@@ -19,7 +19,9 @@ class TestIsSensitivePath:
     """Tests for is_sensitive_path()."""
 
     @pytest.mark.parametrize("prefix", ["~/.kiro/crew", "~/.kirocrew"])
-    @pytest.mark.parametrize("leaf", [".trees.json", ".TREES.JSON", ".trees.json.tmp"])
+    @pytest.mark.parametrize(
+        "leaf", [".trees.json", ".TREES.JSON", ".trees.json.tmp", ".owners.json"]
+    )
     def test_scratch_index_is_sensitive(self, prefix: str, leaf: str) -> None:
         assert is_sensitive_path(f"{prefix}/scratch/{leaf}")
 
@@ -28,7 +30,9 @@ class TestIsSensitivePath:
         assert is_sensitive_path(str(tmp_path / "scratch" / ".trees.json"))
         assert not is_sensitive_path(str(tmp_path / "scratch" / "work" / "notes.txt"))
 
-    @pytest.mark.parametrize("leaf", [".trees.json", "tmpabcdefgh.tmp", ".0123456789abcdef.tmp"])
+    @pytest.mark.parametrize(
+        "leaf", [".trees.json", ".owners.json", "tmpabcdefgh.tmp", ".0123456789abcdef.tmp"]
+    )
     def test_scratch_index_in_windows_relocated_root(self, tmp_path, monkeypatch, leaf) -> None:
         from kiro_crew import agent_scratch, agent_scratch_trees
         from kiro_crew.config import paths

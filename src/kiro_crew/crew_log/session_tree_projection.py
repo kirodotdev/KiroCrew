@@ -84,7 +84,7 @@ import sys as _sys
 import threading
 import time
 import weakref
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Optional
 
@@ -123,6 +123,22 @@ logger = logging.getLogger("kiro_crew.crew_log.session_tree_projection")
 #: instance is not the only one that arms a write, so cancelling just that one would
 #: leave a directly-constructed projection's worker sleeping with a write still owed.
 _LIVE_PROJECTIONS: "weakref.WeakSet[SessionTreeProjection]" = weakref.WeakSet()
+
+
+@dataclass(frozen=True)
+class EdgeSnapshot:
+    """One generation of the session tree's persisted edges, for a walk to read."""
+
+    nodes: "dict[str, TreeNode]"
+    complete: bool
+    suspect: "frozenset[str]"
+
+    def edge(self, slot: str) -> "tuple[str, bool]":
+        """``(creator, verified)``: *slot*'s edge and whether that exact edge may certify."""
+        node = self.nodes.get(slot)
+        creator = (node.parent_slot or "") if node is not None and not node.cycle else ""
+        verified = self.complete and slot not in self.suspect and creator not in self.suspect
+        return creator, verified
 
 
 class SessionTreeProjection:
@@ -409,6 +425,47 @@ class SessionTreeProjection:
         if node is None or node.cycle or node.parent_slot != creator:
             return ""
         return creator
+
+    def edge_snapshot(self) -> "EdgeSnapshot":
+        """Every persisted edge and its trust, from ONE locked reading. No I/O.
+
+        A walk over several hops, or over several owners, reads all of them from
+        this one object, so it never combines an edge from one generation with an
+        edge from the next. :meth:`snapshot_is_current` says whether the state has
+        moved since, for a caller that must not commit a decision on a stale one.
+        """
+        with self._lock:
+            if self._nodes is None:
+                self._nodes = self._fold_locked()
+            return EdgeSnapshot(
+                nodes=self._nodes,
+                complete=self._complete_locked(),
+                suspect=self._suspect_slots_locked(),
+            )
+
+    def snapshot_is_current(self, snap: "EdgeSnapshot") -> bool:
+        """Whether nothing has changed since *snap* was taken. No I/O.
+
+        Every change drops the folded nodes (the next fold is a new object), so the
+        same object still held, with the same completeness and suspect set, means
+        the same generation.
+        """
+        with self._lock:
+            return (
+                self._nodes is snap.nodes
+                and self._complete_locked() == snap.complete
+                and self._suspect_slots_locked() == snap.suspect
+            )
+
+    def _complete_locked(self) -> bool:
+        return not (self._incomplete or self._fault_sids or self._unattributed_gap)
+
+    def _suspect_slots_locked(self) -> "frozenset[str]":
+        # Walk the suspect set, not every record: it is bounded by the units whose
+        # decision may be wrong, while the records grow with the store.
+        return frozenset(
+            self._records[sid].slot for sid in self._suspect_sids if sid in self._records
+        )
 
     def spawned_creator(self, slot: str) -> str:
         """*slot*'s creator from a trusted ``session/spawned`` record, or ``""``. No I/O.

@@ -166,6 +166,7 @@ _CREW_HOME_PREFIXES: tuple[str, ...] = (".kiro/crew", ".kirocrew")
 
 _CREW_SECRET_LEAVES: list[str] = [
     "scratch/.trees.json",  # Reads expose other trees; writes remap resumes.
+    "scratch/.owners.json",  # The index's overflow: the same ownership evidence.
     # Gateway diagnostics, for the reason the sandbox mask gives: the rows carry
     # frame labels, folded stacks and process detail, and the owner-gated read
     # routes redact them on the way out while the files themselves do not. A file

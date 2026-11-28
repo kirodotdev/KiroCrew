@@ -36,19 +36,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import itertools
-import os
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from kiro_crew import agent_scratch, agent_scratch_trees, model_scope
 from kiro_crew.agent_sdk import kas_approve_for_me
-from kiro_crew.agent_sdk.backends import (
-    ACP_BACKENDS_CWD_BOUND_SESSIONS,
-    ACP_BACKENDS_MODEL_AT_LAUNCH,
-)
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_AT_LAUNCH
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_CLAUDE_CODE
 from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
 from kiro_crew.aws_project_profiles import (
@@ -84,6 +80,15 @@ from kiro_crew.session_allocation_parts.errors import (
     SpeculativeResumeRefused,
 )
 from kiro_crew.session_allocation_parts.eviction import _drain_despite_cancellation
+from kiro_crew.session_allocation_parts.resume_cwd import (  # noqa: F401 -- importers read them here
+    HIDDEN_SCRATCH_CWD_NOTICE,
+    _note_skipped_hidden_cwd,
+    _resume_would_move_the_session,
+    _stored_cwd_is_hidden_scratch,
+)
+from kiro_crew.session_allocation_parts.scratch_ownership import (
+    _recorded_tree_of_own_session_tree,
+)
 from kiro_crew.session_lifecycle import adopt_parked_queue, allocation_identity
 from kiro_crew.start_priority import (
     START_QUEUE_COLD_START,
@@ -169,99 +174,6 @@ def _model_is_a_launch_argument(provider: Any) -> bool:
     """Whether *provider*'s harness reads its model at launch, so a switch relaunches it."""
     backend = getattr(getattr(provider, "client", None), "backend", None)
     return isinstance(backend, str) and backend in ACP_BACKENDS_MODEL_AT_LAUNCH
-
-
-def _resume_would_move_the_session(provider: Any, stored_cwd: str) -> bool:
-    """Whether loading *provider*'s saved session would restore it outside its own folder.
-
-    Only for a harness in ``ACP_BACKENDS_CWD_BOUND_SESSIONS``, which serves a session
-    only in the directory it was created in. A saved session with no recorded folder
-    (its project was cleared) counts as moved: a fresh session with the conversation
-    replayed is always correct there, and a load in the wrong folder is not.
-    """
-    backend = getattr(getattr(provider, "client", None), "backend", None)
-    if not (isinstance(backend, str) and backend in ACP_BACKENDS_CWD_BOUND_SESSIONS):
-        return False
-    cwd = getattr(provider, "cwd", "")
-    if not stored_cwd or not isinstance(cwd, str) or not cwd:
-        return True
-    return os.path.normpath(stored_cwd) != os.path.normpath(cwd)
-
-
-def _stored_cwd_is_hidden_scratch(
-    stored_cwd: str, shared_scratch: object, session_key: str, backend_override: str | None
-) -> bool:
-    """Whether a resumed session's recorded cwd is a scratch tree its new process cannot read.
-
-    Each process gets its own directory under the scratch root, and the sandbox hides
-    every other one. A conversation that worked in its ``$KIROCREW_SCRATCH`` records
-    that directory as its cwd, but its next process gets a fresh tree, so the old one
-    is hidden from it and the child cannot read its own working directory (kiro-cli
-    exits at start-up with ``EPERM ... uv_cwd`` on macOS). The tree the spawn shares
-    (``shared_scratch``) is re-exposed to it, so a cwd inside that one is kept. A session
-    that starts unsandboxed hides nothing, so its cwd is kept too: its tier is
-    ``agent.sandbox`` after the governance floor, raised to the ``agent.harness_sandbox``
-    floor of the backend the provider factory selects for *session_key* and
-    *backend_override*.
-    Native Windows applies no scratch-root mask at all: a Kiro spawn is delegated to
-    Kiro's own sandbox and Crew has no Windows sandbox backend, so the cwd is kept there.
-    On every platform a cwd that is not a directory (the scratch sweep removed or
-    quarantined its tree) is unreadable too, so it is never kept.
-    """
-    from kiro_crew import platform_compat
-    from kiro_crew.agent_scratch import scratch_root
-    from kiro_crew.agent_sdk.tool_gate import harness_sandbox_mode
-    from kiro_crew.config.loader import KiroCrewConfig
-    from kiro_crew.crewmate_harness import crewmate_backend_pin
-    from kiro_crew.members import select_provider_backend
-    from kiro_crew.sandbox_tiers import _clamp_sandbox_mode, configured_sandbox_mode
-
-    path = Path(os.path.realpath(stored_cwd))
-    if not path.is_relative_to(os.path.realpath(scratch_root())):
-        return False
-    if not os.path.isdir(path):
-        return True
-    if platform_compat.IS_WINDOWS:
-        return False
-    try:
-        mode = _clamp_sandbox_mode(configured_sandbox_mode())
-        # A floor only raises a tier, so only an "off" tier needs the session's backend.
-        if mode == "off":
-            cfg = KiroCrewConfig.load()
-            backend = select_provider_backend(
-                session_key,
-                cfg.agent.member_acp_backend,
-                cfg.agent.acp_backend,
-                backend_override=backend_override,
-                crew_backend=(
-                    crewmate_backend_pin(cfg, session_key) if backend_override is None else None
-                ),
-            )
-            if harness_sandbox_mode(backend, mode, cfg.agent.harness_sandbox) == "off":
-                return False
-    except Exception:
-        # An unreadable config or backend counts as masked: the session then starts
-        # in its default directory, which it can always read.
-        pass
-    if shared_scratch is not None and path.is_relative_to(os.path.realpath(str(shared_scratch))):
-        return False
-    return True
-
-
-#: ``startup_notice`` token for a start that left a hidden scratch cwd behind.
-HIDDEN_SCRATCH_CWD_NOTICE = "hidden_scratch_cwd_skipped"
-
-
-def _note_skipped_hidden_cwd(provider: Any, skipped_cwd: str) -> None:
-    """Tell the chat its folder could not be reopened, once, on the provider's start."""
-    if not skipped_cwd or getattr(provider, "startup_notice", None) is not None:
-        # A notice the start itself left (a cloud reopen) is not overwritten.
-        return
-    provider.startup_notice = (
-        HIDDEN_SCRATCH_CWD_NOTICE,
-        f"This chat's folder {skipped_cwd} was a temporary folder from an earlier "
-        "run and can't be opened anymore. The chat now works in the default folder.",
-    )
 
 
 async def _session_runs_remotely(session_key: str) -> bool:
@@ -405,13 +317,18 @@ def _dispatch_hard_kill(self: SessionAllocationService, provider: LLMProvider) -
         threading.Thread(target=kill, args=(provider,), daemon=True).start()
 
 
-async def _record_scratch_tree(self: SessionAllocationService, key: str, tree: Path) -> bool:
+async def _record_scratch_tree(
+    self: SessionAllocationService, key: str, tree: Path, parent: str = ""
+) -> Literal["kept", "retire", "unrecorded"]:
     """Attempt best-effort persistence off-loop before publishing the session identity.
 
-    Return False when *tree* did not become *key*'s binding, or when a disk
-    row naming another tree survives a failed drop; the caller then retires
-    the binding. Otherwise a failed write of an admitted binding returns True:
-    the in-memory binding is the tree this session is using, so it is kept.
+    ``"retire"`` when *tree* did not become *key*'s binding, or when a disk row
+    naming another tree survives a failed drop; the caller then retires the
+    binding. ``"unrecorded"`` when *tree* is shared with other keys and neither
+    the index nor the owner file took this key: the caller fails the allocation,
+    because a restart would forget this key and let a co-owner remount the
+    directory alone. Otherwise ``"kept"``: a failed write of a sole owner's
+    binding keeps the in-memory binding the session is using.
     """
     persisted = await run_to_completion(
         asyncio.to_thread(
@@ -419,19 +336,46 @@ async def _record_scratch_tree(self: SessionAllocationService, key: str, tree: P
             key,
             tree,
             ticket=next(_scratch_record_tickets),
+            parent=parent,
         )
     )
     if persisted:
-        return True
+        # A founder bound only in memory would be forgotten by a restart once this
+        # key shares its directory: record it first, or refuse the join.
+        if not await asyncio.to_thread(agent_scratch_trees.record_live_co_owners, key, tree):
+            return "unrecorded"
+        return "kept"
     self._deps.logger.warning(
         "Could not persist scratch binding; continuing session allocation. "
         "This session may start a fresh tree after a gateway restart."
     )
     if not agent_scratch_trees.holds_live_tree(key, tree):
-        return False
+        # The binding cache refused this key, so only its owner row keeps it counted
+        # after a restart (``keys_on_tree``), even while it owns the directory
+        # alone: a key that shares it later would otherwise forget this one. For a
+        # sole owner the row is best-effort: with the index write failed too, the
+        # session still starts on a degraded disk. In a directory other keys own:
+        # no record, no binding.
+        if not await asyncio.to_thread(agent_scratch_trees.record_owner_marker, key, tree):
+            shared = await asyncio.to_thread(agent_scratch_trees.keys_on_tree, tree)
+            if shared - {key}:
+                return "unrecorded"
+        return "retire"
+    # The index could not take this binding, so its ownership is recorded inside the
+    # directory itself; without that record a restart would forget this key, and a
+    # co-owner of another tree could remount the directory alone. In a directory
+    # other keys own: no record, no binding.
+    shared = await asyncio.to_thread(agent_scratch_trees.keys_on_tree, tree)
+    if shared - {key} and not await asyncio.to_thread(
+        agent_scratch_trees.record_owner_marker, key, tree
+    ):
+        return "unrecorded"
     # A row naming another tree that could not be dropped would resume the
     # discarded tree after a restart, so the caller's retirement handles it.
-    return await run_to_completion(asyncio.to_thread(agent_scratch_trees.drop_other_row, key, tree))
+    dropped = await run_to_completion(
+        asyncio.to_thread(agent_scratch_trees.drop_other_row, key, tree)
+    )
+    return "kept" if dropped else "retire"
 
 
 def _remove_reservation_now(self: SessionAllocationService, key: str, token: object) -> None:
@@ -688,6 +632,8 @@ async def _get_or_create_impl(
     # default directory. Any other caller keeps its cwd, so a start there fails loudly
     # instead of running in another repository. Never handed to a factory.
     fallback_hidden_cwd = bool(extra_factory_kwargs.pop("fallback_hidden_cwd", False))
+    # The session the gateway spawned this subagent for, from the spawn call.
+    scratch_parent = str(extra_factory_kwargs.pop("scratch_parent", "") or "")
     from kiro_crew.execution_context import read_session_execution
 
     execution = await asyncio.to_thread(read_session_execution, key)
@@ -828,6 +774,7 @@ async def _get_or_create_impl(
             app_launch_agent=app_launch_agent,
             owning_app=owning_app,
             fallback_hidden_cwd=fallback_hidden_cwd,
+            scratch_parent=scratch_parent,
             **extra_factory_kwargs,
         )
 
@@ -897,6 +844,7 @@ async def _get_or_create_impl(
             focus_resume=focus_resume,
             app_name=app_name,
             fallback_hidden_cwd=fallback_hidden_cwd,
+            scratch_parent=scratch_parent,
             **claim,
         )
 
@@ -960,7 +908,7 @@ async def _get_or_create_impl(
         if readable_scratch is None and memory_mode == "persistent" and resume_sid:
             # A resume rejoins its recorded tree (bound as ``shared_scratch`` below),
             # so a cwd inside that tree stays readable to the new process.
-            readable_scratch = await asyncio.to_thread(agent_scratch_trees.recorded_tree, key)
+            readable_scratch = await _recorded_tree_of_own_session_tree(key, self._deps.logger)
             cwd_kept_by_recorded_tree = readable_scratch is not None
         cwd_is_hidden = await asyncio.to_thread(
             _stored_cwd_is_hidden_scratch,
@@ -1456,7 +1404,7 @@ async def _get_or_create_impl(
             and resume_sid
             and extra_factory_kwargs.get("shared_scratch") is None
         ):
-            recorded_scratch = await asyncio.to_thread(agent_scratch_trees.recorded_tree, key)
+            recorded_scratch = await _recorded_tree_of_own_session_tree(key, self._deps.logger)
             if recorded_scratch is not None:
                 extra_factory_kwargs["shared_scratch"] = recorded_scratch
                 provider = build_provider()
@@ -1809,7 +1757,21 @@ async def _get_or_create_impl(
                         # declare it must retire any predecessor binding.
                         work_scratch = getattr(provider, "work_scratch_dir", None)
                         if isinstance(work_scratch, Path):
-                            must_retire = not await self._record_scratch_tree(key, work_scratch)
+                            # The binding and its spawn parent go in one checked write.
+                            recorded = await self._record_scratch_tree(
+                                key, work_scratch, scratch_parent
+                            )
+                            if recorded == "unrecorded":
+                                # Fail closed: drop the live binding, and the existing
+                                # rollback below closes the provider and publishes nothing.
+                                await run_to_completion(
+                                    asyncio.to_thread(agent_scratch_trees.abandon_tree, key)
+                                )
+                                raise RuntimeError(
+                                    f"could not record session {key} as an owner of the "
+                                    f"shared scratch directory {work_scratch.name!r}"
+                                )
+                            must_retire = recorded == "retire"
                         else:
                             must_retire = had_resume_sid or await run_to_completion(
                                 asyncio.to_thread(agent_scratch_trees.has_live_tree, key)
@@ -1980,6 +1942,7 @@ async def _get_or_create_impl(
             app_launch_agent=app_launch_agent,
             owning_app=owning_app,
             fallback_hidden_cwd=fallback_hidden_cwd,
+            scratch_parent=scratch_parent,
             **extra_factory_kwargs,
         )
 

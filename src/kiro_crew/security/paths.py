@@ -152,7 +152,7 @@ def _path_in_home_dirs(
 
         scratch_override = scratch_root_override_path_hint()
         if scratch_override is not None:
-            from kiro_crew.agent_scratch_trees import TREE_INDEX_FILENAME
+            from kiro_crew.agent_scratch_trees import OWNERS_FILENAME, TREE_INDEX_FILENAME
 
             scratch_targets = (
                 {os.path.realpath(os.path.expanduser(scratch_override))}
@@ -163,7 +163,8 @@ def _path_in_home_dirs(
             for cand in candidates:
                 cand_cf = cand.casefold()
                 if (
-                    os.path.basename(cand_cf) == TREE_INDEX_FILENAME or cand_cf.endswith(".tmp")
+                    os.path.basename(cand_cf) in (TREE_INDEX_FILENAME, OWNERS_FILENAME)
+                    or cand_cf.endswith(".tmp")
                 ) and os.path.dirname(cand_cf) in scratch_parents:
                     return True
     except PathResolutionStalled:

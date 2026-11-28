@@ -21,6 +21,23 @@ through the path gate's resolver without allocating scratch or creating the data
 home, preserving the validated override pin after a working-directory change.
 Other sibling files and files inside work-tree subdirectories remain accessible.
 
+The index also holds one reserved row, `"\x00quarantine"`, mapping a directory name to the
+session keys that owned it when a resume could not establish that they belong to one session
+tree. A directory with a mark is not rejoined until every marked owner resolves to one tree.
+Reads fail closed: a mark row this module did not write, an index that exists but is not a
+JSON object under the size cap, or a read error refuses the directory. Every rewrite of the
+index carries the row through, dropping marks for directories the sweep reclaimed. A mark and
+the row change it protects are one write (`_mark_before_leaving`, `abandon_tree_all`). When
+that write fails or would not fit, the index rows stay as they were, and the refusal is held
+in this process's memory with a bounded owner set (`_hold_refusal`) until a durable mark lands
+(`quarantine_tree`, `abandon_tree_all`) or one tree settles it (`clear_quarantine`), so a later check in this process refuses the directory again
+(`held_refusal`, `refused_across_trees`). Past the bound every unmarked directory is refused
+(`_REFUSALS_OVERFLOWED`). A fresh process holds no refusal: it reads the unchanged rows, every
+owner is still bound on disk, and its next resume runs the ownership check over all of them
+(`_recorded_tree_of_own_session_tree`), which refuses the directory again only when those owners
+resolve to more than one session tree. Binding readers skip the row, so an index without it reads as it always did. An index
+rewritten after it became unusable no longer holds the marks it lost.
+
 ### MCP launch authorization leaves
 
 The `approvals.json` file in the crew-home `mcp-launch-approvals/` directory
