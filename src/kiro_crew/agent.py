@@ -282,6 +282,7 @@ from kiro_crew.config.paths import (
     ambient_agents_dir,
     isolated_agents_dir,
     kiro_agents_dir,
+    kiro_home,
     project_agents_dir,
     shared_kiro_agents_writable,
 )
@@ -612,7 +613,9 @@ class SharedAgentHomeRefused(OSError):
     """
 
 
-_KIRO_MCP_JSON = Path.home() / ".kiro" / "settings" / "mcp.json"
+# kiro-cli's own global MCP file, under ``KIRO_HOME`` when that is set, as
+# kiro-cli and the gateway's rewriter read it.
+_KIRO_MCP_JSON = kiro_home() / "settings" / "mcp.json"
 # Well-known Claude Code global MCP config. The core does not read this at
 # rebuild/discovery/apply time (OSS is Kiro-only); a companion contributes it as
 # a scope via the extra_mcp_scopes() CPP seam. Retained as the canonical path

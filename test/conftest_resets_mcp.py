@@ -119,3 +119,56 @@ def _fresh_backend_tmp_socket_room_warnings(_floor_monkeypatch):
 
     _floor_monkeypatch.setattr(backend_tmp, "_warned_roots", set(), raising=False)
     _floor_monkeypatch.setattr(backend_tmp, "_SUN_PATH_BYTES", sys.maxsize, raising=False)
+
+
+@per_test_guard
+def _no_mcp_auto_share(request, _floor_monkeypatch):
+    """Keep the gateway start's auto-share pass off the host's own MCP servers.
+
+    ``mcp_gateway.auto_share`` lists every configured server (the host's
+    ``~/.kiro`` included) and writes a stub for each into config, so a test that
+    starts the gateway would otherwise stub servers it never declared. A module
+    that tests the pass itself sets ``AUTO_SHARE = True``.
+    """
+    if getattr(request.module, "AUTO_SHARE", False):
+        return
+    from kiro_crew.mcp_gateway import auto_share
+
+    _floor_monkeypatch.setattr(auto_share, "share_declared_servers", lambda: [])
+    # The declaration watch it starts polls for as long as the gateway runs;
+    # with nothing to watch it returns at once.
+    _floor_monkeypatch.setattr(auto_share, "declaration_files_stat", lambda: None)
+
+
+@per_test_guard
+def _no_first_sight_measure(request, _floor_monkeypatch):
+    """Keep a probe round from starting its unasked pre-flight pass.
+
+    ``mcp_probe._start_first_sight_measure`` spawns each fake ``status="ok"``
+    server twice in the background after a test's probe round, which the test
+    never asked for. A module that tests that pass sets ``FIRST_SIGHT_MEASURE = True``.
+    """
+    if getattr(request.module, "FIRST_SIGHT_MEASURE", False):
+        return
+    from kiro_crew.dashboard.handlers import mcp_probe
+
+    _floor_monkeypatch.setattr(mcp_probe, "_start_first_sight_measure", lambda *_a: None)
+
+
+@per_test_guard
+def _no_backend_sandbox(request, _floor_monkeypatch):
+    """Spawn gateway backends without the global sandbox, except where it is the subject.
+
+    ``backend.spawn_backend`` wraps a shared backend in the host's sandbox and
+    refuses the share where none can be built, as inside a test worker that is
+    already sandboxed. Tests that start a real backend pin what it does once
+    running. A module that tests the wrap itself sets ``BACKEND_SANDBOX = True``.
+    """
+    if getattr(request.module, "BACKEND_SANDBOX", False):
+        return
+    from kiro_crew.mcp_gateway import backend
+
+    async def _unwrapped(argv, _env, _tmp, _secrets=(), **_kwargs):
+        return argv, None, False
+
+    _floor_monkeypatch.setattr(backend, "_sandboxed_backend_argv", _unwrapped)

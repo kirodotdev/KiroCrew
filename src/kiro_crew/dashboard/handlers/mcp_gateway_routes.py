@@ -683,6 +683,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     answers = getattr(gw_cfg, "cwd_use", None) or {}
     bindings = getattr(gw_cfg, "cwd_use_launch", None) or {}
     observed_roots = frozenset(n for n in observed if folder_use.asks_for_roots(observed, n))
+    folder_kept = declarations.folder_users(stub_set, folder_free, answers, bindings)
     roots_excluded = declarations.per_chat(
         rows.keys(), observed_roots, folder_free, answers, bindings
     )
@@ -705,7 +706,9 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
         # below as information — a spec-level ``poolable: true`` does not opt a
         # server in, and reading it as "stubbed" here would make the row claim a stub
         # the broker has not created.
-        stubbed = can_stub and name in stub_set
+        # A launch that names the chat's folder runs per chat whatever the share
+        # list says (the rewriter's ``folder_users``), so the row says so.
+        stubbed = can_stub and name in stub_set and name not in folder_kept
         # Whether stubbing this server could actually produce a SHARED backend.
         # The rewriter leaves an env-declaring entry unwrapped when the pooled
         # spawn would withhold a declared key (every key with
@@ -766,6 +769,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                     folder_free,
                     answer,
                     asked_roots=folder_use.roots_observed(name, observed_roots),
+                    launch_free=declarations.launch_free(name),
                 )
                 is not None,
                 "cwd_roots": asked_roots,

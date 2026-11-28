@@ -645,6 +645,16 @@ def rewrite_agents(
         if observed_roots
         else frozenset()
     )
+    # The gateway start's pass records every launch with no review, so on that
+    # pass a launch that names the chat's folder stays per chat on every start,
+    # not only when it is first shared: only a ``not_used`` answer given for this
+    # launch routes it. That reads the declarations, so it runs only on a cache
+    # miss below; the specs are already in the cache key, and the answers it
+    # reads are added to it on every wrapping pass, so the live refresh's policy
+    # matches the start's. A refresh that would wrap such a launch differs from
+    # the running targets and asks for a restart instead.
+    folder_pass = bool(configured_stub_set) and not getattr(approvals, "probe", False)
+    folder_census = folder_pass and getattr(approvals, "auto", False)
 
     # An install upgraded from an older release can still carry a settings
     # overlay at ``<overlay_dir>/../settings/mcp.json``; this pass never
@@ -737,6 +747,13 @@ def rewrite_agents(
     # Keep the configured roster and its managed launches fixed for live refresh;
     # observed roots only invalidate cached overlays, not the broker's policy.
     current_inputs["roots_excluded"] = sorted(roots_excluded)
+    if folder_pass:
+        # JSON-native (lists, not tuples): compared with the stored copy.
+        current_inputs["folder_answers"] = [
+            [list(pair) for pair in sorted((cwd_answers or {}).items())],
+            [list(pair) for pair in sorted((cwd_bindings or {}).items())],
+            sorted(folder_free or ()),
+        ]
     if approvals is not None:
         current_inputs["launch_approvals"] = approvals.digest()
     with _PASS_INPUTS_LOCK:
@@ -776,6 +793,10 @@ def rewrite_agents(
             return cached
     if approvals is not None:
         approvals.full_pass = True
+    if folder_census:
+        roots_excluded = roots_excluded | read_declarations(
+            source_dir, mate_source_dir
+        ).folder_users(configured_stub_set, folder_free, cwd_answers or {}, cwd_bindings or {})
 
     written: set[str] = set()
     # The ``name`` of every agent overlay this pass published: a crewmate whose

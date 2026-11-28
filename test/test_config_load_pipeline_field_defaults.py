@@ -885,7 +885,8 @@ def _stub_roster_migration_cases() -> list:
     the effective set and the configured roster.
     """
     gateway = sections.McpGatewayConfig
-    moves = [(gateway, "enabled", True), (gateway, "stub_servers", ["moved"])]
+    # ``enabled`` defaults on, so the move is to off.
+    moves = [(gateway, "enabled", False), (gateway, "stub_servers", ["moved"])]
 
     def roster(c: loader.KiroCrewConfig) -> tuple[list[str], list[str]]:
         return c.mcp_gateway.stub_servers, c.mcp_gateway.stub_roster

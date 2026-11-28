@@ -456,6 +456,27 @@ async def _recaller_loop(
         return
 
 
+def _attested_control_plane(args: argparse.Namespace) -> bool:
+    """Whether this stub's target is Kiro Crew's own managed control-plane launch.
+
+    The same vetting gatewayd runs before it spawns a backend unwrapped
+    (``stub_fallback._fallback_target_is_own_control_plane``): the name must be
+    reserved AND the binary, args and env must be the managed invocation's. Only
+    then does a confined session keep the broker path, since gatewayd runs that
+    launch by attestation and never in the shared sandbox; run here it would lose
+    the authenticated gateway path. A reserved name with any other launch runs per
+    chat like a third-party server. Fails closed. Imported only on this branch.
+    """
+    from kiro_crew.mcp_gateway import stub_fallback, stub_register
+
+    try:
+        return stub_fallback._fallback_target_is_own_control_plane(
+            args, stub_register._resolve_target_args(args), dict(os.environ)
+        )
+    except Exception:  # noqa: BLE001 -- not attested: the closed side
+        return False
+
+
 async def _amain(argv: Optional[list[str]] = None) -> int:
     # ── Name the default executor ──
     # asyncio.to_thread and run_in_executor(None, ...) route onto the loop's
@@ -482,6 +503,15 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
         # refusing stub opens no connection and names no target (``--refuse``).
         logger.info("refusing: no tools for server %r agent %r", args.server, args.agent)
         return await _serve_refusal(StubSession(), server=args.server)
+    from kiro_crew.mcp_gateway.session_confinement import PER_CHAT_ENV
+
+    if os.environ.get(PER_CHAT_ENV) == "1" and not _attested_control_plane(args):
+        # A session fenced tighter than a shared backend: run the server here, per
+        # chat, inside its sandbox (``session_confinement``). The fallback refuses an
+        # unresolved ``secret://`` value rather than launching with it.
+        logger.info("per-chat session: running %r here, not on the gateway", args.server)
+        fallback_exec(args)
+        return 1  # unreachable
     _adopt_read_ceiling(args)
     # build_register_payload -> _build_caller_block -> CallerContext.from_env
     # does a synchronous /proc ancestry walk + file reads (and _binary_version

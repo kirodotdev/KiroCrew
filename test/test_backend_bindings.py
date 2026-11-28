@@ -49,7 +49,7 @@ SHARED_BINDINGS_CHECKS = ("the_class_only_scan_can_fail",)
 #: A dataclass field is "data" when it has a plain default (a class attribute) and
 #: "annotation" when it has none or a ``default_factory``.
 _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
-    "__init__": ("function", False, "b0b5bdb3423d", "backend"),
+    "__init__": ("function", False, "3c82e316e554", "backend"),
     "__post_init__": ("function", False, "b60c5fea256e", "backend"),
     "_apply_inflight_report": ("function", False, "44c5cabfd721", "backend_routing"),
     "_apps_declared_uris": ("annotation", False, "", ""),
@@ -123,6 +123,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "_spawn_metric_task": ("function", False, "13f007277a39", "backend_routing"),
     "_stderr_tail": ("annotation", False, "", ""),
     "_stderr_task": ("data", False, "", ""),
+    "_sandbox_cleanup_task": ("data", False, "", ""),
     "_stdout_task": ("data", False, "", ""),
     "_stub_agents": ("annotation", False, "", ""),
     "_stub_inboxes": ("annotation", False, "", ""),
@@ -178,7 +179,7 @@ _FACADE = backend_mod.__name__
 #: What ``from kiro_crew.mcp_gateway.backend import *`` bound before the split: every
 #: public name of the unsplit module's namespace.
 _BASE_STAR_NAMES = frozenset("""
-    Any Awaitable Backend BackendGone CALLER_CAPABILITY_KEY CALLER_META_KEY
+    Any Awaitable Backend BackendGone BackendSandboxRefused CALLER_CAPABILITY_KEY CALLER_META_KEY
     CANONICAL_TEMP_KEYS CallerContext HARD_WEDGE_CEILING_SECS HEARTBEAT_PING_ID
     HEARTBEAT_TIMEOUT_SECS ID_PROBE_BYTES INFLIGHT_CAPABILITY_KEY INFLIGHT_NOTIFICATION
     INITIALIZE_DEADLINE_REASON INTERNAL_STUB_PREFIXES KIROCREW_SPAWNED_ENV

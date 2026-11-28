@@ -31,7 +31,6 @@ import { api, ApiError } from '../api/client'
 import { i18nT } from '../i18n/t'
 import { McpManagement } from '../pages/settings/McpManagement'
 import { answerBatchPreviewsPerName } from './McpManagementTestUtils'
-import { namedCeiling } from './namedCeiling'
 
 const M = (key: string, vars?: Record<string, unknown>) => i18nT(`pages.mcpManagement.${key}`, vars)
 const rowName = (labelKey: string, name = 'alpha-mcp') => `${M(labelKey)} ${name}`
@@ -359,55 +358,5 @@ describe('a refused launch', () => {
     expect(screen.queryByText(M('state_needs_reapproval'))).toBeNull()
     expect(screen.queryByRole('button', { name: rowName('new_command_button') })).toBeNull()
     expect(screen.queryByRole('button', { name: M('review_approve') })).toBeNull()
-  })
-})
-
-describe('the Sharing row\'s "Always trust changes" choice', () => {
-  // Each wait sits behind the page's status and servers reads, then a mutation
-  // and the servers refetch it invalidates.
-  const ROW_TRUST = namedCeiling('ROW_TRUST', 5000)
-  const trustBox = () =>
-    screen.findByRole('checkbox', { name: M('trust_changes_label') }, ROW_TRUST) as Promise<HTMLInputElement>
-
-  it('keeps the box drawn unchecked after unticking, and ticking it again grants trust', async () => {
-    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
-    vi.spyOn(api, 'mcpGatewayServers')
-      .mockResolvedValueOnce({ servers: [{ ...server, trust_changes: true }] } as never)
-      .mockResolvedValue({ servers: [{ ...server, trust_changes: false }] } as never)
-    const stop = vi.spyOn(api, 'mcpGatewayStopTrustingChanges').mockResolvedValue({ ok: true, name: 'alpha-mcp', trust_changes: false })
-    const grant = vi.spyOn(api, 'mcpGatewayTrustChanges').mockResolvedValue({ ok: true, name: 'alpha-mcp', trust_changes: true })
-
-    mount()
-    fireEvent.click(await trustBox())
-    await waitFor(() => expect(stop).toHaveBeenCalledExactlyOnceWith('alpha-mcp'), ROW_TRUST)
-    await waitFor(
-      () => expect((screen.getByRole('checkbox', { name: M('trust_changes_label') }) as HTMLInputElement).checked).toBe(false),
-      ROW_TRUST,
-    )
-
-    fireEvent.click(await trustBox())
-    await waitFor(() => expect(grant).toHaveBeenCalledExactlyOnceWith('alpha-mcp'), ROW_TRUST)
-  })
-
-  it('says what to do first when the grant is refused', async () => {
-    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
-    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [{ ...server, trust_changes: false }] } as never)
-    vi.spyOn(api, 'mcpGatewayTrustChanges').mockRejectedValue(
-      new ApiError(409, 'refused', JSON.stringify({ code: 'trust_needs_approved_launch' })),
-    )
-
-    mount()
-    fireEvent.click(await trustBox())
-    const said = M('stub_error_trust_needs_approved_launch', { name: 'alpha-mcp' })
-    await waitFor(() => expect(screen.getAllByRole('alert').some(a => a.textContent?.includes(said))).toBe(true), ROW_TRUST)
-  })
-
-  it('draws no choice on a row whose launch waits for approval', async () => {
-    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ launch_refused: { 'alpha-mcp': changed } }) as never)
-    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [{ ...server, trust_changes: false }] } as never)
-
-    mount()
-    await screen.findByRole('button', { name: rowName('new_command_button') }, ROW_TRUST)
-    expect(screen.queryByRole('checkbox', { name: M('trust_changes_label') })).toBeNull()
   })
 })

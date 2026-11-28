@@ -1469,6 +1469,7 @@ class KiroCrewConfig:
         """
         from kiro_crew.agent_sdk.drivers.acp import build_acp_provider
         from kiro_crew.agent_sdk.tool_gate import harness_sandbox_mode
+        from kiro_crew.mcp_gateway.session_confinement import PER_CHAT_ENV, uses_shared_backends
         from kiro_crew.session_work_dir import is_disposable_session_key
 
         model = self.agent.model
@@ -1707,6 +1708,10 @@ class KiroCrewConfig:
                         session_key or "?",
                         m,
                     )
+            _tier = harness_sandbox_mode(_backend, sandbox, harness_sandbox)
+            if _gw_overlay is not None and not uses_shared_backends(_backend, _tier):
+                # Fenced tighter than a shared backend: its stubs run every server per chat.
+                extra_env = {**(extra_env or {}), PER_CHAT_ENV: "1"}
             return build_acp_provider(
                 work_dir=wdir,
                 model=m,
@@ -1714,7 +1719,7 @@ class KiroCrewConfig:
                 crew_agent=crew_agent,
                 # The session's tier, chosen once with its backend: the launch's mask
                 # preflight and its wrap both read it (``agent.harness_sandbox``).
-                sandbox_mode=harness_sandbox_mode(_backend, sandbox, harness_sandbox),
+                sandbox_mode=_tier,
                 session_key=session_key,
                 channel_id=channel_id,
                 extra_env=extra_env,

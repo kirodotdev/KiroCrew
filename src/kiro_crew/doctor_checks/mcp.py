@@ -573,6 +573,24 @@ def _share_refusal_label(record: Mapping[str, Any]) -> str:
     return _SHARE_REFUSAL_LABELS.get(reason, reason)
 
 
+def _vault_declared(names: list[str]) -> list[str]:
+    """Those of *names* some declaration gives a ``secret://`` env value, sorted.
+
+    Unreadable declarations count as none, which leaves the row informational.
+    """
+    try:
+        from kiro_crew import cli_doctor
+        from kiro_crew.config.paths import mate_agents_dir
+        from kiro_crew.mcp_gateway.folder_use import read_declarations
+        from kiro_crew.mcp_utils import mcp_server_alias
+
+        # The facade's agents dir, so a patch on ``cli_doctor`` reaches this read.
+        vault = read_declarations(cli_doctor._agents_dir(), mate_agents_dir()).vault
+    except Exception:  # noqa: BLE001 -- a diagnostic read; the row stays as it is
+        return []
+    return sorted(n for n in names if mcp_server_alias(n) in vault)
+
+
 def _doctor_mcp_share_refused(cfg: KiroCrewConfig, issues: list[str]) -> None:
     """Name every server config asks to share whose launch approval is refused.
 
@@ -584,8 +602,11 @@ def _doctor_mcp_share_refused(cfg: KiroCrewConfig, issues: list[str]) -> None:
 
     Reports, never approves: the approval stays a dashboard action, because the
     approval write is what pins the exact launch the gateway resolved. A refusal
-    IS an issue -- config and the running host disagree, and only the operator's
-    approval (or removing the server from the share list) reconciles them.
+    is info, not an issue: the refused launch runs inside each chat's sandbox,
+    so no tool is lost, only the memory a shared copy saves. Two cases stay an
+    issue: a server whose env holds a ``secret://`` value, which has no per-chat
+    fallback and so does not start, and an approval store that cannot be read,
+    since then the state is unknown.
     """
     try:
         gw = cfg.mcp_gateway
@@ -624,16 +645,37 @@ def _doctor_mcp_share_refused(cfg: KiroCrewConfig, issues: list[str]) -> None:
     if not hits:
         print(f"  mcp sharing: ✅ {len(asked)} server(s) set to share, none waiting for approval")
         return
+    # A server whose env holds a ``secret://`` reference has no per-chat fallback:
+    # only the gateway's shared launch resolves the reference, so a refused one
+    # does not start at all. That stays an issue.
+    vault = _vault_declared(hits)
+    if vault:
+        names = ", ".join(vault)
+        print(f"  mcp sharing: ⚠ not running, launch not approved: {names}")
+        render._print_wrapped(
+            "These servers name a secret:// value in their env, which only the "
+            "shared gateway launch resolves, so with the launch refused they do "
+            "not start and their tools are unavailable. Approve each one on the "
+            "MCP Servers page, Sharing view (/mcp?view=sharing), then run "
+            "`kirocrew restart`.",
+            keep=("`kirocrew restart`",),
+        )
+        issues.append(f"{len(vault)} MCP server(s) not running: launch not approved")
+        hits = [name for name in hits if name not in vault]
+        if not hits:
+            return
     rows = ", ".join(f"{name} ({_share_refusal_label(shares[name])})" for name in hits)
-    print(f"  mcp sharing: ⚠ not shared, one copy per chat: {rows}")
+    # Info, not an issue: a refused launch runs inside each chat's sandbox, so
+    # every tool still works and only the shared copy's memory saving is lost.
+    print(f"  mcp sharing: ⏹ not shared, one copy per chat: {rows}")
     render._print_wrapped(
-        "Config asks to share these servers, but the gateway refused their launch "
-        "until it is approved on the dashboard. Open MCP Servers, the "
+        "Config asks to share these servers, but the gateway keeps their launch "
+        "inside each chat until it is approved on the dashboard. Their tools work "
+        "as before. Open MCP Servers, the "
         "Sharing view (/mcp?view=sharing), approve each one that offers "
         "Approve, then run `kirocrew restart` so new chats use the shared copy.",
         keep=("`kirocrew restart`",),
     )
-    issues.append(f"{len(hits)} MCP server(s) set to share are not shared: launch not approved")
 
 
 def _doctor_dropped_mcp_servers(issues: list[str]) -> None:

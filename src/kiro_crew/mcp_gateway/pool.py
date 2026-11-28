@@ -16,12 +16,11 @@ fields labeled "security boundary" are in that class and are not key
 dimensions: ``sandbox_mode``, ``autoapprove_set_hash``, ``approval_mode``
 and ``trust_all_tools``.
 
-* **The sandbox is not applied to a pooled backend at all.** ``gatewayd``
-  spawns backends outside any mount namespace by design (see the security
-  boundary note in ``backend.spawn_backend``); the per-session sandbox wraps
-  kiro-cli, not a gateway-spawned server. Two sessions configured for
-  different sandbox tiers therefore get processes confined identically --
-  partitioning them buys a second unsandboxed process, not a second sandbox.
+* **A pooled backend has one tier whatever the session's.** ``gatewayd``
+  spawns it in the global ``standard`` sandbox (see the security boundary note
+  in ``backend.spawn_backend``), and a session confined beyond that tier never
+  attaches to it (``session_confinement.uses_shared_backends``: its stubs run
+  each server per chat). Partitioning by tier would buy a second process confined the same.
 * **Approval is decided before a call reaches the gateway.** Tool visibility,
   the ``allowedTools`` grants (a verb a server's autoApprove keeps among them, as
   an entry of the agent's skill view: kiro-cli has no autoApprove field), the

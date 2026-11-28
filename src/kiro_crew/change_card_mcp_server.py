@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import shlex
 import urllib.parse
 from typing import Any
@@ -80,6 +81,9 @@ SHARE_OFFER_FIELD = "share_offer"
 #: The change row that shows an Apply stops sharing a server. Drawn as an ordinary
 #: change line, unlike the offer row, so no unshare step is hidden from the person.
 SHARING_OFF_ROW = {"label": "Sharing", "before": "On", "after": "Off"}
+#: The row for a server that was not shared and stays per chat. Its step records
+#: that off, so the gateway's auto-share (``mcp_gateway.auto_share``) keeps it.
+SHARING_KEPT_OFF_ROW = {"label": "Sharing", "after": "Off"}
 #: Placeholders that stand for the chat's folder in an arg or env value.
 _FOLDER_PLACEHOLDERS = (
     "${workspacefolder}",
@@ -109,14 +113,32 @@ def _names_the_chat_folder(value: str) -> bool:
         return False
     if len(text) > 2 and text[1] == ":":  # a Windows drive path
         return False
+    if _is_time_zone_name(text):
+        # ``America/Chicago`` has a slash and names a zone, not a folder entry.
+        return False
     return "@" not in text and ("/" in text or low.endswith((".js", ".mjs", ".cjs", ".ts", ".py")))
+
+
+#: An IANA time zone name: one of the fixed top-level areas, then a location, as
+#: in ``America/Chicago`` or ``America/Argentina/Buenos_Aires``. Matched in memory,
+#: since this runs on the event loop when a card is built.
+_TIME_ZONE_NAME = re.compile(
+    r"(?:Africa|America|Antarctica|Arctic|Asia|Atlantic|Australia|Europe|Indian|Pacific|Etc)"
+    r"(?:/[A-Za-z][A-Za-z0-9_+\-]*){1,2}"
+)
+
+
+def _is_time_zone_name(text: str) -> bool:
+    """Whether *text* has the shape of an IANA time zone name (``Europe/Paris``)."""
+    return _TIME_ZONE_NAME.fullmatch(text) is not None
 
 
 def detects_chat_folder(name: str, entry: dict[str, Any] | None) -> bool:
     """Kiro Crew's own reading: does this server read or write the chat's folder?
 
     True when an arg or env value is ``.``, a relative path or a folder placeholder
-    (``${workspaceFolder}``, ``${PWD}`` and the like). The server's name and package
+    (``${workspaceFolder}``, ``${PWD}`` and the like). An IANA time zone name
+    (``America/Chicago``) has a slash but is not a path. The server's name and package
     are not read: a name says nothing certain about the folder. A remote server
     (``url``) runs no process here, so it has no folder to read. Anything this
     cannot read is treated as using the folder.
@@ -320,7 +342,9 @@ def _share_steps(
     answer is never rewritten. Every unshare step comes with the
     :data:`SHARING_OFF_ROW` change line, so the card shows all that Apply does. Any
     unshare step requires a session restart even when ``use_now`` is false, since
-    the old target is gone.
+    the old target is gone. On an add card for a server that was not shared,
+    unchecked or not safe to share, Apply records the off (:func:`_kept_off`, the
+    :data:`SHARING_KEPT_OFF_ROW` line), so the gateway's auto-share keeps it per chat.
     *at* is the plan index of the first step.
     """
     from kiro_crew.change_card_catalog_plans import _step_fill, _with_fills, step
@@ -334,7 +358,7 @@ def _share_steps(
     refusal = share_refusal(p, entry, snapshot)
     if refusal is not None:
         if not shared:
-            return [], []
+            return _kept_off(p, refusal, snapshot)
         # The operator's recorded answer is never rewritten; only a server with no
         # answer yet gets one.
         if refusal == REFUSED_USES_FOLDER and snapshot.get("cwd_use") is None:
@@ -347,7 +371,9 @@ def _share_steps(
         return ([dict(SHARING_OFF_ROW)], unshare) if shared and not share else ([], [])
     row = {"field": SHARE_OFFER_FIELD, "label": "Sharing", "after": share}
     if not share:
-        return ([dict(SHARING_OFF_ROW), row], unshare) if shared else ([row], [])
+        if shared:
+            return [dict(SHARING_OFF_ROW), row], unshare
+        return [row], _kept_off(p, None, snapshot)[1]
     launch = "/api/mcp-gateway/servers/launch?" + urllib.parse.urlencode({"name": name})
     steps = []
     if not snapshot.get("sharing_on"):
@@ -364,6 +390,28 @@ def _share_steps(
         fills,
     )
     return [row], [*steps, step("GET", launch), step("POST", stub_path, body, fill=fills)]
+
+
+def _kept_off(
+    p: dict[str, Any], refusal: str | None, snapshot: dict[str, Any]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The off an add card records for a new local server it keeps per chat.
+
+    *refusal* is why it is not safe to share, or None when the person unticked
+    the box. Without the record the gateway's auto-share would find the new
+    server undecided and share it. A folder signal also records the folder
+    answer when none is recorded yet. A remote server has no launch to share, a
+    name another declaration also carries is not this card's to decide, and a
+    change card keeps the server's current sharing, so those record nothing.
+    """
+    from kiro_crew.change_card_catalog_plans import step
+
+    if p["action"] != ACTION_ADD or refusal in (REFUSED_NOT_LOCAL, REFUSED_DECLARED_ELSEWHERE):
+        return [], []
+    body: dict[str, Any] = {"name": p["server"], "stub": False}
+    if refusal == REFUSED_USES_FOLDER and snapshot.get("cwd_use") is None:
+        body["cwd_use"] = CWD_USES
+    return [dict(SHARING_KEPT_OFF_ROW)], [step("POST", "/api/mcp-gateway/servers/stub", body)]
 
 
 def _launch(entry: dict[str, Any] | None) -> str | None:
@@ -509,7 +557,10 @@ def build_preview(p: dict[str, Any], snapshot: dict[str, Any], out: dict[str, An
     apply += share_steps
     rows += share_rows
     # The launch read is a GET whose body is None.
-    unshares = any((s.get("body") or {}).get("stub") is False for s in share_steps)
+    # Only a server that was shared loses a target; a kept-off record changes nothing running.
+    unshares = bool(snapshot.get("shared")) and any(
+        (s.get("body") or {}).get("stub") is False for s in share_steps
+    )
     if p.get(OPTION_USE_NOW, True) or unshares:
         apply.append(step("POST", "/api/sessions/restart", {}))
     out["title"] = _TITLES[action].format(name=name)

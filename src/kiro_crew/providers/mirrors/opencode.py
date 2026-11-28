@@ -55,7 +55,6 @@ from kiro_crew.acp.session_mcp import (
 )
 from kiro_crew.acp_backends import ACP_BACKEND_OPENCODE
 from kiro_crew.mcp_gateway import STUB_MODULE
-from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.mcp_gateway.hashing import expand_stub_flags
 from kiro_crew.providers.mirrors.base import (
     RESOURCES_NO_READER,
@@ -138,10 +137,11 @@ def is_session_bound_work_ledger_stub(stub: Mapping[str, Any], session_token: st
     * the name is the work-ledger server's;
     * it is a stdio element (tagged ``stdio`` or untagged) whose argv runs the
       broker stub module and registers under exactly one ``--server``, that name;
-    * its ``env`` is exactly one pair: :data:`STUB_SESSION_TOKEN_ENV` carrying
-      *session_token*, which must be nonempty. The gateway clears a stub's env and
-      the client adds only that token, so any other pair, a second token, or a
-      token naming another session means the element is not this session's stub.
+    * its ``env`` is one pair: :data:`STUB_SESSION_TOKEN_ENV` carrying
+      *session_token*, which must be nonempty, plus only ``PER_CHAT_ENV=1`` for a
+      confined session (``session_servers.stub_env_binds``). Any other pair, a
+      second token, or a token naming another session means the element is not
+      this session's stub.
 
     Fails closed: anything unreadable answers ``False``. Restrictions, ``disabled``
     and the ``tools`` allowlist are not decided here; the caller still applies them.
@@ -158,16 +158,10 @@ def is_session_bound_work_ledger_stub(stub: Mapping[str, Any], session_token: st
         return False
     if _stub_registered_servers(stub.get("args")) != [server]:
         return False
-    env = stub.get("env")
-    if not isinstance(env, list) or len(env) != 1:
-        return False
-    pair = env[0]
-    return (
-        isinstance(pair, Mapping)
-        and set(pair) == {"name", "value"}
-        and pair.get("name") == STUB_SESSION_TOKEN_ENV
-        and pair.get("value") == session_token
-    )
+    from kiro_crew.mcp_gateway.session_servers import stub_env_binds
+
+    # The token, and for a confined session exactly the per-chat mark after it.
+    return stub_env_binds(stub.get("env"), session_token)
 
 
 def without_stdio_tag(element: dict[str, Any]) -> dict[str, Any]:

@@ -105,7 +105,7 @@ from kiro_crew.mcp_gateway.admission import (
 from kiro_crew.mcp_gateway.apps import sweep_spool as apps_sweep_spool
 from kiro_crew.mcp_gateway.backend import INTERNAL_STUB_PREFIXES  # noqa: F401
 from kiro_crew.mcp_gateway.backend import BackendGone  # noqa: F401 - not a seam
-from kiro_crew.mcp_gateway.backend import Backend, spawn_backend
+from kiro_crew.mcp_gateway.backend import Backend, BackendSandboxRefused, spawn_backend
 from kiro_crew.mcp_gateway.backend_tmp import sweep_all_backend_tmp  # noqa: F401
 from kiro_crew.mcp_gateway.breaker import CircuitBreaker
 
@@ -377,6 +377,7 @@ from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX, resolve_secret_u
 from kiro_crew.mcp_gateway.shutdown_budget import DRAIN_SECS, POOL_SHUTDOWN_SECS
 from kiro_crew.mcp_gateway.spill import cleanup_old_spill_files
 from kiro_crew.mcp_gateway.stub import fallback_counts as stub_fallback_counts  # noqa: F401
+from kiro_crew.mcp_gateway.stub_link import TARGET_UNKNOWN_REASON
 from kiro_crew.metrics import mcp_gateway_gauges
 from kiro_crew.metrics.provider import get_recorder  # noqa: F401
 from kiro_crew.metrics.provider import _CONSENT_RECHECK_SECS
@@ -1544,23 +1545,36 @@ async def _acquire_backend(
             raise _TargetUnknown(
                 f"ssh-agent socket decision changed for server {pool_key.server_name!r}"
             )
-        backend = await spawn_backend(
-            pool_key=pool_key,
-            command=command,
-            args=list(args),
-            env=spawn_env,
-            work_dir=fresh_target[3],
-            # Containment yields only to temp keys cleared by the shared rule.
-            # ``spawn_backend`` checks them again after secret resolution, so a
-            # path hidden behind ``secret://`` cannot bypass the runtime check.
-            declared_temp_keys=accepted_temp_keys,
-            secret_env_keys=tuple(_secret_keys),
-            **(
-                {"initialize_timeout_secs": admission.initialize_timeout_for(pool_key)}
-                if admission is not None
-                else {}
-            ),
-        )
+        try:
+            backend = await spawn_backend(
+                pool_key=pool_key,
+                command=command,
+                args=list(args),
+                env=spawn_env,
+                work_dir=fresh_target[3],
+                # Containment yields only to temp keys cleared by the shared rule.
+                # ``spawn_backend`` checks them again after secret resolution, so a
+                # path hidden behind ``secret://`` cannot bypass the runtime check.
+                declared_temp_keys=accepted_temp_keys,
+                secret_env_keys=tuple(_secret_keys),
+                # The keys this server's own declaration sets: a channel token it
+                # names is kept, one only inherited from the daemon is dropped.
+                declared_env_keys=tuple(declared),
+                # The positive attestation, not the reserved name, keeps the
+                # direct exec (``backend._sandboxed_backend_argv``).
+                managed_control_plane=control_plane,
+                **(
+                    {"initialize_timeout_secs": admission.initialize_timeout_for(pool_key)}
+                    if admission is not None
+                    else {}
+                ),
+            )
+        except BackendSandboxRefused as exc:
+            # Answered as a missing target, so the stub runs the server per chat
+            # inside that chat's sandbox (``stub_link.target_unknown``).
+            raise _TargetUnknown(
+                f"{TARGET_UNKNOWN_REASON} {pool_key.server_name!r}: {exc}"
+            ) from exc
         # Security note: resolved secrets exist ONLY in the local spawn_env
         # dict passed to the child via Popen(env=...).  They are NEVER written
         # to the parent's os.environ, so /proc/<gateway_pid>/environ cannot
@@ -1738,6 +1752,14 @@ def main() -> None:
     from kiro_crew.mcp_gateway.hashing import GATEWAY_PATH_ENV, pin_gateway_path
 
     pin_gateway_path(os.environ.pop(GATEWAY_PATH_ENV, None))
+    # The in-sandbox marker is the launcher's, for processes it confined. An
+    # inherited copy here would make every backend wrap a no-op passthrough
+    # (``sandbox_wrap``: "already inside a Kiro Crew sandbox"), so shared
+    # backends would start outside any sandbox. Dropped, as ``cli.main`` and
+    # ``mcp_entry`` drop it: a daemon that really runs inside one then fails
+    # the nested wrap and refuses the share (per chat), the closed side.
+    os.environ.pop("KIROCREW_SANDBOX_ACTIVE", None)
+    os.environ.pop("KIROCREW_SANDBOX_LEVEL", None)
     try:
         # Windows: every spawn on this loop builds its child off-loop.
         rc = asyncio.run(_amain(), loop_factory=gateway_loop_factory())

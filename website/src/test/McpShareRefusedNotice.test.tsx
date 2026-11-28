@@ -133,14 +133,14 @@ describe('McpShareRefusedNotice', () => {
     expect(screen.getByRole('link', { name: 'Open Sharing' })).not.toHaveAttribute('target')
   })
 
-  it('is a warning, not an error, and offers no agent hand-off', async () => {
+  it('is quiet info, not a warning or an error, and offers no agent hand-off', async () => {
     mockApi.mcpGatewayStatus.mockResolvedValue(
       status({ share_refused: { 'alpha-mcp': 'added_outside_dashboard' } }),
     )
     mount(<McpShareRefusedNotice />)
     const notice = await screen.findByTestId('mcp-share-refused', undefined, WAIT)
     expect(notice).toHaveAttribute('role', 'status')
-    expect(notice).toHaveAttribute('data-tone', 'warn')
+    expect(notice).toHaveAttribute('data-tone', 'info')
     expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
   })
 

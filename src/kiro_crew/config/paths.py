@@ -1188,10 +1188,11 @@ def kiro_home() -> Path:
     WHOLE user directory (agents, prompts, skills, steering, settings, sessions),
     but KiroCrew currently resolves the host ``~/.kiro`` for most of those readers
     (session transcripts in ``session_map.py`` / ``acp/*`` / ``providers/acp_*.py``
-    / ``dashboard/handlers/usage_sessions.py``, and the ``settings/mcp.json`` registry).
+    / ``dashboard/handlers/usage_sessions.py``). The global ``settings/mcp.json``
+    follows it: the agent spec builder, the MCP page's reader and its writer.
     Setting ``KIRO_HOME`` therefore moves where kiro-cli WRITES sessions without
     moving where KiroCrew READS them, which breaks session resume. Only the agents
-    directory follows it today, so this is not yet a supported way to isolate an
+    directory and that MCP file follow it today, so this is not yet a supported way to isolate an
     instance. (``build_pod_env()`` does set it, to ``<pod home>/kiro``.) Bringing
     the remaining readers through this resolver is the prerequisite.
 

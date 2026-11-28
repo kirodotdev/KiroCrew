@@ -59,7 +59,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from kiro_crew.config.paths import spec_dir_for
 from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
@@ -73,8 +73,37 @@ from kiro_crew.start_priority import START_PRIORITY_ENV, StartPriority
 logger = logging.getLogger(__name__)
 
 
-def attach_stub_session_token(entries: list[dict[str, Any]], token: str) -> list[dict[str, Any]]:
+def stub_env_binds(env: Any, token: str) -> bool:
+    """Whether a stub element's ACP ``env`` is exactly what :func:`attach_stub_session_token` wrote.
+
+    That is the one :data:`STUB_SESSION_TOKEN_ENV` pair carrying *token* (nonempty),
+    optionally followed by exactly ``PER_CHAT_ENV=1`` for a confined session. Any
+    other pair, a second token or another session's token answers ``False``.
+    """
+    from kiro_crew.mcp_gateway.session_confinement import PER_CHAT_ENV
+
+    if not token or not isinstance(env, list) or not env:
+        return False
+    pair, rest = env[0], env[1:]
+    if rest != [] and rest != [{"name": PER_CHAT_ENV, "value": "1"}]:
+        return False
+    return (
+        isinstance(pair, Mapping)
+        and set(pair) == {"name", "value"}
+        and pair.get("name") == STUB_SESSION_TOKEN_ENV
+        and pair.get("value") == token
+    )
+
+
+def attach_stub_session_token(
+    entries: list[dict[str, Any]], token: str, *, per_chat: bool = False
+) -> list[dict[str, Any]]:
     """Return *entries* with *token* added to each element's ACP ``env`` array.
+
+    *per_chat* also adds ``session_confinement.PER_CHAT_ENV=1`` to each element, for
+    a session confined beyond the shared backends' tier: the element's own env
+    reaches the stub even on a harness that clears its MCP children's environment,
+    and the stub then runs the server itself instead of contacting the gateway.
 
     Applied to the stub entries of ONE ACP session, after
     :func:`pooled_session_servers` has shaped them. Kept separate from that
@@ -87,15 +116,23 @@ def attach_stub_session_token(entries: list[dict[str, Any]], token: str) -> list
     stays byte-identical to the pre-token wire shape. Copies each element: the
     caller's list may be a cached array shared with another session.
     """
-    if not token:
+    from kiro_crew.mcp_gateway.session_confinement import PER_CHAT_ENV
+
+    if not token and not per_chat:
         return entries
     out: list[dict[str, Any]] = []
     for entry in entries:
         shaped = dict(entry)
         raw_env = shaped.get("env")
         env = [e for e in raw_env if isinstance(e, dict)] if isinstance(raw_env, list) else []
-        env = [e for e in env if e.get("name") != STUB_SESSION_TOKEN_ENV]
-        env.append({"name": STUB_SESSION_TOKEN_ENV, "value": token})
+        env = [e for e in env if e.get("name") not in (STUB_SESSION_TOKEN_ENV, PER_CHAT_ENV)]
+        if token:
+            env.append({"name": STUB_SESSION_TOKEN_ENV, "value": token})
+        # Every element, Kiro Crew's own reserved names included: a name proves
+        # nothing (a declaration may carry one with a foreign launch), so the
+        # stub decides from the launch itself (``stub._attested_control_plane``).
+        if per_chat:
+            env.append({"name": PER_CHAT_ENV, "value": "1"})
         shaped["env"] = env
         out.append(shaped)
     return out

@@ -111,6 +111,14 @@ class Roster(NamedTuple):
     overflowed: bool = False
 
 
+def _runs_per_chat(element: dict[str, Any]) -> bool:
+    """Whether *element* carries the per-chat mark (``session_confinement``)."""
+    from kiro_crew.mcp_gateway.session_confinement import PER_CHAT_ENV
+
+    env = element.get("env")
+    return isinstance(env, list) and {"name": PER_CHAT_ENV, "value": "1"} in env
+
+
 def broker_stub_roster(servers: Any) -> Roster:
     """This array's stub token and its broker stubs, bounded where they are kept.
 
@@ -127,6 +135,9 @@ def broker_stub_roster(servers: Any) -> Roster:
         server = stub_server(element)
         element_token = _env_token(element)
         if not server or not element_token:
+            continue
+        if _runs_per_chat(element):
+            # It runs the server itself and never registers with the broker.
             continue
         if not token:
             token = element_token

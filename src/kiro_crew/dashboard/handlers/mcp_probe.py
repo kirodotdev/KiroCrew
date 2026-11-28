@@ -545,10 +545,46 @@ async def _run_mcp_probe(state: DashboardState | None) -> None:
         logger.info("MCP probe complete: %d servers", len(result))
         if state is not None:
             state.push_refresh("mcp_servers")
+            if not overlapped_shutdown:
+                _start_first_sight_measure(state, probed)
     except Exception:
         logger.debug("Background MCP probe failed", exc_info=True)
     finally:
         _mcp_probe_in_progress = False
+
+
+def _start_first_sight_measure(state: DashboardState, probed: list[Any]) -> None:
+    """Measure, in the background, servers this probe round saw with no verdict yet.
+
+    Runs after the round at gateway start and after the round a newly added
+    server triggers, so the Sharing view's "Measure" press is needed only for
+    what a budgeted pass has not reached. Its own task, so the probe's waiters
+    (the boot path awaits the probe) never wait on the pre-flight.
+    """
+    task = asyncio.create_task(_measure_first_sight(state, list(probed)))
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
+async def _measure_first_sight(state: DashboardState, probed: list[Any]) -> None:
+    """One budgeted pre-flight pass over :func:`evaluate.first_sight` of *probed*."""
+    # Deferred for the boot-path import cost named in ``_evaluate_shareability``.
+    from kiro_crew.mcp_gateway.evaluate import evaluate_new_servers, first_sight
+
+    try:
+        due = first_sight(probed)
+        if not due:
+            return
+        runtime = await asyncio.to_thread(
+            lambda: records_dir(KiroCrewConfig.load().mcp_gateway.socket_path)
+        )
+        measured: list[int] = []
+        await evaluate_new_servers(due, runtime, on_progress=lambda m, _a, _t: measured.append(m))
+        # Only a pass that stored a verdict changes what the page shows.
+        if measured and measured[-1]:
+            state.push_refresh("mcp_servers")
+    except Exception:
+        logger.debug("first-sight shareability pass failed", exc_info=True)
 
 
 async def api_mcp_servers(request: web.Request) -> web.Response:

@@ -1069,6 +1069,9 @@ def test_only_unpinned_broken_budgets_adopt_themselves():
         "telemetry.retention_days",
         "telemetry.max_total_mb",
         "memory.embedding_idle_evict_secs",
+        # A stored false in a pre-0.15 file may be the owner's own off from the
+        # Settings switch, which is never turned back on.
+        "mcp_gateway.enabled",
         # A stored false may be the owner keeping this gateway from opening SSH or
         # SSM tunnels to remote crews; adopting would open them without consent.
         "instances.enabled",

@@ -13,7 +13,7 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_session_start_timeout``, ``_start_collect_timeout``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
-``_bound_workspace_fd``, ``_child_env_names``, ``_expect_mcp_reports``,
+``_bound_workspace_fd``, ``_child_env_names``, ``_expect_mcp_reports``, ``_extra_env``,
 ``_governance_scope``, ``_kiro_native_spec_lookup``, ``_launch_agent``,
 ``_launch_copy_spec``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``,
 ``_member_context``, ``_native_launch_resources``, ``_native_launch_sources``,
@@ -1109,7 +1109,11 @@ async def _own_stub_session(
     is named by the ``rekey()`` claim instead.
     """
     token = mint_stub_session_token()
-    entries = attach_stub_session_token(entries, token)
+    from kiro_crew.mcp_gateway.session_confinement import is_per_chat_env
+
+    entries = attach_stub_session_token(
+        entries, token, per_chat=is_per_chat_env(getattr(self, "_extra_env", None))
+    )
     if session_key:
         await asyncio.to_thread(publish_session_token, token, session_key)
     if entries and self._mcp_gateway_socket and self.pid:

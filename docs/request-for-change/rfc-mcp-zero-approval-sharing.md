@@ -286,15 +286,18 @@ implement this yet; PR 1 adds it.
   wrapped process. `e0e784ea821f` still exempts browsers on macOS, and
   `fb0e016bdec1` drops the exemption but does not add `--no-sandbox` yet, so
   shared playwright fails there; auto-share `467e7f360c9c` carries this
-  decision. puppeteer gets no such flag
-  (decision C, §5.4).
+  decision. A shared puppeteer server gets the same through its env
+  (decision C, as reversed, §5.4).
 - The wrap is refused, and the server falls back to one copy per chat inside the
   chat's sandbox, when no sandbox can be built, when a declared loader variable
   (`LD_*`, `DYLD_*`) differs from the daemon's own, or when the launcher would
   scrub a declared env key. A refused wrap never falls back to an unwrapped run.
-  The one unwrapped case is the operator's own no-isolation opt-in, where
-  `wrap_argv` applies no confinement and per-chat copies are unsandboxed too.
-- Windows is unchanged.
+  A wrap that confined nothing (`wrap_argv` returned the argv as it was: the
+  operator's no-isolation opt-in, or an in-sandbox marker the daemon
+  inherited) is refused the same way, so a shared backend is never wider than
+  a per-chat copy; the daemon drops an inherited marker at start.
+- Windows is unchanged: there is no OS sandbox to wrap with, and shared
+  backends start as they do today.
 
 What the sandbox gives a shared backend, checked inside the profile: the
 credential homes the profile masks stay masked, the Kiro Crew `.env` is an empty
@@ -399,14 +402,19 @@ Same branch.
   recorded as the new hazard `single_page_browser`. A backend already shared by
   two or more chats is recycled, and each chat gets a private copy through the
   existing hazard retreat.
-- **Decision C (maintainer, 2026-11-27): shared puppeteer does not get
-  `allowDangerous` by default.** server-puppeteer refuses launch options that
-  weaken Chrome unless the caller passes `allowDangerous: true`. The gateway
-  does not add it. Reason: on main puppeteer already fails inside the Linux chat
-  sandbox ("no usable sandbox", §8.1), and on the hosted dev box it refused its
-  launch options without `allowDangerous` (§8.2). Leaving it off is therefore
-  no regression, and turning it on by default would weaken the browser for
-  every chat that shares it.
+- **Decision C (maintainer, 2026-11-27; reversed by the owner on 2026-11-28):
+  a shared puppeteer server gets Chrome's sandbox turned off the way shared
+  playwright does.** server-puppeteer reads `PUPPETEER_LAUNCH_OPTIONS` (JSON
+  launch options) and refuses a dangerous argument such as `--no-sandbox`
+  unless `ALLOW_DANGEROUS` is `true`. For a shared backend that runs inside our
+  OS sandbox (Linux, macOS; not Windows), the gateway sets
+  `PUPPETEER_LAUNCH_OPTIONS={"args": ["--no-sandbox"]}` and
+  `ALLOW_DANGEROUS=true`, and nothing else. It sets neither when the server's
+  own declaration already sets either key. Our sandbox stays on and still holds
+  the whole process tree. The first decision left puppeteer failing inside the
+  sandbox, as it does per chat on main (§8.1, §8.2); the owner reversed it so a
+  shared puppeteer server works. The cost: with `ALLOW_DANGEROUS` on, a tool
+  call may also pass other dangerous launch options to that browser.
 - sequential-thinking is not serialized: its shared history has no read-modify-write
   step, so concurrent calls do not change the fields a chat uses (§2.4).
 
@@ -583,7 +591,8 @@ not show it. The tables below come from the earlier heads named in their
 columns. All four machines then retested auto-share `467e7f360c9c`, folder-scope
 `6891bfcc8ff7` and daemon `05369284137f`. Every failure left on those heads is
 accepted by the maintainer or parked, and is listed in §10 (items 4, 12, 13
-and 14; item 14 is decision C in §5.4). Each code pull request still carries its own results
+and 14; item 14, shared puppeteer, is decision C in §5.4, which the owner reversed on
+2026-11-28 so the code now turns Chrome's own sandbox off for it). Each code pull request still carries its own results
 for its final head.
 
 ### 8.1 Linux cloud VM (external servers)
@@ -720,8 +729,9 @@ Exit criteria, testable on each machine:
 1. **Chrome inside the sandbox.** Decided 2026-11-27 (§5.2, decision B): no
    browser exemption; shared playwright-mcp gets `--no-sandbox` unless its
    declaration chose; no seccomp change. It is in auto-share `467e7f360c9c`,
-   which all four machines retested. puppeteer still fails inside the sandbox,
-   as on main; the maintainer leaves it so (decision C).
+   which all four machines retested. Shared puppeteer gets Chrome's sandbox
+   turned off too (decision C, reversed by the owner on 2026-11-28); not yet
+   retested on the machines.
 2. **Roots on a server with its own folders.** On `7624c9298a58` a
    server-filesystem launched with folder arguments loses them once the gateway
    answers roots; and on macOS roots dropped a folder an open chat still used.
@@ -773,8 +783,10 @@ Exit criteria, testable on each machine:
 13. **A server deleted while the gateway is down lingers** in the agent specs
     after the next start. The maintainer reports main behaves the same; no run
     in §8 checked main for it. Deferred to a follow-up pull request.
-14. **Shared puppeteer fails** in the sandbox (decision C), as it does per chat
-    on main. The maintainer leaves it.
+14. **Shared puppeteer in the sandbox.** Decision C reversed by the owner on
+    2026-11-28: a wrapped puppeteer server gets `--no-sandbox` through
+    `PUPPETEER_LAUNCH_OPTIONS` and `ALLOW_DANGEROUS=true` unless its declaration
+    sets either. Per chat on main it still fails, as before.
 
 ## 11. Backward compatibility
 
