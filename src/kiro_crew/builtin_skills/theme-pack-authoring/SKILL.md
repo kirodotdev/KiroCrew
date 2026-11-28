@@ -209,6 +209,9 @@ file. Every path is classified against that fixed table, so an unrecognized file
 fails the install — do not park notes or scratch files in the pack (only VCS and
 LICENSE metadata is tolerated). Level-2 caps: at most 5 overlays, 2000 characters
 of `persona.md`. A `branding.botName` (Level 1) is truncated to 48 characters.
+`branding.splashFit` is `"contain"` (the default: the splash art sits in a
+centre box) or `"cover"` (it fills the whole window, cropped to its shape); any
+other value fails the install.
 
 ## Validate and install
 

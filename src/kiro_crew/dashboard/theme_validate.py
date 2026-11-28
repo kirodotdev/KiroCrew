@@ -325,6 +325,9 @@ _THEME_FONT_PIN_SELECTORS = frozenset({"body", "html", "*", ":root"})
 _THEME_MAX_OVERLAYS = 5
 _THEME_PERSONA_MAX_CHARS = 2000
 _THEME_BOTNAME_MAX = 48  # branding bot-name display cap (plain text)
+# How the desktop boot splash draws `branding/splash.*`: in its centre box
+# (contain, the default) or over the whole window (cover).
+_THEME_SPLASH_FITS = frozenset({"contain", "cover"})
 # Installed themes may select only these bundled Lucide symbols. Names cross the
 # manifest/API boundary; executable components and arbitrary SVG never do.
 _THEME_LOADER_ICONS = frozenset(
@@ -1377,6 +1380,17 @@ def _validate_theme_dir(
                     f"font entry '{fam_label}' has role {role!r}; "
                     "valid roles are 'sans' and 'mono'"
                 )
+        # Splash fit: refused at install only, like the font role, so a pack
+        # installed before the key existed keeps loading; the read path drops
+        # an unknown value and the splash keeps its centre box.
+        branding_manifest = manifest.get("branding")
+        if isinstance(branding_manifest, dict) and "splashFit" in branding_manifest:
+            fit = branding_manifest["splashFit"]
+            if not isinstance(fit, str) or fit not in _THEME_SPLASH_FITS:
+                return None, (
+                    f"theme.json 'branding.splashFit' is {fit!r}; "
+                    "valid values are 'contain' and 'cover'"
+                )
 
     max_entries = _THEME_ENTRIES_BY_LEVEL.get(level, 160)
     max_total = _THEME_TOTAL_BYTES_BY_LEVEL.get(level, 5 * 1024 * 1024)
@@ -1527,7 +1541,8 @@ def _theme_asset_descriptor(
     if level < 1:
         return desc
 
-    # Branding — bot name (plain text) + logo/favicon/wordmark/welcome/splash by file presence.
+    # Branding — bot name (plain text) + logo/favicon/wordmark/welcome/splash by file
+    # presence, + the splash fit when the pack ships a splash.
     branding = manifest.get("branding")
     branding = branding if isinstance(branding, dict) else {}
     bres: dict[str, str] = {}
@@ -1549,6 +1564,9 @@ def _theme_asset_descriptor(
             if cat is not None and min_level <= level and (theme_dir / rel).is_file():
                 bres[role] = rel
                 break
+    fit = branding.get("splashFit")
+    if "splash" in bres and isinstance(fit, str) and fit in _THEME_SPLASH_FITS:
+        bres["splashFit"] = fit
     if bres:
         desc["branding"] = bres
 

@@ -74,6 +74,11 @@
       position: absolute; left: 50%; top: 46%; transform: translate(-50%, -50%);
       width: min(70vw, 720px); height: 56vh; object-fit: contain;   /* an SVG may carry no size */
     }
+    /* branding.splashFit "cover": the art fills the window, cropped to its shape.
+       The status line and close control keep their own accent surface above it. */
+    #art.cover, #artStill.cover {
+      left: 0; top: 0; transform: none; width: 100vw; height: 100vh; object-fit: cover;
+    }
     #art[hidden], #artStill[hidden] { display: none; }
 
     /* ---- "Kiro Crew" wordmark — appears briefly in the centre on ready ---- */
@@ -526,26 +531,35 @@
     // A theme pack's splash art (?splash=, a file: URL from theme-splash.js)
     // takes the ghosts' place and the wordmark's; art that fails to load
     // brings the stock ghosts back. Only the stored theme-splash.png|svg file
+    // (theme-splash-cover.* for a pack whose branding.splashFit is "cover")
     // is accepted; any other value keeps the stock splash.
     function themeSplashSrc(raw) {
       var url;
       try { url = new URL(raw); } catch (e) { return ""; }
       if (url.protocol !== "file:" || url.host || url.search || url.hash) return "";
-      return /^\/(?!\/).*\/theme-splash\.(png|svg)$/.test(url.pathname) ? url.href : "";
+      return /^\/(?!\/).*\/theme-splash(-cover)?\.(png|svg)$/.test(url.pathname) ? url.href : "";
+    }
+    // Whether an accepted themeSplashSrc() names art that fills the window.
+    function isCoverSplash(src) {
+      return /\/theme-splash-cover\.(png|svg)$/.test(src);
     }
     // Pack art may animate inside the image (an animated raster, or an SVG with
     // its own CSS or SMIL), where the page's reduced-motion rule cannot reach it.
     // Under reduced motion the <img> stays hidden and only decodes the art (an
     // SVG that is not displayed does not advance), and one frame is painted onto
     // a canvas that never repaints, as the dashboard's PackLoaderImage does.
-    function showThemeArt(art, still, src, reduce, onFail) {
+    // `cover` fills the window with both, instead of the centre box.
+    function showThemeArt(art, still, src, reduce, cover, onFail) {
+      art.classList.toggle("cover", cover);
+      still.classList.toggle("cover", cover);
       art.onerror = function () { art.hidden = true; still.hidden = true; onFail(); };
-      if (reduce) art.onload = function () { still.hidden = false; paintStill(still, art); };
+      if (reduce) art.onload = function () { still.hidden = false; paintStill(still, art, cover); };
       art.src = src;
       if (!reduce) art.hidden = false;
     }
-    // Paint `img` once into `canvas`, contained and centred like `object-fit: contain`.
-    function paintStill(canvas, img) {
+    // Paint `img` once into `canvas`, centred like `object-fit: contain`, or
+    // like `object-fit: cover` (filling the canvas, cropped) when `cover`.
+    function paintStill(canvas, img, cover) {
       var ctx = canvas.getContext && canvas.getContext("2d");
       if (!ctx) return;
       var dpr = window.devicePixelRatio || 1;
@@ -553,7 +567,7 @@
       var h = Math.max(1, Math.round((canvas.clientHeight || 1) * dpr));
       canvas.width = w; canvas.height = h;
       var iw = img.naturalWidth, ih = img.naturalHeight;
-      var scale = iw > 0 && ih > 0 ? Math.min(w / iw, h / ih) : 0;
+      var scale = iw > 0 && ih > 0 ? (cover ? Math.max : Math.min)(w / iw, h / ih) : 0;
       var dw = scale ? iw * scale : w, dh = scale ? ih * scale : h;
       try { ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh); } catch (e) {}
     }
@@ -564,7 +578,7 @@
     try { artSrc = themeSplashSrc(new URLSearchParams(location.search).get("splash") || ""); } catch (e) {}
     if (artSrc) {
       artOn = true;
-      showThemeArt(art, artStill, artSrc, reduce, function () { artOn = false; startGhosts(); });
+      showThemeArt(art, artStill, artSrc, reduce, isCoverSplash(artSrc), function () { artOn = false; startGhosts(); });
     } else {
       startGhosts();
     }
