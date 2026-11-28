@@ -24,6 +24,7 @@ from typing import Any
 
 from kiro_crew.cron import CronJob, lookup_cron_folder_id
 from kiro_crew.cron_script import resolve_script_path
+from kiro_crew.hooks import _darwin_case_alias_matches
 from kiro_crew.mcp_core_parts.gateway import _post
 from kiro_crew.mcp_core_parts.identity import _resolve_session_key
 from kiro_crew.mcp_cron_shell_scan import (
@@ -625,13 +626,19 @@ def _vet_script_file(file_path: str) -> str | None:
                     "Error: cron script changed during security review; retry with a regular file"
                 )
             opened_path = fd_real_path(descriptor)
+            vetted = strip_extended_length_prefix(resolved)
             # ``resolve()`` can keep Windows' ``\\?\`` prefix while the
             # descriptor's path comes back plain; fold it off both sides so the
-            # same file is not read as a redirect. Lexical only.
+            # same file is not read as a redirect. Lexical only. On macOS
+            # ``resolve()`` keeps the caller's letter case while the kernel
+            # reports the on-disk one; a no-follow walk of the vetted name
+            # decides whether a case-only difference is the same file.
             if (
                 opened_path is None
-                or strip_extended_length_prefix(Path(opened_path))
-                != strip_extended_length_prefix(resolved)
+                or (
+                    strip_extended_length_prefix(Path(opened_path)) != vetted
+                    and not _darwin_case_alias_matches(descriptor, str(vetted), opened_path)
+                )
                 or is_sensitive_canonical_path(opened_path)
             ):
                 return "Error: cannot verify cron script path for security review; retry with a regular file"

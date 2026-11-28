@@ -1657,6 +1657,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         _AUTO_PAUSE_MAX,
         _AUTO_PAUSE_THRESHOLD,
     )
+    from kiro_crew.hooks import (  # noqa: F401
+        _darwin_case_alias_matches,
+    )
     from kiro_crew.loopback_http import (  # noqa: F401
         loopback_urlopen,
     )
