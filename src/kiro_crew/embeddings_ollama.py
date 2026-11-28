@@ -12,7 +12,8 @@ installs onto a server they may not run.
 Data boundary: memory and knowledge text is sent to the server. A loopback URL
 keeps it on this machine. Any other host needs ``memory.ollama_allow_remote``
 AND an ``https`` URL, so text never crosses a network in the clear or without an
-explicit opt-in. Redirects are refused, and a loopback URL bypasses proxy
+explicit opt-in; an LTS build also asks ``network.egress`` about that host.
+Redirects are refused, and a loopback URL bypasses proxy
 environment variables, so a request never lands somewhere other than the
 configured endpoint.
 """
@@ -76,8 +77,12 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
-def _url_error(url: str, allow_remote: bool) -> str:
-    """Why *url* may not be used, or ``""`` when it may."""
+def _url_error(url: str, allow_remote: bool, *, check_egress: bool = True) -> str:
+    """Why *url* may not be used, or ``""`` when it may.
+
+    In an LTS build a non-loopback host that passes every other rule is also asked
+    of ``network.egress``; *check_egress* off skips only that last question.
+    """
     try:
         parts = urllib.parse.urlsplit(url)
         host = parts.hostname or ""
@@ -101,7 +106,22 @@ def _url_error(url: str, allow_remote: bool) -> str:
         )
     if parts.scheme != "https":
         return "memory.ollama_url must use https:// for a non-loopback host"
+    if not check_egress:
+        return ""
+    from kiro_crew.embedding_source_governance import EGRESS_REASON, egress_permitted
+
+    if not egress_permitted(url):
+        return EGRESS_REASON
     return ""
+
+
+def egress_url(url: str, allow_remote: bool) -> str:
+    """*url* when ``network.egress`` is asked about it, else ``""``: a non-loopback
+    URL that every other rule accepts. Reads no policy."""
+    if _url_error(url, allow_remote, check_egress=False):
+        return ""
+    host = urllib.parse.urlsplit(url).hostname or ""
+    return "" if _is_loopback_host(host) else url
 
 
 def resolve_ollama_settings(memory: dict) -> OllamaSettings:
@@ -121,7 +141,12 @@ def resolve_ollama_settings(memory: dict) -> OllamaSettings:
         if isinstance(raw_dim, int) and not isinstance(raw_dim, bool) and raw_dim > 0
         else _DEFAULT_DIM
     )
-    error = _url_error(url, memory.get("ollama_allow_remote") is True)
+    from kiro_crew import embedding_source_governance as source_gov
+
+    if not source_gov.source_permitted(source_gov.OLLAMA):
+        error = source_gov.refused_reason(source_gov.OLLAMA)
+    else:
+        error = _url_error(url, memory.get("ollama_allow_remote") is True)
     if not error and not model:
         error = "memory.ollama_model is empty"
     return OllamaSettings(url, model, dim, error)
@@ -398,6 +423,9 @@ class OllamaHttpEmbedder(EmbeddingBackend):
             return None
         out: list[list[float]] = []
         for start in range(0, len(texts), _BATCH_SIZE):
+            # A backend retired mid-batch (a policy deny, a model change) sends no more.
+            if not self._usable():
+                return None
             chunk = self._request(list(texts[start : start + _BATCH_SIZE]))
             if chunk is None:
                 return None

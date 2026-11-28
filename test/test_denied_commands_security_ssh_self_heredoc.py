@@ -529,3 +529,42 @@ def test_reset_still_refuses_self_command_after_the_real_tag(cmd, rule):
     verdict = security.is_denied(cmd)
     assert verdict is not None, cmd
     assert f"rule={rule}" in verdict, verdict
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # ``cat -`` text is read off a message line, beside another command (also
+        # after text leaving a quote open), piped, written to a file, under an
+        # unquoted tag or one bash spells differently, in a body with a backslash,
+        # or closed by a line that differs from its tag only in case.
+        "x=\"$(cat - <<'E'\nssh -p 22 %s id\nE\n)\"",
+        "gh pr create --body \"$(cat - <<'E'\nx\nE\nssh -p 22 %s id)\"",
+        "gh pr create --body \"$(cat - <<'E'\nit's\nE\nssh -p 22 %s id\n)\"",
+        "gh pr create --body \"`cat - <<'E\\\\OF'\nprinted\nE\\OF\nssh -p 22 %s id\n`\"",
+        'gh pr create --body "$(cat - <<\'A""B\'\nprinted\nA""B\nssh -p 22 %s id\n)"',
+        "gh pr create --body \"$(cat -- <<'E' | sh\nssh -p 22 %s id\nE\n)\"",
+        "gh pr create --body \"$(cat -n <<'E' >s; sh s\nssh -p 22 %s id\nE\n)\"",
+        'gh pr create --body "$(cat - <<E\n$(ssh -p 22 %s id)\nE\n)"',
+        "gh pr create --body \"$(cat - <<'EOF'\nnotes\neof\n)\nEOF\nssh -p 22 %s id\n)\"",
+        "git commit -m \"$(cat -n <<'Msg'\nmsg\n)\nMsg\nssh -p 22 %s id\n)\"",
+    ],
+)
+def test_flagged_cat_text_off_the_single_message_body_is_judged(cmd):
+    assert _denied_by(cmd % ("local" + "host")) == _RULE, cmd
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # The quoted-tag heredoc text of ``cat -``, ``cat --`` or ``cat -n`` alone in a
+        # message body is data, as that of a bare ``cat`` is.
+        "gh pr create --body \"$(cat - <<'EOF'\n- ssh -p 22 %s id\nEOF\n)\"",
+        "gh issue comment 5 -b \"$(cat -- <<'EOF'\n- ssh -p 22 %s id\nEOF\n)\"",
+        "git commit -m \"$(cat -n <<'EOF'\nfix: ssh -p 22 %s id\nEOF\n)\"",
+        "gh pr create --body \"`cat - <<'EOF'\n- ssh -p 22 %s id\nEOF\n`\"",
+        'gh pr create --body "$(cat - <<\'EOF\'\nSee "a (b)": ssh -p 22 %s id\nEOF\n)"',
+    ],
+)
+def test_flagged_cat_text_in_a_single_message_body_stays_allowed(cmd):
+    assert _denied_by(cmd % ("local" + "host")) is None, cmd

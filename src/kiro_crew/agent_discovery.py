@@ -102,6 +102,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SkillScopeResolutionError,
         agent_skill_globs,
         can_inherit_skills,
+        child_skill_globs,
         inherited_skill_globs,
         mate_conductor_scope,
         served_provider_label,

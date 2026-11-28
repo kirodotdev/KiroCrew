@@ -308,7 +308,10 @@ rejected. The operator ceiling is `monitoring.max_runtime_secs`; setting 2592000
 permits a 30-day request without extending existing loops. The cap is a runaway backstop, not evidence that the watched work
 completed: `AutoNudgeService._timer` (`autonudge_service/firing.py`) deactivates a capped
 loop and emits
-`expired`.
+`expired`. The `expired` notice (`_notify_nudge_expired` in
+`slack/gateway_runtime/nudge_wiring.py`) says which bound or outcome stopped the loop
+and ends with the pull request a gated loop watched (`autonudge_judge.watched_pr_subject`),
+so a person with several loops can tell which watch ended.
 
 `autonudge.runtime_budget_exceeded` (a module function in `autonudge_service/model.py`)
 measures a configured wall-clock

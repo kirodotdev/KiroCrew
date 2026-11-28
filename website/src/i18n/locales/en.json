@@ -6073,7 +6073,8 @@
       "open_update_settings": "Open update settings",
       "update_available": "Update available",
       "update_ready": "Update ready",
-      "update_when_i_restart": "Update when I restart"
+      "update_when_i_restart": "Update when I restart",
+      "installing": "Installing update…"
     },
     "voiceDictationPanel": {
       "esc_to_cancel_click_mic_to_finish": "Esc to cancel, click the mic to finish",

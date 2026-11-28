@@ -308,10 +308,10 @@ def _list_tools() -> list[dict[str, Any]]:
                     },
                     "command": {
                         "type": "string",
-                        "description": "Shell command for code-based cron execution "
-                        "(bypasses LLM entirely). Mutually exclusive with 'script'. "
-                        "When set, 'message' is neither sent to an LLM nor passed "
-                        "to the command: put any arguments in the command itself.",
+                        "description": "Shell command, no LLM; exclusive with 'script'. "
+                        "'message' is neither sent to an LLM nor passed to the command. "
+                        "Clean stdout: bell + launch channel_type/target_id, not a chat; "
+                        "Slack --channel: bell only; silent: none.",
                     },
                     "timeout": {
                         "type": "integer",

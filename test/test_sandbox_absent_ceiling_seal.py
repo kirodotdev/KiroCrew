@@ -404,6 +404,34 @@ class TestSealAppliesToAPreviouslyAbsentCeiling:
         ]
         assert not missing, f"materialised but not named as required: {missing}"
 
+    def test_an_uncreatable_bot_move_ledger_refuses_and_a_created_one_is_required(
+        self, crew_home, tmp_path, monkeypatch
+    ):
+        """The ledger holds a moved Bot's held limits, and a Bot can move after a spawn.
+
+        One that cannot be created would stay writable inside the sandbox, so the spawn
+        is refused; one this spawn created is required, so the launcher refuses it gone.
+        """
+        (ledger,) = sandbox._resolved_mate_ledger_targets()
+        assert ledger.startswith(str(tmp_path) + os.sep)
+        assert os.path.isdir(os.path.dirname(os.path.dirname(ledger)))
+        assert not os.path.lexists(ledger)
+        real = sandbox._publish_empty_ceiling
+
+        def no_ledger(target, *args, **kwargs):
+            return False if target == ledger else real(target, *args, **kwargs)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(sandbox, "_publish_empty_ceiling", no_ledger)
+            with pytest.raises(sandbox.SandboxCeilingUnsealable) as refused:
+                sandbox.namespace_argv(["/bin/true"])
+            assert ledger in str(refused.value)
+            assert not os.path.lexists(ledger)
+
+        argv = sandbox.namespace_argv(["/bin/true"])
+        assert os.path.isfile(ledger)
+        assert ledger in _written_plan(argv)["required_mask_targets"]
+
     def test_relocated_data_home_is_covered(self, tmp_path, monkeypatch):
         """A data home that escapes ``$HOME`` gets the same treatment.
 

@@ -77,6 +77,7 @@ _OWNERS = (
     "kiro_crew.dashboard.session_control_parts.session_messaging",
     "kiro_crew.dashboard.session_control_parts.crew_filing",
     "kiro_crew.dashboard.session_control_parts.session_create_pins",
+    "kiro_crew.dashboard.session_control_parts.worker_skills",
     "kiro_crew.dashboard.session_control_parts.session_create",
     "kiro_crew.dashboard.session_control_parts.session_tree",
     "kiro_crew.dashboard.session_control_parts.session_handoff",
@@ -296,7 +297,6 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _dispatching_crewmate,
         _hands_off_to_own_worker,
         _inherited_project_dir,
-        _model_pin_refusal,
         _record_spawn,
         _refuse_if_crew_paused,
         _register_spawn_pending_edge,
@@ -305,6 +305,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
     )
     from kiro_crew.dashboard.session_control_parts.session_create_pins import (  # noqa: F401
         _inherited_pin_foreign_to_child,
+        _model_pin_refusal,
     )
     from kiro_crew.dashboard.session_control_parts.session_handoff import (  # noqa: F401
         _HANDOFF_LOCK,
@@ -476,6 +477,9 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         reload_target,
         retry_target,
         stop_target,
+    )
+    from kiro_crew.dashboard.session_control_parts.worker_skills import (  # noqa: F401
+        trigger_skills_for_child,
     )
 
 

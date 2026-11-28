@@ -4192,7 +4192,12 @@ is what tells two dashboard ports apart. After a chained forward comes up, the h
 reads the far end's id: equal to its own, or to any ancestor's, and the forward is
 torn down and the connect refused. Ids are compared, never `ssh_host` strings -- one
 machine answers to many spellings, so a string comparison would refuse unrelated
-crews and still admit real loops. The file is a READONLY sandbox leaf (`sandbox._CREW_READONLY_LEAVES`; the Linux spawn
+crews and still admit real loops. The refused status carries
+`error_code = "chain_cycle"`. The row is already stored by then, because the check
+needs the hop open, and a loop never connects on a retry, so the hub dashboard
+removes the row its own announcement adoption just added when its connect answers
+that code, and relays the reason to the pane. A connect that fails for any other
+reason keeps the row. The file is a READONLY sandbox leaf (`sandbox._CREW_READONLY_LEAVES`; the Linux spawn
 mints the real id before sealing, so the seal has a name to bind) and write-protected on
 the agent file tools, so a sandboxed process cannot write the `gateway_id` name. The
 mint itself still writes a temp file beside it in the data home, which is not sealed.

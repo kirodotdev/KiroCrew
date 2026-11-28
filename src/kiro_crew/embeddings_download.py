@@ -382,6 +382,12 @@ def start_background_model_download() -> "asyncio.Task[bool] | None":
     if embedding_model_is_custom():
         logger.info("Custom embedding model configured — skipping the default model download")
         return None
+    from kiro_crew import embedding_source_governance as source_gov
+
+    if not source_gov.source_permitted(source_gov.BUNDLED):
+        # Nothing could load it (LTS policy); always permitted on oss.
+        logger.info("The bundled embedding model is not allowed — skipping its download")
+        return None
     mgr = model_download_manager()
     if mgr.model_ready():
         mgr.status = {"step": "ready", "error": "", "attempt": 0}

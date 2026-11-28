@@ -275,6 +275,8 @@ LOCAL_ONLY_CORE_TOOLS: frozenset[str] = frozenset(
         "pod_up",  # boots a gateway from a worktree on this machine
         "pod_restart",  # and boots it again in place
         "pod_down",  # and deletes that pod's data directory here
+        "pod_api",  # and calls that pod's API with a token minted here
+        "pod_provision_start",  # builds a worktree's venv and dist on this machine
         "task_run",  # reads its spec off this machine's disk and runs with local tools
         # Each ctx.agent() step is a fresh session here, not the caller's environment.
         "workflow_run",

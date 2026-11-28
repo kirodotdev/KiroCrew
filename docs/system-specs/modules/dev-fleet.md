@@ -657,6 +657,34 @@ minted token's own `exp`, `session_exp` and `iat` claims and returns them as
 so it reads those claims unverified; they are display-only and the pod enforces the
 limits. `pod_up` on a running pod leaves it running and returns a fresh token.
 
+Three more tools have no `pod/*` route; they are served only through the
+`agent-tools` route, so they add nothing to `strict_internal_paths`:
+
+- **`pod_api`** (`agent_pod_api.pod_api_response` → `worktree_ops._pod_api` →
+  `pod.runtime_client.pod_api`) sends one request to a running pod. The token is minted
+  in the gateway, spent over the pod's own unix socket and scrubbed from the reply,
+  so the agent never holds it. GET and HEAD go through; any other method needs
+  `allow_write: true`, as `kirocrew pod api` needs `--allow-write`. Every call, a
+  refusal included, is written to the Security Event Log as `dev_fleet.agent.pod_api`.
+  The reply body is cut at 50,000 characters. The tool is not a security boundary
+  and refuses no route: `pod_up` already hands the agent a token for the same pod.
+  The boundary is the operator turning Dev Fleet on; the pod runs the worktree's
+  code as the operator outside the agent sandbox, so a write here acts with the
+  operator's rights.
+- **`pod_provision_start` / `pod_provision_status`** run `worktree_ops._pod_provision`
+  (the Provision button's run, sandboxed `strict`) in the gateway and answer at once
+  with its run id; the status reads that run's state and last 40 output lines, and
+  answers only for a run this gateway started for that worktree.
+
+Pod configuration goes through `pod_api` PATCH `/api/config/kirocrew` (a dotted
+`path` and `value`), then `pod_restart`, which keeps the data directory and applies
+restart-marked keys.
+
+A pod's environment names the host's `engines/kas` as `KIROCREW_BUNDLED_KAS_DIR`
+(`pod.runtime._share_host_kas_engines`), so a pod whose KAS pin the host already
+installed runs that engine instead of downloading it. This saves the download and is
+not a boundary: the pod gateway runs outside the agent sandbox and can write there.
+
 ## Authorization
 
 The backend-proxied endpoints (`/apps/dev-fleet/api/...`) inherit gateway session

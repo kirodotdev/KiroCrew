@@ -2,9 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 
 import { renderWithProviders, createTestStore } from '../test/helpers'
-import { sseStatus, setDesktopUpdateAvailable } from '../store/dashboardSlice'
+import { sseStatus, setDesktopUpdateAvailable, setUpdateProgress } from '../store/dashboardSlice'
 import { i18nT } from '../i18n/t'
 import UpdatePill from '../components/UpdatePill'
+import { handleUpdateProgress } from '../hooks/useWebSocket'
 import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../components/ui/dropdown-menu'
 import type { UpdateState } from '../hooks/useUpdateSubscription'
@@ -62,6 +63,27 @@ describe('UpdatePill', () => {
   it('an armed update reads "Update when I restart" and lights the pill with no newer build', async () => {
     await mount({ status: { update_available: false, update_armed_version: '9.9.9' } })
     expect(pill()).toHaveTextContent(i18nT('components.updatePill.update_when_i_restart'))
+  })
+
+  it('reads "Installing update…" while the gateway builds an update, and leaves it when the install ends', async () => {
+    const { store } = await mount({ status: { update_available: true } })
+    act(() => { store.dispatch(setUpdateProgress({ step: 'building', detail: 'Building…' })) })
+    expect(pill()).toHaveTextContent(i18nT('components.updatePill.installing'))
+    act(() => { store.dispatch(setUpdateProgress({ step: 'failed', detail: 'wheel SHA-256 mismatch' })) })
+    expect(pill()).toHaveTextContent(i18nT('components.updatePill.update_available'))
+    act(() => { store.dispatch(setUpdateProgress({ step: 'done', detail: 'v9.9.9 installed. Restart to use it.' })) })
+    expect(pill()).not.toHaveTextContent(i18nT('components.updatePill.installing'))
+  })
+
+  it('leaves "Installing update…" when an automatic install ends without a frame of its own', async () => {
+    // Deferred, stopped or incompatible: the gateway clears its progress and
+    // tells every tab with a `cleared` frame.
+    const { store } = await mount({ status: { update_available: true } })
+    act(() => { handleUpdateProgress(store.dispatch, { step: 'building', detail: 'Building…' }) })
+    expect(pill()).toHaveTextContent(i18nT('components.updatePill.installing'))
+    act(() => { handleUpdateProgress(store.dispatch, { step: 'cleared', detail: '' }) })
+    expect(store.getState().dashboard.updateProgress).toBeNull()
+    expect(pill()).toHaveTextContent(i18nT('components.updatePill.update_available'))
   })
 
   it('appears on a desktop update', async () => {

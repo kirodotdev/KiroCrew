@@ -40,8 +40,9 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5476/api/sessions   # 
 
 ## The interface — pod tools if you are an agent, the CLI if you are a human
 
-**If you are an agent session, reach for the `pod_up` / `pod_restart` / `pod_down`
-/ `pod_status` / `pod_ls` MCP tools before a shell.** A pod is a systemd `--user` unit, so every
+**If you are an agent session, reach for the `pod_up` / `pod_restart`
+/ `pod_down` / `pod_status` / `pod_ls` / `pod_api` / `pod_provision_start` / `pod_provision_status`
+MCP tools before a shell.** A pod is a systemd `--user` unit, so every
 pod verb needs the systemd user bus. Whether your shell can reach that bus depends
 on the sandbox your session runs behind: under Kiro Crew's own sandbox it can (see
 `security.md`, "Scoped user-bus locator forward"), but behind an outer sandbox with
@@ -58,8 +59,60 @@ pod_up     {"worktree": "<wt>"}   -> prose: port, base_url, checkout, token (+ i
 pod_restart {"worktree": "<wt>"}  -> same handle, HOME KEPT (apps, config, models)
 pod_status {"worktree": "<wt>"}   -> status + port + health
 pod_ls     {}                     -> every pod active on this host
+pod_api    {"worktree": "<wt>", "method": "GET", "path": "/api/health"}
+                                  -> HTTP status + body; the token never reaches you
+           (+ "data": "<json>", "allow_write": true for anything but GET/HEAD)
+pod_provision_start  {"worktree": "<wt>"}             -> run_id (venv + SPA build)
+pod_provision_status {"worktree": "<wt>", "run_id": …} -> running / exit code + tail
 pod_down   {"worktree": "<wt>"}   -> stopped, HOME reclaimed
 ```
+
+**`pod_api` instead of a token.** It is `kirocrew pod api` as a tool: the gateway
+mints the pod token, spends it on one request over the pod's private socket and
+scrubs it from the reply, so an API test has no 5-minute window to race. GET and
+HEAD go through as they are; any other method needs `"allow_write": true`, and every
+call is in the Security Event Log. Playwright still needs the `pod_up` token: use it
+straight away.
+
+**Configuring a pod from the tool.** To test Crew's own engine (the bundle route):
+
+1. Start it with `pod_up {"worktree": "<wt>"}`.
+2. Set the config field with `pod_api {"worktree": "<wt>", "method": "PATCH",
+   "path": "/api/config/kirocrew", "data": "{\"path\": \"agent.kas_bundle\", \"value\": true}",
+   "allow_write": true}`. PATCH takes one dotted `path` and its `value`, not a
+   nested config object.
+3. Call `pod_restart {"worktree": "<wt>"}`. It keeps the pod's data directory,
+   so `config.json` survives and a restart-marked key such as `agent.kas_bundle`
+   takes effect.
+4. Confirm with `pod_api {"worktree": "<wt>", "method": "GET",
+   "path": "/api/config/kirocrew"}`.
+
+Windows has no `pod_restart`: the tool is refused there. `pod_down` then `pod_up`
+starts a fresh home and loses the config, so it cannot preserve this configuration.
+A source pod otherwise runs KAS through kiro-cli's relay.
+
+**Signing a pod in to Kiro (bundle route).** A pod's Crew sign-in lives in the
+pod's own data directory, and the pod's gateway serves the same sign-in endpoints
+the dashboard card uses, so `pod_api` does it without any host credential:
+
+```
+pod_api {"worktree": "<wt>", "method": "GET",  "path": "/api/kas-login"}
+        -> "authenticated": true/false
+pod_api {"worktree": "<wt>", "method": "POST", "path": "/api/kas-login/device",
+         "data": "{\"provider\": \"builder_id\"}", "allow_write": true}
+        -> verification_uri_complete, user_code, login_id, expires_at
+# give the user the link and the code, then every ~5 s until it is not "pending":
+pod_api {"worktree": "<wt>", "method": "POST", "path": "/api/kas-login/poll",
+         "data": "{\"login_id\": \"<login_id>\"}", "allow_write": true}
+```
+
+When you hand the user the link, say that **this sign-in is for pod `<wt>`**, not
+for their own Kiro Crew: the pod runs the worktree's code, which can read the
+sign-in it stores. Ask which provider to use rather than guessing: `builder_id`
+for AWS Builder ID, or `idc` with the company `start_url` (and `region`) in `data`.
+The poll only stores the sign-in when it is called after approval, so keep polling
+until it answers `authorized` (or `choose_profile`: poll again with
+`"profile_arn"` set to the `selected` value it returns).
 
 **Reproducing an agent error state.** A pod starts from the service manager's
 clean environment, so a `KIROCREW_KIRO_BIN` you export never reaches it. To see
@@ -70,11 +123,10 @@ absolute path>"]` (CLI: `kirocrew pod up <wt> --env KIROCREW_KIRO_BIN=<path>`).
 The pod boots even though that child cannot start, and the journal says so. Only
 `KIROCREW_KIRO_BIN` is accepted. The next `pod_up` without `env` clears it.
 
-Provisioning is not one of them: a cold venv plus an SPA build is minutes of work,
-and a single blocking tool call for that dies to any timeout with no way to learn
-the outcome. An unbuilt worktree is refused with the CLI's own remedy in the
-message; run `kirocrew pod provision <wt>` or use the Dev Fleet page's Provision
-button, which streams its output.
+Provisioning is minutes of work, so it is not one blocking call: `pod_up` refuses
+an unbuilt worktree, `pod_provision_start` starts the build and returns a run id,
+and `pod_provision_status` reports it until it ends. The Dev Fleet page's Provision
+button and `kirocrew pod provision <wt>` do the same build.
 
 Everything after step 1 below -- curl against the handle, drive the SPA with
 Playwright, read the screenshots -- is unaffected: those are ordinary loopback
@@ -129,8 +181,8 @@ screenshots from `ARTIFACT_DIR` inline instead.
 
 Other verbs: `ls` (list running pods) · `status <wt>` · `token <wt>` · `url <wt>`
 · `logs <wt>` · `provision <wt>`. Run `kirocrew pod --help` for the full list.
-`token`, `url`, `logs` and `provision` have no tool of their own yet: `pod_up`
-already returns the token and url, and pod logs stay a human-facing read.
+`token`, `url` and `logs` have no tool of their own: `pod_up` already returns the
+token and url, `pod_api` covers API calls, and pod logs stay a human-facing read.
 
 **Isolation guarantees** (enforced by the pod runtime):
 own `KIROCREW_HOME`, own port, **no tunnel** (can't grab the real Slack identity),

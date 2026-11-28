@@ -816,6 +816,11 @@ class TestMintRefusalNamesTheGateThatRefused:
         assert "stale" not in message
         # And a recreate is not presented as the fix for a caller-provenance verdict.
         assert "does NOT change this verdict" in message
+        # An agent's sandboxed shell is refused here: the next step is the tool path.
+        assert "pod_up tool" in message and "Dev Fleet" in message
+        assert "chat started after" in message
+        # Only tools the adoption-pinned Dev Fleet release declares are named.
+        assert "pod_api" not in message and "pod_provision" not in message
 
     def test_the_owner_refusal_never_recommends_deleting_the_pod(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -808,6 +808,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _worker_capabilities_line,
 )
 from kiro_crew.mcp_dashboard_session_tools import (  # noqa: E402, F401
+    _TRIGGER_SKILLS_PROPERTY,
     _session_tools,
 )
 from kiro_crew.mcp_dashboard_tag_runs import (  # noqa: E402, F401
@@ -986,6 +987,11 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
         _subtree_holds_foreign_folder,
     )
     from kiro_crew.mcp_crew_list import crew_list_tool  # noqa: F401
+    from kiro_crew.mcp_session_once import (  # noqa: F401
+        _post_once,
+        lost_reply_error,
+        possible_double,
+    )
     from kiro_crew.mcp_tools.dashboard_client import DashboardClient, DashboardError  # noqa: F401
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401
     from kiro_crew.sel import sel  # noqa: F401
@@ -993,5 +999,7 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
         BROADCAST_RESPONSE_MARGIN_SECS,
         BROADCAST_TARGET_ALLOWANCE_SECS,
         MAX_BROADCAST_TARGETS,
+        MAX_TRIGGER_SKILL_KEY_LEN,
+        MAX_TRIGGER_SKILLS,
         SLACK_THREAD_TS_RE,
     )

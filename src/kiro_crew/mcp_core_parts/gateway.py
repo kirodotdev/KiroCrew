@@ -518,6 +518,9 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
     message = raw or str(exc)
     counted = False
     code = ""
+    request_id = ""
+    replay = ""
+    replay_attempt: int | None = None
     hints: dict[str, str] = {}
     if raw:
         try:
@@ -534,6 +537,20 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
                 raw_code = parsed.get("code")
                 if isinstance(raw_code, str) and _re.fullmatch(r"[a-z0-9_.-]{1,64}", raw_code):
                     code = raw_code
+                # The request id a replayed session-control refusal echoes, which is
+                # how ``mcp_session_once`` tells the first post's own refusal from a
+                # resend's. Kept only in the shape the tool mints.
+                raw_request_id = parsed.get("request_id")
+                if isinstance(raw_request_id, str) and _re.fullmatch(
+                    r"[0-9a-f]{32}", raw_request_id
+                ):
+                    request_id = raw_request_id
+                raw_replay = parsed.get("replay")
+                if raw_replay in ("first", "unsaved", "replayed"):
+                    replay = raw_replay
+                raw_attempt = parsed.get("replay_attempt")
+                if type(raw_attempt) is int and 0 <= raw_attempt < 100:
+                    replay_attempt = raw_attempt
                 # The how-to-retry text a refusal carries next to its sentence
                 # (deploy's "use ttl_hours=0" and the command to run). Redacted
                 # below with the message, since it is the same untrusted body.
@@ -563,6 +580,12 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
         out["counted"] = True
     if code:
         out["code"] = code
+    if request_id:
+        out["request_id"] = request_id
+    if replay:
+        out["replay"] = replay
+    if replay_attempt is not None:
+        out["replay_attempt"] = replay_attempt
     for key, value in hints.items():
         value, _ = redact_exfiltration_urls(value)
         value, _ = redact_credentials(value)

@@ -40,6 +40,7 @@ import {
   CHAINED_CREW_REFUSED_MESSAGE,
   chainAdoptionPlan,
   chainRefusalCode,
+  isChainCycleRefusal,
   readChainedCrewNotice,
 } from '../lib/chainAnnounce'
 import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
@@ -491,7 +492,18 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           // promised top-level tab missing and the crew reachable only from the
           // Remote Crew list. The announcing pane's user connected it there; this
           // is the same intent arriving here.
-          await api.connectInstance(added.id)
+          await api.connectInstance(added.id).catch(async (err: unknown) => {
+            if (isChainCycleRefusal(err)) {
+              // A loop does not clear on a retry, so a kept row is a crew in Remote
+              // Crew that can never connect. Take it back out; the catch below
+              // tells the pane why.
+              await api.removeInstance(added.id).catch((removeErr: unknown) =>
+                paneLog('chain-loop-remove-failed', { id: added.id, error: (removeErr as Error)?.message || 'unknown' }),
+              )
+              void queryClient.invalidateQueries({ queryKey: ['instances'] })
+            }
+            throw err
+          })
         }
         void queryClient.invalidateQueries({ queryKey: ['instances'] })
       } catch (err) {

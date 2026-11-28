@@ -99,16 +99,14 @@ _INBOX_POLL_SECS = 1.0
 # part of its turn; ``workflow_run`` and ``workflow_rerun_subtree`` run an
 # orchestration of agents, and ``workflow_author`` exists only to feed them;
 # ``task_run`` starts the autonomous task runner; ``register_hook`` opens a
-# dedicated agent session an external POST drives later; ``pod_up`` boots a
-# whole preview gateway as its own host process on its own port, which keeps
-# serving after the turn that started it has ended, and ``pod_restart`` starts
-# that gateway again.
+# dedicated session an external POST drives; ``pod_up`` boots a preview gateway;
+# the restart, API and provision verbs restart it, drive it and build it.
 #
 # The observe-and-tear-down verbs are deliberately ABSENT, and their absence is
 # the qualifier this invariant needs rather than an omission: ``spawn_list``,
 # ``spawn_status``, ``spawn_release``, ``workflow_status``, ``workflow_result``,
 # ``workflow_list``, ``workflow_cancel``, ``workflow_library_list``,
-# ``pod_ls``, ``pod_status`` and ``pod_down`` read or
+# ``pod_ls``, ``pod_status``, ``pod_provision_status`` and ``pod_down`` read or
 # end a context that already exists and start no turn.  ``spawn_status`` returns
 # a retained transcript, so how widely that read is scoped is a question about
 # read scope and not about this boundary.
@@ -124,6 +122,8 @@ CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS: tuple[str, ...] = (
     "register_hook",
     "pod_up",
     "pod_restart",
+    "pod_api",
+    "pod_provision_start",
 )
 
 # Direct-to-user messaging tools a channel agent may never invoke — channel

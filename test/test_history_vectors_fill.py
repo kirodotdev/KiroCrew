@@ -273,6 +273,25 @@ class TestFillBatch:
         assert _coverage(tmp_path)["embedded"] == 1
         assert _rows(tmp_path, "SELECT signature FROM chunk") == [("space-2",)]
 
+    def test_a_policy_refused_backend_keeps_the_stored_vectors(self, tmp_path: Path, space) -> None:
+        _write(tmp_path, "s", "some words")
+        _chunk(tmp_path)
+        _drain(tmp_path)
+        assert _coverage(tmp_path)["embedded"] == 1
+
+        # An LTS deny rebuilds the backend under another identity; that is not a
+        # model change, so nothing is released.
+        refused = _Embedder(space, model_id="custom:unavailable")
+        refused._policy_allowed = False  # type: ignore[attr-defined]
+        space["embedder"] = refused
+        store = chunking.vector_store_for(tmp_path)
+        try:
+            assert fill.fill_batch(ConversationLog(base_dir=tmp_path), store)["filled"] == 0
+        finally:
+            store.close()
+        assert _rows(tmp_path, "SELECT signature FROM chunk") == [("space-1",)]
+        assert refused.calls == []
+
     def test_a_session_released_by_a_model_change_is_still_pruned(
         self, tmp_path: Path, space
     ) -> None:

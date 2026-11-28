@@ -213,6 +213,13 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # layer only (a request carries no session). An absent scope leaves each source
     # to its own switch.
     "webhooks": ScopeSpec(RULESET, matcher="identifier"),
+    # Which embedding sources memory may use (RFC crew-lts-edition D13, policy term
+    # ``embedding_model_use``). Members are ``bundled``, ``custom`` and ``ollama``,
+    # never a model name, e.g.
+    #   {"memory.embedding_sources": {"mode": "allow", "allow": ["bundled", "ollama"]}}
+    # Asked by ``kiro_crew.embedding_source_governance`` in an LTS build only, policy
+    # layer only; an ``oss`` build never evaluates it, so this row is data there.
+    "memory.embedding_sources": ScopeSpec(RULESET, matcher="identifier"),
     # Capabilities (registered defaults — see the CAPABILITY-DEFAULT CONTRACT above):
     "capabilities.spawn": ScopeSpec(
         CAPABILITY, capability_default=True, scope_matchers={"agents": "identifier"}
