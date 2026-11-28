@@ -1,5 +1,5 @@
 import type { MotionValue } from 'motion-dom'
-import { useCallback, useEffect, useMemo, useRef, type MutableRefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type MutableRefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Search } from 'lucide-react'
@@ -21,6 +21,7 @@ import { historySearchHostMarks } from '../../../hooks/useMessageSearch'
 import { CHAT_HISTORY_SEARCH_TAB_ID, useChatHistorySearchTab } from '../useChatHistorySearchTab'
 import { useAppDispatch } from '../../../store'
 import { closeActivityPanel } from '../../../store/chatSlice'
+import { setSidePanelMounted } from '../../../hooks/sidePanelMounted'
 
 // A chunk that fails to load shows its notice in the Search tab, with Try Again.
 // No hand-off: the chat composer beside the pane may hold an unsent draft.
@@ -74,6 +75,10 @@ interface ChatSidePanelsProps {
   historyActions: PreviewActions
   activeSlotTitle: string | undefined
   activitySlot: HTMLElement | null
+  /** The panel is mounted inline, in the page's own row, rather than in the
+   *  shell's column (panelInlineHost, lib/touchLayoutForm.ts). A fold never
+   *  changes it, so folding never remounts the panel or its frames. */
+  panelInline: boolean
   /** Look the shell's `#activity-bar-slot` up again (sessionsDrawer). */
   refreshActivitySlot?: () => void
   /** An embedded chat or a popout: no shell column, no health check. */
@@ -107,7 +112,7 @@ export default function ChatSidePanels({
   mode, activeSlot, connected, isMobile, activityOpen, insertDashboardReply, addSourceCommentToChat, handleArtifactOpen, handleFileOpen, handleFileSave,
   handleOpenWorkingTreeDiff, hasBrowserTab, hasLiveAppTab, panelIssues, panelSources, dismissSource, reconcileIssueUrl, reconcileSourceUrl, search, selectedIssueUrl, selectedSourceUrl, selectIssueUrl,
   selectSourceUrl, tabsCtl, submitComments, currentSlot, handleAddToContext, sidePanelDock, sidePanelDockAnim, effectiveSidebarWidth, toggleAct, chatNav, chatPins, chatPinsLoading, handleJumpToPin, handlePutPinInComposer,
-  handleUnpinById, historyActions, activeSlotTitle, activitySlot, refreshActivitySlot, embedded, chatPaneEl, hasTaskDashboard, sidebarOpen, sideOverlayPanelRef, sideOverlayPhase, sideOverlayX, panelFillWidth, panelMaximized,
+  handleUnpinById, historyActions, activeSlotTitle, activitySlot, panelInline, refreshActivitySlot, embedded, chatPaneEl, hasTaskDashboard, sidebarOpen, sideOverlayPanelRef, sideOverlayPhase, sideOverlayX, panelFillWidth, panelMaximized,
   pinSummary, trackpad,
 }: ChatSidePanelsProps) {
   const { deskSlide, deskSpacerW, deskPanelWrapRef } = trackpad
@@ -151,7 +156,7 @@ export default function ChatSidePanels({
   }] : undefined), [historyTab.tabOpen, historyTab.onScreen, activeSlot, closeSearch, focusNonce, historyActions, isMobile])
   // The store says open, the panel must be on screen (useSidePanelHealth).
   useSidePanelHealth({
-    enabled: activityOpen && !isMobile && !embedded,
+    enabled: activityOpen && !panelInline && !embedded,
     activeSlot,
     dock: sidePanelDock,
     slot: activitySlot,
@@ -165,6 +170,26 @@ export default function ChatSidePanels({
       close: () => dispatch(closeActivityPanel()),
     },
   })
+  // Whether a SidePanel is mounted, in the shell's column when it has one,
+  // else inline. Both hosts render from this one value, and it is published
+  // for recordUnfoldedForm (hooks/sidePanelMounted.ts), so the fact and the
+  // render cannot drift. An embedded chat or a popout does not publish: one
+  // writer, the page's own. It never sits on the chat route, where alone the
+  // fold two-pane form applies, so a no-op wake on its own route re-records
+  // the same unfolded form and its panel has no hold to keep.
+  const sidePanelMounted = activitySlot
+    ? shouldMountSidePanel(mountInput) || deskSlide
+    : isMobile
+      // `hasLiveAppTab` keeps a closed-but-alive panel MOUNTED (display:none
+      // below) so its iframe — and the drawing inside it — survives the
+      // close, exactly as the width-reveal branch always did.
+      ? sideOverlayPhase !== 'closed' || (shouldMountSidePanel(mountInput) && isSidePanelHidden(mountInput))
+      : shouldMountSidePanel(mountInput)
+  useLayoutEffect(() => {
+    if (embedded) return
+    setSidePanelMounted(sidePanelMounted)
+    return () => setSidePanelMounted(false)
+  }, [embedded, sidePanelMounted])
   // A narrow desktop window where the panel fills the chat column needs no mark:
   // it squeezes the transcript to zero width, which the on-screen backstop sees
   // (paneVisibility, #23564), and a bottom-docked panel leaves it on screen.
@@ -180,14 +205,7 @@ export default function ChatSidePanels({
             it re-laid-out the panel AND the squeezed chat pane every frame.
             Mount is held through 'closing' so the slide-out is not cut short.
             Embed frames keep the width reveal — they have no overlay chrome. */}
-        {(isMobile
-          // `hasLiveAppTab` keeps a closed-but-alive panel MOUNTED (display:none
-          // below) so its iframe — and the drawing inside it — survives the
-          // close, exactly as the width-reveal branch always did.
-          ? (sideOverlayPhase !== 'closed'
-              || (shouldMountSidePanel(mountInput)
-                  && isSidePanelHidden(mountInput))) && !activitySlot
-          : shouldMountSidePanel(mountInput) && !activitySlot) && (
+        {(sidePanelMounted && !activitySlot) && (
           <motion.div
             key="side-panel-inline"
             data-testid="side-panel-inline"
@@ -256,7 +274,7 @@ export default function ChatSidePanels({
           the window edge — both sides move together instead of snapping. */}
       {activitySlot && createPortal(
         <AnimatePresence initial={false}>
-          {(shouldMountSidePanel(mountInput) || deskSlide) && (
+          {sidePanelMounted && (
             <motion.div
               key="side-panel"
               ref={deskPanelWrapRef}

@@ -64,7 +64,8 @@ const EXPECTED: Record<string, Expect> = {
     ],
   },
   'shell.nav-toggle': {
-    kind: 'toggle', labelKey: 'app.expand_sidebar', aliasKeys: ['app.collapse_sidebar'], source: RAIL_SRC, en: 'Expand sidebar', zh: '展开侧边栏',
+    // The folded-lock name is an alias, so the guide quotes the label a folded rail shows.
+    kind: 'toggle', labelKey: 'app.expand_sidebar', aliasKeys: ['app.collapse_sidebar', 'app.sidebar_compact_while_folded'], source: RAIL_SRC, en: 'Expand sidebar', zh: '展开侧边栏',
     placements: [shell('rail', [], [vp('desktop')])],
   },
   'shell.notifications': {

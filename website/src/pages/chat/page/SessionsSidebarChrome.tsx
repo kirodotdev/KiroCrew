@@ -31,6 +31,9 @@ import { whenIdle } from '../../../lib/whenIdle'
 const PANE_PREWARM_IDLE_TIMEOUT_MS = 4000
 
 interface SessionsSidebarChromeProps {
+  /** Not the dashboard's own chat page (an embedded chat or a popout), as
+   *  ChatPage decides it: its list is never placed against a fold. */
+  embedded?: boolean
   embedMode?: 'chat' | 'sessions'
   mode?: string
   activeSlot: string | null
@@ -144,7 +147,7 @@ export function AdoptPaneHost({ host }: { host: HTMLElement | null }) {
  * The sessions chrome around the chat pane: the phone drawer and its scrim, the desktop sidebar toggle and its recents flyout, the sidebar or drawer itself (or the embedded sessions list), the phone top bar, and the tag popover.
  */
 export default function SessionsSidebarChrome({
-  embedMode, mode, activeSlot, transcriptShown, connected, creatingSlot, dispatch, filteredSlots, personSlots, isMobile, keyboardInset, mobileNavRail, surfaceUnreadSlots, titleInTopbar, topbarSlot, topbarTrailSlot, vv,
+  embedded, embedMode, mode, activeSlot, transcriptShown, connected, creatingSlot, dispatch, filteredSlots, personSlots, isMobile, keyboardInset, mobileNavRail, surfaceUnreadSlots, titleInTopbar, topbarSlot, topbarTrailSlot, vv,
   activityOpen, selectFromSidebar, history, historyHasMore, navigateToEmbeddedSlot, openEmbeddedCrewWindow, splitMode, defaultAgent, installedAgents, sidebarAgents, sidebarChoices, setActionError, showActionError,
   canStageSessionRef, chatPaneEl, stageSessionRef, openSlotInNewTab, ownsSessionTabs, activePoppedOut, focusActivePopout, openActivePopout, splitFeatureEnabled, currentSlot, effectiveMode, title,
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarDragging, setSidebarWidth, sidebarAutoHidden, sidebarDragging, splitAnchorForActive, effectiveSidebarWidth, toggleAct,
@@ -167,6 +170,7 @@ export default function SessionsSidebarChrome({
       onWidthChange={setSidebarWidth}
       onDragChange={setSidebarDragging}
       fillsHost={isMobile}
+      embedded={embedded}
       collapsible={!isMobile}
       staticRows={isMobile}
       onSelectSlot={selectFromSidebar}
