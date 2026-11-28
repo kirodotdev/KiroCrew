@@ -932,8 +932,8 @@ def main() -> None:
         # they surface at exit, stamped with the stop time, or never after a
         # kill or an in-app os.execv. One reconfigure here, before the first
         # status print, covers every launcher; a terminal is already
-        # line-buffered and is left alone. Gateway-only: no other subcommand
-        # is long-lived under a service manager.
+        # line-buffered and is left alone. The gateway and `doctor` are the
+        # only subcommands that take it (doctor's reason is at its branch).
         platform_compat.ensure_line_buffered_stdout()
         # Seam-supplied pre-launch checks (CPP IdentityProvider seam). Runs
         # HERE in the gateway dispatch — not in boot_platform (which runs for
@@ -1038,6 +1038,11 @@ def main() -> None:
             whatsapp=getattr(args, "whatsapp", False),
         )
     elif args.command == "doctor":
+        # Doctor's rows are print() calls and its probes log WARNING records to
+        # stderr, which CPython writes at once. Captured (a pipe or a file),
+        # stdout is block-buffered, so a record lands inside a half-written
+        # row; written line by line, a record can fall only between rows.
+        platform_compat.ensure_line_buffered_stdout()
         _doctor(
             platform_boot_error=_platform_boot_error,
             bundle=getattr(args, "bundle", False),
