@@ -607,5 +607,6 @@
   "pages.appsPage.blanket_bot_chat_stop_failed",
   "components.chatHistorySearch.image_count",
   "components.chatHistorySearch.file_count",
-  "pages.chat.subagentProgressBar.older_runs_not_shown"
+  "pages.chat.subagentProgressBar.older_runs_not_shown",
+  "memoryPage.strength_rate_outrank"
 ]

@@ -34,14 +34,17 @@ type LessonAnswer = { tone: 'info' | 'warning' | 'error'; text: string }
 type NewKind = 'fact' | 'directive'
 const KINDS: NewKind[] = ['fact', 'directive']
 
-export function NewMemoryDialog({ onClose, onSaved, onLessonSaved, onDirtyChange }: { onClose: () => void; onSaved: (key: string) => void; onLessonSaved: () => void; onDirtyChange?: (dirty: boolean) => void }) {
+export function NewMemoryDialog({ initialRule = '', onClose, onSaved, onLessonSaved, onDirtyChange }: {
+  /** Open on a lesson with this rule typed in (an experience saved so it stops fading). */
+  initialRule?: string
+  onClose: () => void; onSaved: (key: string) => void; onLessonSaved: () => void; onDirtyChange?: (dirty: boolean) => void }) {
   const { t } = useTranslation()
-  const [kind, setKind] = useState<NewKind>('fact')
+  const [kind, setKind] = useState<NewKind>(initialRule ? 'directive' : 'fact')
   const [key, setKey] = useState('')
   // A selector-safe id: `list` is resolved by id, and the generated one carries colons.
   const hintsId = `memory-key-hints${useId().replace(/:/g, '')}`
   const [value, setValue] = useState('')
-  const [rule, setRule] = useState('')
+  const [rule, setRule] = useState(initialRule)
   const [category, setCategory] = useState<(typeof CATEGORIES)[number]>('knowledge')
   const [answer, setAnswer] = useState<LessonAnswer | null>(null)
   const saveFact = useMutation({ mutationFn: () => api.vectorSemanticWrite(key.trim(), value), onSuccess: () => onSaved(key.trim()) })
@@ -57,7 +60,9 @@ export function NewMemoryDialog({ onClose, onSaved, onLessonSaved, onDirtyChange
   const pending = saveFact.isPending || saveLesson.isPending
   const ready = !pending && (kind === 'fact' ? !!key.trim() && !!value.trim() : !!rule.trim())
   // Both drafts stay while the kind switches, so either one keeps the dialog guarded.
-  const dirty = !!key || !!value || !!rule
+  // A rule brought in from an experience is still stored there, so only a change
+  // to it, or a picked category, is a draft.
+  const dirty = !!key || !!value || (!!rule && rule !== initialRule) || category !== 'knowledge'
   useDraftDirty(dirty, onDirtyChange)
   const submit = () => { if (!ready) return; if (kind === 'fact') saveFact.mutate(); else { setAnswer(null); saveLesson.mutate() } }
   return <Modal open title={t('memoryPage.new_memory')} maxWidth={480} guardAccidentalDismiss={dirty} dismissDisabled={pending} onClose={onClose} footer={<div className="flex justify-end gap-2">
