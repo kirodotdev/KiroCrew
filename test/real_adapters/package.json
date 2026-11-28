@@ -9,7 +9,7 @@
     "@deepseek-ai/dsh": "0.2.0-rc.2",
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@strands-agents/cli": "0.2.4",
-    "opencode-ai": "1.19.1",
+    "opencode-ai": "1.19.5",
     "pi-acp": "0.0.34"
   },
   "overrides": {
