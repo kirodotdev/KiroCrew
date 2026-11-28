@@ -143,7 +143,6 @@ _LISTING_IMPORTS = (
     "slack/__init__.py",
     "slack/features.py",
     "spawn_label.py",
-    "subagent.py",
     "subagent_read_collected.py",
     "subagent_standalone.py",
     "subagent_wait_reasons.py",

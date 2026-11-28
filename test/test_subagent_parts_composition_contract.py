@@ -18,7 +18,8 @@ they define on the facade's globals. These tests pin what that composition promi
 * nothing but ``kiro_crew.subagent`` imports a module of ``subagent_parts`` at runtime,
   except ``manager.py``, which imports the ``*_surface`` modules its class binds and
   ``run_limits`` for its default arguments, and ``kiro_crew.subagent_standalone``, which
-  imports the two owners that work before the facade is loaded; an owner imports the
+  imports the two owners that work before the facade is loaded and reads a few named
+  values from three more on first use; an owner imports the
   facade only for type checking, and no owner carries an agent-sdk boundary edge;
 * the two standalone owners bind every global their functions read, load without the
   facade, and are called through one object on both sides of the facade's load;
@@ -171,6 +172,11 @@ def _family_edges(module: str) -> bool:
 
 #: Owners that also run before the facade is loaded (``kiro_crew.subagent_standalone``).
 _STANDALONE_OWNERS = ("host_memory", "spawn_allowlists")
+
+#: Owners ``kiro_crew.subagent_standalone`` reads a few names from on first use, for the
+#: spawn and host-headroom tools: only those names run before the facade is loaded
+#: (``subagent_standalone.STANDALONE_READS``; the refusal codes are plain strings).
+_STANDALONE_READ_OWNERS = ("agent_policy", "run_output", "start_pricing")
 _STANDALONE = "kiro_crew/subagent_standalone.py"
 
 #: Owner functions the sweeps must find (a floor, so a sweep that finds nothing fails).
@@ -1392,7 +1398,10 @@ def test_nothing_but_the_facade_imports_an_owner() -> None:
         )
         if mod.startswith(f"{subagent_parts.__name__}.")
     }
-    assert imported == {f"{subagent_parts.__name__}.{name}" for name in _STANDALONE_OWNERS}
+    assert imported == {
+        f"{subagent_parts.__name__}.{name}"
+        for name in (*_STANDALONE_OWNERS, *_STANDALONE_READ_OWNERS)
+    }
 
 
 def _boundary_gate():

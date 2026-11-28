@@ -4,6 +4,9 @@ line, the delivery record a completion carries, and the per-run credit accountin
 
 from __future__ import annotations
 
+# Real import: ``format_subagent_usage`` also runs before the facade is loaded
+# (``kiro_crew.subagent_standalone.STANDALONE_READS``).
+import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -17,7 +20,6 @@ if TYPE_CHECKING:
         SubagentInfo,
         _billing_stats,
         _sum_usage,
-        math,
         redact_and_truncate,
         redact_credentials,
         redact_exfiltration_urls,
