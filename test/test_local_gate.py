@@ -1192,3 +1192,251 @@ def test_the_tree_scan_tier_adds_nothing_without_a_src_change(gate, monkeypatch)
     plan = gate.build_plan(_args(tree_scans=True))
     assert not any(label == "backend (tree scans)" for label, _cmd, _cwd in plan.commands)
     assert "tree scans: no src/ change, none needed" in plan.notes
+
+
+# ---------------------------------------------------------------------------
+# selection: a test that reaches a changed module through a facade
+# (the re-export parser these reach is scripts/run_scoped_tests_facades.py)
+# ---------------------------------------------------------------------------
+
+
+def _facade_repo(tmp_path: Path) -> Path:
+    """An owner module, a facade re-offering two of its names, and four tests.
+
+    The facade uses both re-export spellings of this tree: an import kept with
+    ``noqa: F401`` and an ``_EXPORTS_BY_OWNER`` table. ``plain`` is imported for
+    the facade's own use, so a test naming it does not reach the owner.
+    """
+    root = tmp_path / "repo"
+    pkg = root / "src" / "kiro_crew" / "parts"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "owner.py").write_text("HEADER_RE = 1\nLAZY = 2\nplain = 3\n", encoding="utf-8")
+    (root / "src" / "kiro_crew" / "surface.py").write_text(
+        "from kiro_crew.parts.owner import HEADER_RE  # noqa: F401\n"
+        "from kiro_crew.parts.owner import plain\n"
+        "from kiro_crew.parts import owner  # noqa: F401\n"
+        "_EXPORTS_BY_OWNER = {'kiro_crew.parts.owner': ('LAZY',)}\n"
+        "VALUE = plain\n",
+        encoding="utf-8",
+    )
+    tests = {
+        "test/test_pins_static.py": "from kiro_crew import surface\nPINNED = {'HEADER_RE': 'digest'}\n",
+        "test/test_pins_lazy.py": "from kiro_crew import surface\nassert surface.LAZY\n",
+        "test/test_uses_plain.py": "from kiro_crew import surface\nassert surface.plain\n",
+        "test/test_other_name.py": "from kiro_crew import surface\nassert surface.VALUE\n",
+    }
+    for rel, text in tests.items():
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    return root
+
+
+def test_a_test_pinning_a_re_exported_name_is_selected_for_its_owner(
+    gate, tmp_path, monkeypatch, collect_ignore_helpers
+) -> None:
+    """A change to the owner selects the tests that name a name the facade
+    re-offers from it, by either spelling, and not a test that only imports the
+    facade or names what the facade merely uses."""
+    selector = importlib.import_module("run_scoped_tests")
+    monkeypatch.setattr(collect_ignore_helpers, "PLATFORM_IGNORED", frozenset())
+    root = _facade_repo(tmp_path)
+    targets, verdict = selector.related_targets("backend", ["src/kiro_crew/parts/owner.py"], root=root)
+    assert "test/test_pins_static.py" in targets
+    assert "test/test_pins_lazy.py" in targets
+    assert "test/test_uses_plain.py" not in targets
+    assert "test/test_other_name.py" not in targets
+    assert "2 reaching a changed module through a facade" in verdict
+
+
+def test_a_re_exported_submodule_is_not_a_name_the_package_defines(tmp_path) -> None:
+    """``from kiro_crew.parts import owner`` binds a submodule, so a change to the
+    package's ``__init__.py`` makes ``surface`` no facade of it."""
+    selector = importlib.import_module("run_scoped_tests")
+    root = _facade_repo(tmp_path)
+    assert selector.facade_reexports(["src/kiro_crew/parts/__init__.py"], root) == {}
+
+
+_OWNER = "src/kiro_crew/parts/owner.py"
+_PACKAGE = "src/kiro_crew/parts/__init__.py"
+_SURFACE = "src/kiro_crew/surface.py"
+_RUNNER = "src/kiro_crew/parts/sub/runner.py"
+_OWNER_DEFINES = {"HEADER_RE", "helper", "Store", "LAZY"}
+_KEPT = "from kiro_crew.parts.owner import HEADER_RE"
+_FILE_WIDE_F401 = {
+    "setup.cfg": "[flake8]\nper-file-ignores =\n    src/kiro_crew/surface.py: E402,F401\n"
+}
+_LISTED_WITH_ANOTHER_FILE = {
+    "setup.cfg": "[flake8]\nper-file-ignores =\n    src/kiro_crew/other.py, src/kiro_crew/surface.py: F401\n"
+}
+_COMPOSING_PACKAGE = {
+    _PACKAGE: "from kiro_crew._facade_compose import compose as _compose\n"
+    "def compose(namespace, owners):\n"
+    "    _compose(namespace, owners)\n"
+}
+
+
+@pytest.mark.parametrize(
+    ("facade", "source", "changed", "extra", "offered"),
+    [
+        pytest.param(_SURFACE, f"{_KEPT}  # noqa: F401\n", _OWNER, {}, {"HEADER_RE"}, id="noqa-f401"),
+        pytest.param(
+            _SURFACE, f"{_KEPT}  # noqa: E402,F401\n", _OWNER, {}, {"HEADER_RE"}, id="f401-after-a-code"
+        ),
+        pytest.param(
+            _SURFACE, f"{_KEPT}  # noqa: E402, F401\n", _OWNER, {}, {"HEADER_RE"}, id="f401-after-a-space"
+        ),
+        pytest.param(_SURFACE, f"{_KEPT}  # noqa\n", _OWNER, {}, {"HEADER_RE"}, id="bare-noqa"),
+        pytest.param(_SURFACE, f"{_KEPT}  # noqa: F4\n", _OWNER, {}, {"HEADER_RE"}, id="code-prefix"),
+        pytest.param(_SURFACE, f"{_KEPT}  # noqa: E402\n", _OWNER, {}, set(), id="noqa-without-f401"),
+        pytest.param(_SURFACE, f"{_KEPT}\n", _OWNER, _FILE_WIDE_F401, {"HEADER_RE"}, id="per-file-ignores"),
+        pytest.param(
+            _SURFACE, f"{_KEPT}\n", _OWNER, _LISTED_WITH_ANOTHER_FILE, {"HEADER_RE"}, id="per-file-list"
+        ),
+        pytest.param(
+            _SURFACE, f"{_KEPT}\n__all__ = ['HEADER_RE']\n", _OWNER, {}, {"HEADER_RE"}, id="listed-in-all"
+        ),
+        pytest.param(
+            _SURFACE,
+            "_FORWARDS_BY_OWNER = {'kiro_crew.parts.owner': ('LAZY',)}\n",
+            _OWNER,
+            {},
+            {"LAZY"},
+            id="owner-keyed-table",
+        ),
+        pytest.param(
+            _SURFACE,
+            "from kiro_crew import _facade_mirror\n_OWNERS = ('kiro_crew.parts.owner',)\n",
+            _OWNER,
+            {},
+            _OWNER_DEFINES,
+            id="mirror-facade",
+        ),
+        pytest.param(
+            _SURFACE,
+            "from kiro_crew._facade_compose import compose\n"
+            "from kiro_crew.parts import owner as _owner\n"
+            "compose(globals(), (_owner,))\n",
+            _OWNER,
+            {},
+            _OWNER_DEFINES,
+            id="compose-facade",
+        ),
+        pytest.param(
+            "src/kiro_crew/parts/mirror.py",
+            "from kiro_crew import _facade_mirror\n_OWNERS = (f'{__package__}.owner',)\n",
+            _OWNER,
+            {},
+            _OWNER_DEFINES,
+            id="mirror-owner-f-string",
+        ),
+        pytest.param(
+            _SURFACE,
+            "from kiro_crew._facade_compose import compose\n"
+            "from kiro_crew.parts import owner as _owner\n"
+            "from kiro_crew import other as _other\n"
+            "compose(globals(), (_other,))\n",
+            _OWNER,
+            {},
+            set(),
+            id="imported-but-not-an-owner",
+        ),
+        pytest.param(
+            _SURFACE,
+            "from kiro_crew import parts as _parts\n_parts.compose(globals(), ())\n",
+            _OWNER,
+            _COMPOSING_PACKAGE,
+            _OWNER_DEFINES,
+            id="composing-package",
+        ),
+        pytest.param(
+            _SURFACE,
+            "from kiro_crew import parts as _parts\nCOMPOSE = _parts.compose\n",
+            _OWNER,
+            _COMPOSING_PACKAGE,
+            set(),
+            id="composing-package-unused",
+        ),
+        pytest.param(
+            _SURFACE, "from kiro_crew.parts import owner as _owner\n", _OWNER, {}, set(), id="no-helper"
+        ),
+        pytest.param(
+            _RUNNER, "from ..owner import HEADER_RE  # noqa: F401\n", _OWNER, {}, {"HEADER_RE"}, id="ancestor"
+        ),
+        pytest.param(
+            _RUNNER, "from .. import HEADER_RE  # noqa: F401\n", _PACKAGE, {}, {"HEADER_RE"}, id="package"
+        ),
+    ],
+)
+def test_each_way_a_module_offers_a_changed_module_name_is_read(
+    tmp_path, request, facade, source, changed, extra, offered
+) -> None:
+    """Every spelling of an offer this tree uses is read, an import the module only
+    uses is not an offer, and a mirror or compose facade serves what its owner
+    defines (not what the owner imports)."""
+    selector = importlib.import_module("run_scoped_tests")
+    # The selector caches a tree's file list by its root, and a passed case's
+    # tmp_path is deleted and handed to the next case, so each case gets its own root.
+    root = tmp_path / request.node.callspec.id
+    files = {
+        "src/kiro_crew/__init__.py": "",
+        _PACKAGE: "HEADER_RE = 1\n",
+        "src/kiro_crew/parts/sub/__init__.py": "",
+        _OWNER: (
+            "import os\n"
+            "HEADER_RE = 1\n"
+            "def helper():\n"
+            "    return HEADER_RE\n"
+            "class Store:\n"
+            "    pass\n"
+            "if os.name:\n"
+            "    LAZY = 2\n"
+        ),
+        **extra,
+        facade: source,
+    }
+    for rel, text in files.items():
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    assert selector.facade_reexports([changed], root).get(facade, set()) == offered
+
+
+def test_a_test_importing_from_a_package_facade_is_selected(
+    gate, tmp_path, monkeypatch, collect_ignore_helpers
+) -> None:
+    """A package offers names through its ``__init__.py``, and a test reaches them by
+    the package's own name, never by ``__init__``."""
+    selector = importlib.import_module("run_scoped_tests")
+    monkeypatch.setattr(collect_ignore_helpers, "PLATFORM_IGNORED", frozenset())
+    root = tmp_path / "repo"
+    files = {
+        "src/kiro_crew/__init__.py": "",
+        _PACKAGE: f"{_KEPT}  # noqa: F401\n",
+        _OWNER: "HEADER_RE = 1\n",
+        "test/test_by_dotted_name.py": "from kiro_crew.parts import HEADER_RE\n",
+        "test/test_by_package_name.py": "from kiro_crew import parts\nassert parts.HEADER_RE\n",
+    }
+    for rel, text in files.items():
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    targets, _verdict = selector.related_targets("backend", [_OWNER], root=root)
+    assert "test/test_by_dotted_name.py" in targets
+    assert "test/test_by_package_name.py" in targets
+
+
+def test_a_hook_module_change_selects_the_agent_surface_contract(
+    gate, monkeypatch, collect_ignore_helpers
+) -> None:
+    """The reported shape, on the real tree: ``test_agent_refactor_contracts.py``
+    pins the digest of ``_HOOK_HEADER_RE`` through ``kiro_crew.agent``, which
+    re-offers it from ``agent_materialization/kiro_hooks.py``. An edit to that
+    owner must select the contract test, or the local gate passes and CI fails."""
+    selector = importlib.import_module("run_scoped_tests")
+    monkeypatch.setattr(collect_ignore_helpers, "PLATFORM_IGNORED", frozenset())
+    targets, _verdict = selector.related_targets(
+        "backend", ["src/kiro_crew/agent_materialization/kiro_hooks.py"]
+    )
+    assert "test/test_agent_refactor_contracts.py" in targets

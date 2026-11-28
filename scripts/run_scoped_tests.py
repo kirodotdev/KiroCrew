@@ -49,6 +49,11 @@ Backend, as the union of:
 * test files that textually reference a changed module -- an import, a quoted
   string for ``importlib.import_module``, a fixture name. Best-effort, and
   deliberately over-broad in the safe direction
+* test files that reach a changed module through a facade: they reference a
+  ``src/`` module that offers names from it (an import flake8 keeps although
+  unused or one listed in ``__all__``, an owner-keyed name table, or a mirror or
+  compose facade over it) and name one of those names, as a surface contract that
+  pins ``kiro_crew.agent``'s names does
 * the cross-surface set ``ci-surface-tests.py`` computes, when the OTHER surface
   changed. That one is CI's own reduction rather than a second answer invented here
 
@@ -109,6 +114,18 @@ from pathlib import Path, PurePosixPath
 from types import ModuleType
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# The facade scan's parser is the sibling run_scoped_tests_facades.py. scripts/
+# joins sys.path for it here, because `-P` and PYTHONSAFEPATH keep a script's own
+# directory off the path.
+_SCRIPTS_DIR = str(REPO_ROOT / "scripts")
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+from run_scoped_tests_facades import (  # noqa: E402  (path set immediately above)
+    SRC_ROOT,
+    ChangedModules,
+    module_of,
+)
 
 # The collector's own platform ignore list, through the collector's own reader.
 # `test/conftest.py` re-exports that helper's `pytest_ignore_collect` hook, and the
@@ -186,6 +203,7 @@ BROAD_IMPACT_PATH_PREFIXES = (
     "website/integration/mocks/",
     ".github/workflows/",
     "scripts/run_scoped_tests.py",
+    "scripts/run_scoped_tests_facades.py",
 )
 
 _SAFE_TARGET = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/-]*$")
@@ -827,6 +845,75 @@ def _referencing_tests(paths: list[str], tree: tuple[str, ...], root: Path) -> l
     return [rel for rel in tree if rel not in changed and matcher.search(_read_text(root, rel))]
 
 
+def _facade_tests(surface: str, paths: list[str], tree: tuple[str, ...], root: Path) -> list[str]:
+    """(d) Test files that reach a changed module's names through a facade.
+
+    A test that pins a facade's surface -- names, signatures and value digests read
+    off ``kiro_crew.agent`` -- reaches the owner module those names live in without
+    ever naming it, so (c) finds no token of the owner in it. Such a test is
+    selected when it references the facade AND names one of the names the facade
+    re-offers from the changed module. Requiring the name keeps a busy facade such
+    as ``kiro_crew.agent`` from pulling in every test that merely imports it.
+    """
+    if surface != "backend":
+        return []
+    reach = facade_reexports(paths, root)
+    if not reach:
+        return []
+    pairs = [
+        (_ReferenceMatcher(names), _ReferenceMatcher(_facade_tokens(facade)))
+        for facade, names in sorted(reach.items())
+    ]
+    changed = set(paths)
+    out: list[str] = []
+    for rel in tree:
+        if rel in changed:
+            continue
+        text = _read_text(root, rel)
+        if any(named.search(text) and facade.search(text) for named, facade in pairs):
+            out.append(rel)
+    return out
+
+
+def _facade_tokens(facade: str) -> set[str]:
+    """Strings a test would contain if it imports the facade at ``facade``.
+
+    A package's ``__init__.py`` is imported under the package's own name, never as
+    ``__init__``, so its tokens are its path, the package's dotted name and its last
+    component.
+    """
+    if PurePosixPath(facade).name != "__init__.py":
+        return reference_tokens(facade)
+    package = module_of(facade) or ""
+    return {token for token in (facade, package, package.rsplit(".", 1)[-1]) if token}
+
+
+_PYTHON_SOURCE = re.compile(r"\.py$")
+
+
+def facade_reexports(paths: list[str], root: Path = REPO_ROOT) -> dict[str, set[str]]:
+    """``{facade path: names it offers from a changed module}`` for ``src/`` modules.
+
+    shortcut: one level only. A facade that offers another facade's names is not
+    followed; follow it if a pinned surface is ever two facades deep.
+    """
+    if not any(module_of(path) for path in paths):
+        return {}
+    modules = ChangedModules.read(root, paths, functools.partial(_read_text, root))
+    changed = set(paths)
+    out: dict[str, set[str]] = {}
+    for rel in _tree_files(root, (SRC_ROOT,), _PYTHON_SOURCE):
+        if rel in changed:
+            continue
+        text = _read_text(root, rel)
+        if not modules.might_offer(rel, text):
+            continue
+        names = modules.offered_names(rel, text)
+        if names:
+            out[rel] = names
+    return out
+
+
 def platform_uncollected_targets() -> frozenset[str]:
     """Backend targets ``test/conftest.py`` would refuse to collect on this host.
 
@@ -864,6 +951,7 @@ def related_targets(
         ("in the diff", _diff_tests(surface, paths)),
         ("name-matched", _name_matched_tests(surface, paths, tree)),
         ("referencing a changed file", _referencing_tests(paths, tree, tree_root)),
+        ("reaching a changed module through a facade", _facade_tests(surface, paths, tree, root)),
     ):
         fresh = {f for f in found if f not in selected}
         if fresh:
