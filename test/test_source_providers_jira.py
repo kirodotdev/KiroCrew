@@ -11,6 +11,8 @@ from source_providers_helpers import _clear_shared_fetch_state  # noqa: F401
 from source_providers_helpers import _mock_source_sel_fixture  # noqa: F401
 from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F401
 
+from kiro_crew import platform_compat
+from kiro_crew.config.loader import read_env_file_credential
 from kiro_crew.dashboard.handlers import source_providers as source
 
 
@@ -494,6 +496,67 @@ class TestGetJiraAuth:
             "Operator runtime override should win over vault when it differs "
             f"from .env file value; got {result}"
         )
+
+
+class TestEnvFileReaderCaseFold:
+    """The per-key ``.env`` read finds what boot seeded, in either spelling."""
+
+    @staticmethod
+    def _env(tmp_path: Path, body: str) -> Path:
+        ep = tmp_path / ".env"
+        ep.write_text(body, encoding="utf-8")
+        return ep
+
+    def test_windows_reader_finds_a_lowercase_line(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        ep = self._env(tmp_path, "jira_api_token=old\n")
+        assert read_env_file_credential("JIRA_API_TOKEN", ep) == "old"
+
+    def test_windows_reader_takes_the_first_non_empty_spelling(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        ep = self._env(tmp_path, "JIRA_API_TOKEN=\njira_api_token=a\nJira_Api_Token=b\n")
+        assert read_env_file_credential("JIRA_API_TOKEN", ep) == "a"
+
+    def test_posix_reader_stays_case_sensitive(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        ep = self._env(tmp_path, "jira_api_token=old\n")
+        assert read_env_file_credential("JIRA_API_TOKEN", ep) == ""
+        assert read_env_file_credential("jira_api_token", ep) == "old"
+
+    @pytest.mark.parametrize("line_key", ["jira_api_token", "JIRA_API_TOKEN"])
+    def test_windows_seeded_lowercase_line_does_not_beat_the_vault(
+        self, monkeypatch, tmp_path, line_key
+    ):
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        ep = self._env(tmp_path, f"{line_key}=stale-env-token\n")
+
+        class FakeEntry:
+            host = "acme.atlassian.net"
+            email = "dev@acme.com"
+
+        class FakeConfig:
+            class dashboard:
+                jira_auth = [FakeEntry()]
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+            def load_credentials(self, *, propagate=True):
+                return {}
+
+        # What Windows boot leaves behind: the line seeded under the upper-case entry.
+        monkeypatch.setenv("JIRA_API_TOKEN", "stale-env-token")
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        monkeypatch.setattr(
+            source,
+            "_resolve_jira_token_from_vault",
+            lambda name: "fresh-vault-token" if name == "JIRA_API_TOKEN" else "",
+        )
+        monkeypatch.setattr(
+            source, "read_env_file_credential", lambda key: read_env_file_credential(key, ep)
+        )
+        assert source._get_jira_auth("acme.atlassian.net") == ("dev@acme.com", "fresh-vault-token")
 
 
 class TestJiraIsCloud:

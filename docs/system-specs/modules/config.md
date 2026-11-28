@@ -3172,7 +3172,13 @@ callers) read an undecodable file of either kind the same way: the same
 warning, nothing loaded from it, and a non-definitive answer to a caller that
 asks. So such a file stops neither the gateway at boot, a session start, nor
 `kirocrew doctor`, while the in-place rewriters still refuse it, so they
-never overwrite a file they could not parse.
+never overwrite a file they could not parse. A file it can read, the per-key
+reader answers by the same `os.environ` entry boot seeded: keyed by
+`_env_name_key` (the name upper-cased on Windows, itself on POSIX), first
+non-empty spelling in file order (`_effective_entry_values`). So on Windows a
+`jira_api_token=` line answers `read_env_file_credential("JIRA_API_TOKEN")`, and
+the Jira source's stale-`.env` check sees it instead of mistaking the seeded
+value for an operator override.
 
 The apply itself is the other way the cycle can fail, and it is treated the
 same way. `apply_env_credential_changes` is best-effort — a bad apply must not
