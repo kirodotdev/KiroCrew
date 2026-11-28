@@ -732,6 +732,8 @@ def open_port_forward(
     # ``os.getpgid`` of the reaped pid names nothing.
     with contextlib.suppress(AttributeError):  # a Popen stand-in without a __dict__
         proc.ssm_pgid = _spawned_group(proc)  # type: ignore[attr-defined]
+        proc.ssm_start_time = _spawned_start_time(proc)  # type: ignore[attr-defined]
+        proc.ssm_local_port = local_port  # type: ignore[attr-defined]
     if capture_stdout:
         _start_stdout_drain(proc)
     return proc
@@ -751,6 +753,19 @@ def _spawned_group(proc: subprocess.Popen) -> Optional[int]:
     # No poll() here: nothing has waited on the child yet, so even a wrapper
     # that already exited is an un-reaped zombie whose pid still names it.
     return pid if platform_compat.pgroup_of(pid) == pid else None
+
+
+def _spawned_start_time(proc: subprocess.Popen) -> Optional[str]:
+    """The creation identity of a just-spawned forward's wrapper, or ``None``.
+
+    Windows only: it is the root token :func:`_reap_windows_survivors` walks the
+    wrapper's descendants from once the wrapper has exited, when ``taskkill /T``
+    cannot walk them. POSIX records the group instead.
+    """
+    pid = getattr(proc, "pid", None)
+    if os.name != "nt" or type(pid) is not int or pid <= 1:
+        return None
+    return platform_compat.process_start_time(pid)
 
 
 def _start_stdout_drain(proc: subprocess.Popen) -> None:
@@ -821,13 +836,18 @@ def kill_port_forward(proc: Optional[subprocess.Popen]) -> None:
     (``ssm_pgid``, see :func:`open_port_forward`) is what gets signalled, and
     any member it still has after the wrapper is gone is sent SIGTERM, then
     SIGKILL, each followed by a bounded wait for the group to empty. Only that
-    one group is signalled, so another forward's plugin is never touched.
+    one group is signalled, so another forward's plugin is never touched. On
+    Windows ``taskkill /T`` cannot walk a tree whose root has exited, so the
+    wrapper's creation time recorded at spawn (``ssm_start_time``) drives
+    :func:`_reap_windows_survivors` instead.
     """
     if proc is None:
         return
     pgid = _recorded_group(proc)
     if proc.poll() is not None:
         _reap_group_survivors(pgid, term_sent=False)
+        if os.name == "nt":
+            _reap_windows_survivors(proc)
         return
     group_term_sent = False
 
@@ -841,9 +861,8 @@ def kill_port_forward(proc: Optional[subprocess.Popen]) -> None:
             group_term_sent = group_term_sent or sig == platform_compat.SIGTERM
             return True
         try:
-            os.killpg(os.getpgid(proc.pid), sig)
-            return True
-        except (ProcessLookupError, PermissionError, OSError, AttributeError):
+            return platform_compat.kill_process_group(os.getpgid(proc.pid), sig)
+        except (ProcessLookupError, PermissionError, OSError, AttributeError, ValueError):
             return False
 
     def _kill_tree_windows() -> bool:
@@ -916,6 +935,65 @@ def kill_port_forward(proc: Optional[subprocess.Popen]) -> None:
         with contextlib.suppress(Exception):
             proc.wait(timeout=5)
     _reap_group_survivors(pgid, term_sent=group_term_sent)
+    if os.name == "nt":
+        # Reached only when the tree kill failed and a parent-only kill ran.
+        _reap_windows_survivors(proc)
+
+
+def _reap_windows_survivors(proc: subprocess.Popen) -> None:
+    """End what an exited wrapper left running, on Windows.
+
+    The wrapper's descendants come from the process table through
+    :func:`platform_compat.attributed_descendants`, which keeps a child only when
+    it was created after the process it is listed under, so a stray under a
+    recycled pid is left alone. The wrapper's own pid cannot be recycled while
+    *proc* holds its process handle. Only a pid still attributed in a second walk
+    after its identity was read is ended, through
+    :func:`platform_compat.kill_pid_pinned` against that identity. After a
+    bounded wait, any process still alive, identified or not, is logged with the
+    forwarded port it may still hold. One without the spawn record is left alone.
+    """
+    pid = getattr(proc, "pid", None)
+    if type(pid) is not int or pid <= 1 or not hasattr(proc, "ssm_start_time"):
+        return
+    token = proc.ssm_start_time
+    if not isinstance(token, str) or not token:
+        # Recorded, but the wrapper's identity was unreadable at spawn: no tree to walk.
+        _warn_port_held(proc, "unidentified")
+        return
+    found = platform_compat.attributed_descendants(pid, token)
+    if not found:
+        return
+    tokens = {child: platform_compat.process_start_time(child) for child in found}
+    attributed = set(platform_compat.attributed_descendants(pid, token))
+    survivors = [(c, t) for c, t in tokens.items() if t and c in attributed]
+    unpinned = [c for c, t in tokens.items() if not t]
+    for child, child_token in survivors:
+        with contextlib.suppress(OSError):
+            platform_compat.kill_pid_pinned(child, child_token, platform_compat.SIGKILL)
+    deadline = time.monotonic() + _GROUP_KILL_WAIT_SECS
+    while True:
+        survivors = [
+            (child, child_token)
+            for child, child_token in survivors
+            if (now := platform_compat.process_start_time(child)) == child_token
+            or (now is None and platform_compat.pid_exists(child))
+        ]
+        if not survivors or time.monotonic() >= deadline:
+            break
+        _sleep(_GROUP_EMPTY_POLL_SECS)
+    left = [c for c, _ in survivors] + [c for c in unpinned if platform_compat.pid_exists(c)]
+    if left:
+        _warn_port_held(proc, left)
+
+
+def _warn_port_held(proc: subprocess.Popen, pids: object) -> None:
+    logger.warning(
+        "session-manager-plugin process(es) %s outlived the aws wrapper and could not"
+        " be ended or identified; forwarded port %s may still be held",
+        pids,
+        getattr(proc, "ssm_local_port", "unknown"),
+    )
 
 
 def _recorded_group(proc: subprocess.Popen) -> Optional[int]:
