@@ -61,6 +61,7 @@ import { describe, it, expect } from 'vitest'
 import { CATALOGS as RUNTIME_CATALOGS } from './catalogs'
 import { DEFAULT_LANGUAGE } from './languages'
 import contextSidecar from './en.context.json'
+import { inKeyOrder, replayEntries } from '../../scripts/lib/i18n-context-order.mjs'
 
 /** Flatten a nested catalog to dotted leaf paths → string values. */
 function flatten(obj: unknown, prefix = ''): Record<string, string> {
@@ -140,6 +141,19 @@ describe('en.context.json shape', () => {
     expect(Object.keys(contextSidecar).sort()).toEqual(['_comment', 'entries'])
   })
 
+  it('keeps entries in key order, so branches that each add one merge cleanly', () => {
+    // A new entry goes where its key sorts, never at the end: two branches that
+    // each add one then change different lines, and git merges them unless the
+    // keys sort next to each other.
+    const keys = Object.keys(ENTRIES)
+    const sorted = Object.keys(inKeyOrder(ENTRIES))
+    const misplaced = keys.filter((key, index) => key !== sorted[index])
+    expect(
+      misplaced,
+      `entries out of key order; run \`npm run i18n:context:sort\` in website/:\n  ${misplaced.slice(0, 10).join('\n  ')}`,
+    ).toEqual([])
+  })
+
   it('is a sidecar, so no description can orphan a translation', () => {
     // The point of the whole mechanism: descriptions live outside the catalogs
     // the runtime loads, so editing one can never change a translation key.
@@ -214,5 +228,33 @@ describe('opaque-key coverage', () => {
       `these are D1 fragments, not abbreviations — delete the key in Phase 3 instead of ` +
         `describing it:\n  ${described.map(k => `${k} = ${JSON.stringify(EN[k])}`).join('\n  ')}`,
     ).toEqual([])
+  })
+})
+
+describe('replaying a branch onto the key-ordered sidecar', () => {
+  const parent = { 'a.kept': 'Kept as the parent had it.', 'b.edited': 'Old text.', 'c.dropped': 'Dropped by the branch.' }
+  const revision = { 'a.kept': 'Kept as the parent had it.', 'b.edited': 'New text.', 'z.added': 'Added by the branch.' }
+  const onMain = {
+    'a.kept': 'Reworded on main since the fork.',
+    'b.edited': 'Old text.',
+    'c.dropped': 'Dropped by the branch.',
+    'm.main': 'Added on main.',
+  }
+
+  it('applies the keys the branch added, changed and deleted', () => {
+    const replayed = replayEntries(onMain, parent, revision)
+    expect(replayed).toMatchObject({ 'b.edited': 'New text.', 'z.added': 'Added by the branch.' })
+    expect(replayed).not.toHaveProperty('c.dropped')
+  })
+
+  it("keeps main's own changes to keys the branch did not touch", () => {
+    expect(replayEntries(onMain, parent, revision)).toMatchObject({
+      'a.kept': 'Reworded on main since the fork.',
+      'm.main': 'Added on main.',
+    })
+  })
+
+  it('orders keys by code unit, the way the file is written', () => {
+    expect(Object.keys(inKeyOrder({ b: '', 'a.z': '', A: '', a: '' }))).toEqual(['A', 'a', 'a.z', 'b'])
   })
 })
