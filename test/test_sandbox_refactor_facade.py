@@ -373,6 +373,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _retry_interpreter_enoent popen_limited
         _FORK_FREE_SPAWN _FORK_ONLY_SPAWN_KWARGS fork_free_spawns _fork_free_spawn_plan
         _SHIM_SETSID_FLAG _SHIM_CHDIR_FLAG _SHIM_CLOSE_FDS_FLAG
+        _PROFILE_NICE _SHIM_NICE_FLAG _UNBOUNDED_SESSION_HOST_NICE
         """.split()),
     "kiro_crew.sandbox_spawn": tuple("""
         corroborate_launcher_refusal credential_mask_applies spawn_delegates_masking
