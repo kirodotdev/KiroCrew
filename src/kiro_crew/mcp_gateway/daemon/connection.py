@@ -153,6 +153,11 @@ async def _declaring_agent(frame_agent: str, conn: _StubConn, writer: asyncio.St
     _peer_pid, refusal = await facade._owner_sender_refusal(writer)
     if not refusal:
         return frame_agent
+    # The owner check hops to a thread; the owner's binding can land meanwhile
+    # (a replay after a daemon restart refreshes ``conn.bound_agents``). Read the
+    # bound set again, so a genuine late binding is not refused as forged.
+    if frame_agent in conn.bound_agents:
+        return frame_agent
     logger.info(
         "stub %s names agent %r, which the gateway did not bind to its session; "
         "serving it with no declaring agent",
@@ -429,6 +434,16 @@ async def _handle_connection(
         # render's spool record so the callback is governed by the agent that
         # produced it (``app_call._agent_for_call``).
         stub_agent = await _declaring_agent(frame_agent, conn, writer)
+        if frame_agent and not stub_agent and not (exclusive_stub_uuid and conn.stub_session_token):
+            # A pooled or tokenless stub never reaches ``_await_declaring_agent``,
+            # which audits the private, tokened refusal once its wait settles; so
+            # this refusal is recorded here, the only place it is decided.
+            _audit_declaring_agent_denied(
+                socketsec.get_peer_pid(writer),
+                conn.stub_uuid,
+                frame_agent,
+                "framed agent is not bound to this connection's session token",
+            )
         # Register this connection for the keepalive probe. Scoped to the handler's
         # own task so a dead transport can cancel exactly the coroutine that is
         # parked on the read, letting its finally run the detach.

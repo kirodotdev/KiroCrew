@@ -570,6 +570,55 @@ async def test_a_non_owner_binding_leaves_the_stub_with_no_declared_env(
 
 
 @pytest.mark.asyncio
+async def test_a_binding_that_lands_during_the_owner_check_is_not_refused(monkeypatch) -> None:
+    """The owner check hops to a thread; a replayed binding can land meanwhile.
+
+    The stub is not the owner, so ``_declaring_agent`` awaits the owner check.
+    The genuine binding arrives during that await. The framed agent is then in
+    the bound set and must be taken, not refused as forged.
+    """
+    conn = connection_mod._StubConn(
+        stub_uuid="s-race",
+        ancestor_pids=[RUNTIME_PID],
+        pool_label="",
+        caller=None,
+        stub_session_token=TOKEN,
+    )
+
+    def _not_a_successor_while_the_binding_lands(_owner, _peer):
+        # Runs on the owner check's thread hop, where a replayed binding lands.
+        conn.bound_agents = frozenset({OWN_AGENT})
+        return False
+
+    monkeypatch.setattr(gw, "_OWNER_PID", os.getpid() + 100000)
+    monkeypatch.setattr(control.socketsec, "get_peer_pid", lambda _w: RUNTIME_PID)
+    monkeypatch.setattr(
+        control.platform_compat, "is_exec_supervisor_of", _not_a_successor_while_the_binding_lands
+    )
+    assert await connection_mod._declaring_agent(OWN_AGENT, conn, MagicMock()) == OWN_AGENT
+
+
+@pytest.mark.asyncio
+async def test_a_pooled_register_naming_an_unbound_agent_is_audited(daemon, monkeypatch) -> None:
+    """A pooled stub never enters the private wait, so its refusal is audited at register."""
+    audited: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(
+        connection_mod, "_audit_declaring_agent_denied", lambda *a: audited.append(a)
+    )
+    pairs = _write_sidecar(OTHER_AGENT)
+    with monkeypatch.context() as stub_side:
+        _stubs_are_not_the_owner(stub_side)
+        frame = _register(OTHER_AGENT, pairs, poolable=True)
+        _reader, writer = await daemon.register_and_ensure(frame)
+    assert daemon.acquired[-1]["declaring_agent"] == ""
+    assert len(audited) == 1
+    _peer_pid, stub_uuid, frame_agent, reason = audited[0]
+    assert (stub_uuid, frame_agent) == (frame["stub_uuid"], OTHER_AGENT)
+    assert TOKEN not in reason
+    await _settle(writer)
+
+
+@pytest.mark.asyncio
 async def test_a_daemon_slower_than_five_seconds_still_gets_its_bindings_replayed(
     monkeypatch,
 ) -> None:
