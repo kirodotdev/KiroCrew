@@ -29,10 +29,13 @@ import math
 import os
 import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from kiro_crew import irq, platform_compat
 from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.platform_lock_compat import file_lock, open_lock_file
 from kiro_crew.work_vocab import WORK_WAKE_STATUSES, wake_statuses
 
 logger = logging.getLogger(__name__)
@@ -498,6 +501,31 @@ def _rate_path(conductor_key: str):
     return irq.state_path("work-ledger-rate", conductor_key, "rate")
 
 
+@contextmanager
+def _rate_lock(conductor_key: str) -> Iterator[None]:
+    """Hold this conductor's rate file for one read-change-write.
+
+    Two watches on one ledger share the file (see :func:`_rate_path`), and each
+    charge reads it, changes it in memory and renames a new copy over it. Two
+    charges that overlap would both start from the same copy, and the second
+    rename would drop the first one's wake and seen token: a wake not counted
+    against the hour, and a watch that wakes its conductor again for a report it
+    already delivered.
+
+    A sidecar beside the file, taken with the shared cross-process helper, which
+    raises ``OSError`` rather than letting a caller in unserialized. The directory
+    is screened for a link first, as :func:`_write_rate` does, so the lock file is
+    never created through one.
+    """
+    path = _rate_path(conductor_key)
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    if platform_compat.is_link_or_junction(parent):
+        raise OSError("the rate file's directory is a symlink or junction")
+    with open_lock_file(path.with_name(f"{path.name}.lock")) as fd, file_lock(fd):
+        yield
+
+
 def _read_rate(conductor_key: str) -> dict[str, Any]:
     """The rate map, or empty when there is nothing to trust.
 
@@ -591,15 +619,25 @@ def forget_items(conductor_key: str, item_ids: list[str]) -> bool:
 
     The probe calls this for items that closed. A closed item never wakes again, so
     keeping its tokens only grows the file. Writes only when one of the items is
-    present, so a quiet tick with closed items costs a read and no write.
+    present, so a quiet tick with closed items costs a read and no write or lock.
+    The write re-reads under :func:`_rate_lock`, so a charge another watch made
+    since the first read is kept; a lock that cannot be taken answers False.
     """
     current = _read_rate(conductor_key)
-    present = [item_id for item_id in item_ids if item_id in current]
-    if not present:
+    if not any(item_id in current for item_id in item_ids):
         return True
-    for item_id in present:
-        current.pop(item_id, None)
-    return _write_rate(conductor_key, current)
+    try:
+        with _rate_lock(conductor_key):
+            current = _read_rate(conductor_key)
+            present = [item_id for item_id in item_ids if item_id in current]
+            if not present:
+                return True
+            for item_id in present:
+                current.pop(item_id, None)
+            return _write_rate(conductor_key, current)
+    except OSError:
+        logger.debug("wake gate: the rate file's lock could not be taken", exc_info=True)
+        return False
 
 
 def note_wake(
@@ -631,44 +669,57 @@ def note_wake(
     A caller that treats False as authorization has no bound at all, though, because
     an unwritable file leaves every later tick reading an unspent budget -- so the
     probe refuses the wake it could not charge and folds it forward instead.
+
+    The read, the change and the write run under :func:`_rate_lock`, so two watches
+    charging at once both land. A lock that cannot be taken answers False, the same
+    as a write that did not land.
     """
     moment = time.time() if now is None else now
-    current = _read_rate(conductor_key)
-    entry = current.get(item_id)
-    remembered = _seen_tokens(entry, watcher)
-    charged = [moment] + list(_wake_times(entry, since=moment - _RATE_WINDOW_SECS))
-    if not isinstance(entry, dict):
-        entry = {}
-    entry["wakes"] = charged[:_MAX_STORED_WAKES]
-    entry.pop("window_start", None)
-    entry.pop("count", None)
-    entry.pop("recent_tokens", None)
-    if token:
-        # Newest first, bounded by what the probe can still re-read; see
-        # ``_MAX_REMEMBERED_TOKENS``.
-        kept = [t for t in remembered if t != token and not (replaces and t.startswith(replaces))]
-        head = [token]
-        if cause:
-            kept = [t for t in kept if not t.startswith(CAUSE_KEY)]
-            head.append(cause)
-        stored = entry.get("seen")
-        seen = {
-            str(key): value
-            for key, value in (stored.items() if isinstance(stored, dict) else ())
-            if key != watcher and isinstance(value, list)
-        }
-        # Re-inserted last, so dict order is write order and the oldest set goes first.
-        seen[watcher] = head + kept[: _MAX_REMEMBERED_TOKENS - len(head)]
-        entry["seen"] = dict(list(seen.items())[-_MAX_WATCHERS_PER_ITEM:])
-    current[item_id] = entry
-    if len(current) > _MAX_TRACKED_ITEMS:
-        ordered = sorted(
-            current.items(),
-            key=lambda kv: max(_wake_times(kv[1], since=-1.0), default=-1.0),
-            reverse=True,
-        )
-        current = dict(ordered[:_MAX_TRACKED_ITEMS])
-    return _write_rate(conductor_key, current)
+    try:
+        with _rate_lock(conductor_key):
+            current = _read_rate(conductor_key)
+            entry = current.get(item_id)
+            remembered = _seen_tokens(entry, watcher)
+            charged = [moment] + list(_wake_times(entry, since=moment - _RATE_WINDOW_SECS))
+            if not isinstance(entry, dict):
+                entry = {}
+            entry["wakes"] = charged[:_MAX_STORED_WAKES]
+            entry.pop("window_start", None)
+            entry.pop("count", None)
+            entry.pop("recent_tokens", None)
+            if token:
+                # Newest first, bounded by what the probe can still re-read; see
+                # ``_MAX_REMEMBERED_TOKENS``.
+                kept = [
+                    t
+                    for t in remembered
+                    if t != token and not (replaces and t.startswith(replaces))
+                ]
+                head = [token]
+                if cause:
+                    kept = [t for t in kept if not t.startswith(CAUSE_KEY)]
+                    head.append(cause)
+                stored = entry.get("seen")
+                seen = {
+                    str(key): value
+                    for key, value in (stored.items() if isinstance(stored, dict) else ())
+                    if key != watcher and isinstance(value, list)
+                }
+                # Re-inserted last, so dict order is write order and the oldest set goes first.
+                seen[watcher] = head + kept[: _MAX_REMEMBERED_TOKENS - len(head)]
+                entry["seen"] = dict(list(seen.items())[-_MAX_WATCHERS_PER_ITEM:])
+            current[item_id] = entry
+            if len(current) > _MAX_TRACKED_ITEMS:
+                ordered = sorted(
+                    current.items(),
+                    key=lambda kv: max(_wake_times(kv[1], since=-1.0), default=-1.0),
+                    reverse=True,
+                )
+                current = dict(ordered[:_MAX_TRACKED_ITEMS])
+            return _write_rate(conductor_key, current)
+    except OSError:
+        logger.debug("wake gate: the rate file's lock could not be taken", exc_info=True)
+        return False
 
 
 def _write_rate(conductor_key: str, current: dict[str, Any]) -> bool:
