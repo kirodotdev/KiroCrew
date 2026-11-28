@@ -161,6 +161,14 @@ owner-only and denies app callers, like the member route. Root is
 `not_root_session`, and the panel drops the Overview segment for it (mirroring
 `created_by` and `parent`) and opens on Questions.
 
+Before any write, `instance._refuse_linked_session_dir` refuses a session page
+directory reached through a link or junction: the `lstat` walk of
+`refuse_linked_parent`, then the resolved directory must sit directly under the
+resolved `session-dashboards/` root with its own name. That compare folds Windows'
+`\\?\` prefix off both sides (`strip_extended_length_prefix`), since a resolve
+racing a concurrent first save can keep it on one side only; the fold is lexical,
+so a link to another folder still resolves elsewhere and is refused.
+
 The dashboard MCP tools (`/api/agent-panel/dashboard/*`) accept a caller bound to
 no crew when it is a root session writing its own page: `_resolve_publishing_crew`
 with `root_session=True` returns the caller's own session store key after every

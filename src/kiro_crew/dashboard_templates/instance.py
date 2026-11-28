@@ -82,7 +82,12 @@ from kiro_crew.dashboard_templates.manifest import (
     parse_manifest,
 )
 from kiro_crew.owner_only_files import mkdirs_owner_only
-from kiro_crew.platform_compat import open_create_or_existing, release_lock, try_acquire_lock
+from kiro_crew.platform_compat import (
+    open_create_or_existing,
+    release_lock,
+    strip_extended_length_prefix,
+    try_acquire_lock,
+)
 from kiro_crew.user_json import loads_user_json
 
 __all__ = [
@@ -483,7 +488,10 @@ def _refuse_linked_session_dir(directory: Path) -> None:
         ) from exc
     root = (data_home() / _SESSION_DASHBOARDS_DIR).resolve()
     resolved = directory.resolve()
-    if resolved.parent != root or resolved.name != directory.name:
+    # A resolve racing a concurrent first save's mkdir can keep Windows' \\?\
+    # prefix on one side only; the fold is lexical, so a redirect still differs.
+    strip = strip_extended_length_prefix
+    if strip(resolved.parent) != strip(root) or resolved.name != directory.name:
         raise InstanceError("this session's dashboard directory is outside the session pages")
 
 

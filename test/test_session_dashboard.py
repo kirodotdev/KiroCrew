@@ -27,6 +27,7 @@ from kiro_crew.crew_log import session_tree_projection
 from kiro_crew.dashboard.handlers import agent_panel as panel_routes
 from kiro_crew.dashboard.handlers import member_dashboard as routes
 from kiro_crew.dashboard_templates import catalog, instance
+from kiro_crew.platform_compat import symlink_or_junction
 from kiro_crew.testing.synthetic_credentials import github_classic
 
 ROOT = "chat-100"
@@ -528,6 +529,46 @@ def test_the_lstat_walk_refuses_a_planted_link_on_its_own(tmp_path, at_root):
 
     with pytest.raises(instance.InstanceError):
         instance._refuse_linked_session_dir(data_home() / "session-dashboards" / digest)
+
+
+def _resolve_with_prefix(monkeypatch, directory: Path) -> None:
+    """Give *directory*'s resolve the ``\\\\?\\`` prefix a racing ``ntpath.realpath`` keeps."""
+    real = Path.resolve
+
+    def _resolve(self: Path, strict: bool = False) -> Path:
+        resolved = real(self, strict=strict)
+        return Path("\\\\?\\" + str(resolved)) if self == directory else resolved
+
+    monkeypatch.setattr(Path, "resolve", _resolve)
+    # The lstat walk is pinned by its own tests; this one isolates the root compare.
+    monkeypatch.setattr(instance, "refuse_linked_parent", lambda _path: None)
+
+
+def test_a_prefixed_resolve_of_a_real_session_page_directory_passes(monkeypatch):
+    """One resolve prefixed and the other plain still name one directory."""
+    from kiro_crew.config.paths import data_home
+
+    digest = instance.session_instance_key(ROOT)[len(instance.SESSION_KEY_PREFIX) :]
+    directory = data_home() / "session-dashboards" / digest
+    directory.mkdir(parents=True)
+    _resolve_with_prefix(monkeypatch, directory)
+    assert str(directory.resolve()).startswith("\\\\?\\")
+    instance._refuse_linked_session_dir(directory)
+
+
+def test_a_prefixed_link_to_another_data_home_folder_is_still_refused(monkeypatch):
+    """The fold is lexical: a link elsewhere inside the data home still resolves elsewhere."""
+    from kiro_crew.config.paths import data_home
+
+    digest = instance.session_instance_key(ROOT)[len(instance.SESSION_KEY_PREFIX) :]
+    target = data_home() / "members" / "someone" / "dashboard"
+    target.mkdir(parents=True)
+    root = data_home() / "session-dashboards"
+    root.mkdir(parents=True)
+    symlink_or_junction(target, root / digest)
+    _resolve_with_prefix(monkeypatch, root / digest)
+    with pytest.raises(instance.InstanceError, match="outside the session pages"):
+        instance._refuse_linked_session_dir(root / digest)
 
 
 @pytest.mark.skipif(
