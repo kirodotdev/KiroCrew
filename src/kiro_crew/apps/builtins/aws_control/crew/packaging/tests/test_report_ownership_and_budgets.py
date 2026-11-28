@@ -31,7 +31,14 @@ import pathlib
 
 import pytest
 
-from .test_producer import called_name, load_build, make_crew, sign_plan, source_defining
+from .test_producer import (
+    called_name,
+    load_build,
+    make_crew,
+    requires_symlinks,
+    sign_plan,
+    source_defining,
+)
 
 _posix_only = pytest.mark.skipif(
     os.name != "posix",
@@ -249,6 +256,7 @@ def test_the_build_itself_refuses_a_foreign_report(tmp_path: pathlib.Path) -> No
 # ---------------------------------------------------------------------------
 # S3
 # ---------------------------------------------------------------------------
+@requires_symlinks
 def test_the_shape_predicate_reports_a_symlink(tmp_path: pathlib.Path) -> None:
     """The POSIX half of the reparse question, which is all this host can plant."""
     mod = load_build()

@@ -12,7 +12,7 @@ import pathlib
 
 import pytest
 
-from .test_producer import load_build
+from .test_producer import load_build, requires_symlinks
 
 _AS_NT = ('    elif os.name == "nt":', "    elif True:")
 
@@ -20,6 +20,7 @@ _AS_NT = ('    elif os.name == "nt":', "    elif True:")
 # ---------------------------------------------------------------------------
 # Y1
 # ---------------------------------------------------------------------------
+@requires_symlinks
 def test_a_chained_redirect_to_a_share_is_refused(tmp_path: pathlib.Path) -> None:
     """Two local hops and then a share. The first hop alone looks harmless."""
     mod = load_build(mutate=_AS_NT)
@@ -38,6 +39,7 @@ def test_a_chained_redirect_to_a_share_is_refused(tmp_path: pathlib.Path) -> Non
     assert "attacker-host" in str(caught.value)
 
 
+@requires_symlinks
 def test_a_single_hop_to_a_share_is_still_refused(tmp_path: pathlib.Path) -> None:
     """The case that already worked must keep working while the chain case is added."""
     mod = load_build(mutate=_AS_NT)
@@ -51,6 +53,7 @@ def test_a_single_hop_to_a_share_is_still_refused(tmp_path: pathlib.Path) -> Non
     assert "network share" in str(caught.value)
 
 
+@requires_symlinks
 def test_a_chain_of_local_links_is_not_refused(tmp_path: pathlib.Path) -> None:
     """Non-vacuity: following the chain must not become refusing every chain.
 
@@ -71,6 +74,7 @@ def test_a_chain_of_local_links_is_not_refused(tmp_path: pathlib.Path) -> None:
     assert mod._resolve_prompt_path(f"file://{first}", agents_dir) == first
 
 
+@requires_symlinks
 def test_a_redirect_cycle_is_refused_rather_than_followed(tmp_path: pathlib.Path) -> None:
     """A cycle has to terminate somewhere that is not an infinite loop."""
     mod = load_build(mutate=_AS_NT)
@@ -86,6 +90,7 @@ def test_a_redirect_cycle_is_refused_rather_than_followed(tmp_path: pathlib.Path
     assert "chain of more than" in str(caught.value)
 
 
+@requires_symlinks
 def test_the_hop_bound_is_a_bound_and_not_a_ban(tmp_path: pathlib.Path) -> None:
     """A chain inside the bound resolves; one past it is refused. Both, so the number means
     something rather than being a synonym for "refuse"."""
