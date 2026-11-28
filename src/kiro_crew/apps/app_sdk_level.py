@@ -33,6 +33,18 @@ runs on the app's own agent's tab, through ``POST /api/browser/media`` (``action
 itself while the app's media plays.
 Level 16 adds the SDK's ``useKeepAlive``: a routed page stays mounted, hidden, while
 the app says it is busy, and the dashboard names it on every page with Open and Stop.
+
+Level 17 adds backend SDK names, one batch: ``iter_credential_matches`` and
+``CREDENTIAL_PLACEHOLDER``, the gateway's credential scan over text an app holds and
+the text its redactor writes; ``contains_exfiltration_url``, its exfiltration-URL
+check, answered as a bool; ``DENIED_ROOT_PARTS``, the credential directory names
+refused at any depth of a picked folder; ``minimal_env``, the location-hints-only
+environment; ``git_hook_disable_args``, ``git_hook_disable_args_async`` and
+``GitHookScanError``, the overrides that turn off a repository's config-defined git
+hooks, listed by a sandboxed git; ``max_output_bytes`` on ``run_sandboxed_async`` with
+``OutputLimitExceeded``; and ``record_or_raise`` on the audit writer (``ctx.audit``
+and ``audit_log``), the fail-closed row, written only under the name the gateway
+gave the app.
 """
 
-APP_SDK_LEVEL = 16
+APP_SDK_LEVEL = 17

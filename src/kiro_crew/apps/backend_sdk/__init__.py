@@ -1,12 +1,13 @@
 """The public backend SDK: the host controls an app's own Python may call.
 
 An app backend that needs a host control with no ``ctx`` seam (a sensitive-path
-check, the file path gate, a no-follow read, outbound redaction, an audit row, a
-sandboxed child, a process or file-lock helper, the public-address check for a URL it
-fetches, a media-type sniff, a descriptor-pinned path walk and copy) otherwise looks
-up a private ``kiro_crew`` name by string. Those names move between releases, so each
-lookup is a gap that keeps a wheel copy alive. This package is the stable spelling of
-the most-used of them.
+check, the file path gate, a no-follow read, outbound redaction, a credential or
+exfiltration-URL check on text it holds, an audit row, a sandboxed child and the
+environment and git hook overrides it runs with, a process or file-lock helper, the
+public-address check for a URL it fetches, a media-type sniff, a descriptor-pinned
+path walk and copy) otherwise looks up a private ``kiro_crew`` name by string. Those
+names move between releases, so each lookup is a gap that keeps a wheel copy alive.
+This package is the stable spelling of the most-used of them.
 
 **Reachable from both backend kinds.** An in-process app (``backend.hooks``) and a
 spawned one (``backend.entryPoint`` on the gateway's interpreter, the default once
@@ -18,14 +19,17 @@ absent, exactly as it treats an older gateway.
 gateway itself enforces, looked up at call time, so a check tightened in a later
 release reaches the app with the wheel. Nothing here is a copy, and no name adds
 reach: a spawn is wrapped in the same OS sandbox and can only keep or tighten its
-tier, a read or a pinned copy refuses exactly what the private one refuses, and the
-URL check only refuses: it opens no connection.
+tier, a read or a pinned copy refuses exactly what the private one refuses, the URL
+check only refuses (it opens no connection), the content checks only answer about
+text the caller already holds, and an audit row is attributed to the app the gateway
+named.
 
 **Level-gated.** ``SDK_LEVEL`` is the App Kit seam level of this build
 (``ctx.sdk_level`` for an in-process app); the package exists from level 7. A name
-added after the package carries its own level in ``_EXPORT_LEVELS``. An app reads
-the package through a feature-detected import, and a later name with
-``getattr(sdk, name, None)``, and keeps its own refusal on an older gateway.
+added after the package carries its own level in ``_EXPORT_LEVELS``, and a keyword
+added to a name after the name in ``_KEYWORD_LEVELS``. An app reads the package
+through a feature-detected import, and a later name with ``getattr(sdk, name, None)``,
+and keeps its own refusal on an older gateway.
 
 Importing the package is cheap: each name is bound on first access, so a spawned
 backend that wants one helper does not load the gateway's whole security stack.
@@ -40,6 +44,11 @@ from kiro_crew.apps.app_sdk_level import APP_SDK_LEVEL
 
 if TYPE_CHECKING:
     from kiro_crew.apps.backend_sdk.audit import audit_log  # noqa: F401
+    from kiro_crew.apps.backend_sdk.content import (  # noqa: F401
+        CREDENTIAL_PLACEHOLDER,
+        contains_exfiltration_url,
+        iter_credential_matches,
+    )
     from kiro_crew.apps.backend_sdk.files import (  # noqa: F401
         FileTooLargeError,
         atomic_write,
@@ -47,8 +56,14 @@ if TYPE_CHECKING:
         ensure_owner_only_dir,
         read_bytes_nofollow,
     )
+    from kiro_crew.apps.backend_sdk.git_hooks import (  # noqa: F401
+        GitHookScanError,
+        git_hook_disable_args,
+        git_hook_disable_args_async,
+    )
     from kiro_crew.apps.backend_sdk.media import RASTER_SNIFF_BYTES, sniff_raster_mime  # noqa: F401
     from kiro_crew.apps.backend_sdk.paths import (  # noqa: F401
+        DENIED_ROOT_PARTS,
         contains_sensitive_path,
         is_sensitive_path,
     )
@@ -73,7 +88,9 @@ if TYPE_CHECKING:
     )
     from kiro_crew.apps.backend_sdk.redaction import ScrubResult, scrub_outbound  # noqa: F401
     from kiro_crew.apps.backend_sdk.spawn import (  # noqa: F401
+        OutputLimitExceeded,
         SandboxUnavailableError,
+        minimal_env,
         run_sandboxed,
         run_sandboxed_async,
         sandboxed_argv,
@@ -94,13 +111,20 @@ BACKEND_SDK_LEVEL = 7
 #: Public name -> the submodule that binds it.
 _LAZY_EXPORTS: dict[str, str] = {
     "audit_log": "audit",
+    "CREDENTIAL_PLACEHOLDER": "content",
+    "contains_exfiltration_url": "content",
+    "iter_credential_matches": "content",
     "FileTooLargeError": "files",
     "atomic_write": "files",
     "canonical_file_path": "files",
     "ensure_owner_only_dir": "files",
     "read_bytes_nofollow": "files",
+    "GitHookScanError": "git_hooks",
+    "git_hook_disable_args": "git_hooks",
+    "git_hook_disable_args_async": "git_hooks",
     "RASTER_SNIFF_BYTES": "media",
     "sniff_raster_mime": "media",
+    "DENIED_ROOT_PARTS": "paths",
     "contains_sensitive_path": "paths",
     "is_sensitive_path": "paths",
     "PinnedPathRefusal": "pinned",
@@ -120,7 +144,9 @@ _LAZY_EXPORTS: dict[str, str] = {
     "rmtree_force": "process",
     "ScrubResult": "redaction",
     "scrub_outbound": "redaction",
+    "OutputLimitExceeded": "spawn",
     "SandboxUnavailableError": "spawn",
+    "minimal_env": "spawn",
     "run_sandboxed": "spawn",
     "run_sandboxed_async": "spawn",
     "sandboxed_argv": "spawn",
@@ -147,6 +173,23 @@ _EXPORT_LEVELS: dict[str, int] = {
     "is_reparse_point": 14,
     "pin_parent": 14,
     "supports_pinned_walk": 14,
+    "CREDENTIAL_PLACEHOLDER": 17,
+    "contains_exfiltration_url": 17,
+    "iter_credential_matches": 17,
+    "GitHookScanError": 17,
+    "git_hook_disable_args": 17,
+    "git_hook_disable_args_async": 17,
+    "DENIED_ROOT_PARTS": 17,
+    "OutputLimitExceeded": 17,
+    "minimal_env": 17,
+}
+
+#: Keyword -> the App Kit seam level that publishes it, for a keyword added to a name
+#: after the name itself: ``max_output_bytes`` on ``run_sandboxed_async``. A keyword
+#: is not an attribute of the package, so it is not in ``__all__``; the adoption pin
+#: tool counts a tree's use of one as it counts an ``_EXPORT_LEVELS`` name.
+_KEYWORD_LEVELS: dict[str, int] = {
+    "max_output_bytes": 17,
 }
 
 __all__ = sorted({"SDK_LEVEL", "BACKEND_SDK_LEVEL", *_LAZY_EXPORTS})

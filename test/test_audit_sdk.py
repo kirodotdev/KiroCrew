@@ -105,3 +105,53 @@ def test_every_app_gets_audit_with_no_permission_declared(tmp_path) -> None:
     ctx = build_app_context("doc-store", tmp_path, permissions={})
     assert isinstance(ctx.audit, AuditSDK)
     assert ctx.cron is None, "a capability SDK still requires its permission"
+
+
+# ── the fail-closed row (seam level 17) ─────────────────────────────────────
+
+
+def test_the_fail_closed_row_is_published_at_seam_level_seventeen() -> None:
+    from kiro_crew.apps.app_sdk_level import APP_SDK_LEVEL
+    from kiro_crew.apps.audit_sdk import METHOD_LEVELS
+
+    assert METHOD_LEVELS == {"record_or_raise": 17}
+    assert 17 <= APP_SDK_LEVEL
+    assert callable(AuditSDK.record_or_raise)
+
+
+def test_the_context_writer_records_the_row_critically(tmp_path, sink) -> None:
+    ctx = build_app_context("doc-store", tmp_path, permissions={})
+    ctx.audit.record_or_raise("git.invoked", "invoked", resources="status")
+    (call,) = sink.calls
+    assert call["caller"] == "app:doc-store"
+    assert call["operation"] == "doc-store.git.invoked"
+    assert call["source"] == "app"
+    assert call["outcome"] == "invoked"
+    assert call["resources"] == "status"
+    assert call["critical"] is True
+
+
+def test_a_write_that_fails_reaches_the_caller(tmp_path, monkeypatch) -> None:
+    # Audit-or-deny: the caller refuses the action because the row did not land.
+    monkeypatch.setattr("kiro_crew.apps.audit_sdk.sel", lambda: _Sink(boom=True))
+    ctx = build_app_context("doc-store", tmp_path, permissions={})
+    with pytest.raises(OSError, match="sel unwritable"):
+        ctx.audit.record_or_raise("launch", "auto_approved")
+
+
+def test_a_writer_the_gateway_did_not_name_refuses_the_row(sink) -> None:
+    # The public spelling that takes a chosen name builds a writer like this one, so a
+    # fail-closed row is never written as another app.
+    with pytest.raises(LookupError):
+        AuditSDK("other-app").record_or_raise("launch", "auto_approved")
+    assert sink.calls == []
+    AuditSDK("other-app").record("publish", "success")
+    assert sink.calls[-1]["caller"] == "app:other-app"
+
+
+def test_the_fail_closed_row_has_no_attribution_parameter() -> None:
+    import inspect
+
+    params = inspect.signature(AuditSDK.record_or_raise).parameters
+    for name in ("caller", "source", "agent", "session_key", "tool_name", "critical"):
+        assert name not in params, name
