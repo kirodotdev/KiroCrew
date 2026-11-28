@@ -459,6 +459,7 @@ from conftest_slack import (  # noqa: E402,F401 -- bound for pytest and importer
     _reset_options_control_state,
     _reset_thread_board,
     _reset_thread_messages,
+    _reset_thread_openers,
 )
 
 # ``make_dir_link`` lives in kiro_crew.testing.links so the app-embedded test

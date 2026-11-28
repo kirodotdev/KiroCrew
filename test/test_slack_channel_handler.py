@@ -24,7 +24,7 @@ from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.slack import channel_handler as ch
 from kiro_crew.slack import conductor_thread as ct
 from kiro_crew.slack import handler as _handler
-from kiro_crew.slack import transport_dispatch
+from kiro_crew.slack import thread_opener, transport_dispatch
 from kiro_crew.slack.code_channels import binding as cc_binding
 from kiro_crew.slack.code_channels import surface as cc_surface
 from kiro_crew.slack.code_channels.models import ChannelInfo
@@ -285,6 +285,29 @@ class TestChannelBot:
         assert slot._slack_thread_ts == A_TS and slot._slack_channel == CHAN
         assert ds.get_linked_slot(A_TS) is slot and ds.get_linked_slot(B_TS) is None
         assert ds.sessions.get_slack_link("dashboard:" + slot.key) == (A_TS, CHAN)
+
+    def test_the_first_reply_in_an_opened_thread_carries_its_opener(
+        self, ds, run_chat, channel_bot
+    ):
+        """The Bot's chat holds a conversation already, so it reads no thread parent."""
+        slot = _bot_slot(ds)
+        _run(("first question", None, A_TS))
+        thread_opener.leave_unanswered(CHAN, B_TS, _OWNER, "plan the launch :thread:")
+        seen = []
+
+        async def _turn(state, s, text, **kw):
+            seen.append((text, s._slack_thread_ts, [e["content"] for e in s._pending_context]))
+
+        with patch("kiro_crew.dashboard.chat._run_chat", side_effect=_turn):
+            _run(
+                ("start with the date", B_TS, "1700000200.000200"),
+                ("then the venue", B_TS, "1700000200.000300"),
+            )
+        [(first, first_ts, context), later] = seen
+        assert (first, first_ts) == ("start with the date", B_TS)
+        assert len(context) == 1 and context[0].endswith("\nplan the launch :thread:")
+        assert later == ("then the venue", B_TS, [])
+        assert _user_rows(slot) == ["first question", "start with the date", "then the venue"]
 
     def test_each_turn_starts_linked_to_its_own_thread(self, ds, channel_bot):
         slot = _bot_slot(ds)
@@ -922,6 +945,23 @@ class TestChannelConductor:
         assert [b.session_key for b in store().thread_bindings()] == [binding.session_key]
         # The dispatch exemption still recognizes the chat as its channel's conductor.
         assert code_channel_binding_of(ds, slot).anchor_ts == A_TS
+
+    def test_the_first_reply_in_an_opened_thread_carries_its_opener(
+        self, ds, conductor_on, run_chat
+    ):
+        _slack, _binding, slot = _start(ds)
+        thread_opener.leave_unanswered(CHAN, B_TS, _OWNER, "speed up Slack :thread:")
+        seen = []
+
+        async def _turn(state, s, text, **kw):
+            seen.append((text, s._slack_thread_ts, [e["content"] for e in s._pending_context]))
+
+        with patch("kiro_crew.dashboard.chat._run_chat", side_effect=_turn):
+            _run(("measure the first reply", B_TS, "1700000200.000200"))
+        [(text, thread, context)] = seen
+        assert (text, thread) == ("measure the first reply", B_TS)
+        assert any(c.endswith("\nspeed up Slack :thread:") for c in context)
+        assert ch.channel_conductor(CHAN).anchor_ts == B_TS
 
     def test_only_the_owners_messages_reach_it(self, ds, conductor_on, run_chat, monkeypatch):
         _slack, _binding, slot = _start(ds)

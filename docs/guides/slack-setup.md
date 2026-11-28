@@ -324,6 +324,18 @@ always returns false, and the channel-join allowlist prompt is a no-op. A
 > Either way, run `kirocrew token` and open the fresh link to re-authenticate
 > under the new owner.
 
+### Opening a Thread Without an Answer
+
+End a top-level message with the thread icon (`:thread:`, 🧵) and Kiro Crew leaves it
+alone: no reply, no reaction. Use it to name a topic, then write the real request as a
+reply in that thread, or start a Bot there with `!bot <name>` or a Conductor with
+`!conductor`. The first reply starts the conversation, and the agent sees the opener as
+the thread's first message. In a channel that needs a mention, mention the bot in the
+opener; the replies in its thread then need none.
+
+A `!` command still runs when it ends with the icon. A file attached to the opener is
+not read, so attach it to a reply.
+
 ### Reaction Emojis
 
 Kiro Crew shows that it picked up your message without a trail of reactions:

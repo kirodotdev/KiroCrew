@@ -185,6 +185,28 @@ def _reset_thread_messages():
 
 
 @per_test_guard
+def _reset_thread_openers():
+    """Forget the thread openers left unanswered.
+
+    ``kiro_crew.slack.thread_opener`` keeps them process-global, keyed by
+    ``(channel, ts)``, and thread-follow admits a reply in a remembered thread.
+    Tests reuse those ids, so each starts with none. Looked up in ``sys.modules``
+    so a run that never imported it pays nothing.
+    """
+
+    def clear() -> None:
+        module = sys.modules.get("kiro_crew.slack.thread_opener")
+        if module is not None:
+            module._openers.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_channel_handler_locks(_floor_monkeypatch):
     """A channel's claim lock binds to the loop that first contends it; each test has its own."""
     from kiro_crew.slack import channel_handler
