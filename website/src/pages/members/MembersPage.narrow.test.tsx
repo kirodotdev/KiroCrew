@@ -774,6 +774,56 @@ describe('MembersPage default member, memory and URL', () => {
       }
     })
 
+    it('in the shell bar caps the identity stack by the measured side groups, clear of their touch targets', async () => {
+      // jsdom lays nothing out, so the bar's boxes are the ones Chromium measured
+      // on a phone (B035): the drawer toggle at x 8 with no remote crew, at x 66
+      // after a remote crew's icon-only chip and caret; the trail's search and
+      // panel openers 114 and 80px from the right edge.
+      const slot = document.createElement('div')
+      slot.id = 'mobile-topbar-slot'
+      document.body.appendChild(slot)
+      let boxes: Record<string, [number, number]> = {}
+      const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+        const [left, right] = boxes[this.getAttribute('data-testid') ?? ''] ?? [0, 0]
+        return { left, right, width: right - left, top: 0, bottom: 34, height: right > left ? 34 : 0, x: left, y: 0, toJSON: () => ({}) } as DOMRect
+      })
+      const docEl = document.documentElement
+      onTestFinished(() => {
+        spy.mockRestore()
+        delete (docEl as { clientWidth?: number }).clientWidth
+        slot.remove()
+      })
+      await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=alpha' })
+      await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+      const pill = await within(slot).findByTestId('member-identity-pill')
+      const HIT = 44
+      for (const width of [390, 360]) {
+        for (const toggleLeft of [8, 66]) {
+          boxes = {
+            'member-thread-header': [0, width],
+            'member-back': [toggleLeft, toggleLeft + 34],
+            'member-header-search': [width - 114, width - 80],
+            'member-panel-toggle': [width - 80, width - 46],
+          }
+          Object.defineProperty(docEl, 'clientWidth', { configurable: true, value: width })
+          act(() => { window.dispatchEvent(new Event('resize')) })
+          const match = /^max\(7rem, (\d+)px\)$/.exec(pill.style.maxWidth)
+          expect(match, `no measured cap at ${width}px, toggle at ${toggleLeft}`).not.toBeNull()
+          // A long name fills the cap; never below the chip's 7rem (112px) floor.
+          const chip = Math.max(112, Number(match![1]))
+          const stack = [width / 2 - chip / 2, width / 2 + chip / 2]
+          const visible = [...slot.querySelectorAll('button')].map(b => b.getAttribute('data-testid') ?? '').filter(id => boxes[id] && id !== 'member-thread-header')
+          expect(visible).toContain('member-back')
+          for (const id of visible) {
+            const [left, right] = boxes[id]
+            const mid = (left + right) / 2
+            const reach = [mid - Math.max(right - left, HIT) / 2, mid + Math.max(right - left, HIT) / 2]
+            expect(Math.min(stack[1], reach[1]) - Math.max(stack[0], reach[0]), `${id} at ${width}px`).toBeLessThanOrEqual(0)
+          }
+        }
+      }
+    })
+
     it('in the shell bar the identity stack steps out while the side panel or the roster drawer is on screen', async () => {
       // The bar (shell header, z-45) paints the fixed stack over every page
       // overlay that opens under it, so the stack must not cover their tops.
