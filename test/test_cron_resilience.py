@@ -13,6 +13,7 @@ import kiro_crew.heartbeat as hb_mod
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.cron import CronJob, CronService
 from kiro_crew.heartbeat import _HEADER, HeartbeatService
+from kiro_crew.testing.wait import finished
 
 #: These tests fire cron jobs through the due-scan, which defers firings while
 #: the host's memory posture is critical (see ``ample_host_free_memory``).
@@ -177,11 +178,16 @@ class TestHeartbeatParallel:
 
     @pytest.mark.asyncio
     async def test_tasks_run_concurrently(self, tmp_path: Path) -> None:
-        started: list[float] = []
+        # Every task holds until all three are in flight, so a serial run never
+        # releases its first task and fails by name instead of on a time span.
+        arrived: list[str] = []
+        all_in_flight = asyncio.Event()
 
         async def on_task(text: str, deliver: str) -> None:
-            started.append(time.monotonic())
-            await asyncio.sleep(0.5)
+            arrived.append(text)
+            if len(arrived) == 3:
+                all_in_flight.set()
+            await all_in_flight.wait()
 
         svc = HeartbeatService(memory=MagicMock(), on_task=on_task)
         hb_path = tmp_path / "HEARTBEAT.md"
@@ -190,10 +196,8 @@ class TestHeartbeatParallel:
         original = hb_mod.heartbeat_path
         hb_mod.heartbeat_path = lambda: hb_path
         try:
-            await svc._process_heartbeat_file()
+            await finished(svc._process_heartbeat_file(), "three heartbeat tasks in flight at once")
         finally:
             hb_mod.heartbeat_path = original
 
-        assert len(started) == 3
-        # All 3 should start within 0.1s of each other (parallel)
-        assert max(started) - min(started) < 0.2
+        assert sorted(arrived) == ["task1", "task2", "task3"]
