@@ -360,8 +360,8 @@ _OWNERS = st.sampled_from(["fork-owner", "other-owner", "base-owner"])
 _NAMES = st.sampled_from(["base-repo", "second-fork"])
 _REFS = st.sampled_from(["fix/thing", "main", "x&state=closed", "fix/thing2"])
 _SHAS = st.sampled_from(["a" * 40, "b" * 40])
-_LABEL_OWNERS = st.sampled_from(["", "", "", "old-name", "other-owner"])
-_PULLS = st.lists(st.tuples(_OWNERS, _NAMES, _REFS, _SHAS, _LABEL_OWNERS), max_size=6)
+# GitHub names a pull request's head label after its head repository's current owner.
+_PULLS = st.lists(st.tuples(_OWNERS, _NAMES, _REFS, _SHAS), max_size=6)
 _CASE = itertools.count()
 
 
