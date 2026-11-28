@@ -32,6 +32,8 @@ from kiro_crew.validation_parts.input_bounds import (
     MAX_BROADCAST_TARGETS,
     MAX_LONG_STRING,
     MAX_MEDIUM_STRING,
+    MAX_TRIGGER_SKILL_KEY_LEN,
+    MAX_TRIGGER_SKILLS,
     SLACK_THREAD_TS_RE,
     USER_ID_RE,
     USER_MAX_LEN,
@@ -375,6 +377,16 @@ LIST_SESSIONS_SCHEMA = ToolSchema(
     ],
 )
 
+#: ``skills`` on ``session_create`` and ``work_dispatch``: a worker's trigger list.
+_TRIGGER_SKILLS_FIELD = FieldSpec(
+    "skills",
+    list,
+    required=False,
+    item_type=str,
+    item_max_len=MAX_TRIGGER_SKILL_KEY_LEN,
+    max_items=MAX_TRIGGER_SKILLS,
+)
+
 SESSION_CREATE_SCHEMA = ToolSchema(
     tool_name="session_create",
     fields=[
@@ -445,6 +457,9 @@ SESSION_CREATE_SCHEMA = ToolSchema(
         # never has to send to a key it has not read back yet. Bounded exactly as
         # ``session_send.message`` is; the route repeats that bar before creating.
         FieldSpec("message", str, required=False, max_len=MAX_LONG_STRING),
+        # A worker's trigger list (``worker_trigger_skills``). Bounded here; the
+        # route checks each key against the worker's scope.
+        _TRIGGER_SKILLS_FIELD,
     ],
 )
 
@@ -650,6 +665,7 @@ WORK_DISPATCH_SCHEMA = ToolSchema(
         ),
         FieldSpec("reasoning_effort", str, required=False, max_len=32),
         FieldSpec("backend", str, required=False, max_len=MAX_SHORT_STRING),
+        _TRIGGER_SKILLS_FIELD,
     ],
 )
 

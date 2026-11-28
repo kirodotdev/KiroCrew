@@ -305,6 +305,8 @@ def _create_session(args: dict[str, Any], ctx: ToolContext, *, keep_walk: bool =
     if args.get("message") is not None:
         # Also before the preflight: a message the route refuses creates no folder.
         payload["message"] = args["message"]
+    if args.get("skills") is not None:
+        payload["skills"] = args["skills"]
 
     def _refused(refused: DashboardError, suffix: str) -> str:
         return redact(
@@ -401,6 +403,8 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         )
     if resp.get("autocompact_pct") is not None:
         on_model += f", auto-compacting at {resp['autocompact_pct']:g}%"
+    if resp.get("skills"):
+        on_model += f", triggering only {', '.join(f'`{k}`' for k in resp['skills'])}"
     opened = f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "
     guidance = str(resp.get("guidance") or "")
     if guidance:
@@ -1464,6 +1468,7 @@ def _run_work_dispatch(args: dict[str, Any], ctx: ToolContext) -> str:
                 for k in ("agent", "agent_kind", "folder", "model", "reasoning_effort", "backend")
                 if args.get(k)
             },
+            **({"skills": args["skills"]} if args.get("skills") is not None else {}),
         },
         ctx,
         keep_walk=True,

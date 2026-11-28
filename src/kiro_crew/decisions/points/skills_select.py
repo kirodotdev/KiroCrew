@@ -147,11 +147,13 @@ def selected_skills(
     loop: asyncio.AbstractEventLoop | None = None,
     history_source: Callable[[], Sequence[Mapping[str, Any]]] | None = None,
     unusable: Collection[str] = (),
+    only: Collection[str] | None = None,
 ) -> list[str] | None:
     """The oracle's selection for *text*, or ``None`` to keep the baseline.
 
-    *unusable* is the matcher's own: skills the turn cannot use are not on the
-    menu, so the pick and the baseline arm both leave them out.
+    *unusable* and *only* are the matcher's own gates: skills the turn cannot
+    use or its worker did not list are not on the menu, so the pick and the
+    baseline arm both leave them out.
 
     Runs on the CALLER's thread, which in production is an executor worker. The
     order below is the contract:
@@ -200,6 +202,7 @@ def selected_skills(
             session_key=session_key,
             baseline_out=baseline,
             unusable=unusable,
+            only=only,
         )
         if not candidates:
             return None
@@ -483,14 +486,16 @@ def candidates_from_loader(
     session_key: str | None = None,
     baseline_out: list[str] | None = None,
     unusable: Collection[str] = (),
+    only: Collection[str] | None = None,
 ) -> list[dict[str, str]]:
     """Every skill *text* could load, best-scoring first, capped and screened.
 
     Walks the same ``(name, file, within)`` triples and the same frontmatter
     reader ``get_triggered_skills`` uses, so eligibility cannot drift from the
     baseline's own notion of it — and so a confined project skill is read through
-    the descriptor-pinned reader rather than by path. A skill in *unusable* is
-    skipped here exactly as the matcher skips it.
+    the descriptor-pinned reader rather than by path. A skill in *unusable*, or
+    outside *only* when that worker list is present, is skipped here exactly as
+    the matcher skips it.
 
     Scoring is only an ORDER here: a skill below ``MIN_TRIGGER_OVERLAP`` is still
     offered, which is the whole point of asking. A NEGATIVE trigger that matches
@@ -527,7 +532,12 @@ def candidates_from_loader(
         key = str(name or "")
         # An over-long key is dropped, never shortened: the answer is resolved by
         # name downstream.
-        if not key or len(key) > MAX_KEY_CHARS or key in unusable:
+        if (
+            not key
+            or len(key) > MAX_KEY_CHARS
+            or key in unusable
+            or (only is not None and key not in only)
+        ):
             continue
         try:
             meta = skills_loader._cached_frontmatter(skill_file, within=within)

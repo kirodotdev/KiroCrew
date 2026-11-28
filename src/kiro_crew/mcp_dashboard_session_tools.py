@@ -43,6 +43,22 @@ from kiro_crew.mcp_dashboard_session_runs import (
     _run_work_dispatch,
 )
 from kiro_crew.mcp_tools.table import Tool
+from kiro_crew.validation import MAX_TRIGGER_SKILL_KEY_LEN, MAX_TRIGGER_SKILLS
+
+#: ``session_create``'s ``skills``, which ``work_dispatch`` passes on.
+_TRIGGER_SKILLS_PROPERTY = {
+    "type": "array",
+    "items": {"type": "string", "maxLength": MAX_TRIGGER_SKILL_KEY_LEN},
+    "minItems": 1,
+    "maxItems": MAX_TRIGGER_SKILLS,
+    "description": (
+        "Worker only (kirocrew-worker or a Bot's worker): the skill keys whose "
+        "triggers may fire in its session; skills.max_triggered still caps them. "
+        "Nothing else narrows: skill_search and $key reach its whole scope. A key "
+        "outside that scope refuses the create (`unknown_skills`). Omit for today's "
+        "matching."
+    ),
+}
 
 
 def _session_tools() -> tuple[Tool, ...]:
@@ -178,6 +194,7 @@ def _session_tools() -> tuple[Tool, ...]:
                             "still change or reset it later."
                         ),
                     },
+                    "skills": _TRIGGER_SKILLS_PROPERTY,
                     "message": {
                         "type": "string",
                         "description": (
@@ -826,6 +843,10 @@ def _session_tools() -> tuple[Tool, ...]:
                             "A backend that cannot start here refuses the dispatch at "
                             "session_create, and the item is closed."
                         ),
+                    },
+                    "skills": {
+                        **_TRIGGER_SKILLS_PROPERTY,
+                        "description": "As session_create takes it.",
                     },
                 },
                 "required": ["title", "acceptance", "agent", "seed"],

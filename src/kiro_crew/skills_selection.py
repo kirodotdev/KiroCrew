@@ -197,6 +197,7 @@ def get_triggered_skills(
     *,
     select: Callable[[], list[str] | None] | None = None,
     unusable: Collection[str] = (),
+    only: Collection[str] | None = None,
 ) -> list[str]:
     """Return names of skills whose triggers match the given text.
 
@@ -212,6 +213,10 @@ def get_triggered_skills(
     *unusable* names skills the turn cannot use (their feature is off for the
     session). They are skipped like a ``repo_scope`` mismatch, so one never
     takes a slot under the cap.
+
+    *only*, when given, is the whole candidate set (a worker's conductor-chosen
+    list, :mod:`kiro_crew.worker_trigger_skills`): every other skill is skipped
+    before the cap, and a *select* answer is cut to it too.
 
     *select*, when given, may replace the matched set before the audit row
     is written; it returns ``None`` to keep the match. It is a callable, not
@@ -238,7 +243,7 @@ def get_triggered_skills(
     visible = self._iter_visible(project_dir) if cap > 0 else ()
     text_words: set[str] = words_of(text) if cap > 0 else set()
     for name, skill_file, _within in visible:
-        if name in unusable:
+        if name in unusable or (only is not None and name not in only):
             continue
         # A reader on the per-message path: one SKILL.md that is not UTF-8
         # costs its own match, never the turn (rationale on the helper).
@@ -289,6 +294,8 @@ def get_triggered_skills(
             logger.debug("skills.select: selection failed (%s)", type(exc).__name__)
         if selected is not None:
             triggered = list(selected)
+    if only is not None:
+        triggered = [name for name in triggered if name in only]
 
     # Emit ONE audit event for the matched + denied sets rather than one per
     # skill. A SEL entry per skill (incl. every non-match) on every message

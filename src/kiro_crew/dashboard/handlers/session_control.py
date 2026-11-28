@@ -531,6 +531,8 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             # may be bound to a member's private store.
             caller_fenced=_carried_fence(request),
             backend=backend,
+            # Typed and checked against the child's scope by `create_session`.
+            trigger_skills=body.get("skills"),
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)

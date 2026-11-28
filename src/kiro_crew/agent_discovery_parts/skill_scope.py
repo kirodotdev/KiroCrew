@@ -187,6 +187,7 @@ def agent_skill_globs(
     strict: bool = False,
     inherit_defaults: bool = False,
     session_key: str = "",
+    member_id: str | None = None,
 ) -> list[str]:
     """Return fnmatch globs for the skills mapped to *agent*, or ``[]``.
 
@@ -202,7 +203,8 @@ def agent_skill_globs(
     snapshot for user-level agents; the selected path anchors relative skill URIs.
     Project agents keep precedence over the user-level pin.
     The crewmate conductor and worker resolve from the crewmate folder; *session_key*
-    names the worker's crewmate (``mate_worker.mate_service_scope_spec``).
+    names the worker's crewmate (``mate_worker.mate_service_scope_spec``), or
+    *member_id* does for a worker whose session is not opened yet.
     """
     if not agent:
         return []
@@ -210,7 +212,11 @@ def agent_skill_globs(
 
     data: dict[str, Any] | None
     path: Path | None
-    mate = mate_service_scope_spec(agent, session_key) if agents_dir is None else None
+    mate = (
+        mate_service_scope_spec(agent, session_key, member_id=member_id)
+        if agents_dir is None
+        else None
+    )
     if mate is not None:
         data, path = mate
         if data is None:
@@ -360,6 +366,33 @@ def session_skill_globs(
             inherit_defaults=inherit,
             session_key=session_key,
         )
+    )
+    if template in WHOLE_CATALOG_TEMPLATES and not mapped:
+        return None
+    return with_companion_skills(mapped)
+
+
+def child_skill_globs(
+    template: str,
+    member_id: str | None,
+    *,
+    project_dir: str | Path | None = None,
+    provider_type: str | None = None,
+) -> list[str] | None:
+    """:func:`session_skill_globs` for a session that is not opened yet.
+
+    The scope a child running *template* on *member_id*'s record will have, read by
+    the same rule: a Bot's worker from that Bot's merged kit, any other template from
+    its own spec. A newborn holds no pin, so none is consulted.
+    """
+    from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP
+
+    mapped = agent_skill_globs(
+        template,
+        project_dir=project_dir,
+        strict=True,
+        inherit_defaults=provider_type == PROVIDER_ACP,
+        member_id=member_id,
     )
     if template in WHOLE_CATALOG_TEMPLATES and not mapped:
         return None

@@ -115,6 +115,10 @@ def init_session_fields(self: _ChatSlot) -> None:
     # selection gate decides as before. Set at birth and restored with the slot;
     # every allocation passes it as ``backend_override``.
     self.backend = ""
+    # The skills a conductor chose for this worker's trigger matching
+    # (``session_create(skills=...)``, ``worker_trigger_skills``); ``None`` = no list.
+    # Set at birth, never cleared, and restored with the slot.
+    self.trigger_skills = None
     # The agent Crew Mode turned on with ("" when the chat never turned it on):
     # stamped by the agent switch (``crew_mode.stamp_for_switch``) and persisted,
     # so the chat stays in Crew Mode after ``agent.crew_mode_agent`` changes.

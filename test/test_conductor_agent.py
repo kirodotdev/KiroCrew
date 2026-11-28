@@ -1075,8 +1075,8 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
     def test_pr_checks_seed_may_name_the_prepare_pr_skill_by_path(self):
         """A ``pr_checks`` seed can point the worker at kirocrew-prepare-pr's SKILL.md.
 
-        ``kirocrew-worker`` gets no per-message trigger matching (``build_message`` gates
-        it on ``not is_custom``), so however a seed is worded nothing auto-loads
+        ``kirocrew-worker`` matches triggers only over a list its conductor passed
+        (``session_create(skills=...)``), so a seed cannot rely on its wording to load
         ``kirocrew-prepare-pr`` in the worker session. The conductor naming the file is
         what makes the worker follow it. Pinned as an OPTIONAL hint, not a mandate: a user
         who does not want kirocrew-prepare-pr must not have it forced on every worker.
