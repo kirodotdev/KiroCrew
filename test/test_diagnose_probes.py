@@ -107,15 +107,45 @@ def test_a_healthy_install_reports_no_problem_or_warning(world):
     assert all("fix" not in f for f in findings)
 
 
-def test_probe_ids_are_the_twelve_reported_symptoms():
+def test_probe_ids_are_unique_and_name_their_probes():
     ids = [pid for pid, _ in dp.PROBES]
-    assert len(ids) == len(set(ids)) == 12
+    assert ids and len(ids) == len(set(ids))
+    assert "config_unreadable" in ids
     assert {fn.__name__ for _, fn in dp.PROBES} == {f"probe_{pid}" for pid in ids}
 
 
 # --------------------------------------------------------------------------- #
 # One scenario per probe
 # --------------------------------------------------------------------------- #
+
+
+def test_config_file_that_is_not_a_json_object_is_a_problem(world):
+    world["cfg"]._base_unreadable = True
+    world["cfg"]._overlay_unreadable = True
+    f = _run(world)["config_unreadable"]
+    assert f["status"] == dp.PROBLEM
+    assert f["evidence"] == {"files": ["config.json", "config.local.json"]}
+    assert "not in effect" in f["summary"]
+    # One flag covers a file that cannot be opened, is not UTF-8 or is not a JSON
+    # object, so the steps name each cause rather than only a JSON repair.
+    steps = f["fix"]["steps"]
+    assert "can read" in steps[0]
+    assert "UTF-8" in steps[1]
+    assert "Repair the JSON" in steps[2]
+
+
+def test_an_unreadable_overlay_alone_names_only_that_file(world):
+    world["cfg"]._overlay_unreadable = True
+    f = _run(world)["config_unreadable"]
+    assert f["evidence"] == {"files": ["config.local.json"]}
+    assert "defaults" not in f["summary"]
+
+
+def test_a_repaired_file_is_not_reported_from_the_process_wide_marker(world):
+    # A file that failed earlier in the process keeps its marker in
+    # ``degraded_sections``; this load read it, so it is not unreadable now.
+    world["cfg"]._degraded_sections = frozenset({"*", "*config.json", "dashboard"})
+    assert _run(world)["config_unreadable"]["status"] == dp.OK
 
 
 def test_hidden_model_named_in_the_question_is_a_problem(world):
