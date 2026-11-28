@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useId, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useMutationState, useQueryClient } from '@tanstack/react-query'
 import { Download, Loader2, RefreshCw, Sparkles } from 'lucide-react'
 import { api, ApiError, type SkillScriptValidation } from '../../api/client'
 import ProjectSkillsPlatformHint from '../../components/ProjectSkillsPlatformHint'
@@ -49,6 +49,8 @@ const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', tri
  * without `svh`, matching the shell's own `supports-[height:100dvh]` pattern.
  */
 const PANE_SHELL_CLASS = 'flex gap-3 -mx-2 md:mx-0 h-[calc(100vh-260px)] supports-[height:100svh]:h-[calc(100svh-260px)] min-h-[420px]'
+
+const APPROVE_PENDING_KEY = ['skills-pending-approve'] as const
 
 /** Humanize a kebab/snake-case skill name for display. */
 const displayName = (s: Skill) => s.name.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
@@ -942,12 +944,14 @@ function ValidationFindings({ report }: { report: Record<string, string[]> }) {
   )
 }
 
-function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, olderUpdates = [], hasNewer, onApprove, onDismiss }: {
+function PendingCandidateRow({ p, autoOpen, approveRefusal, approving = false, mixedQueue, olderUpdates = [], hasNewer, onApprove, onDismiss }: {
   p: PendingSkill
   /** True when a notification deep-linked at THIS candidate (?review=<slug>). */
   autoOpen?: boolean
   /** Why the last Approve click on THIS row was refused, when it was. */
   approveRefusal?: ApproveRefusal
+  /** True while this row's approve request is in flight. */
+  approving?: boolean
   /** True when the queue holds a flagged candidate — the only shape where the
       disabled fade can be misread as a validation state. */
   mixedQueue?: boolean
@@ -1064,8 +1068,13 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, olderUpd
               /* Collapsed, aria-disabled rather than disabled: a disabled
                  button gets no hover or focus, so its tip could never say
                  that Review comes first. The click guard below holds it, and
-                 the aria-disabled classes repeat a disabled primary's look. */
-              aria-disabled={!open || undefined}
+                 the aria-disabled classes repeat a disabled primary's look.
+                 Busy while this row's approval runs: a second click would hit
+                 a candidate the first one already consumed and answer 404.
+                 This prop replaces Btn's own busy aria-disabled, so it names
+                 `approving` too. */
+              aria-disabled={!open || approving || undefined}
+              busy={approving}
               disabled={open && approveDisabled}
               className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:active:scale-100"
               onClick={() => {
@@ -1445,6 +1454,7 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
     },
   })
   const approve = useMutation({
+    mutationKey: APPROVE_PENDING_KEY,
     mutationFn: ({ slug, contentSha256 }: { slug: string; contentSha256: string; alsoDismiss?: string[] }) =>
       api.approvePendingSkill(slug, contentSha256),
     onMutate: ({ slug }) => {
@@ -1585,6 +1595,12 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
       qc.invalidateQueries({ queryKey: ['skills'] })
       if (alsoDismiss && alsoDismiss.length > 0) dismissOlder.mutate(alsoDismiss)
     },
+  })
+  // Read from the mutation cache, not `approve.variables`: that holds only the
+  // latest click, so approving a second row would free the first row's button.
+  const approvingSlugs = useMutationState({
+    filters: { mutationKey: APPROVE_PENDING_KEY, status: 'pending' },
+    select: mutation => (mutation.state.variables as { slug: string }).slug,
   })
   const dismiss = useMutation({
     mutationFn: ({ slug, contentSha256 }: { slug: string; contentSha256?: string }) =>
@@ -1804,10 +1820,17 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
                   p={p}
                   autoOpen={p.slug === reviewSlug}
                   approveRefusal={approveRefusals[p.slug]}
+                  approving={approvingSlugs.includes(p.slug)}
                   mixedQueue={pending.some(c => c.script_validation?.ok === false)}
                   olderUpdates={siblings.older}
                   hasNewer={siblings.hasNewer}
-                  onApprove={(slug, contentSha256, alsoDismiss) => approve.mutate({ slug, contentSha256, alsoDismiss })}
+                  onApprove={(slug, contentSha256, alsoDismiss) => {
+                    // `approving` renders a tick after the click; the mutation
+                    // cache holds the first approval at once, so a repeat in that
+                    // tick sends nothing either.
+                    if (qc.isMutating({ mutationKey: APPROVE_PENDING_KEY, predicate: m => (m.state.variables as { slug: string }).slug === slug })) return
+                    approve.mutate({ slug, contentSha256, alsoDismiss })
+                  }}
                   onDismiss={(s, contentSha256) => dismiss.mutate({ slug: s, contentSha256 })}
                 />
               )
