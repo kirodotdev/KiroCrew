@@ -1,5 +1,6 @@
 /**
- * The canvas's right-click menu: copy and paste, delete, stacking order, lock.
+ * The canvas's right-click menu: copy and paste, delete, stacking order, lock,
+ * and the canvas's default style.
  * A floating sticker in the app's own theme; the row under the pointer or the
  * keyboard is a purple sticker of its own.
  */
@@ -12,8 +13,9 @@ export type MenuAction =
   | 'copy' | 'paste' | 'delete'
   | 'front' | 'forward' | 'backward' | 'back'
   | 'lock' | 'unlockAll'
+  | 'setDefault' | 'resetDefault'
 
-interface Item { action: MenuAction; label: string; keys: string; needsSelection?: boolean }
+interface Item { action: MenuAction; label: string; keys?: string; needsSelection?: boolean }
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
 
@@ -28,11 +30,15 @@ interface Props {
   canEdit: boolean
   canPaste: boolean
   anyLocked: boolean
+  /** The selection has one look its group's default does not already hold. */
+  canSetDefault: boolean
+  /** The selection's group has a default to reset. */
+  canResetDefault: boolean
   onAction: (a: MenuAction) => void
   onClose: () => void
 }
 
-export default function CanvasContextMenu({ x, y, bounds, hasSelection, canEdit, canPaste, anyLocked, onAction, onClose }: Props) {
+export default function CanvasContextMenu({ x, y, bounds, hasSelection, canEdit, canPaste, anyLocked, canSetDefault, canResetDefault, onAction, onClose }: Props) {
   const { t } = useTranslation()
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ x, y })
@@ -60,6 +66,10 @@ export default function CanvasContextMenu({ x, y, bounds, hasSelection, canEdit,
       { action: 'lock', label: t('components.canvas.menu_lock_unlock'), keys: shiftCtrl('L'), needsSelection: true },
       { action: 'unlockAll', label: t('components.canvas.menu_unlock_all'), keys: altShiftCtrl('L') },
     ],
+    [
+      { action: 'setDefault', label: t('components.canvas.set_default_style'), needsSelection: true },
+      { action: 'resetDefault', label: t('components.canvas.reset_default_style'), needsSelection: true },
+    ],
   ]
 
   // Flip in from the edges when the menu would overflow the canvas.
@@ -83,6 +93,8 @@ export default function CanvasContextMenu({ x, y, bounds, hasSelection, canEdit,
     if (it.needsSelection && it.action !== 'lock' && !canEdit) return false
     if (it.action === 'paste') return canPaste
     if (it.action === 'unlockAll') return anyLocked
+    if (it.action === 'setDefault') return canSetDefault
+    if (it.action === 'resetDefault') return canResetDefault
     return true
   }
 
@@ -101,14 +113,15 @@ export default function CanvasContextMenu({ x, y, bounds, hasSelection, canEdit,
     <div ref={ref} role="menu" tabIndex={-1} aria-label={t('components.canvas.menu_label')} data-canvas-ui data-testid="canvas-context-menu" onKeyDown={onKeyDown}
       onPointerDown={e => e.stopPropagation()} onContextMenu={e => e.preventDefault()}
       className="absolute w-[240px] rounded-2xl bg-bg-elevated py-1.5 text-text"
-      style={{ left: pos.x, top: pos.y, zIndex: 20, fontSize: 13, boxShadow: FLOAT_SHADOW }}>
+      // A canvas shorter than the menu scrolls it, so every item stays reachable.
+      style={{ left: pos.x, top: pos.y, zIndex: 20, fontSize: 13, boxShadow: FLOAT_SHADOW, maxHeight: Math.max(0, bounds.h - 8), overflowY: 'auto' }}>
       {groups.map((group, g) => (
         <div key={g} className={g ? 'mt-1.5 border-t border-border pt-1.5' : undefined}>
           {group.map(it => (
             <button key={it.action} type="button" role="menuitem" disabled={!enabled(it)} onClick={() => { onAction(it.action); onClose() }}
               className="group mx-1.5 flex w-[calc(100%-12px)] items-center justify-between rounded-[10px] px-3 py-1.5 text-left outline-none enabled:hover:bg-accent enabled:hover:text-accent-fg focus-visible:bg-accent focus-visible:text-accent-fg disabled:opacity-40">
               <span>{it.label}</span>
-              <span className="text-[12px] text-muted group-enabled:group-hover:text-accent-fg group-focus-visible:text-accent-fg">{it.keys}</span>
+              {it.keys && <span className="text-[12px] text-muted group-enabled:group-hover:text-accent-fg group-focus-visible:text-accent-fg">{it.keys}</span>}
             </button>
           ))}
         </div>

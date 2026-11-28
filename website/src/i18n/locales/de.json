@@ -11907,6 +11907,8 @@
       "menu_send_backward": "Eine Ebene nach hinten",
       "menu_send_to_back": "In den Hintergrund",
       "menu_unlock_all": "Alle Objekte entsperren",
+      "set_default_style": "Als Standardstil festlegen",
+      "reset_default_style": "Standardstil zurücksetzen",
       "past_version": "Frühere Version: schreibgeschützt",
       "linked_file": "Verknüpfte Datei: schreibgeschützt",
       "load_failed": "Der Canvas konnte nicht geladen werden",

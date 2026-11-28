@@ -1867,6 +1867,21 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   `borderHex`, `ink`, `inkHex`, `fontSize`, `bold`, `strike`, `align`, `locked`
   on nodes, and `swatch`, `line`, `dashed`, `route` on edges. Array order is
   stacking order, back to front.
+- **Default styles** (`canvasDefaults.ts`) ride in one optional top-level
+  `defaultStyles` field, `{"shape": {...}, "sticky": {...}, "text": {...}}`: the
+  look a new object of that group starts with. `shape` covers rectangles,
+  ellipses and diamonds; a section has no default. Each group keeps only the
+  fields it draws, in model names (`color`, `hex`, `fill` for shapes and
+  stickies; `weight`, `border`, `borderColor`, `borderHex` for shapes; `ink`,
+  `inkHex`, `bold`, `strike` for text boxes; `fontSize`, `align` for all three),
+  and drops any value that is invalid or the built-in one, so a default set from
+  an object in the built-in look is the same as no default. A canvas without the
+  field draws in the built-in look, and writing it adds none. **Set as default
+  style** on the right-click menu (not the selection toolbar) takes the
+  selection's look when every selected object shares one group and one look;
+  **Reset default style** removes that group. Each is one undo step and never
+  restyles objects already drawn. An imported file's field is written back
+  unchanged until its defaults change.
 - A document written elsewhere reads too: `color` wins over a stale `swatch`,
   presets `"1"`-`"6"` become red, orange, yellow, green, teal and violet, a
   text node without `shape` is a rectangle, a missing `toEnd` is an arrow, and a

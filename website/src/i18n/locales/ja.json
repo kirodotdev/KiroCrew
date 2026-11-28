@@ -11634,6 +11634,8 @@
       "menu_send_backward": "背面へ移動",
       "menu_send_to_back": "最背面へ移動",
       "menu_unlock_all": "すべてのオブジェクトのロックを解除",
+      "set_default_style": "デフォルトのスタイルに設定",
+      "reset_default_style": "デフォルトのスタイルをリセット",
       "past_version": "過去のバージョン：読み取り専用",
       "linked_file": "リンクされたファイル：読み取り専用",
       "load_failed": "キャンバスを読み込めませんでした",

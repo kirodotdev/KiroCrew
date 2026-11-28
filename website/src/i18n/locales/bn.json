@@ -11907,6 +11907,8 @@
       "menu_send_backward": "পিছনে পাঠাও",
       "menu_send_to_back": "সবার পিছনে পাঠাও",
       "menu_unlock_all": "সব অবজেক্ট আনলক করো",
+      "set_default_style": "ডিফল্ট স্টাইল হিসেবে সেট করো",
+      "reset_default_style": "ডিফল্ট স্টাইল রিসেট করো",
       "past_version": "পূর্ববর্তী সংস্করণ: শুধু পড়ার জন্য",
       "linked_file": "লিঙ্ক করা ফাইল: শুধু পড়ার জন্য",
       "load_failed": "ক্যানভাস লোড করা যায়নি",

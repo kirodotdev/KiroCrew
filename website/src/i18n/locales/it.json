@@ -12180,6 +12180,8 @@
       "menu_send_backward": "Porta indietro",
       "menu_send_to_back": "Porta in secondo piano",
       "menu_unlock_all": "Sblocca tutti gli oggetti",
+      "set_default_style": "Imposta come stile predefinito",
+      "reset_default_style": "Ripristina lo stile predefinito",
       "past_version": "Versione precedente: sola lettura",
       "linked_file": "File collegato: sola lettura",
       "load_failed": "Impossibile caricare la lavagna",

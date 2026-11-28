@@ -11634,6 +11634,8 @@
       "menu_send_backward": "下移一层",
       "menu_send_to_back": "置于底层",
       "menu_unlock_all": "解锁所有对象",
+      "set_default_style": "设为默认样式",
+      "reset_default_style": "重置默认样式",
       "past_version": "历史版本：只读",
       "linked_file": "关联文件：只读",
       "load_failed": "无法加载画布",

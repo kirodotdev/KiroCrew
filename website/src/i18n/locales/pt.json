@@ -12180,6 +12180,8 @@
       "menu_send_backward": "Enviar para trás",
       "menu_send_to_back": "Enviar para o plano de fundo",
       "menu_unlock_all": "Desbloquear todos os objetos",
+      "set_default_style": "Definir como estilo padrão",
+      "reset_default_style": "Redefinir o estilo padrão",
       "past_version": "Versão anterior: somente leitura",
       "linked_file": "Arquivo vinculado: somente leitura",
       "load_failed": "Não foi possível carregar a tela",
