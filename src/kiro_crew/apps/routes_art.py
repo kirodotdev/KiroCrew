@@ -49,11 +49,15 @@ from kiro_crew.apps.registry import (
     known_registry_repos,
     minimal_env,
 )
-from kiro_crew.apps.registry_pipeline.checkout import _HOOKS_NEUTRALIZER_ARGV
-from kiro_crew.apps.registry_pipeline.git_targets import _lfs_endpoint_pin_argv
+from kiro_crew.apps.registry_pipeline.checkout import (
+    _HOOKS_NEUTRALIZER_ARGV,
+    _local_checkout,
+    _transfer_env,
+    _trusted_git,
+)
 from kiro_crew.apps.registry_pipeline.subprocess_env import (
-    _git_network_step_env,
     _proxy_env_has_credentials,
+    transfer_home,
 )
 from kiro_crew.apps.routes_static import _CONTENT_TYPES
 from kiro_crew.dashboard.conditional_get import conditional_response
@@ -555,11 +559,17 @@ async def _fetch_git_blob(
                 )
                 return False
         else:
+            git_bin = await asyncio.to_thread(_trusted_git)
+            if not git_bin:
+                return False
+            # TRANSFER only (``--no-checkout``) under the isolated transfer env plus
+            # the owner subset when owner-designated; the LOCAL checkout below runs
+            # under the normal env so a filter-driven or LFS-tracked blob resolves.
             clone_cmd = [
-                "git",
+                git_bin,
                 *_HOOKS_NEUTRALIZER_ARGV,
-                *_lfs_endpoint_pin_argv(git_url),
                 "clone",
+                "--no-checkout",
                 "--depth",
                 "1",
                 "--branch",
@@ -577,29 +587,43 @@ async def _fetch_git_blob(
                 _prepare=wrap_argv,
             )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
-            proc = await create_subprocess_limited(
-                *sandboxed_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=await _git_network_step_env(
-                    clone_env, git_url, forward_applied=forward_applied
-                ),
+            # The ssh agent socket is kept and repaired only when the wrap applied
+            # the forward (``forward_applied``); an owner-designated branch also
+            # gets the vetted owner-config subset.
+            blob_env = await _transfer_env(
+                clone_env,
+                git_url,
+                credential_target,
+                owner_designated=owner_designated,
+                forward_applied=forward_applied,
             )
-            try:
-                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_BLOB_FETCH_TIMEOUT)
-            except asyncio.CancelledError:
-                # A gateway shutdown must not leave the clone running with no owner.
-                await platform_compat.kill_and_reap(proc)
-                raise
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.communicate()
-                logger.warning(
-                    "git clone timed out for %s/%s",
-                    _strip_git_target_userinfo(repo),
-                    file_path,
+            # Owner-designated keeps the real HOME (credential store / .netrc);
+            # an index-chosen sibling gets the empty HOME. Config is off either way.
+            with transfer_home(owner_designated) as _home_env:
+                blob_env = {**blob_env, **_home_env}
+                proc = await create_subprocess_limited(
+                    *sandboxed_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=blob_env,
                 )
-                return False
+                try:
+                    _, stderr = await asyncio.wait_for(
+                        proc.communicate(), timeout=_BLOB_FETCH_TIMEOUT
+                    )
+                except asyncio.CancelledError:
+                    # A gateway shutdown must not leave the clone running with no owner.
+                    await platform_compat.kill_and_reap(proc)
+                    raise
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.communicate()
+                    logger.warning(
+                        "git clone timed out for %s/%s",
+                        _strip_git_target_userinfo(repo),
+                        file_path,
+                    )
+                    return False
 
             if proc.returncode != 0:
                 logger.debug(
@@ -614,6 +638,18 @@ async def _fetch_git_blob(
                         if stderr
                         else ""
                     ),
+                )
+                return False
+            # LOCAL checkout under the normal env so an LFS/filter-driven blob
+            # materialises before it is read.
+            co_code, _co_out = await _local_checkout(
+                git_bin, git_url, ref, Path(tmp_root), clone_mode, clone_env, owner_designated
+            )
+            if co_code != 0:
+                logger.debug(
+                    "blob checkout failed for %s/%s",
+                    _strip_git_target_userinfo(repo),
+                    file_path,
                 )
                 return False
 

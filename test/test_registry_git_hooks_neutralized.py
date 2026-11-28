@@ -58,7 +58,7 @@ def _git_subcommand_index(argv: list[str]) -> int:
 
 def _assert_neutralized(argvs: list[list[str]]) -> None:
     """Every captured git argv must carry the hooks neutralizer before its subcommand."""
-    git_argvs = [a for a in argvs if a and a[0] == "git"]
+    git_argvs = [a for a in argvs if a and os.path.basename(a[0]) == "git"]
     assert git_argvs, f"expected at least one git spawn, captured: {argvs}"
     for argv in git_argvs:
         sub = _git_subcommand_index(argv)
@@ -82,7 +82,7 @@ def _install_capture(monkeypatch, module, sink: list[list[str]]) -> None:
         # closed so no call site reaches a disk read of a real checkout.
         sub = _git_subcommand_index(list(argv))
         tokens = list(argv)[sub : sub + 2]
-        if argv and argv[0] == "git" and tokens[:1] in (["init"], ["remote"]):
+        if argv and os.path.basename(argv[0]) == "git" and tokens[:1] in (["init"], ["remote"]):
             return _FakeProc(returncode=0, output=b"")
         return _FakeProc(returncode=1)
 
@@ -156,6 +156,16 @@ async def _capture_clone_or_pull_pull(monkeypatch, tmp_path: Path) -> list[list[
         return None
 
     monkeypatch.setattr(checkout, "_kill_process_group", _kill)
+
+    # The reused-checkout update path creates a throwaway transfer repo under
+    # TMPDIR and removes it in a ``finally`` via this seam; really remove it so the
+    # fake-spawn run leaves no residue for the session leak check.
+    async def _rmtree_real(path: str | Path) -> None:
+        import shutil
+
+        shutil.rmtree(path, ignore_errors=True)
+
+    monkeypatch.setattr(checkout, "_rmtree_force_settled", _rmtree_real)
     dest = tmp_path / "pull_dest" / "demo-app"
     (dest / ".git").mkdir(parents=True)
     result = await checkout._git_clone_or_pull(url, "main", dest, [])
@@ -167,7 +177,10 @@ async def _capture_manifest(monkeypatch) -> list[list[str]]:
     """Drive the anonymous throwaway clone in ``_fetch_app_manifest``."""
     sink: list[list[str]] = []
     _install_capture(monkeypatch, manifests, sink)
-    monkeypatch.setattr(manifests, "_git_transport_env", lambda *a, **k: {})
+    # The network env flows through ``_transfer_env`` (defined in checkout and
+    # shared by every sibling), so neutralize it at that single source; the sibling
+    # imports no ``_git_transport_env`` name of its own to patch.
+    monkeypatch.setattr(checkout, "_git_transport_env", lambda *a, **k: {})
     monkeypatch.setattr(manifests, "is_clone_host_trusted", lambda url: True)
     # No local fast path and no cache hit, so it reaches the clone.
     monkeypatch.setattr(manifests, "_read_manifest_cache", lambda entry: None)
@@ -223,7 +236,7 @@ async def test_every_registry_git_spawn_carries_the_hooks_neutralizer(monkeypatc
         "_fetch_git_blob": await _capture_blob(monkeypatch, tmp_path),
     }
     for site, argvs in captures.items():
-        git_argvs = [a for a in argvs if a and a[0] == "git"]
+        git_argvs = [a for a in argvs if a and os.path.basename(a[0]) == "git"]
         assert git_argvs, f"{site} captured no git spawn: {argvs}"
         _assert_neutralized(argvs)
 
@@ -235,7 +248,7 @@ async def test_negative_control_removing_the_splice_makes_the_pull_site_red(monk
     with pytest.MonkeyPatch.context() as removed:
         removed.setattr(checkout, "_HOOKS_NEUTRALIZER_ARGV", ())
         argvs = await _capture_clone_or_pull_pull(removed, tmp_path)
-    git_argvs = [a for a in argvs if a and a[0] == "git"]
+    git_argvs = [a for a in argvs if a and os.path.basename(a[0]) == "git"]
     assert git_argvs, argvs
     with pytest.raises(AssertionError):
         _assert_neutralized(argvs)
@@ -284,8 +297,15 @@ async def _capture_fetch_branch_envs(
     for argv, env in seen:
         if env.get("NETWORK"):
             assert argv[_git_subcommand_index(argv)] == "fetch", argv
-            assert "GIT_CONFIG_GLOBAL" not in env, "the network step keeps the operator's config"
-            assert "GIT_CONFIG_NOSYSTEM" not in env, "the network step keeps the operator's config"
+            # The network step reads none of the user's git CONFIG: system and
+            # global config are disabled through these keys, independent of HOME. The
+            # fetch here is owner-designated (index_originated defaults False), so it
+            # KEEPS the gateway's HOME -- its credential store and .netrc still work;
+            # an index-originated fetch would get an empty HOME instead.
+            assert env.get("GIT_CONFIG_GLOBAL") == os.devnull, "network step cuts global config"
+            assert env.get("GIT_CONFIG_NOSYSTEM") == "1", "network step cuts system config"
+            assert env.get("GIT_TERMINAL_PROMPT") == "0", "network step never prompts"
+            assert env.get("HOME") == str(tmp_path / "gateway-home"), "owner step keeps HOME"
     return seen
 
 

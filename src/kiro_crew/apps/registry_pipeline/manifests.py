@@ -35,8 +35,11 @@ from kiro_crew.apps.registry_pipeline.checkout import (
     _communicate_with_timeout,
     _git_fetch_branch,
     _git_fetch_commit,
+    _local_checkout,
     _mkdtemp_settled,
     _rmtree_force_settled,
+    _transfer_env,
+    _trusted_git,
 )
 from kiro_crew.apps.registry_pipeline.clone_metadata import _clone_branch_matches
 from kiro_crew.apps.registry_pipeline.gh_credential import (
@@ -48,10 +51,8 @@ from kiro_crew.apps.registry_pipeline.git_targets import (
     _SSH_REFUSAL_PREFIX,
     _entry_git_url,
     _git_target_is_unsupported,
-    _git_transport_env,
     _git_url_host,
     _is_ssh_git_url,
-    _lfs_endpoint_pin_argv,
     _loggable_git_transport_output,
     _looks_like_git_url,
     _ssh_method_list_closes,
@@ -66,11 +67,10 @@ from kiro_crew.apps.registry_pipeline.sources import (
 )
 from kiro_crew.apps.registry_pipeline.store_art import _contained_join, _store_asset_path
 from kiro_crew.apps.registry_pipeline.subprocess_env import (
-    _GIT_CLONE_LOCALE,
-    _git_network_step_env,
     _proxy_env_has_credentials,
     anonymous_git_env,
     minimal_env,
+    transfer_home,
 )
 from kiro_crew.apps.store_links import sanitize_links
 from kiro_crew.sandbox import (
@@ -346,11 +346,18 @@ async def _fetch_app_manifest(
                 )
                 return await _retry_with_gh("\n".join(fetch_log))
         else:
+            git_bin = await asyncio.to_thread(_trusted_git)
+            if not git_bin:
+                return None
+            # TRANSFER only (``--no-checkout``): fetch the objects under the
+            # isolated transfer env (plus the owner subset when owner-designated);
+            # the working tree is populated by a LOCAL checkout under the normal env
+            # so LFS and filter drivers resolve. No LFS pin on the transfer.
             clone_cmd = [
-                "git",
+                git_bin,
                 *_HOOKS_NEUTRALIZER_ARGV,
-                *_lfs_endpoint_pin_argv(git_url),
                 "clone",
+                "--no-checkout",
                 "--depth",
                 "1",
                 "--branch",
@@ -368,21 +375,29 @@ async def _fetch_app_manifest(
                 _prepare=wrap_argv,
             )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
-            transport_env = await _git_network_step_env(
-                _git_transport_env(credential_target, git_url, clone_env),
+            # The ssh agent socket is kept and repaired only when the wrap applied
+            # the forward (``forward_applied``); an owner-designated fetch also gets
+            # the vetted owner-config subset.
+            transport_env = await _transfer_env(
+                clone_env,
                 git_url,
+                credential_target,
+                owner_designated=owner_designated,
                 forward_applied=forward_applied,
             )
-            transport_env["LC_ALL"] = _GIT_CLONE_LOCALE
-            proc = await create_subprocess_limited(
-                *sandboxed_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=transport_env,
-                start_new_session=platform_compat.IS_POSIX,
-                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-            )
-            _, stderr = await _communicate_with_timeout(proc, timeout=_CLONE_TIMEOUT)
+            # Owner-designated keeps the real HOME (credential store / .netrc);
+            # an index-chosen sibling gets the empty HOME. Config is off either way.
+            with transfer_home(owner_designated) as _home_env:
+                transport_env = {**transport_env, **_home_env}
+                proc = await create_subprocess_limited(
+                    *sandboxed_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=transport_env,
+                    start_new_session=platform_compat.IS_POSIX,
+                    creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                )
+                _, stderr = await _communicate_with_timeout(proc, timeout=_CLONE_TIMEOUT)
             if proc.returncode != 0:
                 clone_output = stderr.decode(errors="replace").strip()
                 if provenance is not None and _is_ssh_sign_in_refusal(clone_output):
@@ -396,6 +411,14 @@ async def _fetch_app_manifest(
                     ),
                 )
                 return await _retry_with_gh(clone_output)
+            # LOCAL checkout under the normal env so the manifest (and any
+            # filter-driven content) materialises.
+            co_code, _co_out = await _local_checkout(
+                git_bin, git_url, branch, Path(tmp_root), sandbox_mode, clone_env, owner_designated
+            )
+            if co_code != 0:
+                logger.debug("manifest checkout failed for %s", _strip_git_target_userinfo(git_url))
+                return None
             checkout_root = Path(tmp_root)
         # Containment is measured from the root the tree actually landed in, which
         # differs by branch: the pinned fetch uses a child of `tmp_root` so it gets a

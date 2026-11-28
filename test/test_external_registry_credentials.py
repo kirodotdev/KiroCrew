@@ -12,6 +12,7 @@ every sibling; shared fixtures live in ``external_registry_helpers.py``.
 from __future__ import annotations
 
 import logging
+import os
 import shlex
 from pathlib import Path
 from types import SimpleNamespace
@@ -123,7 +124,10 @@ class TestInstallPathCredentialPosture:
                 return (b"", None)
 
         async def _fake_exec(*args, **kwargs):
-            captured["env"] = kwargs.get("env")
+            # Capture the network TRANSFER (`clone`) env, not the later local
+            # checkout which runs under the plain clone_env.
+            if "clone" in args:
+                captured["env"] = kwargs.get("env")
             return _FakeProc()
 
         dest = tmp_path / "clone-dest"  # does not exist → fresh-clone path
@@ -174,7 +178,10 @@ class TestInstallPathCredentialPosture:
                 return (b"", None)
 
         async def _fake_exec(*args, **kwargs):
-            captured["env"] = kwargs.get("env")
+            # Capture the network TRANSFER (`clone`) env, not the later local
+            # checkout which runs under the plain clone_env.
+            if "clone" in args:
+                captured["env"] = kwargs.get("env")
             return _FakeProc()
 
         url = "https://github.com/kirodotdev/bundled-app.git"
@@ -189,8 +196,12 @@ class TestInstallPathCredentialPosture:
         assert err is None
         env = captured["env"]
         # minimal_env carries NONE of the anonymous credential-suppression keys.
-        assert "GIT_CONFIG_NOSYSTEM" not in env
-        assert "GIT_CONFIG_GLOBAL" not in env
+        # Every registry fetch now reads none of the user's git CONFIG (system and
+        # global disabled); the owner posture is distinguished by keeping the
+        # ambient SSH identity (no anonymous BatchMode suppression), not by config.
+        assert env.get("GIT_CONFIG_NOSYSTEM") == "1"
+        assert env.get("GIT_CONFIG_GLOBAL") == os.devnull
+        assert "BatchMode=yes" not in env.get("GIT_SSH_COMMAND", "")
         # Sandbox mode is the host-derived context decision, not forced strict.
         assert captured["mode"] == reg._context_clone_sandbox_mode(url)
 
@@ -371,7 +382,10 @@ class TestSameRepoCredentialCarveOut:
                 return (b"", b"")
 
         async def _fake_exec(*args, **kwargs):
-            captured["env"] = kwargs.get("env")
+            # Capture the network TRANSFER (`clone`) env, not the later local
+            # checkout which runs under the plain clone_env.
+            if "clone" in args:
+                captured["env"] = kwargs.get("env")
             return _FakeProc()
 
         with (
@@ -394,8 +408,12 @@ class TestSameRepoCredentialCarveOut:
 
         # Owner-designated: minimal_env (no credential suppression) + context sandbox.
         env = captured["env"]
-        assert "GIT_CONFIG_NOSYSTEM" not in env
-        assert "GIT_CONFIG_GLOBAL" not in env
+        # Every registry fetch now reads none of the user's git CONFIG (system and
+        # global disabled); the owner posture is distinguished by keeping the
+        # ambient SSH identity (no anonymous BatchMode suppression), not by config.
+        assert env.get("GIT_CONFIG_NOSYSTEM") == "1"
+        assert env.get("GIT_CONFIG_GLOBAL") == os.devnull
+        assert "BatchMode=yes" not in env.get("GIT_SSH_COMMAND", "")
         # SSH host is trusted → context mode is standard (not forced strict).
         assert captured["mode"] == reg._context_clone_sandbox_mode(
             "ssh://git.example.com/team/MyRegistry"
@@ -421,7 +439,10 @@ class TestSameRepoCredentialCarveOut:
                 return (b"", b"")
 
         async def _fake_exec(*args, **kwargs):
-            captured["env"] = kwargs.get("env")
+            # Capture the network TRANSFER (`clone`) env, not the later local
+            # checkout which runs under the plain clone_env.
+            if "clone" in args:
+                captured["env"] = kwargs.get("env")
             return _FakeProc()
 
         with (
@@ -473,7 +494,10 @@ class TestSameRepoCredentialCarveOut:
                 return (b"", None)
 
         async def _fake_exec(*args, **kwargs):
-            captured["env"] = kwargs.get("env")
+            # Capture the network TRANSFER (`clone`) env, not the later local
+            # checkout which runs under the plain clone_env.
+            if "clone" in args:
+                captured["env"] = kwargs.get("env")
             return _FakeProc()
 
         url = "ssh://git.example.com/team/MyRegistry"
@@ -488,8 +512,12 @@ class TestSameRepoCredentialCarveOut:
         assert err is None
         env = captured["env"]
         # Owner-designated: minimal_env without credential suppression.
-        assert "GIT_CONFIG_NOSYSTEM" not in env
-        assert "GIT_CONFIG_GLOBAL" not in env
+        # Every registry fetch now reads none of the user's git CONFIG (system and
+        # global disabled); the owner posture is distinguished by keeping the
+        # ambient SSH identity (no anonymous BatchMode suppression), not by config.
+        assert env.get("GIT_CONFIG_NOSYSTEM") == "1"
+        assert env.get("GIT_CONFIG_GLOBAL") == os.devnull
+        assert "BatchMode=yes" not in env.get("GIT_SSH_COMMAND", "")
         # Context sandbox mode for trusted SSH host → standard.
         assert captured["mode"] == reg._context_clone_sandbox_mode(url)
 
@@ -636,14 +664,26 @@ def _ssh_capture(
         ok = any(tok in ("init", "remote") for tok in argv[:12]) and "fetch" not in argv
         return _SshFakeProc(0 if ok else 128, stderr)
 
-    async def _noop(*a: object, **k: object) -> None:
-        return None
+    async def _rmtree_real(path: object, *a: object, **k: object) -> None:
+        # The reused-checkout update makes a throwaway transfer repo under TMPDIR and
+        # removes it through this seam; really remove it so the fake run leaves no
+        # residue for the session leak check.
+        import shutil
+
+        shutil.rmtree(path, ignore_errors=True)
 
     monkeypatch.setattr(module, "wrap_argv_async", _wrap)
     monkeypatch.setattr(module, "cgroup_scope_argv", lambda argv: list(argv))
     monkeypatch.setattr(module, "create_subprocess_limited", _spawn)
-    monkeypatch.setattr(checkout, "_git_transport_env", lambda *a, **k: {})
-    monkeypatch.setattr(checkout, "_rmtree_force_settled", _noop)
+    # The transfer env flows the clone env through ``_git_transport_env`` (every
+    # network step now does, via ``_transfer_env``), so the stub must PASS THAT ENV
+    # THROUGH -- the real one returns ``dict(env)`` plus a credential rewrite, and
+    # these ssh URLs carry no http rewrite -- or the gateway's SSH_AUTH_SOCK is lost
+    # before the socket repair can read it.
+    monkeypatch.setattr(
+        checkout, "_git_transport_env", lambda target, git_url, env, *a, **k: dict(env)
+    )
+    monkeypatch.setattr(checkout, "_rmtree_force_settled", _rmtree_real)
     monkeypatch.setattr(checkout, "is_clone_host_trusted", lambda url: True)
 
 
@@ -785,6 +825,15 @@ async def test_branch_fetch_asks_for_the_agent_socket_only_when_told_to(
 _STALE_AGENT_SOCK = "/tmp/ssh-gone/agent.1"
 _LIVE_AGENT_SOCK = "/tmp/ssh-live/agent.2"
 
+# The isolated transfer disables the user's system and global git config on EVERY
+# network step (``_git_network_env``), so a transfer/step env carries these three
+# keys beside whatever ssh-agent socket the wrap keeps for it.
+_NET_CONFIG = {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+}
+
 #: What the stand-in wrap reports for a step that asks for the agent: the forward
 #: kept, or turned down the way ``strict`` without the operator's consent turns it down.
 _wrap_verdicts = pytest.mark.parametrize(
@@ -839,7 +888,7 @@ async def test_network_step_env_names_a_live_agent_only_for_a_step_that_keeps_it
         gateway_env, _SSH_REGISTRY_URL, forward_applied=forward_applied
     )
     agent = {"SSH_AUTH_SOCK": _LIVE_AGENT_SOCK, "SSH_AGENT_PID": "4242"} if kept else {}
-    assert step_env == {"HOME": "/tmp/op-home", **agent}
+    assert step_env == {"HOME": "/tmp/op-home", **_NET_CONFIG, **agent}
     # No scan for a step that does not keep the agent: all a scan can do is find it one.
     assert met == ([_STALE_AGENT_SOCK] if kept else [])
     # The caller's env also serves the local steps, which keep the environment they had.
@@ -865,7 +914,7 @@ async def test_network_step_env_keeps_the_gateways_socket_when_the_scan_fails(
     step_env = await subprocess_env._git_network_step_env(
         {"SSH_AUTH_SOCK": _STALE_AGENT_SOCK}, _SSH_REGISTRY_URL, forward_applied=[True]
     )
-    assert step_env == {"SSH_AUTH_SOCK": _STALE_AGENT_SOCK}
+    assert step_env == {**_NET_CONFIG, "SSH_AUTH_SOCK": _STALE_AGENT_SOCK}
 
 
 # --- A socket the scan finds is used only when it is the operator's own ---
@@ -901,7 +950,10 @@ async def test_network_step_env_uses_a_found_socket_only_when_it_is_the_operator
         dict(gateway_env), _SSH_REGISTRY_URL, forward_applied=[True]
     )
     # Refused, the step keeps what the gateway named: its own socket, or none at all.
-    assert step_env == ({"SSH_AUTH_SOCK": _LIVE_AGENT_SOCK} if refusal is None else gateway_env)
+    assert step_env == {
+        **_NET_CONFIG,
+        **({"SSH_AUTH_SOCK": _LIVE_AGENT_SOCK} if refusal is None else gateway_env),
+    }
     assert judged == [_LIVE_AGENT_SOCK]
     assert met == [started_with]
 
@@ -920,7 +972,7 @@ async def test_network_step_env_never_judges_the_socket_the_gateway_named(monkey
     step_env = await subprocess_env._git_network_step_env(
         {"SSH_AUTH_SOCK": own}, _SSH_REGISTRY_URL, forward_applied=[True]
     )
-    assert step_env == {"SSH_AUTH_SOCK": own}
+    assert step_env == {**_NET_CONFIG, "SSH_AUTH_SOCK": own}
 
 
 @_wrap_verdicts
@@ -999,9 +1051,14 @@ async def test_install_pull_is_handed_a_live_agent_socket_only_when_its_wrap_kee
     (dest / ".git").mkdir(parents=True)
     result = await checkout._git_clone_or_pull(_SSH_REGISTRY_URL, "main", dest, [])
     assert result is not None and result["ok"] is False
-    (pull,) = _ssh_calls_with(calls, "pull")
-    assert _agent_sockets([pull]) == [_LIVE_AGENT_SOCK if keeps_agent else None]
-    assert _handed_live_agent(calls) == ([pull] if keeps_agent else [])
+    # The reused-checkout update replaces ``git pull`` with a network ``fetch`` into
+    # a throwaway temp repo (then a local fetch + ff-merge); the network fetch is
+    # the one carrying the remote URL and the only step handed the agent socket.
+    network = [c for c in _ssh_calls_with(calls, "fetch") if _SSH_REGISTRY_URL in c["argv"]]
+    assert len(network) == 1, calls
+    (fetch,) = network
+    assert _agent_sockets([fetch]) == [_LIVE_AGENT_SOCK if keeps_agent else None]
+    assert _handed_live_agent(calls) == ([fetch] if keeps_agent else [])
     assert len(met) == (1 if keeps_agent else 0)
 
 

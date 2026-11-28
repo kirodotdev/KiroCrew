@@ -135,7 +135,8 @@ class TestFetchRefHooksNeutralizer:
         assert err is None
         assert spawned, "no git process was spawned"
         for argv in spawned:
-            assert argv[0] == "git"
+            # argv[0] is the validated ABSOLUTE git, never a bare PATH ``git``.
+            assert os.path.basename(argv[0]) == "git" and os.path.isabs(argv[0])
             assert f"core.hooksPath={os.devnull}" in argv, argv
             assert "core.fsmonitor=false" in argv, argv
             # The neutralizer precedes the git subcommand.

@@ -10,9 +10,11 @@ command text is untrusted. Each allowlist carries the reason for its names.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import sys
+from tempfile import mkdtemp
 
 from kiro_crew import platform_compat
 from kiro_crew.agent_sdk.drivers.acp import resolve_ssh_auth_sock
@@ -166,6 +168,20 @@ def _git_network_env(env: dict[str, str], git_url: str) -> dict[str, str]:
     is kept, so a caller's explicit value wins over the process env.
     """
     network_env = dict(env)
+    # A registry/app-repo network spawn reads NONE of the user's git config. The
+    # clone-host check vets only the URL git is given, so a URL-scoped
+    # ``http.<url>.followRedirects``, a ``url.<x>.insteadOf``, an ``includeIf`` or a
+    # ``credential.helper`` in the operator's system or global config must not
+    # apply. ``GIT_CONFIG_NOSYSTEM`` drops the system file and
+    # ``GIT_CONFIG_GLOBAL=/dev/null`` replaces BOTH global files (``~/.gitconfig``
+    # and ``$XDG_CONFIG_HOME/git/config``); pair with :func:`isolated_git_home` so
+    # the empty HOME/XDG leave nothing for a credential helper to read either.
+    # ``GIT_TERMINAL_PROMPT=0`` keeps a private repo failing closed instead of
+    # prompting. The gateway's own command-scope ``GIT_CONFIG_*`` transport entries
+    # (credentials the code supplies) are set on *env* and left untouched here.
+    network_env["GIT_CONFIG_GLOBAL"] = os.devnull
+    network_env["GIT_CONFIG_NOSYSTEM"] = "1"
+    network_env["GIT_TERMINAL_PROMPT"] = "0"
     if not _uses_http_proxy(git_url):
         return network_env
     for key, value in os.environ.items():
@@ -246,6 +262,57 @@ async def _git_network_step_env(
         if found:
             network_env["SSH_AUTH_SOCK"] = found
     return network_env
+
+
+@contextlib.contextmanager
+def isolated_git_home():
+    """Yield ``HOME``/``XDG_CONFIG_HOME`` pointing at fresh EMPTY temp dirs, removed
+    after the ``with`` block.
+
+    git reads the user's ``~/.gitconfig`` from ``HOME`` and
+    ``$XDG_CONFIG_HOME/git/config`` as its "global" config, and a credential helper
+    reads its own files from ``HOME`` too. An empty directory the gateway just made
+    carries none of the user's config, ``insteadOf``, ``includeIf`` or credential
+    helper. Overlay the yielded keys onto a registry network-spawn env AFTER
+    :func:`_git_network_env` (which disables the system and global config FILES):
+    the two together put every user-config source out of scope, while the
+    command-scope ``GIT_CONFIG_*`` transport credentials the code supplies still
+    apply. Removed in ``finally`` so a failed spawn leaves nothing behind.
+
+    ``mkdtemp`` is bound at import (``from tempfile import mkdtemp``), so a test that
+    patches ``tempfile.mkdtemp`` to steer the CLONE's throwaway dir does not also
+    steer this isolated HOME onto that same path and then delete it on cleanup.
+    """
+    import shutil
+
+    home = mkdtemp(prefix="kirocrew-git-home-")
+    xdg = mkdtemp(prefix="kirocrew-git-xdg-")
+    try:
+        yield {"HOME": home, "XDG_CONFIG_HOME": xdg}
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+        shutil.rmtree(xdg, ignore_errors=True)
+
+
+@contextlib.contextmanager
+def transfer_home(owner_designated: bool):
+    """The HOME/XDG overlay for a network TRANSFER, by credential posture.
+
+    An INDEX-originated transfer (``owner_designated=False``) runs anonymous, so it
+    gets :func:`isolated_git_home`: an empty HOME/XDG that hides the operator's
+    ``~/.gitconfig``, ``~/.git-credentials`` (``credential.helper=store``) and
+    ``~/.netrc`` alike. An OWNER-designated transfer keeps the real HOME/XDG and
+    yields no overlay, so a ``store`` credential helper and ``.netrc`` the owner
+    configured still authenticate it. Its ``~/.gitconfig`` and XDG config are still
+    out of scope either way, because :func:`_git_network_env` disables the global
+    and system config FILES through ``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_NOSYSTEM``
+    independent of HOME.
+    """
+    if owner_designated:
+        yield {}
+        return
+    with isolated_git_home() as env:
+        yield env
 
 
 def _is_safe_env_key(key: str) -> bool:

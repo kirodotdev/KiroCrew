@@ -30,6 +30,7 @@ import importlib.util
 import inspect
 import itertools
 import json
+import os
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -708,6 +709,10 @@ class TestAPatchOnTheFacadeReachesEveryCallSite:
     async def test_one_spawn_patch_reaches_the_facade_and_four_owners(self, tmp_path: Path) -> None:
         with pytest.MonkeyPatch.context() as patched:
             spawned = _record_spawns(patched)
+            # The resolver fails closed when no git validates (on this sandbox the
+            # host git is owned by another uid), so pin an absolute git the faked
+            # spawns can record; the test only checks the argv shape, never runs it.
+            patched.setattr(registry, "_trusted_git", lambda: "/usr/bin/git")
             # checkout: the origin read of an existing checkout.
             (tmp_path / "clone" / ".git").mkdir(parents=True)
             assert await registry._clone_origin_url(tmp_path / "clone") is None
@@ -754,31 +759,47 @@ class TestAPatchOnTheFacadeReachesEveryCallSite:
                 i += 2
             return i
 
+        # Every registry git spawn runs the validated ABSOLUTE git, not a bare
+        # ``git`` resolved on PATH, so a git spawn is recognised by its basename.
+        def _is_git(argv: tuple[str, ...]) -> bool:
+            return bool(argv) and os.path.basename(argv[0]) == "git"
+
         # The non-git spawns keep their fixed leading shape.
-        non_git = [argv for argv in spawned if not (argv and argv[0] == "git")]
+        non_git = [argv for argv in spawned if not _is_git(argv)]
         assert non_git == [
             ("/bin/sh", "-c", "true"),
             ("/opt/test/npm", "install"),
         ], non_git
-        git_spawns = [argv for argv in spawned if argv and argv[0] == "git"]
-        # ``git remote get-url`` (the checkout origin read) plus the two clone sites.
+        git_spawns = [argv for argv in spawned if _is_git(argv)]
+        # ``git remote get-url`` (the checkout origin read), then the anonymous
+        # ``git clone --no-checkout --depth 1`` at each of the two clone sites. There
+        # is no pre-clone ``git config`` guard any more: the isolated git env (user
+        # config out of scope, validated absolute git) carries the property instead.
+        # The fake clone fails, so neither site reaches its local checkout spawn.
         assert len(git_spawns) == 3, git_spawns
-        origin, *clones = git_spawns
+        origin, *rest = git_spawns
         assert origin[_git_subcommand_index(origin) : _git_subcommand_index(origin) + 3] == (
             "remote",
             "get-url",
             "origin",
         ), origin
-        # Both remaining git spawns are the anonymous ``git clone --depth 1`` of
-        # indexes' and manifests' call sites: assert the subcommand slot and the
-        # ``--depth`` argument right after it.
+        clones = [a for a in rest if a[_git_subcommand_index(a)] == "clone"]
         assert len(clones) == 2, clones
         for clone in clones:
             sub = _git_subcommand_index(clone)
             assert clone[sub] == "clone", clone
-            assert clone[sub + 1 : sub + 3] == ("--depth", "1"), clone
-        # The order the call sites ran in is preserved (indexes before manifests).
-        assert [argv[0] for argv in spawned] == [
+            # The transfer is now ``clone --no-checkout --depth 1``: the network
+            # step fetches objects only, and a LOCAL checkout (not reached here, the
+            # fake clone fails) materialises the tree under the normal env.
+            assert clone[sub + 1] == "--no-checkout", clone
+            assert clone[sub + 2 : sub + 4] == ("--depth", "1"), clone
+        # Every git spawn runs the one absolute binary ``_trusted_git`` resolved,
+        # the value pinned on the facade above (the patch is lifted by now, so read
+        # the pinned literal, not a fresh resolve that fails closed on this host).
+        assert all(argv[0] == "/usr/bin/git" for argv in git_spawns), git_spawns
+        # The order the call sites ran in is preserved: origin read, detect probe,
+        # then each clone site's clone, then the build.
+        assert [os.path.basename(argv[0]) if _is_git(argv) else argv[0] for argv in spawned] == [
             "git",
             "/bin/sh",
             "git",

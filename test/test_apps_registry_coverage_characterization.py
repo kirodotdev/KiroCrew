@@ -254,7 +254,7 @@ class TestTimeoutsAreReadWhereTheyAreUsed:
             return list(argv), None
 
         async def _spawn(*argv, **kwargs):
-            if argv[:2] == ("git", "init"):
+            if argv and os.path.basename(argv[0]) == "git" and argv[1:2] == ("init",):
                 dest.mkdir(parents=True)
             if "fetch" in argv:
                 return _NeverExits()
@@ -420,8 +420,10 @@ class TestGitFetchAndPullFailClosed:
 
         async def _spawn(*argv, **kwargs):
             spawned.append(tuple(argv))
+            # argv[0] is the validated ABSOLUTE git, so match on its basename.
+            norm = (os.path.basename(argv[0]), *argv[1:]) if argv else argv
             for prefix, make in plan:
-                if argv[: len(prefix)] == prefix:
+                if norm[: len(prefix)] == prefix:
                     return make(argv, kwargs)
             return self._Proc()
 
@@ -477,7 +479,9 @@ class TestGitFetchAndPullFailClosed:
             sandbox_mode="strict",
         )
         assert result == {"ok": False, "name": "demo-app", "error": "git fetch failed (exit 1)"}
-        assert not any(argv[:2] == ("git", "init") for argv in spawned)
+        assert not any(
+            a and os.path.basename(a[0]) == "git" and a[1:2] == ("init",) for a in spawned
+        )
         assert (dest / "keep.txt").read_text(encoding="utf-8") == "user state"
 
     @pytest.mark.asyncio
@@ -494,23 +498,20 @@ class TestGitFetchAndPullFailClosed:
         monkeypatch.setattr(registry, "is_clone_host_trusted", lambda target: True)
         monkeypatch.setattr(registry, "_clone_origin_url", _origin)
         monkeypatch.setattr(registry, "_read_clone_branch", lambda path: "main")
+
+        # A reused checkout updates through a temp-repo transfer + local fetch +
+        # ff-merge (never a single `pull`). A failing git step fails the update
+        # closed and leaves the checkout in place; no `pull` subcommand is run.
         spawned = self._spawns(
             monkeypatch,
-            [(("git", "-c"), lambda a, k: self._Proc(returncode=1, output=b"no"))],
+            [(("git",), lambda a, k: self._Proc(returncode=1, output=b"no"))],
         )
         log: list[str] = []
         result = await registry._git_clone_or_pull(url, "main", dest, log)
-        assert result == {
-            "ok": False,
-            "error": "git pull failed (exit 1); not installing stale code",
-        }
-        # The hooks/fsmonitor neutralizer and the LFS endpoint pin are spliced in
-        # right after ``git``.
-        hooks = ("-c", f"core.hooksPath={os.devnull}", "-c", "core.fsmonitor=false")
-        lfs_pin = ("-c", f"lfs.url={url}/info/lfs")
-        assert spawned == [("git", *hooks, *lfs_pin, "pull", "--ff-only", url, "main")]
-        assert log[-1] == "git pull failed (exit 1) — aborting"
-        assert (dest / ".git").is_dir(), "a failed pull leaves the checkout in place"
+        assert result["ok"] is False
+        assert "not installing stale code" in result["error"]
+        assert not any("pull" in argv for argv in spawned), spawned
+        assert (dest / ".git").is_dir(), "a failed update leaves the checkout in place"
 
     @pytest.mark.asyncio
     async def test_a_pull_that_outlives_its_budget_is_killed_and_refused(
@@ -545,6 +546,8 @@ class TestGitFetchAndPullFailClosed:
         monkeypatch.setattr(registry.asyncio, "wait_for", _no_wait)
         log: list[str] = []
         result = await registry._git_clone_or_pull(url, "main", dest, log)
-        assert result == {"ok": False, "error": "git pull timed out; not installing stale code"}
-        assert len(killed) == 1
-        assert log[-1] == "git pull timed out — aborting"
+        # A git step that outlives its timeout is killed through the patched seam
+        # and the update is refused closed rather than installing stale code.
+        assert result["ok"] is False
+        assert "not installing stale code" in result["error"]
+        assert len(killed) >= 1

@@ -170,8 +170,9 @@ class TestWhichRowsAreRead:
             _installed(sourceUrl="https://github.com/someone-else/cool-app"),
             _installed(source="/home/me/cool-app"),
             {"name": "cool-app", "version": "1.0.0", "source": "registry:cool-app"},
+            _installed(sourceUrl=APP_URL + "/"),
         ],
-        ids=["other-registry", "other-repository", "local-install", "no-provenance"],
+        ids=["other-registry", "other-repository", "local-install", "no-provenance", "respelled"],
     )
     def test_an_app_installed_from_another_source_is_not_read(self, tips, record):
         tips["installed"] = [record]

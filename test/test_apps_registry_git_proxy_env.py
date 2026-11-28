@@ -79,7 +79,15 @@ def test_git_network_env_adds_proxy_and_ca_variables(proxy_env):
 )
 def test_non_http_remotes_get_no_proxy_and_no_split(proxy_env, git_url):
     """Only git's HTTP transport reads the proxy, so SSH keeps its combined path."""
-    assert _git_network_env({"BASE": "1"}, git_url) == {"BASE": "1"}
+    # No proxy keys and no credential split for a non-http remote, but the
+    # user-config cut-off applies to every registry network spawn regardless of
+    # transport (an empty global/system config scope).
+    assert _git_network_env({"BASE": "1"}, git_url) == {
+        "BASE": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
     assert _proxy_env_has_credentials(git_url) is False
 
 

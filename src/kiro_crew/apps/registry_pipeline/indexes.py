@@ -32,8 +32,11 @@ from kiro_crew.apps.registry_pipeline.checkout import (
     _HOOKS_NEUTRALIZER_ARGV,
     _communicate_with_timeout,
     _git_fetch_branch,
+    _local_checkout,
     _mkdtemp_settled,
     _rmtree_force_settled,
+    _transfer_env,
+    _trusted_git,
 )
 from kiro_crew.apps.registry_pipeline.gh_credential import (
     _gh_access,
@@ -48,7 +51,6 @@ from kiro_crew.apps.registry_pipeline.git_targets import (
     _classify_registry_fetch_failure,
     _entry_git_url,
     _git_target_is_unsupported,
-    _lfs_endpoint_pin_argv,
     _loggable_git_transport_output,
     _looks_like_git_url,
     _public_registry_name,
@@ -70,10 +72,9 @@ from kiro_crew.apps.registry_pipeline.store_art import (
     _prewarm_owner_tier_store_assets,
 )
 from kiro_crew.apps.registry_pipeline.subprocess_env import (
-    _GIT_CLONE_LOCALE,
-    _git_network_step_env,
     _proxy_env_has_credentials,
     minimal_env,
+    transfer_home,
 )
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
@@ -419,11 +420,15 @@ async def _fetch_external_registry_index(
                 )
                 return await _retry_with_gh(fetch_text, cause)
         else:
+            git_bin = await asyncio.to_thread(_trusted_git)
+            if not git_bin:
+                _sel_outcome("failed")
+                return _failed(_FETCH_CAUSE_OTHER)
             clone_cmd = [
-                "git",
+                git_bin,
                 *_HOOKS_NEUTRALIZER_ARGV,
-                *_lfs_endpoint_pin_argv(git_url),
                 "clone",
+                "--no-checkout",
                 "--depth",
                 "1",
                 "--branch",
@@ -445,19 +450,32 @@ async def _fetch_external_registry_index(
                 _prepare=wrap_argv,
             )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
-            process_env = await _git_network_step_env(
-                minimal_env(), git_url, forward_applied=forward_applied
+            # TRANSFER only (``--no-checkout``) under the isolated transfer env plus
+            # the owner subset (the owner configured this registry URL). The ssh
+            # agent socket is kept and repaired only when the wrap applied the
+            # forward (``forward_applied``). The LOCAL checkout below runs under the
+            # normal env.
+            process_env = await _transfer_env(
+                minimal_env(),
+                git_url,
+                git_url,
+                owner_designated=True,
+                forward_applied=forward_applied,
             )
-            process_env["LC_ALL"] = _GIT_CLONE_LOCALE
-            proc = await create_subprocess_limited(
-                *sandboxed_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=process_env,
-                start_new_session=platform_compat.IS_POSIX,
-                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-            )
-            _, stderr = await _communicate_with_timeout(proc, timeout=_CLONE_TIMEOUT)
+            # The owner configured this registry URL, so the transfer is
+            # owner-designated: keep the real HOME (its credential store / .netrc
+            # still work), with global and system config off via _git_network_env.
+            with transfer_home(owner_designated=True) as _home_env:
+                process_env = {**process_env, **_home_env}
+                proc = await create_subprocess_limited(
+                    *sandboxed_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=process_env,
+                    start_new_session=platform_compat.IS_POSIX,
+                    creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                )
+                _, stderr = await _communicate_with_timeout(proc, timeout=_CLONE_TIMEOUT)
             if proc.returncode != 0:
                 text = stderr.decode(errors="replace")
                 tail = _loggable_git_transport_output(text, credentialed=False)[-400:]
@@ -468,6 +486,13 @@ async def _fetch_external_registry_index(
                 )
                 _sel_outcome("failed")
                 return await _retry_with_gh(text, _classify_registry_fetch_failure(text))
+            # LOCAL checkout under the normal env so the index tree materialises.
+            co_code, _co_out = await _local_checkout(
+                git_bin, git_url, branch, Path(tmp_root), mode, minimal_env(), True
+            )
+            if co_code != 0:
+                _sel_outcome("failed")
+                return _failed(_FETCH_CAUSE_OTHER)
 
         # Prefer an explicit app-registry.json index, then the apps/*/app.json
         # fallback. Both walk the clone's disk, so they run in ONE

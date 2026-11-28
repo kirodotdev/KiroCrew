@@ -523,8 +523,13 @@ class TestStrictSshRouteRefusal:
             return argv, None
 
         async def _fake_create(*args, **kwargs):
-            assert "pull" in args
-            return _ScriptedGitProc(1, _SSH_NAME_UNRESOLVED)
+            # The update's network TRANSFER is a ``fetch`` of the ssh URL; fail it
+            # with the unresolved-host output. The local steps (rev-parse, init)
+            # succeed so the transfer is reached.
+            if _SSH_APP_URL in args:
+                assert "fetch" in args
+                return _ScriptedGitProc(1, _SSH_NAME_UNRESOLVED)
+            return _ScriptedGitProc(0, b"")
 
         with (
             patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),

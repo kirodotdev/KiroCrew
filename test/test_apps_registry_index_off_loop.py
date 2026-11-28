@@ -74,6 +74,19 @@ def stub_sandbox_and_sel(_floor_monkeypatch):
         MagicMock(),
         raising=False,
     )
+    # The LOCAL checkout step lives in the checkout module and uses ITS sandbox
+    # seams, so stub those too or the index fetch hits the real wrap and raises
+    # SandboxUnavailableError on a host with no sandbox backend.
+    _floor_monkeypatch.setattr(
+        "kiro_crew.apps.registry_pipeline.checkout.wrap_argv_async", _passthrough_wrap
+    )
+    _floor_monkeypatch.setattr(
+        "kiro_crew.apps.registry_pipeline.checkout.cgroup_scope_argv", lambda argv: argv
+    )
+    _floor_monkeypatch.setattr(
+        "kiro_crew.apps.registry_pipeline.checkout.wrap_argv",
+        lambda argv, **k: (list(argv), None),
+    )
 
 
 def _clone_proc():
@@ -87,6 +100,7 @@ def _clone_proc():
 def _point_clone(monkeypatch, clone_dir: Path, build=None):
     """Point the fetch at ``clone_dir``: stub mkdtemp + the clone subprocess."""
 
+    import kiro_crew.apps.registry_pipeline.checkout as _checkout
     import kiro_crew.apps.registry_pipeline.indexes as _idx
 
     # The real mkdtemp hands the fetch an existing directory, so the stub does
@@ -100,6 +114,10 @@ def _point_clone(monkeypatch, clone_dir: Path, build=None):
 
     monkeypatch.setattr(tempfile, "mkdtemp", lambda *a, **k: str(clone_dir))
     monkeypatch.setattr(_idx, "create_subprocess_limited", _fake_create_subprocess_limited)
+    # The split transfer spawns the network ``clone --no-checkout`` through the
+    # index module and the LOCAL ``checkout --force`` through the checkout module;
+    # both resolve the clone root to the same stub directory.
+    monkeypatch.setattr(_checkout, "create_subprocess_limited", _fake_create_subprocess_limited)
 
 
 class TestLoadIndexEntriesSync:
