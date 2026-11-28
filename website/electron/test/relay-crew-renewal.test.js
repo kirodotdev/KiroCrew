@@ -125,6 +125,24 @@ test("a main-frame 401 mints once and reloads, a second within 30 s stops", asyn
   assertNoToken(h, "tok-1", "tok-2");
 });
 
+test("a main-frame 403 mints once and reloads as a 401 does, a second within 30 s stops", async () => {
+  const h = harness();
+  await started(h);
+  h.answers.push(grant("tok-2"));
+  h.win.fire(403);
+  await flush();
+  assert.equal(h.mints, 2);
+  assert.equal(h.token(), "tok-2");
+  assert.equal(h.win.reloads, 1);
+  await tick(29_000);
+  h.win.fire(403);
+  assert.equal(h.mints, 2);
+  assert.equal(h.renewal.isStopped(), true);
+  assert.deepEqual(h.outcomes.at(-1), { code: OUTCOME.SIGN_IN_FAILED, stopped: true });
+  assert.ok(h.logs.some((l) => l.includes("main frame 403, minting again")));
+  assertNoToken(h, "tok-1", "tok-2");
+});
+
 test("a 401 more than 30 s after the first mints again", async () => {
   const h = harness();
   await started(h, grant("tok-1", { renewInSeconds: 200 }));

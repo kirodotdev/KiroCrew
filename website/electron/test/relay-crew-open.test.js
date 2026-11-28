@@ -709,8 +709,97 @@ test("a Crew with no name gets a neutral one in the notice", async () => {
   assert.equal(s.win.opened[0].notices[0].title, "This Crew is currently unavailable");
 });
 
+const REFUSED_TEXT = {
+  title: "Team Crew refused access to this window.",
+  body: "Press Check again to try once more. If it keeps refusing, ask the owner whether you still have access.",
+  check: "Check again",
+  close: "Close",
+};
+
+const REMOTE_OFF_TEXT = {
+  title: "Team Crew's owner turned Remote Control off.",
+  body: "Once they turn it on again, press Check again.",
+  check: "Check again",
+  close: "Close",
+};
+
+test("Remote Control off and a denied access stop each show the notice that names their cause", async () => {
+  for (const [code, kind, text] of [
+    ["REMOTE_ACCESS_DISABLED", "remote_off", REMOTE_OFF_TEXT],
+    ["ACCESS_DENIED", "no_access", NO_ACCESS_TEXT],
+  ]) {
+    const { made, createRenewal } = recordedRenewals();
+    const s = setup({ createRenewal, answers: [okFor(TOKEN), refusal(code)] });
+    await s.opener.open(ID);
+    const w = s.win.opened[0];
+    w.cbs.status[0](401);
+    await settle();
+    assert.equal(made[0].isStopped(), true, code);
+    assert.deepEqual(w.notices, [text], code);
+    assert.ok(s.logs.includes(`relay crew ${ID}: open -> notice (${kind})`), code);
+    w.close();
+  }
+});
+
+test("the relay answering the page 403 twice, even with fresh tokens, shows the refused notice", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), okFor(`${TOKEN}-2`)] });
+  await s.opener.open(ID);
+  const w = s.win.opened[0];
+  let reloads = 0;
+  w.reload = () => { reloads += 1; };
+  w.cbs.status.forEach((cb) => cb(403));
+  await settle();
+  assert.equal(s.requests.length, 2, "the first 403 mints again");
+  assert.equal(reloads, 1, "and reloads on the fresh token");
+  assert.deepEqual(w.notices, []);
+  w.cbs.status.forEach((cb) => cb(403));
+  await settle();
+  assert.equal(made[0].isStopped(), true);
+  assert.deepEqual(w.notices, [REFUSED_TEXT], "the page says why instead of the bare 403");
+  assert.equal(s.requests.length, 2, "the notice is up, so nothing restarts behind it");
+  assertNoSecrets([...s.logs]);
+});
+
+test("a page that lands on a 403 after its renewal stopped with no notice mints again and reloads", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), refusal("NOT_SET_UP"), okFor(`${TOKEN}-2`)] });
+  await s.opener.open(ID);
+  const w = s.win.opened[0];
+  let reloads = 0;
+  w.reload = () => { reloads += 1; };
+  w.cbs.status[0](401); // NOT_SET_UP: the renewal stops and no notice comes up
+  await settle();
+  assert.equal(made[0].isStopped(), true);
+  assert.equal(w.opts.getToken(), null);
+  w.cbs.status.forEach((cb) => cb(403)); // the page reloaded itself with no token
+  await settle();
+  await settle();
+  assert.equal(s.requests.length, 3, "one fresh mint");
+  assert.equal(reloads, 1);
+  assert.equal(made[1].isStopped(), false);
+  assert.equal(w.opts.getToken(), `${TOKEN}-2`);
+  w.close();
+});
+
+test("a refused restart of a window on the relay's error page shows a notice instead of the bare page", async () => {
+  const { createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), refusal("NOT_SET_UP"), refusal("UNREACHABLE")] });
+  await s.opener.open(ID);
+  const w = s.win.opened[0];
+  w.showsError = () => true;
+  w.cbs.status[0](401);
+  await settle();
+  w.cbs.status.forEach((cb) => cb(403));
+  await settle();
+  await settle();
+  assert.equal(s.requests.length, 3);
+  assert.deepEqual(w.notices, [UNAVAILABLE_TEXT]);
+  w.close();
+});
+
 test("other stops and a failing renewal show no notice", async () => {
-  for (const code of ["REMOTE_ACCESS_DISABLED", "ACCESS_DENIED", "UNREACHABLE"]) {
+  for (const code of ["UNREACHABLE"]) {
     const { createRenewal } = recordedRenewals();
     const s = setup({ createRenewal, answers: [okFor(TOKEN), refusal(code)] });
     await s.opener.open(ID);
