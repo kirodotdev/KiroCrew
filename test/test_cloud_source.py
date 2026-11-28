@@ -12,8 +12,14 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from cloud_source_host_helpers import present_a_well_kept_host_above
 
 from kiro_crew.cloud import aws, source
+
+
+@pytest.fixture(autouse=True)
+def _well_kept_host(_floor_monkeypatch, tmp_path_factory):
+    present_a_well_kept_host_above(_floor_monkeypatch, tmp_path_factory.getbasetemp())
 
 
 @pytest.fixture(autouse=True)

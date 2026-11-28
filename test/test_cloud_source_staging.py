@@ -16,12 +16,18 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from cloud_source_host_helpers import present_a_well_kept_host_above
 from group_privacy_helpers import _ACL_USER, _acl_xattr, _serve_acl
 
 from conftest import make_dir_link
 from kiro_crew import github_runner, platform_compat, windows_acl
 from kiro_crew.cloud import aws, source
 from kiro_crew.config import ensure_data_home
+
+
+@pytest.fixture(autouse=True)
+def _well_kept_host(_floor_monkeypatch, tmp_path_factory):
+    present_a_well_kept_host_above(_floor_monkeypatch, tmp_path_factory.getbasetemp())
 
 
 @pytest.fixture(autouse=True)

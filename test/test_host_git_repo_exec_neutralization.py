@@ -28,6 +28,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from cloud_source_host_helpers import present_a_well_kept_host_above
 from git_maintenance_helpers import git_maintenance_off_entries
 
 pytestmark = [
@@ -438,6 +439,10 @@ class TestBuildSourceFingerprint:
 
 
 class TestCloudSourceTarball:
+    @pytest.fixture(autouse=True)
+    def _well_kept_host(self, _floor_monkeypatch, tmp_path_factory):
+        present_a_well_kept_host_above(_floor_monkeypatch, tmp_path_factory.getbasetemp())
+
     def test_fixed_key_programs_do_not_run(self, tmp_path):
         from kiro_crew.cloud import source
 
