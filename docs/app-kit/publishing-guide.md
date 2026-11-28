@@ -396,6 +396,26 @@ server, too. Only the static files of an installed UI bundle are still served
 from `/apps/<name>/ui/`. Tell users in your README to trust the app when they enable it; a
 user who has not will see `app_execution_denied` rather than a working install.
 
+### A backend that starts commands
+
+An in-process backend (`backend.hooks`) runs inside the gateway process, and that process is not sandboxed. If the
+command it starts runs something that a role session, an agent or a user can write, such as a test file, a server
+entry file, or a repository's `.git/config` (which git reads), that content runs with the user's full rights. A note
+in the README does not change this.
+
+So a backend starts such a command through the app-backend SDK in
+[`kiro_crew.apps.backend_sdk`](api-reference.md#backend-sdk-kiro_crewappsbackend_sdk), at the `standard` tier or
+stricter: `run_sandboxed_async` (or `run_sandboxed`) for a command it runs to completion, and `sandboxed_argv_async`
+when it reads the output as it comes. Where Kiro Crew cannot sandbox the command, `SandboxUnavailableError` is
+raised (and the import fails on a Kiro Crew without the SDK); stop that step and say why, and do not run the command
+another way. Two details:
+
+- The SDK first shipped in Kiro Crew 0.13.0, so an app that uses it sets `minKiroCrewVersion` to `0.13.0` or later.
+- The sandbox's launcher does not raise for a program that is not there: it exits non-zero. If your code must tell
+  a missing `node` or `git` from a command that failed, check that the program exists before you start it.
+
+Commands that run nothing a session or a user can write (for example `lsof` on the app's own process) do not need it.
+
 Repository layout:
 
 ```
@@ -690,6 +710,9 @@ installed one.
 - [ ] `onUninstall` cleans up everything created outside
       `~/.kiro/crew/apps/{name}/`, and nothing the gateway already manages
 - [ ] `README.md` explains what the app does and how to use it
+- [ ] A backend that starts a command running content a role session, an agent or a user can write (tests, a server, git in a
+      repository they can change) starts it through `kiro_crew.apps.backend_sdk`, stops that step on
+      `SandboxUnavailableError`, and sets `minKiroCrewVersion` to `0.13.0` or later
 - [ ] The app installs and enables cleanly from a local clone
 
 Reviewers check that the manifest is complete, the permissions are proportionate,
