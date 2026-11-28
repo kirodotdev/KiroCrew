@@ -604,6 +604,16 @@ class TestPushGuardWiring:
         assert "could not run (broken copy); not blocking the push" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("base", ["main", "origin/main", "refs/remotes/origin/main"])
+def test_the_command_line_takes_a_remote_qualified_base(monkeypatch, base):
+    # Run on its own, --base origin/main reads refs/remotes/origin/main.
+    mod = _mod()
+    seen = []
+    monkeypatch.setattr(mod, "run", lambda base, git_dir: seen.append((base, git_dir)) or 0)
+    assert mod.main(["--base", base, "--git-dir", "gd"]) == 0
+    assert seen == [("main", "gd")]
+
+
 def test_the_script_and_the_skill_state_the_same_limits():
     mod = _mod()
     doc = mod.__doc__ or ""

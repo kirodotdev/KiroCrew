@@ -625,7 +625,9 @@ def main(argv=None):
         description="Report whether the base moved in files this PR also touches."
     )
     parser.add_argument(
-        "--base", default="main", help="Base branch name, without the origin/ prefix."
+        "--base",
+        default="main",
+        help="Base branch name; a leading origin/ or refs/remotes/origin/ is dropped.",
     )
     parser.add_argument(
         "--pr",
@@ -633,6 +635,12 @@ def main(argv=None):
         help="Take the changed files from this PR instead of the local branch.",
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
+    # The skill passes --base origin/<base> to its scripts, so accept that form
+    # rather than fetching refs/heads/origin/<base>, which never exists.
+    for remote_prefix in ("refs/remotes/origin/", "origin/"):
+        if args.base.startswith(remote_prefix):
+            args.base = args.base[len(remote_prefix) :]
+            break
 
     summary = summarize(base=args.base, pr=args.pr)
     line = format_line(summary)
