@@ -1,8 +1,9 @@
 """Tests that a heredoc body nothing runs is data to the self-subcommand floors.
 
-``cat``, ``tee`` and a bare ``python -`` with no way to shell out only store or print
-their body, so a cloud command written in it is a mention. A body a shell or
-an interpreter runs, or one the outer shell expands, is still read as commands.
+``cat``, ``tee`` and a ``python -``, bare or with ``-u``/``-B``/``-s``, with no way to
+shell out only store or print their body, so a cloud command written in it is a
+mention. A body a shell or an interpreter runs, or one the outer shell expands, is
+still read as commands.
 """
 
 from __future__ import annotations
@@ -36,6 +37,9 @@ def _floor(cmd: str) -> "str | None":
         "python3 - <<'EOF'\nfrom pathlib import Path\n"
         f'Path("note.md").write_text("Pass `{_CLOUD}` to skip the sign-in.\\n")\nEOF',
         f"python3 <<'EOF'\nprint('{_CLOUD}')\nEOF",
+        # Options that change no program the body reaches.
+        "python3 -u -B -s - <<'EOF'\nfrom pathlib import Path\n"
+        f'Path("note.md").write_text("Pass `{_CLOUD}` to skip the sign-in.\\n")\nEOF',
         f"cat > note.md <<'EOF'\nRun `{_CLOUD}` first.\n{_CLOUD}\nEOF",
         f"cat <<EOF > note.md\n{_CLOUD}\nEOF",
         f"tee -a note.md <<'EOF'\n{_CLOUD}\nEOF",

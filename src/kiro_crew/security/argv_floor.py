@@ -272,6 +272,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PYTHON_BODY_NODE_CAP,
         _PYTHON_INERT_CALL_NAMES,
         _PYTHON_INERT_CTORS,
+        _PYTHON_INERT_OPTIONS,
         _PYTHON_WRITE_METHODS,
         _RAW_ASSIGNMENT_RE,
         _SELF_CLOUD_DESTRUCTIVE_VERBS,

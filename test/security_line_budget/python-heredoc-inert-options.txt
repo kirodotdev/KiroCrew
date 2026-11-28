@@ -1,0 +1,10 @@
++10
+The heredoc data view, read by the self-subcommand and ssh-to-self floors, takes a
+python body as data for a bare python [-]. One constant (also listed in the
+argv_floor facade's type-checking manifest) and one condition let it
+also take a python command whose only options are -u, -B and -s, matched in any
+letter case because the self floors read lowered text (so -U, -b and -S too: each
+changes only buffering, .pyc writes, bytes warnings or site dirs, and -U is a
+Python 3 usage error). None changes which program reads the body, so the body is
+data exactly when the same command without them reads it as data. Every other
+option, including -I (read lowered as -i), keeps the body.
