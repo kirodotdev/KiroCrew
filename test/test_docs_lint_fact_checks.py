@@ -373,6 +373,17 @@ class TestDeadIdentifier:
         _write(tree, "docs/ok.md", "# Ok\n\nRouted through `vanished_handler`.\n")
         assert "vanished_handler" in _tokens(tree, gate.CHECK_DEAD_IDENTIFIER)
 
+    def test_a_name_repeated_in_one_doc_is_one_finding_per_doc(self, tree: Path) -> None:
+        _write(tree, "src/kiro_crew/real.py", "a = 1\n")
+        body = "Routed through `vanished_handler`, then `vanished_handler` again.\n"
+        _write(tree, "docs/ok.md", f"# Ok\n\n{body}\nAnd `vanished_handler`.\n")
+        _write(tree, "docs/other.md", f"# Other\n\n{body}")
+        findings = gate.run(tree)
+        assert sorted((f.path, f.token) for f in findings.advisories) == [
+            ("docs/ok.md", "vanished_handler"),
+            ("docs/other.md", "vanished_handler"),
+        ]
+
     def test_is_advisory_unless_strict(self, tree: Path) -> None:
         _write(tree, "src/kiro_crew/real.py", "a = 1\n")
         _write(tree, "docs/ok.md", "# Ok\n\nRouted through `vanished_handler`.\n")
