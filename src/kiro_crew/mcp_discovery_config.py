@@ -651,7 +651,12 @@ def list_servers() -> list[McpServerInfo]:
             # runtime's, so the row falls back to "Not verified" until a re-probe.
             from kiro_crew.connections import crew_oauth  # circular: crew_oauth reads list_servers
 
-            if not cached.auth_crew_held or crew_oauth.manages(s.name):
+            entry = {"url": s.url, "headers": s.headers, "type": s.declared_type}
+            if (
+                not cached.auth_crew_held
+                or crew_oauth.manages(s.name)
+                or crew_oauth.custom_sign_in_key(s.name, entry)
+            ):
                 s.auth_grant_present = cached.auth_grant_present
                 s.auth_crew_held = cached.auth_crew_held
         # A registry pointer never has a probe result of its own, so without this

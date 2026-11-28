@@ -749,6 +749,13 @@ def relay_crew_connection(
         )
         return _shim_entry(stdio, session_key, agent_id, server, _UNWRITTEN_VERSION)
     name = snapshot_name(session_key, agent_id, server, version)
+    if isinstance(headers, Mapping):
+        from kiro_crew.mcp_gateway.rewriter_env import _expand_env_map
+
+        # ``${VAR}`` placeholders resolve here, as the header relay does
+        # (:func:`relay_withheld_headers`): the gateway sends these upstream
+        # itself, so a literal ``Token ${BACKEND_TOKEN}`` would reach the server.
+        headers = _expand_env_map(dict(headers), server=server)
     if not crew_oauth_proxy.register_bridge(
         version=version,
         token=token,

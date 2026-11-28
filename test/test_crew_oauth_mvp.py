@@ -1102,6 +1102,24 @@ def test_a_non_auth_header_entry_is_bridged_and_keeps_its_header(home, monkeypat
     assert bridge.extra_headers == {"User-Agent": "my-client"}
 
 
+def test_a_bridged_entry_header_placeholder_is_expanded_in_the_gateway(home, monkeypatch):
+    """A ``${VAR}`` in a bridged entry's header reaches the server as the value."""
+    import kiro_crew.mcp_gateway.rewriter_env as rewriter_env
+
+    monkeypatch.setattr(crew_oauth, "enabled", lambda: True)
+    monkeypatch.setattr(crew_oauth, "_chat_backend_bridged", lambda: True)
+    monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
+    monkeypatch.setattr(rewriter_env, "_placeholder_source_env", lambda: {"UA": "ua-1"})
+    spec = _github_spec()
+    spec["mcpServers"]["github"]["headers"] = {"User-Agent": "client ${UA}"}
+    out = kas_agents.to_client_custom_agent("kirocrew", spec, "p", session_key=SESSION)
+    names = kas_env_launch.batch_snapshot_names([out])
+    doc = json.loads((home / "crew-oauth-bridge" / names[0]).read_text())
+    assert "headers" not in doc and "ua-1" not in json.dumps(doc)
+    (bridge,) = crew_oauth_proxy._bridges.values()
+    assert bridge.extra_headers == {"User-Agent": "client ua-1"}
+
+
 @pytest.mark.asyncio
 async def test_the_proxy_sends_the_entry_header_beside_crews_bearer(proxy_env):
     seen: list = []

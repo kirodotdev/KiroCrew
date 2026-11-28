@@ -9,8 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import urllib.parse
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from mcp_discovery_helpers import (  # noqa: F401 -- registers the no-DNS probe fixture
+    _stub_remote_probe_ssrf_vet,
+)
 
 from kiro_crew.connections import crew_oauth, crew_oauth_dcr
 from kiro_crew.connections.crew_oauth import CrewOAuthError, TokenStore
@@ -285,10 +290,14 @@ def test_an_owner_server_is_bridged_only_once_crew_holds_its_grant(owner):
     )
     # kiro-cli keeps its native path.
     assert crew_oauth.routed_slug("acme", entry, None, backend="kiro") == ""
-    # Its own credential header keeps its own path.
+    # Its own Authorization header keeps its own path.
     assert (
         crew_oauth.routed_slug("acme", {"url": MCP, "headers": {"Authorization": "x"}}, None) == ""
     )
+    # A backend-token header rides along with Crew's OAuth instead of disabling it.
+    assert crew_oauth.routed_slug(
+        "acme", {"url": MCP, "headers": {"x-backend-token": "Token x"}}, None, backend="kas"
+    ) == crew_oauth.custom_key("acme", MCP)
 
 
 def test_a_re_pointed_or_unrecorded_server_is_never_bridged(owner):
@@ -302,7 +311,12 @@ def test_the_dashboard_sign_in_goes_to_crew_only_with_the_flag_and_a_bridged_cha
     owner, monkeypatch
 ):
     assert crew_oauth.signs_in_custom("acme", {"url": MCP})
-    assert not crew_oauth.signs_in_custom("acme", {"url": MCP, "headers": {"X-Api-Key": "k"}})
+    # Only an Authorization header replaces the OAuth bearer; any other header
+    # (a backend token such as x-backend-token) is sent beside it.
+    assert not crew_oauth.signs_in_custom("acme", {"url": MCP, "headers": {"Authorization": "k"}})
+    assert crew_oauth.signs_in_custom(
+        "acme", {"url": MCP, "headers": {"x-backend-token": "Token k"}}
+    )
     monkeypatch.setattr(crew_oauth, "_chat_backend", lambda: "kiro")
     assert not crew_oauth.signs_in_custom("acme", {"url": MCP})
     monkeypatch.setattr(crew_oauth, "_chat_backend", lambda: "kas")
@@ -650,3 +664,171 @@ def test_a_custom_server_with_a_long_dcr_client_id_reaches_consent(vendor, monke
         await row["client"].shutdown()
 
     asyncio.run(_run())
+
+
+def test_an_owner_server_listing_both_secret_methods_registers_and_swaps_by_form(vendor):
+    """A hosted MCP gateway lists Basic but reads ``client_id`` only from the form."""
+    vendor.docs[f"{ISS}/.well-known/oauth-authorization-server"] = {
+        **AS_DOC,
+        "registration_endpoint": f"{ISS}/register",
+        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+    }
+    vendor.posts[f"{ISS}/register"] = [(201, {"client_id": "cid", "client_secret": "sec"}, "")]
+    key = crew_oauth.custom_key("gw", MCP)
+    plan = asyncio.run(crew_oauth_dcr.prepare_custom(key, MCP, {}))
+    registered = [c for c in vendor.calls if c[0] == "POST" and c[1].endswith("/register")]
+    assert registered[0][3]["token_endpoint_auth_method"] == "client_secret_post"
+    assert plan.client.auth_method == "client_secret_post"
+    vendor.posts[TOKEN_URL] = [(200, {"access_token": "at", "refresh_token": "rt"}, "")]
+    asyncio.run(crew_oauth_dcr.exchange(plan.client, "code", "v"))
+    _, _, form, _, auth = vendor.calls[-1]
+    assert (form["client_id"], form["client_secret"], auth) == ("cid", "sec", None)
+
+
+@pytest.fixture()
+def custom_probe(owner, monkeypatch):
+    """Real custom eligibility with a tokenless HTTP challenge and no host reads."""
+    import kiro_crew.config.loader as loader
+    from kiro_crew import mcp_discovery as discovery
+    from kiro_crew.connections.owner_servers import CONFIG_ROOT_KEY, CONFIG_SERVERS_KEY
+
+    entries = {"acme": {"url": MCP, "headers": {"x-backend-token": "Token synthetic"}}}
+    records = loader.read_config_for_update()[CONFIG_ROOT_KEY][CONFIG_SERVERS_KEY]
+    monkeypatch.setattr(discovery, "_load_agent_config", lambda: {"mcpServers": entries})
+    monkeypatch.setattr(discovery, "_load_mcp_json_by_source", lambda: {})
+    monkeypatch.setattr(discovery, "_probe_cache", {})
+    runtime = AsyncMock(return_value=True)
+    monkeypatch.setattr(discovery, "_runtime_grant_present", runtime)
+    response = MagicMock(status=401, headers={"WWW-Authenticate": 'Bearer scope="read"'})
+    response.__aenter__ = AsyncMock(return_value=response)
+    response.__aexit__ = AsyncMock(return_value=False)
+    session = MagicMock()
+    session.post.return_value = response
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(discovery.aiohttp, "ClientSession", lambda **kwargs: session)
+    return SimpleNamespace(
+        discovery=discovery, entries=entries, records=records, held=owner, runtime=runtime
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held", [False, True])
+async def test_custom_probe_and_listing_keep_missing_and_present_crew_grants(custom_probe, held):
+    p = custom_probe
+    key = crew_oauth.custom_key("acme", MCP)
+    if held:
+        p.held.add(key)
+    (server,) = p.discovery.list_servers()
+    result = await p.discovery._probe_remote(server)
+    assert result.status == "needs_auth" and result.auth_challenge
+    assert result.auth_crew_held and result.auth_grant_present is held
+    (listed,) = await asyncio.to_thread(p.discovery.list_servers)
+    assert listed.to_dict()["authCrewHeld"] is True
+    assert listed.to_dict()["authGrantPresent"] is held
+    p.runtime.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["unrecorded", "repointed", "reserved-name", "legacy-sse"])
+async def test_custom_probe_keeps_runtime_grants_without_current_owner_eligibility(
+    custom_probe, kind
+):
+    p = custom_probe
+    if kind == "unrecorded":
+        p.records.clear()
+    elif kind == "repointed":
+        p.entries["acme"]["url"] = MCP + "/other"
+    elif kind == "reserved-name":
+        p.entries["GitHub"] = p.entries.pop("acme")
+        p.records["GitHub"] = p.records.pop("acme")
+    else:
+        p.entries["acme"]["type"] = "sse"
+    (server,) = p.discovery.list_servers()
+    result = await p.discovery._probe_remote(server)
+    assert result.auth_grant_present is True and not result.auth_crew_held
+    p.runtime.assert_awaited_once_with(server.url, server.name, has_headers=True)
+    (listed,) = await asyncio.to_thread(p.discovery.list_servers)
+    assert listed.auth_grant_present is True and not listed.auth_crew_held
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        "unrecorded",
+        "owner-url",
+        "preview",
+        "backend",
+        "url",
+        "header-name",
+        "authorization",
+        "sse",
+        "unreadable",
+    ],
+)
+async def test_cached_custom_custody_requires_current_eligibility_and_identity(
+    custom_probe, monkeypatch, change
+):
+    p = custom_probe
+    p.held.add(crew_oauth.custom_key("acme", MCP))
+    (server,) = p.discovery.list_servers()
+    await p.discovery._probe_remote(server)
+    assert (await asyncio.to_thread(p.discovery.list_servers))[0].auth_grant_present is True
+    if change == "unrecorded":
+        p.records.clear()
+    elif change == "owner-url":
+        p.records["acme"]["url"] = MCP + "/other"
+    elif change == "preview":
+        monkeypatch.setattr(crew_oauth, "enabled", lambda: False)
+    elif change == "backend":
+        monkeypatch.setattr(crew_oauth, "_chat_backend", lambda: "kiro")
+    elif change == "url":
+        p.entries["acme"]["url"] = MCP + "/other"
+        p.records["acme"]["url"] = MCP + "/other"
+    elif change == "header-name":
+        p.entries["acme"]["headers"] = {"X-Tenant": "one"}
+    elif change == "authorization":
+        p.entries["acme"]["headers"] = {"Authorization": "Bearer synthetic"}
+    elif change == "sse":
+        p.entries["acme"]["type"] = "sse"
+    else:
+
+        def unreadable():
+            raise OSError("owner record unavailable")
+
+        monkeypatch.setattr("kiro_crew.config.loader.read_config_for_update", unreadable)
+    (listed,) = await asyncio.to_thread(p.discovery.list_servers)
+    assert listed.auth_grant_present is None and not listed.auth_crew_held
+    assert "authGrantPresent" not in listed.to_dict()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("own_header", [False, True])
+async def test_provider_card_keeps_its_existing_header_custody_rules(custom_probe, own_header):
+    from kiro_crew.connections.registry import get_provider
+
+    p = custom_probe
+    url = str(get_provider("notion")["mcp_url"])
+    headers = {"X-Api-Key": "synthetic"} if own_header else {"User-Agent": "client"}
+    p.entries.clear()
+    p.entries["notion"] = {"url": url, "headers": headers}
+    p.held.add("notion")
+    (server,) = p.discovery.list_servers()
+    result = await p.discovery._probe_remote(server)
+    assert result.auth_grant_present is True
+    assert result.auth_crew_held is (not own_header)
+    (listed,) = await asyncio.to_thread(p.discovery.list_servers)
+    assert listed.auth_grant_present is True and listed.auth_crew_held is (not own_header)
+    if own_header:
+        p.runtime.assert_awaited_once()
+    else:
+        p.runtime.assert_not_awaited()
+
+
+def test_a_custom_status_key_refuses_an_alias_name_even_with_an_owner_record(owner):
+    import kiro_crew.config.loader as loader
+
+    config = loader.read_config_for_update()
+    config["connections"]["owner_mcp_servers"]["bad/name"] = {"url": MCP}
+    assert crew_oauth.custom_sign_in_key("bad/name", {"url": MCP}) == ""
