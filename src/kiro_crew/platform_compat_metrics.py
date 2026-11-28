@@ -731,8 +731,8 @@ def proc_cpu_nanos_for_pid(pid: int) -> int | None:
 
     Root pid ONLY — deliberately no subtree walk here: this probe runs on a read
     loop's cadence and Windows has no child enumeration cheap enough for that. A
-    caller that needs the subtree total uses :func:`proc_subtree_sample` on Linux,
-    or walks :func:`darwin_child_pids` and sums this per pid on macOS (the
+    caller that needs the subtree total uses :func:`proc_subtree_sample` on Linux
+    and Windows, or walks :func:`darwin_child_pids` and sums this per pid on macOS (the
     liveness oracle's darwin backend does exactly that).
     """
     if type(pid) is not int or pid <= 0:
@@ -863,6 +863,11 @@ def proc_subtree_sample(
     tables, so it costs far more than a ``status`` read: for an occasional
     one-off reading, never a periodic sweep.
 
+    Windows has no ``/proc``: there the tree is the lineage-validated one
+    :func:`descendant_termination_handles` returns (two Toolhelp snapshots), RSS
+    is the members' summed working sets and CPU their summed ``GetProcessTimes``
+    in 100 Hz ticks. :func:`proc_rss_tree_mb_for_pid` reads this same walk.
+
     Coverage caveat for a new caller: the walk reads
     ``/proc/<pid>/task/<tid>/children``, which needs ``CONFIG_PROC_CHILDREN`` and
     is documented as reliable only for frozen tasks, so a live tree can come back
@@ -876,6 +881,40 @@ def proc_subtree_sample(
     """
     if not pid:
         return SubtreeSample(-1, 0, None, None)
+    if IS_WINDOWS:
+        if type(pid) is not int or pid <= 1 or not (rss or jiffies):
+            return SubtreeSample(-1, 0, None, None)
+        root_handle = _open_process_termination_handle(pid)
+        descendants: dict[int, int] = {}
+        rss_bytes: int | None = None
+        cpu_nanos = 0
+        try:
+            identity = (
+                None if root_handle is None else _windows_process_handle_identity(root_handle)
+            )
+            # An unanchored root, or one whose identity shows a recycled PID, is
+            # measured alone rather than as an unvalidated tree.
+            if identity is not None and identity[0] == pid:
+                try:
+                    descendants = descendant_termination_handles(pid, root_handle=root_handle)
+                except Exception:
+                    # Enumeration failed (transient snapshot race): the root alone.
+                    descendants = {}
+            for member in (pid, *descendants):
+                member_rss = proc_rss_bytes_for_pid(member) if rss else None
+                if member_rss is not None:
+                    rss_bytes = (rss_bytes or 0) + member_rss
+                if jiffies:
+                    cpu_nanos += proc_cpu_nanos_for_pid(member) or 0
+        finally:
+            for handle in descendants.values():
+                close_process_handle(handle)
+            if root_handle is not None:
+                close_process_handle(root_handle)
+        # CPU in ticks of 100 Hz, the clock rate callers assume where
+        # ``SC_CLK_TCK`` does not exist, so their CPU math holds.
+        rss_kb = -1 if rss_bytes is None else rss_bytes // 1024
+        return SubtreeSample(rss_kb, cpu_nanos // 10_000_000, None, None)
     # The counts share RSS's liveness probe: a root pid whose own status cannot
     # be read has nothing to attribute, so there is nothing to count either.
     own_rss = _proc_status_rss_kb(pid) if (rss or counts) else -1
@@ -941,36 +980,8 @@ def proc_rss_tree_mb_for_pid(pid: int) -> float | None:
         return None
     if type(pid) is not int or pid <= 1:
         return None
-    root_handle = _open_process_termination_handle(pid)
-    if root_handle is None:
-        # Cannot even anchor the root — fall back to the single-process read so a
-        # readable self still yields a number rather than a spurious None.
-        rss = proc_rss_bytes_for_pid(pid)
-        return None if rss is None else rss / (1024 * 1024)
-    descendants: dict[int, int] = {}
-    try:
-        identity = _windows_process_handle_identity(root_handle)
-        if identity is None or identity[0] != pid:
-            rss = proc_rss_bytes_for_pid(pid)
-            return None if rss is None else rss / (1024 * 1024)
-        try:
-            descendants = descendant_termination_handles(pid, root_handle=root_handle)
-        except Exception:
-            # Enumeration failed (transient snapshot race): measure the root
-            # alone rather than an unvalidated tree.
-            descendants = {}
-        total_bytes = 0
-        found = False
-        for member in (pid, *descendants):
-            member_rss = proc_rss_bytes_for_pid(member)
-            if member_rss is not None:
-                total_bytes += member_rss
-                found = True
-        return total_bytes / (1024 * 1024) if found else None
-    finally:
-        for handle in descendants.values():
-            close_process_handle(handle)
-        close_process_handle(root_handle)
+    rss_kb = proc_subtree_sample(pid, jiffies=False).rss_kb
+    return None if rss_kb < 0 else rss_kb / 1024
 
 
 def proc_cpu_seconds() -> float:

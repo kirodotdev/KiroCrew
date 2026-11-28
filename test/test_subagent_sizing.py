@@ -858,6 +858,7 @@ class TestSubtreeCpuJiffies:
         # tree: 1 -> [2, 3]; 2 -> [4]
         children = {1: [2, 3], 2: [4], 3: [], 4: []}
         jiffies = {1: 100, 2: 50, 3: 25, 4: 10}
+        monkeypatch.setattr(sub.platform_compat, "IS_WINDOWS", False)
         monkeypatch.setattr(
             sub.platform_compat, "_proc_children", lambda pid: children.get(pid, [])
         )
@@ -983,6 +984,38 @@ class TestSampleLiveCosts:
         )
         m._sample_live_costs()
         assert a.peak_rss_gb == pytest.approx(3.0, abs=0.01)
+
+    @pytest.mark.parametrize("shared", [False, True])
+    def test_windows_tree_readings_reach_the_cost_log(self, monkeypatch, tmp_path, shared) -> None:
+        """Windows has no ``/proc``: the sweep reads the lineage-validated tree
+        through the real walker, and the run lands in the cost log."""
+        import json
+
+        import kiro_crew.platform_compat as pc
+        import kiro_crew.subagent_cost as cost
+
+        log = tmp_path / "cost_samples.jsonl"
+        monkeypatch.setattr(cost, "_cost_log_path", lambda: log)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid: 900)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (4242, 1, None))
+        monkeypatch.setattr(pc, "descendant_termination_handles", lambda _pid, **_k: {4243: 901})
+        monkeypatch.setattr(pc, "close_process_handle", lambda _h: None)
+        rss = {4242: 256 * 1024 * 1024, 4243: 256 * 1024 * 1024}
+        monkeypatch.setattr(pc, "proc_rss_bytes_for_pid", rss.get)
+        monkeypatch.setattr(pc, "proc_cpu_nanos_for_pid", lambda _pid: 1_000_000_000)
+
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent()
+        info._session_sharing = shared
+        m._agents = {"a1": info}
+        m._sample_live_costs()
+        m._sample_live_costs()
+        m._record_cost(info)
+
+        (record,) = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        assert record["mem_gb"] == pytest.approx(0.5, abs=0.01)
+        assert record.get("shared", False) is shared
 
 
 # Settled-runtime reading: what a dedicated runtime holds once it is up, which

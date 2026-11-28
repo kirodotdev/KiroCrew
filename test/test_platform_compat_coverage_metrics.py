@@ -457,6 +457,61 @@ class TestProcRssTree:
         assert pc.proc_rss_tree_mb_for_pid(500) is None
 
 
+class TestProcSubtreeSampleWindows:
+    """The Windows arm the sub-agent cost sweep and the gateway pool read."""
+
+    def _tree(self, monkeypatch: pytest.MonkeyPatch, closed: list[int]) -> None:
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid: 900)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (500, 1, None))
+        monkeypatch.setattr(pc, "descendant_termination_handles", lambda _pid, **_k: {501: 901})
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+
+    def test_sums_rss_and_cpu_over_the_validated_tree(self, monkeypatch):
+        closed: list[int] = []
+        self._tree(monkeypatch, closed)
+        rss = {500: 2 * 1024 * 1024, 501: 1024 * 1024}
+        cpu = {500: 1_500_000_000, 501: 500_000_000}
+        monkeypatch.setattr(pc, "proc_rss_bytes_for_pid", rss.get)
+        monkeypatch.setattr(pc, "proc_cpu_nanos_for_pid", cpu.get)
+
+        sample = pc.proc_subtree_sample(500, counts=True, needles=("stub",), pss=True)
+
+        # Two CPU seconds read as 200 ticks of the 100 Hz clock the sweep divides by.
+        assert sample == pc.SubtreeSample(3072, 200, None, None, -1)
+        assert sorted(closed) == [900, 901]
+
+    def test_a_skipped_reading_is_not_read(self, monkeypatch):
+        def _refuse(_pid: int) -> int:
+            raise AssertionError("a skipped reading was read")
+
+        self._tree(monkeypatch, [])
+        monkeypatch.setattr(pc, "proc_rss_bytes_for_pid", _refuse)
+        monkeypatch.setattr(pc, "proc_cpu_nanos_for_pid", lambda _pid: 1_000_000_000)
+        assert pc.proc_subtree_sample(500, rss=False) == pc.SubtreeSample(-1, 200, None, None)
+
+        monkeypatch.setattr(pc, "proc_rss_bytes_for_pid", lambda _pid: 4096)
+        monkeypatch.setattr(pc, "proc_cpu_nanos_for_pid", _refuse)
+        assert pc.proc_subtree_sample(500, jiffies=False) == pc.SubtreeSample(8, 0, None, None)
+
+    def test_an_unreadable_tree_keeps_the_sentinels(self, monkeypatch):
+        self._tree(monkeypatch, [])
+        monkeypatch.setattr(pc, "proc_rss_bytes_for_pid", lambda _pid: None)
+        monkeypatch.setattr(pc, "proc_cpu_nanos_for_pid", lambda _pid: None)
+        assert pc.proc_subtree_sample(500) == pc.SubtreeSample(-1, 0, None, None)
+
+    @pytest.mark.parametrize(
+        ("pid", "kwargs"), [(1, {}), (True, {}), (500, {"rss": False, "jiffies": False})]
+    )
+    def test_nothing_to_measure_does_not_walk(self, monkeypatch, pid, kwargs):
+        def _refuse(_pid: int) -> int:
+            raise AssertionError("walked a tree with nothing to measure")
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", _refuse)
+        assert pc.proc_subtree_sample(pid, **kwargs) == pc.SubtreeSample(-1, 0, None, None)
+
+
 class TestProcCpuSeconds:
     def test_posix_sums_user_and_system_time(self, monkeypatch):
         monkeypatch.setattr(pc, "IS_POSIX", True)

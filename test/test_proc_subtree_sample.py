@@ -46,6 +46,7 @@ def _fake_tree(*, needles: tuple[str, ...] = ()):
     """Patch the shared per-process reads to describe :data:`TREE`."""
     return (
         patch.object(platform_compat, "IS_LINUX", True),
+        patch.object(platform_compat, "IS_WINDOWS", False),
         patch.object(platform_compat, "_proc_status_rss_kb", side_effect=lambda p: RSS.get(p, -1)),
         patch.object(platform_compat, "_proc_cpu_jiffies", side_effect=lambda p: JIFFIES.get(p, 0)),
         patch.object(platform_compat, "_proc_children", side_effect=lambda p: TREE.get(p, [])),
@@ -58,7 +59,7 @@ def _fake_tree(*, needles: tuple[str, ...] = ()):
 
 
 class _FakeTree:
-    """:func:`_fake_tree` as a context manager, since it patches five names."""
+    """:func:`_fake_tree` as a context manager, since it patches six names."""
 
     def __init__(self, *, needles: tuple[str, ...] = ()) -> None:
         self._patches = _fake_tree(needles=needles)
@@ -230,6 +231,7 @@ class TestSubtreeWalk:
 
     def test_cycles_and_dead_children_do_not_break_the_sum(self) -> None:
         with (
+            patch.object(platform_compat, "IS_WINDOWS", False),
             patch.object(platform_compat, "_proc_status_rss_kb", lambda p: 100 if p == 1 else -1),
             patch.object(platform_compat, "_proc_children", lambda p: [1, 2] if p == 1 else []),
         ):
@@ -256,6 +258,7 @@ class TestSubtreeWalk:
     def test_the_walk_is_bounded_by_one_ceiling(self) -> None:
         with (
             patch.object(platform_compat, "IS_LINUX", True),
+            patch.object(platform_compat, "IS_WINDOWS", False),
             patch.object(platform_compat, "_proc_status_rss_kb", return_value=1024),
             patch.object(platform_compat, "_proc_cpu_jiffies", return_value=1),
             patch.object(
