@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useInsertionEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { guideConfirm } from '../uiLocations/targetRegistry'
 
 import Modal from './Modal'
@@ -42,18 +42,47 @@ interface PendingConfirm {
   resolve: (confirmed: boolean) => void
 }
 
+function ConfirmControls({ question, onMountChange, onAnswer }: {
+  question: PendingConfirm
+  onMountChange: (question: PendingConfirm, surface: object, mounted: boolean) => void
+  onAnswer: (confirmed: boolean, question: PendingConfirm, surface: object) => void
+}) {
+  const surface = useRef({}).current
+  const { opts } = question
+  useLayoutEffect(() => {
+    onMountChange(question, surface, true)
+    return () => { onMountChange(question, surface, false) }
+  }, [question, surface, onMountChange])
+  return (
+    <>
+      <Btn onClick={() => onAnswer(false, question, surface)}>
+        {i18nT('components.confirmDialog.cancel')}
+      </Btn>
+      {/* What a guide's destructive step waits for: this press, never a cancel. */}
+      <Btn danger={!opts.primary && opts.danger !== false} primary={opts.primary} onClick={() => onAnswer(true, question, surface)} {...guideConfirm()}>
+        {opts.confirmLabel}
+      </Btn>
+    </>
+  )
+}
+
 /**
- * Promise-based confirm for one component: `confirm(opts)` resolves `true`
- * only when the user presses the confirm button; Cancel, Escape, the X
- * button, and a backdrop click all resolve `false`. Render `confirmDialog`
- * once in the component's JSX.
- *
- * Unlike `window.confirm`, the UI stays live while the dialog is open, so a
- * caller that reads mutable state after the `await` must re-read or capture
- * it — the answer can arrive an arbitrary time later. A component that owns a
- * document-level keyboard handler should skip it entirely while `confirmOpen`
- * is true: Escape would re-trigger the guard the dialog just dismissed, and a
- * save shortcut would persist the draft the user is about to discard.
+ * `confirm(opts)` resolves `true` only when the user presses the confirm
+ * button; Cancel, Escape, the X button and a backdrop click resolve `false`.
+ * Render `confirmDialog` once in the component's JSX.
+ * An ask also resolves `false` when its owner unmounts, a newer ask replaces
+ * it, or its dialog is not rendered or stops being rendered, releasing callers
+ * when no answer is possible.
+ * An ask made while React holds the owner's update (a pending transition or
+ * suspended ancestor) stays open until React commits, then appears normally.
+ * `body` must render synchronously because suspension defers the dialog with
+ * its owner.
+ * The UI stays live while the dialog is open, so capture the confirmed target
+ * before awaiting and re-read any other mutable state that must be current
+ * when the answer arrives. A component that owns a document-level
+ * keyboard handler should skip it while `confirmOpen` is true: Escape would
+ * re-trigger the guard the dialog just dismissed, and a save shortcut would
+ * persist the draft the user is about to discard.
  */
 export function useConfirm(): {
   confirm: (opts: ConfirmOptions) => Promise<boolean>
@@ -63,55 +92,110 @@ export function useConfirm(): {
 } {
   const [pending, setPending] = useState<PendingConfirm | null>(null)
   const pendingRef = useRef<PendingConfirm | null>(null)
-  // Keeps the last options through the exit animation: Modal stays mounted
-  // with open=false so AnimatePresence can play the dialog out, and it still
-  // needs a title/footer to render while doing so.
-  const lastOptsRef = useRef<ConfirmOptions | null>(null)
+  const ownerMountedRef = useRef(false)
+  const ownerEffectMountedRef = useRef(false)
+  const committedSurfaceRef = useRef<{ question: PendingConfirm; surface: object } | null>(null)
+  // Exit animations still need the answered question's title and controls.
+  const [lastQuestion, setLastQuestion] = useState<PendingConfirm | null>(null)
 
   const confirm = useCallback((opts: ConfirmOptions) => {
     return new Promise<boolean>(resolve => {
-      // A second ask while one is open answers the first "no" rather than
-      // leaking its promise (and its awaiting caller) forever.
+      if (!ownerMountedRef.current) {
+        resolve(false)
+        return
+      }
+      // Replacing a question must release its awaiting caller.
       pendingRef.current?.resolve(false)
       const next = { opts, resolve }
       pendingRef.current = next
-      lastOptsRef.current = opts
+      setLastQuestion(next)
       setPending(next)
     })
   }, [])
 
-  const settle = useCallback((confirmed: boolean) => {
-    pendingRef.current?.resolve(confirmed)
+  const settle = useCallback((confirmed: boolean, question = pendingRef.current, surface?: object) => {
+    const current = pendingRef.current
+    if (!current || current !== question) return
+    // Only the current mounted controls can approve, even after the question remounts.
+    if (confirmed && (!ownerMountedRef.current
+        || committedSurfaceRef.current?.question !== current
+        || committedSurfaceRef.current.surface !== surface)) return
+    current.resolve(confirmed)
     pendingRef.current = null
     setPending(null)
   }, [])
 
-  // An unmount while the dialog is open answers "no" so the awaiting caller
-  // is released instead of suspended forever.
-  useEffect(() => () => {
-    pendingRef.current?.resolve(false)
-    pendingRef.current = null
+  // Descendant layout effects can ask before the owner's layout effects run.
+  useInsertionEffect(() => {
+    ownerMountedRef.current = true
+    return () => {
+      ownerMountedRef.current = false
+      pendingRef.current?.resolve(false)
+      pendingRef.current = null
+    }
   }, [])
 
-  const opts = pending?.opts ?? lastOptsRef.current
-  const confirmDialog = opts ? (
+  const cancelMissingSurface = useCallback((question: PendingConfirm) => {
+    // Portals and same-commit remounts can supply controls after a cleanup.
+    queueMicrotask(() => {
+      if (!ownerMountedRef.current || pendingRef.current !== question
+          || committedSurfaceRef.current?.question === question) return
+      settle(false, question)
+      setLastQuestion(retained => retained === question ? null : retained)
+    })
+  }, [settle])
+
+  // Suspense hides disconnect layout effects even if no controls ever commit.
+  useLayoutEffect(() => () => {
+    const question = pendingRef.current
+    if (question) cancelMissingSurface(question)
+  }, [cancelMissingSurface])
+
+  // Hidden-tree deletion can skip insertion cleanup; passive effects still detach.
+  useEffect(() => {
+    ownerEffectMountedRef.current = true
+    return () => {
+      ownerEffectMountedRef.current = false
+      queueMicrotask(() => {
+        if (ownerEffectMountedRef.current) return
+        ownerMountedRef.current = false
+        pendingRef.current?.resolve(false)
+        pendingRef.current = null
+      })
+    }
+  }, [])
+
+  const handleDialogMountChange = useCallback((question: PendingConfirm, surface: object, mounted: boolean) => {
+    if (mounted) {
+      committedSurfaceRef.current = { question, surface }
+      return
+    }
+    const committed = committedSurfaceRef.current
+    if (committed?.question !== question || committed.surface !== surface) return
+    committedSurfaceRef.current = null
+    if (pendingRef.current === question) cancelMissingSurface(question)
+  }, [cancelMissingSurface])
+
+  useEffect(() => {
+    if (!pending || committedSurfaceRef.current?.question === pending) return
+    cancelMissingSurface(pending)
+  }, [pending, cancelMissingSurface])
+
+  const finishExit = useCallback((question: PendingConfirm) => {
+    setLastQuestion(retained => retained === question && !pendingRef.current ? null : retained)
+  }, [])
+
+  const question = pending ?? lastQuestion
+  const opts = question?.opts
+  const confirmDialog = question && opts ? (
     <Modal
       open={!!pending}
-      onClose={() => settle(false)}
+      onClose={() => settle(false, question)}
       title={opts.title}
       maxWidth={440}
       layer={opts.layer}
-      footer={
-        <>
-          <Btn onClick={() => settle(false)}>
-            {i18nT('components.confirmDialog.cancel')}
-          </Btn>
-          {/* What a guide's destructive step waits for: this press, never a cancel. */}
-          <Btn danger={!opts.primary && opts.danger !== false} primary={opts.primary} onClick={() => settle(true)} {...guideConfirm()}>
-            {opts.confirmLabel}
-          </Btn>
-        </>
-      }
+      onExitComplete={() => finishExit(question)}
+      footer={<ConfirmControls question={question} onMountChange={handleDialogMountChange} onAnswer={settle} />}
     >
       {/* Full-contrast body: this line carries the consequence ("permanently
           deletes bucket …"), which must not read quieter than the buttons.
