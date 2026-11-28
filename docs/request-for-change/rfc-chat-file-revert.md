@@ -1,6 +1,6 @@
 ---
 title: Revert an agent's file edit from its card in dashboard chat
-status: draft
+status: accepted
 author: RohanK6
 created: 2026-11-11
 last-audited: 2026-11-24
@@ -14,8 +14,10 @@ superseded-by: []
 
 # RFC: Revert an agent's file edit from its card in dashboard chat
 
-- **Status:** Draft. Acceptance requested from a maintainer; the status flips to
-  `accepted` when one records it on this line.
+- **Status:** Accepted by maintainer bolichen97 in his
+  [approving review of #35344](https://github.com/kirodotdev/KiroCrew/pull/35344#pullrequestreview-6063857474)
+  on 2026-11-25. Condition: the implementation PR gets a security review, because
+  it adds a gateway write outside the sandbox.
 - **Verified at:** `3d36b459fd`. Every code reference below was read at that commit.
 - **Tracks:** [#13694](https://github.com/kirodotdev/KiroCrew/issues/13694).
 - **Already decided there** (maintainer bolichen97, 2026-10-08): restore a
