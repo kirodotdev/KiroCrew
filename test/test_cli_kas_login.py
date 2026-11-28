@@ -390,6 +390,26 @@ class TestLogin:
         assert "ignoring --region" in err
         assert fake_service.begun[0]["provider"] == "google"
 
+    @pytest.mark.parametrize("provider", ["builder_id", "google", "github"])
+    def test_an_lts_build_starts_no_personal_sign_in(
+        self, home_store, fake_service, capsys, monkeypatch, provider
+    ):
+        """The LTS checks refuse a Builder ID or social vault sign-in, so the verb's
+        default (builder_id) must not store one; it names the company SSO command."""
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
+        assert cli_kas.kas_cmd(_parse("login", "--provider", provider)) == 2
+        err = capsys.readouterr().err
+        assert "IAM Identity Center" in err
+        assert "kas login --provider idc --start-url" in err
+        assert fake_service.begun == []
+
+    def test_an_lts_build_still_starts_company_sso(self, home_store, fake_service, monkeypatch):
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
+        fake_service.polls = [{"status": "authorized", "provider": "Enterprise"}]
+        args = _parse("login", "--provider", "idc", "--start-url", "https://acme.awsapps.com/start")
+        assert cli_kas.kas_cmd(args) == 0
+        assert [b["provider"] for b in fake_service.begun] == ["idc"]
+
     def test_a_live_sign_in_answers_already_signed_in(self, home_store, fake_service, capsys):
         """kiro-cli ignores a login over a live session; so does this, in words the
         cloud sign-in reads as ``already_logged_in`` and then verifies the identity of."""

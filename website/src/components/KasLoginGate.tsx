@@ -443,6 +443,7 @@ function Chooser({
   beginErrorCode,
   companyDefault,
   localAgentOffUrls = [],
+  gatewayOrganisationOnly = false,
   bare = false,
   beginErrorReason,
   beginErrorReport,
@@ -456,6 +457,8 @@ function Chooser({
   companyDefault?: KasLoginStatus['company_sign_in']
   /** Portals whose sign-in turns the local agent off (`KasLoginStatus.local_agent_off_start_urls`). */
   localAgentOffUrls?: string[]
+  /** The gateway accepts only Company SSO (`KasLoginStatus.organisation_only`). */
+  gatewayOrganisationOnly?: boolean
   bare?: boolean
   /** The begin refusal's `reason`, or '' (see refusalReason). */
   beginErrorReason: string
@@ -466,7 +469,7 @@ function Chooser({
   // The company-SSO choice expands an inline form (start URL + region) instead of
   // beginning immediately: the portal URL is per-company, so there is nothing to
   // start until the user supplies it.
-  const organisationOnly = useContext(OrganisationOnlyContext)
+  const organisationOnly = useContext(OrganisationOnlyContext) || gatewayOrganisationOnly
   const onSkip = useContext(SkipContext)
   const [ssoOpen, setSsoOpen] = useState(organisationOnly)
   // Seeded from the last company sign-in submitted on this browser, else the
@@ -1315,6 +1318,7 @@ function KasLoginFlow({
         beginErrorCode={flow.beginErrorCode}
         companyDefault={status.company_sign_in}
         localAgentOffUrls={status.local_agent_off_start_urls}
+        gatewayOrganisationOnly={status.organisation_only === true}
         bare={bare}
         beginErrorReason={refusalReason(flow.beginDeviceError)}
         beginErrorReport={

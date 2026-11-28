@@ -704,6 +704,23 @@ def profile_eligible(profile_arn: str, policy: Policy = LTS) -> bool:
     return bool(profile_arn) or not policy.require_profile
 
 
+#: The one sign-in that yields an organisation profile the rules fetch accepts:
+#: company SSO (IAM Identity Center).
+ORGANISATION_PROVIDER = "idc"
+
+
+def provider_eligible(provider: str, policy: Policy = LTS) -> bool:
+    """May a sign-in with *provider* start under *policy*?
+
+    Under a policy that requires a profile, only :data:`ORGANISATION_PROVIDER`. A
+    Builder ID sign-in stores no profile, so once it is the vault's sign-in
+    :func:`select` refuses it as ``not_eligible`` and the LTS gate closes; a social
+    one is a personal account. For the surfaces that start a sign-in, so none
+    starts one the LTS checks would then refuse.
+    """
+    return provider == ORGANISATION_PROVIDER or not policy.require_profile
+
+
 def _select(policy: Policy) -> Tuple[Selection, Optional[_CliEntry]]:
     vault = _vault_entry()
     if vault is not None:

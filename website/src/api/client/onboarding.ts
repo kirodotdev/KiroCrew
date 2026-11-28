@@ -290,6 +290,11 @@ export interface KasLoginStatus {
    * older gateway.
    */
   local_agent_off_start_urls?: string[]
+  /**
+   * True in an LTS build: only Company SSO can start, since a Builder ID or
+   * social sign-in would close its gate. Absent on an older gateway.
+   */
+  organisation_only?: boolean
 }
 
 /** One stored sign-in as `/api/kas-login/sources` names it. No token, no ARN. */

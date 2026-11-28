@@ -239,6 +239,17 @@ def _login(args: argparse.Namespace) -> int:
             "Run `kirocrew kas logout` first to switch accounts."
         )
         return 0
+    from kiro_crew import edition, lts_sign_in
+
+    # An LTS build reads only an organisation sign-in: a Builder ID or social one
+    # stored in the vault would close its gate, so it is not started.
+    if edition.is_lts() and not lts_sign_in.provider_eligible(args.provider):
+        print(
+            "❌ this Kiro Crew build signs in only with your organisation's IAM Identity "
+            f"Center. Sign in with {lts_sign_in.sign_in_hint()}.",
+            file=sys.stderr,
+        )
+        return 2
     if args.provider == "idc" and not (args.start_url or "").strip():
         print("❌ --provider idc requires --start-url", file=sys.stderr)
         return 2

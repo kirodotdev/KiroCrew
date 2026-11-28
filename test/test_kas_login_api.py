@@ -187,6 +187,37 @@ async def test_status_ok():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("edition_name, organisation_only", [("lts", True), ("oss", False)])
+async def test_status_says_whether_only_company_sso_can_start(
+    monkeypatch, edition_name, organisation_only
+):
+    """The chooser hides the personal sign-ins on the edition whose checks refuse them."""
+    monkeypatch.setattr("kiro_crew.edition.EDITION", edition_name)
+    resp = await api_kas_login_status(_FakeRequest(_StubService()))
+    assert _body(resp)["organisation_only"] is organisation_only
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["builder_id", "google", "github"])
+async def test_an_lts_build_refuses_a_personal_sign_in_before_it_starts(monkeypatch, provider):
+    """Stored in the vault, a Builder ID or social sign-in is the one LTS sign-in and
+    the LTS checks refuse it, closing the gate on the whole dashboard. Neither
+    transport may start one; company SSO still starts."""
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
+    service = _StubService()
+    for handler in (api_kas_login_begin_device, api_kas_login_begin_loopback):
+        resp = await handler(_FakeRequest(service, {"provider": provider}))
+        assert resp.status == 400, handler.__name__
+        assert _body(resp)["code"] == "organisation_sign_in_required"
+    assert service.calls == []
+    resp = await api_kas_login_begin_device(
+        _FakeRequest(service, {"provider": "idc", "start_url": "https://acme.awsapps.com/start"})
+    )
+    assert resp.status == 200
+    assert service.calls == [("begin", "idc", "")]
+
+
+@pytest.mark.asyncio
 async def test_begin_device_ok():
     resp = await api_kas_login_begin_device(_FakeRequest(_StubService(), {"provider": "google"}))
     assert resp.status == 200
