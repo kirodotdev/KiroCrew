@@ -241,8 +241,8 @@ const EXPECTED: Record<string, string[]> = {
   'Mochi widget pop-out': ['srcdoc script-src-elem https://cdn.jsdelivr.net', 'srcdoc script-src-elem inline'],
   // McpAppFrame.tsx: the bridge guard, the app's own module and the host its metadata names.
   'MCP App': ['srcdoc script-src-elem https://esm.sh', 'srcdoc script-src-elem inline'],
-  // Meetings AgentPanel.tsx: the sketch frame's Mermaid bootstrap. The runtime is same-origin.
-  'Meetings sketch': ['srcdoc script-src-elem inline'],
+  // Meetings AgentPanel.tsx loads the sketch from /sandbox-doc/: it inherits nothing.
+  'Meetings sketch': [],
 }
 
 // The service worker answers the shell from its cache, around this spec's routes.

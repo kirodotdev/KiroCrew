@@ -70,9 +70,10 @@
 //
 // What is true NOW:
 //
-//   * The only scripts in the frame are the two WE author — the vendored Mermaid
-//     runtime and `MERMAID_BOOTSTRAP_BODY` — both emitted after the scrub, from
-//     fixed string literals that interpolate no model or user byte.
+//   * The only scripts in the frame are the ones WE author — the vendored Mermaid
+//     runtime, `MERMAID_BOOTSTRAP_BODY` and, in the live frame, the alive reply
+//     (`FRAME_ALIVE_REPLY_BODY`) — all emitted after the scrub, from fixed string
+//     literals that interpolate no model or user byte.
 //   * Mermaid still works, and tables still work, because Mermaid is driven by
 //     OUR bootstrap from declarative `div.mermaid` / fenced ```mermaid blocks.
 //     The agent is instructed to emit exactly those and to stay "self-contained
@@ -80,14 +81,14 @@
 //     documented need to ship JS. See
 //     `src/kiro_crew/apps/builtins/meetings/agents/meetings-sketch-artist.json`.
 //   * The CSP no longer grants `'unsafe-inline'`. `script-src` names the SHA-256
-//     of each script we author (the bootstrap, and in the exported file the
-//     inlined runtime), so the scrub is no longer the only thing between model
+//     of each script we author (the bootstrap, the alive reply in the live frame,
+//     and in the exported file the inlined runtime), so the scrub is no longer the only thing between model
 //     markup and execution: an inline `<script>`, an `on*=` handler or a
 //     `javascript:` URL the scrub missed is refused by the browser.
 
 import { MERMAID_RUNTIME_PATH as MERMAID_RUNTIME_PATH_ROOT } from '../../../lib/vendorPaths'
 import { withBase } from '../../../lib/basePath'
-import { escapeScriptClose } from '../../../lib/widgetSrcdoc'
+import { escapeScriptClose, FRAME_ALIVE_REPLY_BODY } from '../../../lib/widgetSrcdoc'
 import { sha256Hex } from '../../../utils/sha256Hex'
 /** The runtime's served path under this build's base (the bare path in the stock build). */
 const MERMAID_RUNTIME_PATH = withBase(MERMAID_RUNTIME_PATH_ROOT)
@@ -142,9 +143,9 @@ const MERMAID_RUNTIME_PATH = withBase(MERMAID_RUNTIME_PATH_ROOT)
  * - `base-uri 'none'` — a `<base href>` would re-point every relative URL in the
  *   document, including the Mermaid script path, at an attacker origin.
  */
-const cspFor = (runtimeSource: string): string =>
+const cspFor = (scriptSources: string): string =>
   "default-src 'none'; " +
-  `script-src 'sha256-${MERMAID_BOOTSTRAP_HASH}' ${runtimeSource}; ` +
+  `script-src 'sha256-${MERMAID_BOOTSTRAP_HASH}' ${scriptSources}; ` +
   "style-src 'unsafe-inline'; " +
   "img-src data:; font-src data:; connect-src 'none'; " +
   "form-action 'none'; base-uri 'none';"
@@ -250,6 +251,12 @@ function cspHash(js: string): string {
 
 const MERMAID_BOOTSTRAP_SCRIPT = asParsedScript(MERMAID_BOOTSTRAP_BODY)
 const MERMAID_BOOTSTRAP_HASH = cspHash(MERMAID_BOOTSTRAP_SCRIPT)
+// The live frame is served from a single-use /sandbox-doc/ URL, so it answers the
+// host's ping (useFrameAliveRecovery) and a reload onto the spent URL re-mints.
+// Admitted by hash like the bootstrap: without it the reply is refused and every
+// load reads as dead.
+const ALIVE_REPLY_SCRIPT = asParsedScript(FRAME_ALIVE_REPLY_BODY)
+const ALIVE_REPLY_HASH = cspHash(ALIVE_REPLY_SCRIPT)
 
 /**
  * Elements removed outright from the model document. Every one of them is
@@ -534,10 +541,19 @@ export function buildSketchSrcdoc(html: string, scriptOrigin: string, inlineRunt
   bootstrap.textContent = MERMAID_BOOTSTRAP_SCRIPT
   body.appendChild(bootstrap)
 
+  // The live frame only: an exported file has no host to answer.
+  let scriptSources = runtimeSource
+  if (inlineRuntime === undefined) {
+    const reply = doc.createElement('script')
+    reply.textContent = ALIVE_REPLY_SCRIPT
+    body.appendChild(reply)
+    scriptSources = `'sha256-${ALIVE_REPLY_HASH}' ${runtimeSource}`
+  }
+
   // LAST, and FIRST in the head: nothing above may parse before the policy.
   const csp = doc.createElement('meta')
   csp.setAttribute('http-equiv', 'Content-Security-Policy')
-  csp.setAttribute('content', cspFor(runtimeSource))
+  csp.setAttribute('content', cspFor(scriptSources))
   head.insertBefore(csp, head.firstChild)
 
   // The one remaining template literal holds the static DOCTYPE plus the

