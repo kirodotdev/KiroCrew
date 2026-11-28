@@ -1,0 +1,86 @@
+# Weekly check that the KAS pin's bundled Node (the `-node<N>` part of
+# `KAS_PIN_VERSION` in src/kiro_crew/acp/kas_pin.py) is still the newest
+# release of its major on nodejs.org. When it falls behind, this opens one
+# issue; packaging/kas-al2/README.md "When to rebuild" says how to move it.
+#
+# ONE OPEN ISSUE: the title names the pinned and the newest Node, and the
+# watch closes any open issue of its own (the `kas-node-watch` label) whose
+# title is no longer the one due: superseded by a newer release, or the pin
+# moved. A title already filed, open or closed, is not filed again, so closing
+# one by hand without a bump keeps that version quiet. The lookups are
+# `gh issue list --label`, never `--search`: the search index lags behind a
+# create and title search is a phrase match.
+name: KAS Node Watch
+
+on:
+  schedule:
+    - cron: "0 15 * * 1" # Mondays 15:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  watch:
+    name: Compare the KAS pin's Node with nodejs.org
+    runs-on: ubuntu-latest
+    # 10 min for the check, plus the 20 min the gh wrapper may spend in total
+    # waiting out a spent API rate limit.
+    timeout-minutes: 30
+    steps:
+      - name: Check out the pin, the script and the gh wrapper action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/gh-rate-limit
+            .github/scripts/kas_node_watch.py
+            src/kiro_crew/acp/kas_pin.py
+          sparse-checkout-cone-mode: false
+
+      - name: Install rate-limit-aware gh
+        uses: ./.github/actions/gh-rate-limit
+        with:
+          max-wait: "1200"
+
+      - name: Keep one open issue while the pin's Node is behind
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          index="$RUNNER_TEMP/node-index.json"
+          existing="$RUNNER_TEMP/kas-node-watch-titles.txt"
+          body="$RUNNER_TEMP/kas-node-watch-body.md"
+          curl -fsSL --retry 3 https://nodejs.org/dist/index.json -o "$index"
+          gh label create kas-node-watch --repo "$REPO" --force \
+            --color 0E8A16 \
+            --description "The KAS pin's Node fell behind nodejs.org; filed by kas-node-watch.yml" \
+            >/dev/null \
+            || echo "::notice::Could not ensure the kas-node-watch label (continuing); it may already exist or label writes may be refused."
+          gh issue list --repo "$REPO" --state all --label kas-node-watch \
+            --limit 100 --json title --jq '.[].title' > "$existing"
+          # Empty when the pin is current; the body is written only for a title
+          # this watch has not filed yet.
+          DUE="$(python3 .github/scripts/kas_node_watch.py \
+            --pin-file src/kiro_crew/acp/kas_pin.py --index "$index" \
+            --existing "$existing" --body-out "$body")"
+          export DUE
+          if [ -n "$DUE" ]; then
+            note="Superseded: $DUE."
+          else
+            note="The KAS pin now bundles the newest Node of its major."
+          fi
+          stale="$(gh issue list --repo "$REPO" --state open --label kas-node-watch \
+            --limit 100 --json number,title --jq '.[] | select(.title != env.DUE) | .number')"
+          for number in $stale; do
+            gh issue close "$number" --repo "$REPO" --comment "$note"
+          done
+          if [ -s "$body" ]; then
+            gh issue create --repo "$REPO" --title "$DUE" --label kas-node-watch --body-file "$body"
+          elif [ -n "$DUE" ]; then
+            echo "Already filed: $DUE"
+          else
+            echo "The pin's Node is the newest of its major."
+          fi

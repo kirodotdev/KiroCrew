@@ -89,6 +89,7 @@ on:
       - "Crew Image Build"
       - "Deferred Findings Audit"
       - "Fork PR Label"
+      - "KAS Node Watch"
       - "Memory Benchmark (nightly)"
       - "Merge Queue Ruleset Audit"
       - "Nightly Build"

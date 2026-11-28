@@ -12,6 +12,8 @@ The stock KAS bundle needs glibc 2.27+ in two places: Node 22 and `libonnxruntim
 | Node major (22 leaves maintenance 2027-04-30) | rebuild | rebuild (new Node-API headers) | publish |
 | Every row above | once per architecture (`--arch x64`, `--arch arm64`) | once per architecture | publish with every architecture's pieces |
 
+The weekly KAS Node Watch (`.github/workflows/kas-node-watch.yml`) keeps one issue open while nodejs.org lists a newer Node of the pin's major than the `-node<N>` part of `KAS_PIN_VERSION`, and closes it once the pin moves.
+
 ## Architectures
 
 Both scripts take `--arch x64` (the default) or `--arch arm64` on `build` and `verify`. The container runs as that architecture (`docker run --platform`), so run each build on a host of that architecture: an x64 host for x64, an arm64 (Graviton) host for arm64. Elsewhere it runs under emulation, if at all. The pinned `amazonlinux:2` and `amazonlinux:2023` digests are multi-architecture indexes, so the same pins serve both. Every output name carries the architecture (`node-v<N>-linux-<arch>.tar.xz`, `onnxruntime-node-1.21.0-al2-<arch>.tar.xz`). On arm64 the x64-only assembler probes (`vpcompressb`, `vpdpbusds`) are skipped, and CMake is fetched as Kitware's `linux-aarch64` build. The default `--work` and `--out` end in `-<arch>`; give each architecture its own `--work` when you pass one, because the cached toolchain is native binaries.
