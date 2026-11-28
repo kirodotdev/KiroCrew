@@ -1091,6 +1091,7 @@ class VectorMemoryStore:
         source: str,
         *,
         expect_value_json: str | None = None,
+        refuse_source: str | None = None,
         superseded_by: str | None = None,
         supersede_reason: str | None = None,
     ) -> bool:
@@ -1100,6 +1101,7 @@ class VectorMemoryStore:
             key,
             source,
             expect_value_json=expect_value_json,
+            refuse_source=refuse_source,
             superseded_by=superseded_by,
             supersede_reason=supersede_reason,
         )

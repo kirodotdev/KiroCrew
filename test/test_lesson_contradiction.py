@@ -347,7 +347,8 @@ class TestResolveAndSupersede:
             old_rule = {"rule": "Use X format", "category": "tool"}
             new_rule = {"rule": "Do NOT use X format", "category": "tool"}
             for key, value in (("lesson.old", old_rule), ("lesson.new", new_rule)):
-                await asyncio.to_thread(vs.set_semantic, key, value, 1.0, "user_explicit")
+                # A person-saved row is never swept, so seed extracted findings.
+                await asyncio.to_thread(vs.set_semantic, key, value, 1.0, "consolidation")
             state = MagicMock()
             session = _FakeBgSession("CONTRADICTORY")
             state.sessions.get_bg_session = AsyncMock(return_value=session)
@@ -379,7 +380,7 @@ class TestResolveAndSupersede:
         try:
             await asyncio.to_thread(
                 vs.set_semantic, "lesson.old", {"rule": "Use X", "category": "tool"},
-                1.0, "user_explicit",
+                1.0, "consolidation",
             )
             # COMPARE-AND-DELETE: the body read at write time rides along, so a row
             # replaced while the verdict ran is not tombstoned by key alone.
@@ -398,6 +399,9 @@ class TestResolveAndSupersede:
             assert await asyncio.to_thread(vs.get_semantic, "lesson.old") is None
         finally:
             await asyncio.to_thread(vs.close)
+
+    # The sweep's dashboard frames and its person-saved re-check live in
+    # test_lesson_sweep_delete.py (file line cap).
 
     async def test_swallows_exceptions(self, caplog):
         """A failed sweep must not propagate — the lesson is already persisted."""
@@ -431,7 +435,7 @@ class TestResolveAndSupersede:
             for key in ("lesson.a", "lesson.b"):
                 await asyncio.to_thread(
                     vs.set_semantic, key, {"rule": key, "category": "tool"},
-                    1.0, "user_explicit",
+                    1.0, "consolidation",
                 )
             real_delete = vs.delete_semantic
 
@@ -576,10 +580,30 @@ class TestApiLessonsCreateSchedulesSweep:
                     "rule": "r",
                     "similarity": 0.6,
                     "applies": LESSON_APPLIES_ON_TOPIC,
+                    "source": "consolidation",
                 }
             ]
         )
         assert len(tasks) == 1
+
+    @pytest.mark.parametrize("source", ["user_explicit", None, "", 7])
+    async def test_a_finding_a_person_saved_is_never_swept(self, source):
+        """A model verdict may retire an extracted finding, not one a person saved.
+
+        The sweep deletes after ``learn_add`` returned, so its caller never hears
+        of it; a row whose writer is unknown is protected the same way.
+        """
+        candidate = {
+            "key": "lesson.mine",
+            "rule": "r",
+            "similarity": 0.6,
+            "applies": LESSON_APPLIES_ON_TOPIC,
+        }
+        if source is not None:
+            candidate["source"] = source
+        tasks = await self._run([candidate])
+        assert tasks == []
+        self._sweep.assert_not_called()
 
     async def test_no_task_when_no_candidates(self):
         tasks = await self._run([])
@@ -626,6 +650,7 @@ class TestApiLessonsCreateSchedulesSweep:
             "rule": "in repo Y do Z",
             "similarity": 0.6,
             "applies": LESSON_APPLIES_ON_TOPIC,
+            "source": "consolidation",
         }
         tasks = await self._run(
             [standing, finding], submitted_applies=submitted_applies
