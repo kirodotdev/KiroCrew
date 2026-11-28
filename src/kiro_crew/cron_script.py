@@ -1253,7 +1253,9 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     )
     from kiro_crew.cron_script_paths import (  # noqa: F401
         _bundle_relative_spec,
+        _case_alias_under,
         _data_home_spec,
+        _samefile,
         _split_script_spec,
         _trusted_script_bundle_roots,
     )

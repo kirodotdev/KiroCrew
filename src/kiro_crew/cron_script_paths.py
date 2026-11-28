@@ -150,6 +150,34 @@ def _data_home_spec(module_part: str) -> str:
     return str(config_dir() / "crons" / tail)
 
 
+def _samefile(a: Path, b: Path) -> bool:
+    """``os.path.samefile``, named here so a test can pin the volume's answer."""
+    return os.path.samefile(a, b)
+
+
+def _case_alias_under(file_path: Path, root: Path) -> Path | None:
+    """*file_path* respelled under *root* when only letter case keeps it out.
+
+    A case-insensitive volume (macOS APFS) can reach one directory by two
+    spellings, and ``resolve()`` keeps whichever the caller wrote. Case folding
+    only selects the candidate: the resolved ancestor at *root*'s depth must be
+    *root*'s own inode, which two distinct directories on a case-sensitive
+    volume never are.
+    """
+    depth = len(root.parts)
+    if len(file_path.parts) <= depth:
+        return None
+    head = Path(*file_path.parts[:depth])
+    if str(head).casefold() != str(root).casefold():
+        return None
+    try:
+        if not _samefile(head, root):
+            return None
+    except OSError:
+        return None
+    return root.joinpath(*file_path.parts[depth:])
+
+
 def resolve_script_path(
     script_path: str,
     *,
@@ -229,8 +257,11 @@ def resolve_script_path(
     # resolved mid-replace can come back prefixed while the root does not, and
     # the lone prefix would read as an escape. The fold is lexical.
     plain_file = strip_extended_length_prefix(file_path)
-    if app_root is None and plain_file.is_relative_to(strip_extended_length_prefix(crons_dir)):
+    plain_crons = strip_extended_length_prefix(crons_dir)
+    if app_root is None and plain_file.is_relative_to(plain_crons):
         return str(file_path), func_name
+    if app_root is None and (respelled := _case_alias_under(plain_file, plain_crons)):
+        return str(respelled), func_name
     if app_root is not None:
         bundle_roots: tuple[Path, ...] = (app_root.resolve(),)
     elif allow_bundle_roots:

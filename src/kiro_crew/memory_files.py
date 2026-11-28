@@ -46,6 +46,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.bounded_read import bounded_read
 from kiro_crew.hooks import (
     FileTooLargeError,
+    _darwin_case_alias_matches,
     is_unc_shape,
     safe_read_file_bytes_nolink,
     unc_probe_allowed,
@@ -562,6 +563,10 @@ class LocalMemoryFiles:
             root = os.path.normcase(os.path.realpath(self._roots.memory_dir))
             actual = os.path.normcase(opened)
             expected = os.path.normcase(self._expected_opened_path(path))
+            # macOS reports the on-disk letter case, which can differ from the
+            # data home's spelling; the no-follow walk of *expected* decides.
+            if actual != expected and _darwin_case_alias_matches(descriptor, expected, opened):
+                actual = expected
             if actual != expected or os.path.commonpath([actual, root]) != root:
                 raise OSError("Opened manual profile file is outside its expected bound path")
             with os.fdopen(descriptor, "rb", closefd=False) as handle:

@@ -369,7 +369,10 @@ copied into the learned search index. That reader compares the opened
 descriptor's real path with the requested path after resolving only the memory
 root's own spelling, so a store under a `$HOME` reached through a symlink
 (`/home/<user>` linking to `/local/home/<user>`) reads normally, while a link
-anywhere below the root, a leaf link and a hard link are still refused. A missing database is an explicit service
+anywhere below the root, a leaf link and a hard link are still refused. On macOS
+a real path that differs only in letter case (the data home's spelling against
+the on-disk one) is admitted only when `hooks._darwin_case_alias_matches` proves
+the expected name holds the opened inode. A missing database is an explicit service
 failure, never an empty learned store or a JSONL fallback.
 
 ### A store's three paths, and where the index actually lives
