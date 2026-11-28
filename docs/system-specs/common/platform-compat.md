@@ -73,6 +73,13 @@ is defined in an owner module beside it. Import and patch every one as
   - `platform_compat_metrics`: resident and peak memory, heap trimming and the malloc
     arena cap, open descriptors, CPU time, process-subtree samples, and the host's
     memory, CPU load, memory pressure and power source (`power_source`).
+    `proc_subtree_sample` reads `/proc` on Linux. On Windows it sums the members of
+    the lineage-validated tree `descendant_termination_handles` returns (two Toolhelp
+    snapshots), the walk `proc_rss_tree_mb_for_pid` reads too:
+    `rss_kb` is the summed working sets in KiB, `jiffies` the summed
+    `GetProcessTimes` in 100 Hz ticks. `procs`, `matched` and `pss_kb` stay at their
+    sentinels there. A root that cannot be anchored, a recycled root PID or a failed
+    enumeration measures the root alone, and no readable member reads `rss_kb=-1`.
 
   No carved module imports the facade. The facade installs `kiro_crew._facade_mirror`,
   so a write through it (`monkeypatch.setattr`, `mock.patch`) lands on every carved
