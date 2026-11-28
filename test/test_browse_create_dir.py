@@ -169,6 +169,71 @@ async def test_windows_keeps_a_name_without_a_trailing_dot_or_space(
     assert data == {"path": os.path.join(os.path.realpath(tmp_path), name)}
 
 
+@pytest.fixture()
+def windows_create(tmp_path, monkeypatch):
+    """Take the Windows pinned create on any host, where ``mkdir`` of ``NUL`` makes nothing.
+
+    A Windows host keeps its real pin; elsewhere a plain descriptor stands in for it.
+    """
+    if not platform_compat.IS_WINDOWS:
+        monkeypatch.setattr(
+            files_mod,
+            "platform_compat",
+            SimpleNamespace(
+                IS_WINDOWS=True, pin_directory=lambda base, links_only: os.open(base, os.O_RDONLY)
+            ),
+        )
+        monkeypatch.setattr(
+            files_mod,
+            "pinned_fs",
+            SimpleNamespace(
+                supports_pinned_walk=lambda: False,
+                fd_real_path=lambda fd: os.path.realpath(tmp_path),
+                PinnedPathRefusal=files_mod.pinned_fs.PinnedPathRefusal,
+            ),
+        )
+    real_mkdir = os.mkdir
+
+    def device_mkdir(path, *args, **kwargs):
+        if os.path.basename(path) == "NUL":
+            return None
+        return real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(files_mod.os, "mkdir", device_mkdir)
+
+
+@pytest.mark.asyncio
+async def test_windows_a_device_name_that_makes_no_folder_is_refused(
+    tmp_path, mock_sel, windows_create
+):
+    status, data = await _post({"parent": str(tmp_path), "name": "NUL"})
+    assert (status, data["code"]) == (400, "invalid_name")
+    assert list(tmp_path.iterdir()) == []
+
+
+_RESERVED_NAME_VARIES = pytest.mark.skipif(
+    sys.platform == "win32", reason="whether a reserved name makes a folder varies by Windows build"
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("CON", marks=_RESERVED_NAME_VARIES),
+        pytest.param("NUL.txt", marks=_RESERVED_NAME_VARIES),
+        "new-project",
+    ],
+)
+async def test_windows_a_name_that_makes_a_folder_is_created(
+    tmp_path, mock_sel, windows_create, name
+):
+    status, data = await _post({"parent": str(tmp_path), "name": name})
+    assert status == 201
+    assert data == {"path": os.path.join(os.path.realpath(tmp_path), name)}
+    assert (tmp_path / name).is_dir()
+
+
 @pytest.mark.asyncio
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot hold a name ending in a space")
 async def test_the_parent_is_used_as_sent_not_trimmed(tmp_path, mock_sel):
