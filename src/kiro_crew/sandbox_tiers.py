@@ -21,7 +21,7 @@ import kiro_crew as _kiro_crew_pkg
 from kiro_crew import sandbox_plan
 from kiro_crew.apps import agent_readonly_dirs, credential_masks
 from kiro_crew.atomic_write import refuse_linked_parent
-from kiro_crew.config.paths import config_dir, kiro_agents_dir
+from kiro_crew.config.paths import config_dir, kiro_agents_dir, mate_agents_dir
 from kiro_crew.platform import current_context
 from kiro_crew.sandbox_leaves import (
     _CREW_HIDDEN_DIRS,
@@ -58,6 +58,21 @@ def _resolved_kiro_agents_targets() -> list[str]:
     """
     try:
         return [os.path.normpath(str(kiro_agents_dir()))]
+    except Exception:
+        return []
+
+
+def _resolved_mate_ledger_targets() -> list[str]:
+    """The RESOLVED Bot-move ledger (``mates/migrated.json``), sealed read-only as a file.
+
+    It holds a moved Bot's held limits, which the gateway's approval gates read, so a
+    sandboxed process that rewrites it stops those calls asking a person. Only the
+    unsandboxed gateway writes it. Resolved per spawn, as spelled and as its resolved
+    path when that differs (Seatbelt matches the resolved one). Never raises.
+    """
+    try:
+        ledger = os.path.normpath(str(mate_agents_dir().parent / "migrated.json"))
+        return list(dict.fromkeys((ledger, os.path.realpath(ledger))))
     except Exception:
         return []
 

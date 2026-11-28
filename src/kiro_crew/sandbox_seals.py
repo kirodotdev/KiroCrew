@@ -28,6 +28,7 @@ from kiro_crew.sandbox_precreate import (
     _CREW_PRECREATE_READONLY_FILE_LEAVES,
     _EMPTY_CEILING_DOCUMENT,
 )
+from kiro_crew.sandbox_tiers import _resolved_mate_ledger_targets
 from kiro_crew.terminal_safe import safe_terminal_line
 
 # Logged under the sandbox's name, which operator log filters, level settings
@@ -270,6 +271,41 @@ def _materialize_kiro_mcp_registry() -> list[str]:
         elif not os.path.lexists(target):
             # Absent after a failed publish, so nothing raced in: really unsealed.
             logger.warning("could not create %s to seal it read-only", safe_terminal_line(target))
+    return created
+
+
+def _materialize_mate_ledger(established: list[str] | None = None) -> list[str]:
+    """Create an absent Bot-move ledger as ``{}`` so the Linux seal has a file to bind.
+
+    The record first appears at the first Bot move, which can come after a sandbox
+    started, and ``mount(2)`` cannot seal a name nothing occupies. Every reader
+    (``mate_config_migration._read_ledger``, ``mate_held_rules._held_entries``) reads
+    ``{}`` as an absent ledger, and its writer rewrites it in place, so the seal placed
+    now holds every later save. Only under a kiro home that exists, ``mates`` made 0o700
+    when missing. A ledger seen present is noted in *established*, so one gone by mount
+    time refuses the spawn too; one that cannot be created raises
+    :class:`SandboxCeilingUnsealable`, as an unsealable ceiling does.
+    """
+    created: list[str] = []
+    for target in _resolved_mate_ledger_targets():
+        mates = os.path.dirname(target)
+        if os.path.lexists(target):
+            _note_established(established, target)
+            continue
+        if not os.path.isdir(os.path.dirname(mates)):
+            continue
+        with contextlib.suppress(OSError):  # a failed mkdir fails the publish below
+            os.mkdir(mates, 0o700)
+        if _publish_empty_ceiling(target, mates):
+            created.append(target)
+        elif not os.path.lexists(target):  # absent after a failed publish: nothing raced in
+            _warn_unsealed_ceiling(target, None)
+            raise SandboxCeilingUnsealable(
+                f"cannot create the Bot-move ledger {safe_terminal_line(target)}: a held "
+                "limit recorded while this sandbox runs would stay writable inside it. "
+                "Create it as {} (owner-only), or make its folder writable."
+            )
+        _note_established(established, target)
     return created
 
 
