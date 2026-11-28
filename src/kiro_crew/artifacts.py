@@ -321,6 +321,85 @@ def _lock_for_root(root: Path) -> threading.Lock:
         return lock
 
 
+def _usable_root(root: Path) -> Path:
+    """*root* resolved, refused (``ArtifactError``) when it lands under a sensitive path.
+
+    ``is_sensitive_path()`` handles symlink resolution, so it is resolved before the check.
+    """
+    resolved = root.resolve(strict=False)
+    if reason := sensitive_path_refusal(str(resolved)):
+        if is_unverifiable_path_refusal(reason):
+            raise ArtifactError(reason)
+        raise ArtifactError(f"refusing to use sensitive path as artifact root: {resolved}")
+    return resolved
+
+
+#: What :func:`read_stored_record` and ``ArtifactStore.get`` can raise for a record that
+#: is not there or cannot be read: a store refusal or a missing record
+#: (``ArtifactError``, which is also :func:`read_stored_record`'s refusal of a link at
+#: ``meta.json``'s name), a failed read (``OSError``), a ``meta.json`` that is not
+#: UTF-8 or not JSON (``ValueError``, as is :func:`read_stored_record`'s size cap), one
+#: nested past the JSON decoder's limit (``RecursionError``), and the failures of
+#: ``records.decode_meta`` on the document: ``ValueError`` (a ``version`` that is no
+#: finite number) or ``TypeError`` (a ``version`` that is ``null``, a list or an
+#: object). A caller that decodes the document :func:`read_stored_record` returns
+#: catches the same tuple around that decode.
+STORED_READ_FAILURES: tuple[type[Exception], ...] = (
+    ArtifactError,
+    OSError,
+    ValueError,
+    TypeError,
+    RecursionError,
+)
+
+
+@dataclass(frozen=True)
+class StoredRecord:
+    """One record as :func:`read_stored_record` read it: the raw document, not decoded."""
+
+    #: What ``json.loads`` gave for ``meta.json``: any JSON value, not yet decoded.
+    document: Any
+    #: The ``meta.json`` that was read, the path ``records.decode_meta`` names in errors.
+    meta_path: Path
+    #: The stored ``current.html``.
+    content: str
+
+
+def read_stored_record(root: Path, slug: str, *, max_meta_bytes: int) -> StoredRecord:
+    """Artifact *slug* of the store at *root* as its raw ``meta.json`` document, writing nothing.
+
+    For a caller that must not write the store it reads and judges the raw document
+    itself. It shares ``ArtifactStore(root).get(slug)``'s read: the same slug check,
+    root refusal (``_usable_root``), per-root lock, directory rule
+    (``artifacts_disk._artifact_dir_in``) and fenced, descriptor-pinned reads, with
+    ``current.html`` read as ``get`` reads it (``artifacts_disk._read_store_text``).
+    It does not do what ``get`` does beyond that read: it builds no store, so no store
+    directory is created; a record with no event log is not backfilled; no content
+    token is assigned; nothing is decoded; and ``meta.json`` is opened as named
+    (``artifacts_disk._read_store_text_at_most``), so a link at its final name is
+    refused (``ArtifactError``) instead of followed. ``meta.json`` is read ONCE, and
+    one holding more than *max_meta_bytes* bytes is a ``ValueError``; the object
+    ``json.loads`` gives is returned NOT decoded, so the caller decodes that same
+    object (``records.decode_meta(document, meta_path)``) and the document it judges
+    and the record it decodes come from one read. ``content`` is always the store's
+    own ``current.html``: a live pointer's ``source_path`` (``get``'s current read for
+    one, ``ArtifactStore._is_live_pointer``) is never opened. What it raises is in
+    :data:`STORED_READ_FAILURES`.
+    """
+    root = root.expanduser()
+    resolved = _usable_root(root)
+    slug = _validate_slug(slug)
+    with _lock_for_root(resolved):
+        adir = _artifacts_disk._artifact_dir_in(root, slug)
+        meta_path = adir / "meta.json"
+        if not meta_path.exists():
+            raise ArtifactNotFoundError(f"artifact not found: {slug}")
+        text = _artifacts_disk._read_store_text_at_most(meta_path, max_meta_bytes)
+        document = json.loads(text)
+        content = _artifacts_disk._read_store_text(adir / "current.html")
+        return StoredRecord(document, meta_path, content)
+
+
 class ArtifactStore:
     """File-system backed store for artifacts.
 
@@ -337,13 +416,7 @@ class ArtifactStore:
         # this store in the gateway, so one listener sees them all without the
         # store importing the knowledge package.
         self._change_listener: Callable[[str, str], None] | None = None
-        # Refuse to land under any sensitive path. is_sensitive_path() handles
-        # symlink resolution, so resolve() before checking.
-        resolved = self._root.resolve(strict=False)
-        if reason := sensitive_path_refusal(str(resolved)):
-            if is_unverifiable_path_refusal(reason):
-                raise ArtifactError(reason)
-            raise ArtifactError(f"refusing to use sensitive path as artifact root: {resolved}")
+        resolved = _usable_root(self._root)
         # Keyed by the RESOLVED root so a symlinked alias of the same
         # directory still shares the lock, not just a literal path match.
         self._lock = _lock_for_root(resolved)
@@ -393,8 +466,13 @@ class ArtifactStore:
 
     @staticmethod
     def _is_live_pointer(art: Artifact) -> bool:
-        """True when reads come from ``source_path`` rather than the store's own copy."""
-        return bool(art.source_path) and not art.source_copy_only
+        """True when reads come from ``source_path`` rather than the store's own copy.
+
+        The one live-pointer rule: every reader that must skip a live pointer before
+        opening it asks this through the class. A listed record that lacks either field
+        reads it as empty, so a duck-typed listing is answered by the same rule.
+        """
+        return bool(getattr(art, "source_path", "")) and not getattr(art, "source_copy_only", False)
 
     def set_change_listener(self, listener: Callable[[str, str], None] | None) -> None:
         """Register a callback fired after a content-affecting mutation.

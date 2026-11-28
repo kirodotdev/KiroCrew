@@ -1043,16 +1043,19 @@ def _copy_locked(src: Path, dst: Path) -> bool:
 
 def _merge_named_stores(
     src_root: Path, dst_root: Path, *, allow_unpinned: bool = False
-) -> list[str]:
-    """Install absent stores whole and return the names kept whole at the destination.
+) -> tuple[list[str], list[str]]:
+    """Install absent stores whole; return ``(kept, added)`` store names.
 
-    A manifest and its databases belong to one generation: filling missing files in an
-    existing store can combine a V2 manifest with a V1 database that cannot open as V2.
+    ``kept`` names each store the destination already had, left whole; ``added`` each
+    store this call installed. A manifest and its databases belong to one generation:
+    filling missing files in an existing store can combine a V2 manifest with a V1
+    database that cannot open as V2.
     """
     facade = _facade()
     with memory_store_namespace_lock(dst_root):
         platform_compat.make_owner_only_dir(dst_root)
         kept: list[str] = []
+        added: list[str] = []
         for src in sorted(src_root.iterdir()):
             if is_host_local_store_state((MEMORY_STORES_DIR_NAME, src.name)) or not src.is_dir():
                 continue
@@ -1068,7 +1071,8 @@ def _merge_named_stores(
                 on_skip=pinned_fs.fatal_skip_reporter(f"merge of store {src.name!r}"),
             )
             platform_compat.make_owner_only_dir(dst)
-        return kept
+            added.append(src.name)
+        return kept, added
 
 
 def _report_unmerged_databases(src_tree: Path, dst_tree: Path, tree: str) -> None:

@@ -103,7 +103,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SOURCE_BUILTIN,
         _SOURCE_KIROCREW,
         _SOURCE_PACKAGE,
-        RESERVED_DEFAULT_MEMBER,
         _absence_is_confirmed,
         _as_epoch,
         _build_roster,
@@ -153,6 +152,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     import kiro_crew.dashboard.handlers as _h  # noqa: F401
     from kiro_crew import member_goals  # noqa: F401
     from kiro_crew import members as members_mod  # noqa: F401
+    from kiro_crew.agent_files import RESERVED_DEFAULT_MEMBER  # noqa: F401
     from kiro_crew.apps.bot_grants import (  # noqa: F401
         BOT_SCOPE_READ,
         BOT_SCOPE_WAKE,

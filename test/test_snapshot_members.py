@@ -216,8 +216,13 @@ def test_a_respelled_memory_stores_cannot_plant_the_signing_key(tmp_path):
 
 
 def test_the_dashboard_import_drops_legacy_activity_too(tmp_path, monkeypatch):
-    """The dashboard's zip import replaces through `_do_replace`, which installs
-    `members/`, so a hand-built archive carrying the legacy files is swept there too."""
+    """The dashboard's zip import never installs an archive's `members/` tree.
+
+    An instance Replace leaves the `members` component out of `_do_replace`, as it
+    does `artifacts` and `uploads` (`portability_bots.INSTANCE_REPLACE_COMPONENTS`):
+    a Bot's folder files arrive only from `bot-members/<slug>/`, through the checked
+    Bot stores. A hand-built archive carrying the legacy activity file installs none
+    of it, and the briefing already here stays as it was."""
     from kiro_crew.portability import apply_import_zip, create_export_zip
 
     home = _home(tmp_path, monkeypatch)
@@ -233,7 +238,7 @@ def test_the_dashboard_import_drops_legacy_activity_too(tmp_path, monkeypatch):
 
     apply_import_zip(crafted, mode="replace")
     assert not (bot / "activity.jsonl").exists()
-    assert (bot / BRIEFING_FILE_NAME).read_text() == "imported\n"
+    assert (bot / BRIEFING_FILE_NAME).read_text() == "# priorities\nship the fix\n"
 
 
 def test_a_home_with_no_bots_still_snapshots(tmp_path, monkeypatch):

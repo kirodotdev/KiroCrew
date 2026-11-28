@@ -21,6 +21,7 @@ Instance fields written: none.
 from __future__ import annotations
 
 import errno as _errno
+import io
 import json
 import logging
 import os
@@ -423,11 +424,16 @@ def list_versions(self: ArtifactStore, slug: str) -> _List[int]:
 
 
 def _artifact_dir(self: ArtifactStore, slug: str) -> Path:
-    adir = (self._root / slug).resolve(strict=False)
+    return _artifact_dir_in(self._root, slug)
+
+
+def _artifact_dir_in(root: Path, slug: str) -> Path:
+    """The directory of *slug* under store *root*: the one rule every store read and
+    write locates an artifact by (``_artifact_dir`` for a store, and
+    ``artifacts.read_stored_record`` for a read that builds none)."""
+    adir = (root / slug).resolve(strict=False)
     # Defense in depth: ensure resolved path is still under root.
-    if self._root.resolve(strict=False) not in adir.parents and adir != self._root.resolve(
-        strict=False
-    ):
+    if root.resolve(strict=False) not in adir.parents and adir != root.resolve(strict=False):
         raise ArtifactValidationError(f"slug escapes artifact root: {slug}")
     return adir
 
@@ -546,12 +552,19 @@ def _read_meta_file(self: ArtifactStore, path: Path) -> Artifact:
 
 
 def _read_text(self: ArtifactStore, path: Path) -> str:
+    """Read a store-internal text file through a pinned descriptor (:func:`_read_store_text`)."""
+    return _read_store_text(path)
+
+
+def _read_store_text(path: Path) -> str:
     """Read a store-internal text file through a pinned descriptor.
 
     The fence is asked with the ``realpath`` computed on the line above (see
     :func:`_fence_refuses` for which gate answers, and why). The opened
     descriptor is checked again so a replacement at the final name cannot
-    redirect the read after that first decision.
+    redirect the read after that first decision. It reads no store state, so a
+    read that builds no store (``artifacts.read_stored_record``, for ``current.html``)
+    reads through it too.
     """
     resolved = Path(os.path.realpath(path))
     if reason := _fence_refusal(resolved, "read"):
@@ -559,6 +572,24 @@ def _read_text(self: ArtifactStore, path: Path) -> str:
     fd = _open_pinned_for_read(resolved)
     with os.fdopen(fd, "r", encoding="utf-8") as fh:
         return fh.read()
+
+
+def _read_store_text_at_most(path: Path, max_bytes: int) -> str:
+    """:func:`_read_store_text` of the file named *path* itself, at most *max_bytes* long.
+
+    *path* is judged by the fence and opened as named, not resolved first, so a link at
+    its final name is refused (``ArtifactError``) instead of followed; a file longer
+    than *max_bytes* raises ``ValueError``. Decoded as :func:`_read_store_text` decodes
+    (UTF-8, universal newlines), so a bad byte is a ``UnicodeDecodeError``.
+    """
+    if reason := _fence_refusal(path, "read"):
+        raise ArtifactError(reason)
+    fd = _open_pinned_for_read(path)
+    with os.fdopen(fd, "rb") as fh:
+        data = fh.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError(f"store file is over {max_bytes} bytes: {path}")
+    return io.TextIOWrapper(io.BytesIO(data), encoding="utf-8").read()
 
 
 def _write_text(self: ArtifactStore, path: Path, text: str) -> None:

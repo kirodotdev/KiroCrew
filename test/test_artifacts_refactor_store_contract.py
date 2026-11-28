@@ -962,12 +962,16 @@ class TestSeamReach:
 
 #: Facade-held names an owner also reads through a binding of its own, each a
 #: documented contract: a directly constructed ``ArtifactFolderStore`` takes its
-#: default path from ``folders``' own ``config_dir``, and ``dashboard_package``'s
+#: default path from ``folders``' own ``config_dir``, ``dashboard_package``'s
 #: binding lookup falls back to ``get_default_store`` when no store is passed, so a
 #: caller holding one keeps its own and a caller holding none still reaches the
-#: default. Both reads are deliberate, and a name appearing here without a row is the
-#: case this ratchet exists for: an owner quietly reading the facade.
+#: default, and its bound-dashboard scan asks the one live-pointer rule of the
+#: facade's own class (``ArtifactStore._is_live_pointer``), never of the store it was
+#: handed, which may be a duck-typed listing. Each read is deliberate, and a name
+#: appearing here without a row is the case this ratchet exists for: an owner quietly
+#: reading the facade.
 _DOCUMENTED_SPLITS = {
+    "ArtifactStore": ["dashboard_package"],
     "config_dir": ["folders"],
     "get_default_store": ["dashboard_package"],
 }
@@ -1165,8 +1169,15 @@ BASE_PUBLIC_NAMES = frozenset(
 )
 
 #: Every public name of the facade: a star import of :mod:`kiro_crew.artifacts` binds
-#: exactly these, the base names plus ``platform_compat``, a public module binding.
-FACADE_PUBLIC_NAMES = BASE_PUBLIC_NAMES | {"platform_compat"}
+#: exactly these, the base names plus ``platform_compat``, a public module binding, and
+#: the store's read that writes nothing (``read_stored_record``, with the
+#: ``StoredRecord`` it returns) with the failures it raises (``STORED_READ_FAILURES``).
+FACADE_PUBLIC_NAMES = BASE_PUBLIC_NAMES | {
+    "platform_compat",
+    "read_stored_record",
+    "StoredRecord",
+    "STORED_READ_FAILURES",
+}
 
 
 class TestPublicSurface:

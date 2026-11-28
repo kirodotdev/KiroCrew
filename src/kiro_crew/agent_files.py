@@ -80,6 +80,11 @@ DASHBOARD_MANAGER_AGENT_NAME = DASHBOARD_MANAGER_AGENT_FILENAME[: -len(".json")]
 # deletable and never re-created. ``display_name`` is the label the user sees and
 # may change.
 ASSISTANT_MEMBER_NAME = "mate"
+#: The reserved main member every install carries (``cfg.default_agent``'s seed).
+#: It is never a crewmate the person created and never a Bot an instance export or
+#: import carries. Its one home: the Members roster and the import's Bot vocabulary
+#: import it from here, because this module imports nothing they would cycle through.
+RESERVED_DEFAULT_MEMBER = "default"
 #: The label the first crewmate shows while its ``display_name`` is empty.
 ASSISTANT_DEFAULT_DISPLAY_NAME = "Bot"
 
