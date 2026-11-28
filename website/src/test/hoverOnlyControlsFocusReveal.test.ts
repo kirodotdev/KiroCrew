@@ -9,15 +9,18 @@
  * `has-[:focus-visible]:opacity-100` on a wrapper that holds it, which unlike
  * `focus-within` stays hidden after a mouse click hands focus back).
  *
- * Scope: the full-reveal shape (`group-hover:opacity-100`) on a DOM control.
- * Partial reveals and component controls (`Btn`, `*Button`) are tracked
- * separately. An adopted app's wheel copy (`src/kiro_crew/apps/adoption-pins.json`)
+ * Every reveal value counts (`group-hover:opacity-40` too), and so does a
+ * breakpoint reveal (`md:opacity-0 md:group-hover:opacity-100`): its focus
+ * reveal must sit at the same breakpoint, or at none, and be at least as
+ * visible. A `Btn`, `Clickable` or `*Button` component is a control like a
+ * DOM `<button>`.
+ * An adopted app's wheel copy (`src/kiro_crew/apps/adoption-pins.json`)
  * is skipped: its source of truth is the app's own repository, so a fix there
  * lands in that repository, not here.
  *
- * Scanned by walking each opening tag in the source. An icon or other
- * component (a PascalCase tag) and a self-closing element are skipped: they are
- * decoration, not something Tab can land on.
+ * Scanned by walking each opening tag in the source. Any other component (a
+ * PascalCase tag) and a self-closing element are skipped: they are decoration,
+ * not something Tab can land on.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
@@ -41,11 +44,13 @@ function walk(dir: string): string[] {
   })
 }
 
-const isControl = (name: string, tag: string) => name === 'button' || name === 'a' || /\btabIndex=/.test(tag)
+const isComponentControl = (name: string) => name === 'Btn' || name === 'Clickable' || /^[A-Z]\w*Button$/.test(name)
+const isControl = (name: string, tag: string) =>
+  name === 'button' || name === 'a' || isComponentControl(name) || /\btabIndex=/.test(tag)
 
 /** A wrapper's body holds a control: a native one, or a component whose name
  *  says it is one (a menu or a button). */
-const holdsControl = (body: string) => /<(button|a)\b/.test(body) || /<[A-Z]\w*(Menu|Button)\b/.test(body)
+const holdsControl = (body: string) => /<(button|a)\b/.test(body) || /<(Btn|Clickable|[A-Z]\w*(Menu|Button))\b/.test(body)
 
 /** The text between an element's opening tag (ending at *from*) and its own
  *  closing tag, found by counting nested tags of the same name. */
@@ -68,10 +73,10 @@ function bodyOf(text: string, name: string, from: number): string {
   return ''
 }
 
-/** Every lowercase (DOM) opening tag in *text*, with its body and the line it
- *  starts on. Braces are tracked so a `>` inside a JSX expression does not end
- *  the tag. A PascalCase component is skipped: it is an icon or a widget whose
- *  own source the scan reaches. */
+/** Every lowercase (DOM) or component-control opening tag in *text*, with its
+ *  body and the line it starts on. Braces are tracked so a `>` inside a JSX
+ *  expression does not end the tag. Any other PascalCase component is skipped:
+ *  it is an icon or a widget whose own source the scan reaches. */
 function openingTags(text: string): { tag: string; name: string; line: number; body: string }[] {
   const out: { tag: string; name: string; line: number; body: string }[] = []
   let i = 0
@@ -89,7 +94,7 @@ function openingTags(text: string): { tag: string; name: string; line: number; b
       else if (c === '>' && depth === 0) break
     }
     const tag = text.slice(i, j + 1)
-    if (/^[a-z]/.test(name)) {
+    if (/^[a-z]/.test(name) || isComponentControl(name)) {
       const body = tag.endsWith('/>') ? '' : bodyOf(text, name, j + 1)
       out.push({ tag, name, line: text.slice(0, i).split('\n').length, body })
     }
@@ -98,10 +103,24 @@ function openingTags(text: string): { tag: string; name: string; line: number; b
   return out
 }
 
-const HIDDEN = 'opacity-0'
-const hoverReveal = (cls: string) => cls.split(/\s+/).some(w => /^group-hover(\/[\w-]+)?:opacity-100$/.test(w))
-const focusReveal = (cls: string) => cls.split(/\s+/).some(w =>
-  /^(focus-visible|focus-within|group-focus-visible|group-focus-within|has-\[:focus-visible\])(\/[\w-]+)?:opacity-100$/.test(w))
+/** An optional breakpoint prefix (`md:`), captured so each reveal is matched
+ *  at its own breakpoint. */
+const BP = '((?:sm|md|lg|xl|2xl):)?'
+const HIDDEN = new RegExp(`^${BP}opacity-0$`)
+const HOVER = new RegExp(`^${BP}group-hover(?:/[\\w-]+)?:opacity-(\\d+)$`)
+const FOCUS = new RegExp(
+  `^${BP}(?:focus-visible|focus-within|group-focus-visible|group-focus-within|has-\\[:focus-visible\\])(?:/[\\w-]+)?:opacity-(\\d+)$`)
+
+/** Some hover reveal in *words* has no focus reveal at its breakpoint (or at
+ *  none) that is at least as visible. */
+function lacksFocusReveal(words: string[]): boolean {
+  const reveals = (re: RegExp) => words.flatMap((w) => {
+    const m = re.exec(w)
+    return m ? [{ bp: m[1] ?? '', value: Number(m[2]) }] : []
+  })
+  const focus = reveals(FOCUS)
+  return reveals(HOVER).some(h => !focus.some(f => (f.bp === '' || f.bp === h.bp) && f.value >= h.value))
+}
 
 describe('hover-only controls', () => {
   it('scans a real source tree, so the guard cannot pass vacuously', () => {
@@ -115,8 +134,8 @@ describe('hover-only controls', () => {
       // overlay marked pointer-events-none is decoration Tab never reaches.
       .filter(({ tag, name, body }) => !tag.endsWith('/>') && (isControl(name, tag) || holdsControl(body)))
       .filter(({ tag }) => !/\bpointer-events-none\b/.test(tag))
-      .filter(({ tag }) => tag.split(/\s+/).includes(HIDDEN) || tag.includes(` ${HIDDEN} `) || tag.includes(`"${HIDDEN} `))
-      .filter(({ tag }) => hoverReveal(tag.replace(/["'`{}]/g, ' ')) && !focusReveal(tag.replace(/["'`{}]/g, ' ')))
+      .map(entry => ({ ...entry, words: entry.tag.replace(/["'`{}]/g, ' ').split(/\s+/) }))
+      .filter(({ words }) => words.some(w => HIDDEN.test(w)) && lacksFocusReveal(words))
       .map(({ line }) => `${relative(SRC, file)}:${line}`))
     expect(offenders).toEqual([])
   })

@@ -13,8 +13,9 @@
  *   remove button, are hidden until hover. Keyboard focus in the chip now
  *   reveals them too, as the session and embed tab strips do. jsdom does not
  *   compute Tailwind's opacity, so that half pins the class contract on each
- *   site's source. The docked terminal tab is left as it is:
- *   `BottomTerminalPanel.rename.test.tsx` pins its close as hidden on focus.
+ *   site's source. The docked terminal tab differs: focus on its chip leaves
+ *   the close hidden (`BottomTerminalPanel.rename.test.tsx`), and the close
+ *   shows only while it holds keyboard focus itself.
  */
 import React, { useState } from 'react'
 import { readFileSync } from 'node:fs'

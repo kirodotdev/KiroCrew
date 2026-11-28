@@ -336,7 +336,7 @@ describe('terminal inline rename', () => {
     expect(terminal.del).not.toHaveBeenCalled()
   })
 
-  it('carries no hover tooltip and does not reveal close on keyboard focus', () => {
+  it('carries no hover tooltip and does not reveal close when the chip takes keyboard focus', () => {
     mount()
     act(() => { addTab('/other') })
     const inactiveTab = screen.getAllByRole('tab')[0]
