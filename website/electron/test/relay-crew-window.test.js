@@ -463,6 +463,26 @@ test("window: a reload the page's service worker answers with the relay's 503 is
   ok.handle.close();
 });
 
+test("window: a refused reload the page's service worker answers reaches the status listeners once", () => {
+  for (const order of ["worker", "network-first", "navigate-first"]) {
+    const w = openWithClock();
+    const wc = w.crewView.webContents;
+    const statuses = [];
+    w.handle.onMainFrameStatus((code) => statuses.push(code));
+    wc.emit("did-start-navigation", {}, `${ORIGIN}/`, false, true);
+    if (order === "network-first") w.completed("/", 403, "mainFrame");
+    wc.emit("did-navigate", {}, `${ORIGIN}/`, 403);
+    if (order === "navigate-first") w.completed("/", 403, "mainFrame");
+    assert.deepStrictEqual(statuses, [403], order);
+    // The next load is a new report.
+    wc.emit("did-start-navigation", {}, `${ORIGIN}/`, false, true);
+    wc.emit("did-navigate", {}, `${ORIGIN}/`, 401);
+    assert.deepStrictEqual(statuses, [403, 401], order);
+    assert.deepStrictEqual(w.unreachable, [], "a refusal is renewal's, not an outage");
+    w.handle.close();
+  }
+});
+
 test("window: a page the relay answered 4xx reads as an error until the Crew loads again", () => {
   const w = openWithClock();
   w.completed("/", 403, "mainFrame");

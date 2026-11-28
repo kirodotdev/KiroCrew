@@ -8,6 +8,7 @@ const {
 } = require("./external-scheme");
 const { createReachabilityWatch } = require("./relay-crew-reachability");
 const { normalizeBounds, viewHoldsFocus, computeVisible } = require("./browser-view");
+const { REFUSED_STATUSES } = require("./relay-crew-renewal");
 
 /**
  * A window that shows a remote Crew's dashboard through the Kiro relay.
@@ -307,11 +308,19 @@ function attachRelayCrew({ endpointId, view, session: ses, origin }, host, deps)
   };
   // The status the page on screen was served with: 0 before the first answer.
   let lastMainFrameStatus = 0;
+  // Which hook told the status listeners about the current load, so a load both
+  // see, in either order, is told once: one refusal must not read as two.
+  let statusSeenBy = null;
+  const notifyStatus = (via, code) => {
+    const seenByOther = statusSeenBy !== null && statusSeenBy !== via;
+    statusSeenBy = seenByOther ? null : via;
+    if (!seenByOther) notify(statusListeners, code);
+  };
   ses.webRequest.onCompleted(watched, (details) => {
     if (details.resourceType === "mainFrame") {
       lastMainFrameStatus = details.statusCode;
       if (details.statusCode >= 400) log(`main frame ${details.statusCode}`);
-      notify(statusListeners, details.statusCode);
+      notifyStatus("network", details.statusCode);
       if (details.statusCode >= 500) reportMainFrame(details.statusCode);
       return;
     }
@@ -327,16 +336,25 @@ function attachRelayCrew({ endpointId, view, session: ses, origin }, host, deps)
     else watch.ok();
   });
   // A reload the page's service worker answers never reaches the network hook as a
-  // main-frame request, so the relay's 503 would render as its bare JSON body.
+  // main-frame request, so the relay's 503 would render as its bare JSON body,
+  // and its 401 or 403 would never reach renewal to mint again.
   // `did-navigate` reports the status the document was served with either way.
   // Only a new document from the Crew starts a new load: the notice's own
   // about:blank, and a same-document navigation, keep the current report.
   view.webContents.on("did-start-navigation", (_event, url, inPlace, isMainFrame) => {
-    if (isMainFrame !== false && !inPlace && String(url || "").startsWith(origin)) mainFrameReported = false;
+    if (isMainFrame !== false && !inPlace && String(url || "").startsWith(origin)) {
+      mainFrameReported = false;
+      statusSeenBy = null;
+    }
   });
   view.webContents.on("did-navigate", (_event, url, code) => {
     if (!String(url || "").startsWith(origin)) return;
     if (code > 0) lastMainFrameStatus = code;
+    if (REFUSED_STATUSES.includes(code)) {
+      log(`main frame ${code}`);
+      notifyStatus("navigate", code);
+      return;
+    }
     if (!(code >= 500)) return;
     log(`main frame ${code}`);
     reportMainFrame(code);

@@ -2125,6 +2125,21 @@ reaches another Crew, app or account.
 Only a click connects one: nothing connects when the list loads, when the menu
 opens or when the dashboard reloads.
 
+In the desktop app a relay Crew's window or pane never stays on the relay's own
+refusal. A main-frame 401 or 403 mints a new token once and reloads; a second one
+within 30 s stops renewal (`SIGN_IN_FAILED`, `electron/relay-crew-renewal.js`).
+The window reports that status from the network hook or, for a reload the page's
+service worker answers, from `did-navigate`, once per load either way
+(`electron/relay-crew-window.js`).
+A renewal stop with a notice (`NOTICE_FOR_CODE`, `electron/relay-crew-notice.js`)
+replaces the page with it: "currently unavailable" for `CREW_OFFLINE`, "no
+longer have access" for `CREW_ACCESS_NOT_GRANTED` and `ACCESS_DENIED`, "owner
+turned Remote Control off" with Check again for `REMOTE_ACCESS_DISABLED`, and
+"refused access to this window" with Check again for `SIGN_IN_FAILED`. A page that lands on a 401 or 403 after its renewal stopped
+with no notice up mints again, as choosing its row does; a refused mint for a
+page still on the relay's error page shows the unavailable notice
+(`electron/relay-crew-open.js`).
+
 ### A relay Crew tab's top bar (desktop app)
 
 With a relay Crew tab in front, the window shows that Crew's own bell, credit

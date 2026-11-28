@@ -26,8 +26,10 @@
  * Crew closes then, as on a sign-out.
  *
  * A window stops waiting for its Crew, and shows a notice in place of the
- * Crew's page, when renewal stops on CREW_OFFLINE or CREW_ACCESS_NOT_GRANTED,
- * or when the window reports the Crew unreachable (its retries ran out). The
+ * Crew's page, when renewal stops on a code with a notice (NOTICE_FOR_CODE in
+ * relay-crew-notice.js: the Crew offline, access not granted, Remote Control
+ * off, the relay refusing the page twice), or when the window reports the Crew
+ * unreachable (its retries ran out). The
  * renewal is stopped either way, so nothing retries behind the notice. Check
  * again is one fresh attempt through `restart`; a refusal puts the notice back.
  * Access refusals are noticed at the next renewal, up to 240 s after the change.
@@ -36,6 +38,7 @@
 // The relay's endpoint ID grammar has one definition, in the window module.
 const { isEndpointId } = require("./relay-crew-window");
 const { NOTICE, NOTICE_FOR_CODE, noticeText } = require("./relay-crew-notice");
+const { REFUSED_STATUSES } = require("./relay-crew-renewal");
 
 // Client codes that renewal must read differently from the open call: the
 // feature turned off stops renewal, and a gateway that can't be reached (or
@@ -183,6 +186,15 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
         try { entry.renewal.stop(); } catch { /* still show the notice */ }
         showNotice(endpointId, entry, NOTICE.UNAVAILABLE);
       });
+      // A page that reloaded itself after its renewal stopped went out with no
+      // token, so the relay refused it: mint again, as the switcher row does.
+      // A renewal still running mints again on its own (relay-crew-renewal.js),
+      // and one it stopped just now has put its notice up.
+      win.onMainFrameStatus((status) => {
+        const entry = windows.get(endpointId);
+        if (!entry || entry.win !== win || entry.notice || !REFUSED_STATUSES.includes(status)) return;
+        if (entry.renewal.isStopped()) once(endpointId, () => restart(endpointId, entry));
+      });
       win.onNoticeAction((action) => {
         const entry = windows.get(endpointId);
         if (!entry || entry.win !== win) return;
@@ -217,7 +229,9 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
         return { ok: false, error };
       }
       say(endpointId, error);
-      const kind = NOTICE_FOR_CODE[error] || entry.notice;
+      // A page left on the relay's error page is never left bare: it says why.
+      const onError = typeof entry.win.showsError === "function" && entry.win.showsError();
+      const kind = NOTICE_FOR_CODE[error] || entry.notice || (onError ? NOTICE.UNAVAILABLE : null);
       if (kind && windows.get(endpointId) === entry && !entry.win.isClosed()) {
         // The name from the window's first grant: this refused mint brought none.
         showNotice(endpointId, entry, kind);

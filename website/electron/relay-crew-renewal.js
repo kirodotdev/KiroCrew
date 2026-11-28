@@ -6,7 +6,8 @@
  * The window (`relay-crew-window.js`) adds the newest token from a TokenHolder
  * to every request for the Crew's origin. This module owns that holder: it
  * mints a token, sets it, renews it before it ends, mints again once on a
- * main-frame 401, and clears it when the window closes or access is refused.
+ * main-frame 401 or 403 (the relay refused the token the page was loaded
+ * with), and clears it when the window closes or access is refused.
  *
  * `mint` is injected and resolves either a grant
  * `{ accessToken, expiresAt, renewInSeconds, serverDate }` (epoch seconds on
@@ -26,8 +27,10 @@ const RENEW_DEFAULT_LEAD_S = 60;
 const RENEW_SPREAD_S = 5;
 /** The host lease's backoff steps (relay_client/backoff.py), with full jitter. */
 const BACKOFF_STEPS_S = [2, 5, 15, 30, 60];
-/** A second main-frame 401 this soon after the first stops the window. */
+/** A second refused main frame this soon after the first stops the window. */
 const UNAUTHORIZED_WINDOW_MS = 30_000;
+/** The main-frame statuses the relay answers a token it does not admit with. */
+const REFUSED_STATUSES = Object.freeze([401, 403]);
 
 /**
  * Refusals that stop renewal with no automatic retry: none of them changes
@@ -164,7 +167,7 @@ function createRelayCrewRenewal({ endpointId, mint, holder, onOutcome, log, rand
     runMint();
   }
 
-  function onUnauthorized() {
+  function onUnauthorized(status) {
     if (stopped) return;
     const t = Date.now();
     if (firstUnauthorizedAt !== null && t - firstUnauthorizedAt <= UNAUTHORIZED_WINDOW_MS) {
@@ -172,7 +175,7 @@ function createRelayCrewRenewal({ endpointId, mint, holder, onOutcome, log, rand
       return;
     }
     firstUnauthorizedAt = t;
-    say("main frame 401, minting again");
+    say(`main frame ${status}, minting again`);
     reloadPending = true;
     parked = false;
     runMint();
@@ -183,7 +186,7 @@ function createRelayCrewRenewal({ endpointId, mint, holder, onOutcome, log, rand
     attach(w) {
       win = w;
       w.onClosed(() => finish(OUTCOME.CLOSED));
-      w.onMainFrameStatus((status) => { if (status === 401) onUnauthorized(); });
+      w.onMainFrameStatus((status) => { if (REFUSED_STATUSES.includes(status)) onUnauthorized(status); });
     },
     setHidden(h) {
       if (h && !hidden) hiddenRenewals = 0;
@@ -195,4 +198,4 @@ function createRelayCrewRenewal({ endpointId, mint, holder, onOutcome, log, rand
   };
 }
 
-module.exports = { createRelayCrewRenewal, renewDelayMs, OUTCOME, STOP_REFUSALS };
+module.exports = { createRelayCrewRenewal, renewDelayMs, OUTCOME, STOP_REFUSALS, REFUSED_STATUSES };
