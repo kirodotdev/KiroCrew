@@ -9,6 +9,7 @@ import { api, ApiError } from '../api/client'
 import { copyToClipboard } from '../utils/clipboard'
 import { SNOOZE_SECS } from '../utils/updateNudge'
 import UpdateFoundModal from './UpdateFoundModal'
+import { MORE_BELOW_MASK } from './ModelEffortDropdown'
 import { updateInfoQuery } from '../api/updateInfoQuery'
 import type { UpdateState } from '../hooks/useUpdateSubscription'
 import type { StatusData } from '../types'
@@ -716,6 +717,10 @@ describe('UpdateFoundModal — gateway source', () => {
     )
     expect(screen.queryByRole('button', { name: i18nT('components.updateFoundModal.update_when_i_restart') })).toBeNull()
 
+    // Nothing to wait for yet, so Space offers no game.
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })) })
+    expect(screen.queryByTestId('wait-game')).toBeNull()
+
     fireEvent.click(byName('components.updateFoundModal.restart_to_update'))
 
     await waitFor(() => expect(mockedApi.restartGateway).toHaveBeenCalledTimes(1))
@@ -723,6 +728,35 @@ describe('UpdateFoundModal — gateway source', () => {
     await waitFor(() => expect(
       screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting')),
     ).toBeInTheDocument())
+    // The restart wait offers the laundry game below its line (after 30 s, or on Space). Space is pressed where
+    // focus really is, inside the dialog, whose key isolation must not hide it.
+    const focused = dialog().contains(document.activeElement) ? document.activeElement! : dialog()
+    act(() => { focused.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })) })
+    expect(within(dialog()).getByTestId('wait-game')).toBeInTheDocument()
+  })
+
+  it('fades the dialog body\'s bottom edge while its content runs past the capped dialog, and not when it fits', async () => {
+    const mask = MORE_BELOW_MASK.split(' ')[0]
+    const stub = (hidden: number) => {
+      vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(200)
+      vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) { return 200 + (this.dataset.testid === 'update-found-body' ? hidden : 0) })
+    }
+    onTestFinished(() => { vi.restoreAllMocks() })
+    stub(120)
+    await mount(undefined, gatewayStore({ update_available: true, update_latest_version: '8.8.8', update_can_apply: true, update_restart_ready: true }))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.scroll(screen.getByTestId('update-found-body')) // the scroll listener re-measures, as the observer's first delivery does
+    expect(screen.getByTestId('update-found-body').className).toContain(mask)
+  })
+
+  it('leaves the dialog body unfaded when its content fits', async () => {
+    onTestFinished(() => { vi.restoreAllMocks() })
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(200)
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(200)
+    await mount(undefined, gatewayStore({ update_available: true, update_latest_version: '8.8.8', update_can_apply: true, update_restart_ready: true }))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.scroll(screen.getByTestId('update-found-body'))
+    expect(screen.getByTestId('update-found-body').className).not.toContain(MORE_BELOW_MASK.split(' ')[0])
   })
 
   it('a staged older version leaves a newer offer installable', async () => {

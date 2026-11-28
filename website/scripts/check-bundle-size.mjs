@@ -192,7 +192,13 @@ export const CHUNK_BUDGETS = {
   // `first-load-2` re-measured on an analyze build of main @ c71731b56d, same
   // 5% rule (#39726): it was 1,940 B over its 1179 KB ceiling after first-load
   // growth spread across many features; the other parts were still under.
-  'first-load-1': 1164 * KB, // measured 1,134,732 B
+  //
+  // `first-load-1` raised for the wait game (#41137), which ships in
+  // the first load on purpose: it renders on the dead-gateway cover, where a
+  // separately loaded chunk could not be fetched. Measured on an analyze build
+  // with the game at 1,204,037 B; ceiling = that * 1.05, the file's usual 5% rule,
+  // rounded up to whole KB. CI's bundle gate checks the real chunk size.
+  'first-load-1': 1235 * KB, // measured 1,204,037 B
   'first-load-2': 1240 * KB, // measured 1,209,236 B
   //
   // `main` re-measured on an analyze build of main @ d95060b87c, same 5% rule
