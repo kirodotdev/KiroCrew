@@ -54,6 +54,11 @@ renders for the agent-template placeholders that name no app;
 the spawn names, more paths hidden from a child and nothing lifted.
 Level 19 adds the page's ``FileTree``: the dashboard's project file tree, behind the
 app's declared ``/api/project/tree``.
+
+Level 20 adds the verified download: ``ctx.verified_download`` in-process and the
+backend SDK's ``verified_download`` and ``VerifiedDownloadError`` in a spawned backend.
+One https file, pinned by its sha256 and exact size, into the app's own data
+directory, with one fetch per destination folder at a time.
 """
 
-APP_SDK_LEVEL = 19
+APP_SDK_LEVEL = 20

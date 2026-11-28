@@ -79,7 +79,7 @@ from kiro_crew.apps.builtin_adoption_pins import (  # noqa: E402
 from kiro_crew.dashboard.token_auth_app_scope import EXACT_API_ENTRY_MARK  # noqa: E402
 
 #: ``AppContext`` attributes above seam level 1, with the level that publishes each
-#: (app-kit-platform.md §32a, §32b, §36). An app reads them as ``ctx.<seam>`` or
+#: (app-kit-platform.md §32a, §32b, §36, §40). An app reads them as ``ctx.<seam>`` or
 #: feature-detects them with ``getattr(<context>, "<seam>", None)``.
 _CONTEXT_SEAMS = {
     "turns": 2,
@@ -90,6 +90,7 @@ _CONTEXT_SEAMS = {
     "gateway_origin": 5,
     "chat_slots": 7,
     "webhook_source": 7,
+    "verified_download": 20,
 }
 
 #: A receiver whose last name says it is the app's context (``ctx``, ``self._ctx``,

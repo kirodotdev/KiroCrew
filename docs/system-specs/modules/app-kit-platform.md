@@ -8318,8 +8318,9 @@ second batch of backend SDK names: the credential scan and placeholder, the
 exfiltration-URL check, `DENIED_ROOT_PARTS`, `minimal_env`, the git hook overrides,
 `max_output_bytes` on `run_sandboxed_async` and the audit writer's `record_or_raise`
 (§40); level 18 adds a third batch: the trusted tool lookups, the host agent-template
-values, the bind-address predicate and `extra_hidden_dirs` on the spawn names (§40); level 19 adds the SDK's `FileTree` (§18n).
-Several seams
+values, the bind-address predicate and `extra_hidden_dirs` on the spawn names (§40); level 19 adds the SDK's `FileTree` (§18n);
+level 20 adds the verified download, `ctx.verified_download` with the backend SDK's
+`verified_download` and `VerifiedDownloadError` (§40). Several seams
 share level 7, three share level 8, the open batch that level 10 starts shares level 10, and the backend SDK
 batches share levels 14, 17 and 18, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
@@ -10652,6 +10653,7 @@ that wants one helper does not pay for the security stack.
 | Process and locks | `IS_WINDOWS`, `IS_MACOS`, `IS_LINUX`, `IS_POSIX`, `kill_and_reap`, `is_link_or_junction`, `first_linked_ancestor`, `rmtree_force`, `file_lock` | the `platform_compat` names of the same spelling |
 | Process and locks (level 18) | `address_covers_loopback(address)` | `platform_compat.address_covers_loopback` |
 | Host tools (level 18) | `trusted_git_bin()`, `trusted_system_bin(name)`, `uv_executable()`, `nvm_version_bin_dirs()`, `agent_template_host_values()` | `platform_compat.trusted_git_bin` and `trusted_system_bin`; `env.resolve_uv`; `env.nvm_version_bin_dirs`; `apps.agent_template_values.host_values` |
+| Verified download (level 20) | `verified_download(url, dest, *, sha256, size)`, `VerifiedDownloadError`; `ctx.verified_download(...)` in-process | `apps.download_sdk.download_into`: `asset_downloader.download_to` with its default redirect policy and an `_OwnFiles` target folder, reached through a `platform_compat.pinned_directory` chain from the filesystem root and held under one `platform_compat.file_lock` per folder |
 | Outbound URLs (level 14) | `vet_public_url(url)`, `UrlRejectedError`, `address_is_not_public(address)` | `link_unfurl.vet_unfurl_url`, `link_unfurl.UnfurlRejected`, `link_unfurl.address_is_not_public` |
 | Media type (level 14) | `sniff_raster_mime(head)`, `RASTER_SNIFF_BYTES` | `messaging.raster.sniff_raster_mime`, `messaging.raster.SNIFF_BYTES` |
 
@@ -10713,6 +10715,97 @@ them takes an app name, and another app's directory is a path outside the caller
 data; the app holds its own checkout and `ctx.data_dir`. `address_covers_loopback` is a
 predicate over a bind-address string the caller holds. None of these opens, lists or
 enumerates anything a same-user process could not read itself.
+
+**Verified download** (level 20). `verified_download(url, dest, *, sha256, size)` in a
+spawned backend and `ctx.verified_download(...)` in-process are one call,
+`apps.download_sdk.download_into`, which fetches one https file into the app's own data
+directory: the backend SDK spelling for the `KIROCREW_APP_NAME` the gateway set (a
+blank or malformed one raises `LookupError`; it takes no app name), the context
+spelling for the context's own `name` and `data_dir`. The design is one writer per
+destination, and each guarantee below follows from it.
+
+- *One writer.* Before it creates anything the fetch takes an exclusive
+  `platform_compat.file_lock` (`wait=False`) on `.kc-dl.lock` in the destination's
+  folder, and holds it until its staging file is installed or removed: `flock` on POSIX,
+  a byte-0 `msvcrt.locking` range on Windows, both per open handle, so two fetches in
+  one process exclude each other as two processes do. A second fetch into that folder
+  raises `VerifiedDownloadError` at once and is never run beside the first, so no
+  cleanup of one fetch can meet a file another fetch wrote. The lock is keyed on the
+  folder the fetch holds open, not on the file name, because one filesystem folds
+  several spellings of a name together (case, a trailing dot, a Windows short name) and
+  a lock keyed on one spelling would let two spellings of one destination run at once.
+  The lock file is opened with no truncation and never through a link
+  (`open_create_or_existing` with `O_NOFOLLOW` relative to the folder on POSIX,
+  `open_create_no_reparse` on Windows), is never written and is never removed:
+  removing a lock file another fetch holds splits the lock in two.
+- *Verified before visible.* The bytes stream into `.<32 hex>.kc-dl`, created
+  `O_CREAT | O_EXCL` in the destination's own folder, so the install is one
+  same-filesystem rename, and `download_to` (`size` and `min_bytes` both the declared
+  size) installs only when the length and the sha256 both match. A mismatch leaves the
+  destination as it was. `sha256` is 64 hex characters and `size` an exact length from 1
+  to `asset_downloader.DEFAULT_MAX_BYTES`, both required.
+- *Only its own files removed.* Every filesystem step of the transfer goes through
+  `_OwnFiles`, an `asset_downloader.PinnedTargetDir` that records the identity (device,
+  inode) of each file it creates exclusively and removes a name only while the name
+  still has one of those identities; anything else at the name is logged and left. That
+  covers the engine's own refusal cleanup (a stale staging name, an overflow, a digest
+  or size mismatch, the post-rename identity check of `install_verified`), and a final
+  `discard_own` of the staging name runs on every exit while the lock is held. A
+  destination whose post-rename identity is not the verified file is reported and left,
+  never unlinked. The residual is the two steps of a removal, an identity read and an
+  `unlink`: a process outside the SDK that swaps a file in at the fetch's random staging
+  name between them loses it; no other fetch can, because none runs in the folder.
+- *Contained.* `dest` is a relative path of plain names, parsed once: an anchor, a
+  drive or `..` raises `ValueError`, as does a file name that is the lock file's, ends
+  like a staging file's or ends in a dot or a space. The data directory is resolved
+  once (`realpath`, so a link at or above it is followed once, as every other write of
+  the app's through `ctx.data_dir` follows it), and then it and each folder of `dest`
+  are pinned from the filesystem root down through
+  `platform_compat.pinned_directory(..., links_only=True)` and `PinnedDirectory.child`,
+  which refuse a link or a junction at any component (on Windows `child` also checks
+  the kernel's final path of each folder against its parent's). The chain stays open for
+  the whole fetch: on POSIX every file step is relative to the last descriptor
+  (`PinnedDirectory.fileno`), and on Windows the held handles stop every folder on the
+  path from being renamed while the steps go by path. A missing folder, a file or a link
+  on the way raises `VerifiedDownloadError` before anything is fetched; the call creates
+  no folder. The file lands owner-only on POSIX (`0o600`) and with the folder's
+  inherited access on Windows.
+- *Held to the folder that was checked.* The pin does not stop a same-user process from
+  turning an EMPTY Windows folder into a junction in place (`platform_compat.pin_directory`
+  refuses no `FILE_WRITE_ATTRIBUTES` holder), and a step by path would then land in the
+  junction's target. So the lock is the folder's first entry: on Windows its create is
+  refused when the pinned folder already reads as a link, and its handle, held without
+  delete sharing for the whole fetch, keeps the folder non-empty, which a junction
+  cannot be. Then, on every platform, three handles are held to the kernel's own answer
+  for them (`pinned_fs.fd_real_path`, `GetFinalPathNameByHandleW` on Windows), through
+  `_OwnFiles.require_inside`: the pinned folder's must be the folder that was checked
+  (folded as the OS compares names) and the handle's parent must be that folder. The
+  lock is checked when it is opened, before anything is fetched; the staging file right
+  before the rename that publishes it; the destination right after the install, before
+  success is reported, and a refused install removes the file if it is still this
+  fetch's own. A folder or an ancestor moved after the pin reads as another place, and
+  an unreadable answer refuses. The residual is the Windows lock create, which goes by
+  path: a folder turned into a junction between the link check and that create gets an
+  empty lock file in the junction's target, never truncated and never written, and the
+  fetch is refused.
+- *The engine's network.* https only; the certificate and the host name are verified
+  (`asset_downloader.make_ssl_context`) and no context, connection or redirect argument
+  is offered, so nothing turns either check off; a redirect is followed only on the same
+  host and port (`_SameHostRedirectHandler`), the engine's policy for a url whose origin
+  it cannot vouch for. The address the url names is not judged: the request runs in the
+  caller's own process, which can reach that address with a client of its own, so an
+  address rule here would narrow nothing, and dialing only vetted addresses would need a
+  second HTTPS connection class beside the engine's. A GitHub release or `/archive/` url
+  answers with a redirect to another host, so an app fetching one uses a url that serves
+  the bytes itself (the `codeload.github.com` tarball, an operator's mirror).
+
+A failure raises `VerifiedDownloadError`, an `OSError`, with the engine's own reason,
+which names a host and a local path and never the url's path or a credential. The call
+blocks for the whole transfer and raises `RuntimeError` on an event-loop thread, so an
+in-process app runs it through `asyncio.to_thread`. It has no redirect switch, no
+optional digest, no progress callback and no target outside the data directory, and it
+is not gated by a permission: it only narrows a fetch the app's own code could make
+into its own directory.
 
 **No widening knob.** A public signature carries only the parameters the apps use, and
 never one that adds reach. `sandboxed_argv` accepts the `standard` and `strict` tiers
@@ -10859,7 +10952,10 @@ package attributes: `max_output_bytes` on `run_sandboxed_async`
 (`audit_sdk.METHOD_LEVELS`). Level 18 is a third batch: `trusted_git_bin`,
 `trusted_system_bin`, `uv_executable`, `nvm_version_bin_dirs`,
 `agent_template_host_values` and `address_covers_loopback`, plus the keyword
-`extra_hidden_dirs` on the four spawn names (`_KEYWORD_LEVELS`). A host from level 7
+`extra_hidden_dirs` on the four spawn names (`_KEYWORD_LEVELS`). Level 20 is the
+verified download: `verified_download` and `VerifiedDownloadError`, plus the context
+method `ctx.verified_download`, which the pin tool counts at level 20 through its
+`_CONTEXT_SEAMS`. A host from level 7
 to 13 has the
 package without the name, so an app feature-detects the name with `getattr` and keeps its
 own refusal, and the pin tool counts a tree that names the package and the name as a use
@@ -10868,8 +10964,9 @@ of the name's level (§33), so a host below it keeps the wheel copy.
 **Not in it yet.** The names the apps reach that this package does not cover stay
 private and keep their `_host.py` gap: chat slot and auto-nudge internals (they belong
 to the app-owned chat slot seam of ruling item 4),
-`link_unfurl.pinned_connector` and `PinnedResolver`, `asset_downloader.download_to`,
-`executors.subprocess_executor`,
+`link_unfurl.pinned_connector` and `PinnedResolver`, the downloader's own staging and
+install steps (`asset_downloader.open_staging_nofollow` and `install_verified`; the
+verified download is the public form of `download_to`), `executors.subprocess_executor`,
 `config.loader.config_dir` and `KiroCrewConfig`, `platform.boot_platform`,
 `security.redact_local_paths`,
 `atomic_write.read_bytes_with_retry`, `owner_only_files.mkdirs_owner_only` and
@@ -10895,35 +10992,25 @@ names the loopback ports that tree listens on. The SDK starts no long-lived chil
 picture a person pasted into any chat, so a path to it is a path outside the app's own
 data. An app that keeps work files there moves them to `ctx.data_dir`; reading a file
 the person handed to the app is a call that resolves that one upload, not a directory.
-A verified download, the public form of `asset_downloader.download_to`, was vetted for
-level 18 and deferred to its own change. Its shape: the sha256 and a size cap required,
-the url through `vet_public_url` with every connection dialing only the vetted
-addresses and verifying TLS, no redirect off the host, and the file written only into
-the app's own data directory, through a pinned folder and a staging file of its own. It
-stays out while one finding is open: two fetches to the same destination race, and the
-first one's post-rename identity check, seeing the second one's installed file, removes
-the destination and with it the second fetch's good file. The narrowing it needs is a
-single writer per destination: one exclusive `file_lock` on `.<dest>.kc-dl.lock` in the
-pinned folder, held for the whole fetch, so a refusal's cleanup can only ever remove
-the inode the same transfer installed.
 
 Writers: `apps/backend_sdk/__init__.py`, `apps/backend_sdk/paths.py`,
 `apps/backend_sdk/files.py`, `apps/backend_sdk/redaction.py`,
 `apps/backend_sdk/audit.py`, `apps/backend_sdk/spawn.py`,
 `apps/backend_sdk/process.py`, `apps/backend_sdk/urls.py`, `apps/backend_sdk/media.py`,
 `apps/backend_sdk/pinned.py`, `apps/backend_sdk/content.py`,
-`apps/backend_sdk/git_hooks.py`, `apps/backend_sdk/tools.py`, `apps/audit_sdk.py`
+`apps/backend_sdk/git_hooks.py`, `apps/backend_sdk/tools.py`,
+`apps/backend_sdk/download.py`, `apps/download_sdk.py`, `apps/audit_sdk.py`
 (`record_or_raise`, `METHOD_LEVELS`), `apps/context.py` (the gateway-named
-`ctx.audit`), `apps/agent_template_values.py` (`host_values`),
+`ctx.audit`, `ctx.verified_download`), `apps/agent_template_values.py` (`host_values`),
 `apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
-`scripts/adoption_pin.py` (`_seam_level_uses`, `_BACKEND_SDK_LATER_NAMES`,
-`_AUDIT_METHOD_LEVELS`).
+`scripts/adoption_pin.py` (`_seam_level_uses`, `_CONTEXT_SEAMS`,
+`_BACKEND_SDK_LATER_NAMES`, `_AUDIT_METHOD_LEVELS`).
 Pinned by `test/test_app_backend_sdk.py`, `test/test_app_backend_sdk_file_gate.py`,
 `test/test_app_backend_sdk_urls.py`, `test/test_app_backend_sdk_media.py`,
 `test/test_app_backend_sdk_pinned.py`, `test/test_app_backend_sdk_content.py`,
 `test/test_app_backend_sdk_git_hooks.py`, `test/test_app_backend_sdk_output_cap.py`,
 `test/test_app_backend_sdk_tools.py`, `test/test_app_backend_sdk_hidden_dirs.py`,
-`test/test_audit_sdk.py` and
+`test/test_app_backend_sdk_download.py`, `test/test_audit_sdk.py` and
 `test/test_builtin_adoption_pins.py`.
 App authors: `docs/app-kit/api-reference.md` § Backend SDK.
 

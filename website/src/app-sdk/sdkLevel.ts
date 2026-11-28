@@ -39,5 +39,8 @@
  * spawn); the dashboard gains nothing at that level.
  * Level 19 adds `FileTree`: the dashboard's project file tree, behind the app's
  * declared `/api/project/tree`.
+ *
+ * Level 20 adds the backend's verified download (`ctx.verified_download` and the
+ * backend SDK's `verified_download`); the dashboard gains nothing at that level.
  */
-export const APP_SDK_LEVEL = 19
+export const APP_SDK_LEVEL = 20
