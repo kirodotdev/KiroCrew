@@ -12,7 +12,7 @@ export const {
   appWebOrigin, appWebOriginStatus,
   // Marker protocol. Naming an export the host does not provide is a load-time failure for the
   // whole app, so this list is checked against the protocol barrel by chatProtocolBoundary.test.ts.
-  parseOptions, deriveFollowUpOptions, extractSteeringAcks, stripPartialOptionMarker,
+  parseOptions, deriveFollowUpOptions, extractSteeringAcks, isStatusRow, stripPartialOptionMarker,
   // Chat surfaces and the transcript row registry.
   useChatSession, ChatPanel, ChatEmbed, ChatMessageList,
   // The dashboard's pull-request panel, behind the app's declared source paths (level 2).

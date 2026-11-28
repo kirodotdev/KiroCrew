@@ -1531,6 +1531,7 @@ website/src/app-sdk/protocol/
   optionMarker.ts   the marker pattern (in-tree only) + stripPartialOptionMarker
   options.ts        parseOptions, deriveFollowUpOptions
   steering.ts       extractSteeringAcks
+  statusRow.ts      isStatusRow
   grillMarker.ts    the `[GRILL:]` card parser (in-tree only, not exported from the package)
 ```
 
@@ -1575,6 +1576,18 @@ const { followUpOptions } = deriveFollowUpOptions(messages, running)
 
 When nothing is on offer, every call returns the same shared empty array, so identity comparison works for that case; non-empty results are fresh arrays. Treat it as read-only and copy it before mutating.
 
+To find the agent's last reply in a transcript you read yourself, skip the rows the gateway wrote
+with `isStatusRow(message)`. It is true for a system notice (compaction, session reload and the
+like), a workflow completion whose header parses, and a sub-agent completion envelope, in every role
+the gateway writes them under. A malformed envelope is false, because the chat draws it as text.
+The crewmate chat uses the same verdict, so an app that calls it follows new notice kinds without a
+copy of its own. It does not skip an empty reply (the invisible one a quiet turn ends on); check the
+text yourself when that matters:
+
+```tsx
+const lastReply = [...messages].reverse().find(m => m.role === 'assistant' && !isStatusRow(m))
+```
+
 The module imports no React and no dashboard component, so it is also usable from a worker, a test,
 or a non-React renderer.
 
@@ -1603,6 +1616,7 @@ marker — the exact failure the module exists to prevent. Apps get functions; t
 | `deriveFollowUpOptions(messages, isStreaming)` | function | the choices that still apply to the conversation |
 | `extractSteeringAcks(content)` | function | pull `[STEERING …]` out, returning `{ cleaned, acks }` |
 | `stripPartialOptionMarker(text)` | function | hide a half-streamed marker |
+| `isStatusRow(message)` | function | true for a row the gateway wrote (a notice or a completion envelope), not the agent; seam level 15 |
 | `ParsedOptions` | type | `{ text, options, multi }` |
 | `FollowUpDerivation` | type | `{ followUpOptions, followUpSourceKey }`; `followUpSourceKey` names the row the options came from, or `null` when none are on offer |
 | `ChatMessage` | type | the message shape `deriveFollowUpOptions` consumes |
@@ -2796,7 +2810,7 @@ its outbound URL check (`vet_public_url`, `UrlRejectedError` and
 `address_is_not_public`), its raster sniff (`sniff_raster_mime` and
 `RASTER_SNIFF_BYTES`) and its pinned path walk and copy (`pin_parent`,
 `copy_file_pinned` and their helpers), and level 15 adds `permissions.browserRecipes`
-with [`runRecipe`](#browser-recipes), and level 18 adds the backend SDK's trusted tool
+with [`runRecipe`](#browser-recipes) and the marker protocol's `isStatusRow`, and level 18 adds the backend SDK's trusted tool
 lookups, host agent-template values, `address_covers_loopback` and `extra_hidden_dirs` on
 its spawns, and level 20 adds the [verified download](#verified-download-ctxverified_download)
 (`ctx.verified_download` and the backend SDK's `verified_download`); each level includes

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { groupDisplayItems, applyRunningState, TURN_OPENER_ROLES } from '../pages/chat/groupDisplayItems'
 import { findPinnedPromptIdx, findNextPromptIdx, jumpAnchorIdx } from '../utils/pinnedPrompt'
-import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
+import { isSubagentCompletionMessage } from '../lib/subagentCompletion'
 import type { ChatMessage } from '../types'
 
 // Reproduces the transcript shape a babysit/monitor loop produces: a few typed

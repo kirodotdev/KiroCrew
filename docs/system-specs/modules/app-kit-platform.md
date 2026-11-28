@@ -8312,7 +8312,8 @@ on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 SDK names, one batch: `canonical_file_path`, `vet_public_url`, `UrlRejectedError`,
 `address_is_not_public`, `sniff_raster_mime` and `RASTER_SNIFF_BYTES`, and the
 descriptor-pinned path walk and copy (§40); level 15 adds
-`permissions.browserRecipes` and `useBrowserMedia().runRecipe` (§45); level 16 adds the
+`permissions.browserRecipes`, `useBrowserMedia().runRecipe` (§45) and the SDK's
+`isStatusRow`; level 16 adds the
 SDK's `useKeepAlive` (below); level 17 adds a
 second batch of backend SDK names: the credential scan and placeholder, the
 exfiltration-URL check, `DENIED_ROOT_PARTS`, `minimal_env`, the git hook overrides,

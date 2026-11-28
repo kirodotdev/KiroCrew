@@ -1668,7 +1668,7 @@ UNVERIFIED_MODEL_NOTE = (
 # Key under a completion message's ``meta`` where the gateway stamps the
 # structured header facts (outcome, tallies, chunk index, agent id) the
 # dashboard card reads. Mirrors ``META_KEY`` in
-# website/src/pages/chat/subagentCompletion.ts — the two are one wire contract.
+# the frontend's sub-agent completion parser — the two are one wire contract.
 # The card reads this meta, so rewording the header PROSE cannot break it; the
 # prose regexes serve only old scrollback.
 SUBAGENT_COMPLETION_META_KEY = "subagentCompletion"

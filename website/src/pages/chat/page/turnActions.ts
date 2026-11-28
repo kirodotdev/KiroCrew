@@ -11,7 +11,7 @@ import { type MessageQuote, stripQuoteBlock } from '../../../chat-core/composer/
 import { markDictated } from '../../../chat-core/composer/dictationProvenance'
 import { api } from '../../../api/client'
 import { resolveAskAfterSend } from '../../../lib/resolveAskAfterSend'
-import { isSystemNoticeRow } from '../CompactionCard'
+import { isSystemNoticeRow } from '../../../lib/systemNotice'
 import { injectOpensTurn } from '../RecoveryCard'
 import { mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
 import { revealComposer } from '../composerFocus'

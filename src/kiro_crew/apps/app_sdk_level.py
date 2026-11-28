@@ -30,7 +30,8 @@ also adds the descriptor-pinned path walk and copy: ``supports_pinned_walk``,
 Level 15 adds ``permissions.browserRecipes``: fixed clicks on CSS selectors the gateway
 runs on the app's own agent's tab, through ``POST /api/browser/media`` (``action:
 "recipe"``, the SDK's ``useBrowserMedia().runRecipe``) and, for a ``watch`` recipe, by
-itself while the app's media plays.
+itself while the app's media plays; and the SDK's ``isStatusRow``, the chat's verdict
+on a row the gateway wrote.
 Level 16 adds the SDK's ``useKeepAlive``: a routed page stays mounted, hidden, while
 the app says it is busy, and the dashboard names it on every page with Open and Stop.
 

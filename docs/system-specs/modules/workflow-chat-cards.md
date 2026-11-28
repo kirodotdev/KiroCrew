@@ -18,7 +18,7 @@ That link does not go through the side panel's `+` menu or its empty-state launc
 
 `src/kiro_crew/dashboard/workflow_inject.py::_summarize` creates the completion header, and `inject_workflow_result` appends it as an `assistant` message to the originating slot, broadcasts it to the live chat, and persists the same message for replay. The broadcast includes a workflow-result kind, while the durable message is an assistant row; the renderer therefore detects the persisted content rather than relying on an event kind.
 
-`website/src/pages/chat/WorkflowCompletionCard.tsx::parseWorkflowCompletion` parses the backend header and separates the display body. It removes the trailing agent-facing workflow-tool hint only from the rendered body; it does not mutate the message. The card sanitizes the workflow title, renders the body with `MarkdownRenderer`, starts with the completion body collapsed, and opens the Workflows panel through `openActivityToTab('workflows')`.
+`website/src/lib/workflowCompletion.ts::parseWorkflowCompletion` parses the backend header and separates the display body. It removes the trailing agent-facing workflow-tool hint only from the rendered body; it does not mutate the message. The card sanitizes the workflow title, renders the body with `MarkdownRenderer`, starts with the completion body collapsed, and opens the Workflows panel through `openActivityToTab('workflows')`.
 
 ### Rendering invariants
 

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from '../../types'
+import { isStatusRow } from '../../app-sdk/protocol'
 import {
   crewmateBubbleClass,
   crewmateRunPosition,
@@ -377,13 +378,23 @@ const isSpeechRow = (m: ChatMessage): boolean => (m.role === 'user' ? isCrewmate
 
 describe('speech twins agree (shared fixture)', () => {
   const FIXTURE = path.resolve(__dirname, '../../../../test/fixtures/crewmate_speech_rows.json')
-  type Case = { name: string; role: string; content: string; meta?: Record<string, unknown>; kind?: string; speech: boolean; frontend_only?: boolean }
+  type Case = { name: string; role: string; content: string; meta?: Record<string, unknown>; kind?: string; speech: boolean; status?: boolean; frontend_only?: boolean }
   const cases: Case[] = JSON.parse(readFileSync(FIXTURE, 'utf8')).cases
   it('has enough rows to mean something', () => { expect(cases.length).toBeGreaterThanOrEqual(10) })
   for (const c of cases) {
     it(c.name, () => {
       const row: ChatMessage = { role: c.role, content: c.content, cls: '', ts: '2026-09-22T06:00:00Z', meta: c.meta, kind: c.kind }
       expect(isSpeechRow(row)).toBe(c.speech)
+    })
+  }
+  it('has status rows under every role the gateway writes them with', () => {
+    expect(new Set(cases.filter(c => c.status).map(c => c.role))).toEqual(new Set(['assistant', 'subagent', 'user']))
+  })
+  for (const c of cases) {
+    it(`isStatusRow: ${c.name}`, () => {
+      const row: ChatMessage = { role: c.role, content: c.content, cls: '', ts: '2026-09-22T06:00:00Z', meta: c.meta, kind: c.kind }
+      expect(isStatusRow(row)).toBe(c.status === true)
+      if (c.status) expect(c.speech).toBe(false)
     })
   }
 })

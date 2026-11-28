@@ -192,8 +192,10 @@ export const CHUNK_BUDGETS = {
   // `first-load-2` re-measured on an analyze build of main @ c71731b56d, same
   // 5% rule (#39726): it was 1,940 B over its 1179 KB ceiling after first-load
   // growth spread across many features; the other parts were still under.
+  // Re-measured over main @ 5bfaa5f4a9 with 2% headroom, not 5%: moving the status-row checks
+  // into `lib/` shifted the size cut, +18,077 B here while the four parts grew 280 B together.
   'first-load-1': 1164 * KB, // measured 1,134,732 B
-  'first-load-2': 1240 * KB, // measured 1,209,236 B
+  'first-load-2': 1273 * KB, // measured 1,277,803 B
   //
   // `main` re-measured on an analyze build of main @ d95060b87c, same 5% rule
   // (#43195): it was 338 B over its 1410 KB ceiling, its headroom spent by
