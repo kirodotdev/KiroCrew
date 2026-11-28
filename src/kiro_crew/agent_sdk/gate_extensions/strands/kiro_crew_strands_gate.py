@@ -834,6 +834,10 @@ def _load_user_project(path: str) -> tuple[Any, list[tuple[Agent, tuple, dict]]]
     original_create_harness = strands_harness.create_harness
 
     def capture_create_harness(*args: Any, **options: Any) -> Agent:
+        # Without a session option the CLI's worker serves this agent itself and
+        # never calls create_agent; create_agent replaces the session anyway.
+        if not isinstance(options.get("session", True), dict):
+            options["session"] = _session_option(None)
         agent = original_create_harness(*args, **options)
         captured.append((agent, args, options))
         return agent
@@ -933,12 +937,12 @@ _user_module, _user_captured = (None, []) if not PROJECT else _load_user_project
 def create_agent(**overrides: Any) -> Any:
     """The session's agent, built the way the Strands CLI asks a project for one.
 
-    The CLI passes ``session_id`` / ``session_dir`` and any launch overrides
+    The CLI passes ``session`` (``{"id", "dir"}``) and any launch overrides
     (``model``). Sessions are stored under the directory Kiro Crew names, never in
     the working directory.
     """
-    session_id = overrides.pop("session_id", None)
-    overrides.pop("session_dir", None)
+    session = overrides.pop("session", None)
+    session_id = session.get("id") if isinstance(session, dict) else None
     if _user_module is None:
         agent = strands_harness.create_harness(
             builtin_tools=DEFAULT_BUILTIN_TOOLS,
@@ -949,9 +953,8 @@ def create_agent(**overrides: Any) -> Any:
             **overrides,
         )
     elif callable(getattr(_user_module, "create_agent", None)):
-        if session_id is not None:
-            overrides["session_id"] = session_id
-            overrides["session_dir"] = STATE_DIR
+        if isinstance(session, dict):
+            overrides["session"] = _session_option(session_id)
         built_agent = _user_module.create_agent(**overrides)
         if inspect.isawaitable(built_agent):
             # The CLI's worker awaits an awaitable factory result; the gate check
@@ -964,7 +967,7 @@ def create_agent(**overrides: Any) -> Any:
         if built is not None:
             _agent, args, options = built
             agent = strands_harness.create_harness(
-                *args, **{**options, "session": _session_option(session_id), **overrides}
+                *args, **{**options, **overrides, "session": _session_option(session_id)}
             )
         else:
             # An agent instance with no factory: the one agent this worker serves.
@@ -1076,7 +1079,9 @@ if _user_module is None:
         background_tasks=False,
         memory=False,
         skills=False,
-        session=False,
+        # A session option, so the CLI's worker passes this session's id to
+        # create_agent rather than serving this import-time agent.
+        session=_session_option(None),
     )
 else:
     agent = _require_gated(getattr(_user_module, "agent", None))

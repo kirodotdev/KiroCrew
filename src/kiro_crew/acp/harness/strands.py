@@ -2,8 +2,7 @@
 
 Kiro Crew runs the official Strands CLI (``@strands-agents/cli``) in its Python-project
 ACP mode: ``strands --acp-server --agent <project>``. Four things are this harness's
-own, each measured on 0.2.3, whose code the verified release
-(``STRANDS_VERIFIED_VERSION``) ships unchanged:
+own, each measured on the verified release (``STRANDS_VERIFIED_VERSION``):
 
 * **The project is Crew's gate module.** In this mode the CLI sends
   ``session/request_permission`` only for a Strands interrupt, and nothing in the CLI
@@ -111,7 +110,7 @@ __all__ = [
 
 #: The SHA-256 of the shipped gate module, LF line endings. A copy with other bytes is
 #: never loaded.
-STRANDS_GATE_SHA256 = "1be92fe1296481a3a51a6a77d708e20052aae5dfe4af7253700aaec0a989877b"
+STRANDS_GATE_SHA256 = "674d33da39d0a853fda56955a60588405991b987738528f690fb6f50c5eb8a28"
 
 #: What the gate module names itself in its load marker; the routing table's probe.
 STRANDS_GATE_NAME = "kiro-crew-strands-gate"
@@ -126,7 +125,7 @@ _ENV_STATE_DIR = "KIROCREW_STRANDS_STATE_DIR"
 _ENV_WITHHELD = "KIROCREW_STRANDS_WITHHELD"
 
 #: The CLI's own switches for its discovery of other tools' configuration
-#: (``tui/workspace/trust.js`` and ``tui/skills.js`` in the verified release). Off for
+#: (``config/trust.js`` and ``agent/skills.js`` in the verified release). Off for
 #: every Crew child: MCP servers come from Crew's ``--mcp-config`` file alone.
 STRANDS_DISCOVERY_OFF: dict[str, str] = {
     "STRANDS_CLI_MCP_DISCOVERY": "off",
@@ -480,7 +479,7 @@ def _strands_user_project() -> tuple[str, str]:
 
 
 #: The provider prefixes the pinned CLI's ``--model`` accepts
-#: (``provider/<model>``, ``tui/provider/environment.js``).
+#: (``provider/<model>``, ``config/store.js``).
 STRANDS_PROVIDERS = frozenset(STRANDS_PROVIDER_CHOICES)
 
 

@@ -2,16 +2,13 @@
   {
     "agent_capabilities": {
       "loadSession": true,
-      "mcpCapabilities": {
-        "http": true,
-        "sse": true
-      },
+      "mcpCapabilities": {},
       "promptCapabilities": {
         "embeddedContext": true,
         "image": true
       }
     },
-    "agent_version": "0.0.1",
+    "agent_version": "0.6.0",
     "frame": "response",
     "id": 1,
     "protocol_version": 1
@@ -26,13 +23,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "I'll call"
+        "text": "I'll call the probe c"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "I'll call",
+      "text": "I'll call the probe c",
       "thinking": false
     }
   },
@@ -41,13 +38,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " the probe t"
+        "text": "odeword tool for"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " the probe t",
+      "text": "odeword tool for",
       "thinking": false
     }
   },
@@ -56,13 +53,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "ool."
+        "text": " you."
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "ool.",
+      "text": " you.",
       "thinking": false
     }
   },
@@ -126,13 +123,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "The first"
+        "text": "The call"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "The first",
+      "text": "The call",
       "thinking": false
     }
   },
@@ -141,13 +138,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " call was denied. Per your"
+        "text": " was"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " call was denied. Per your",
+      "text": " was",
       "thinking": false
     }
   },
@@ -156,13 +153,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " instruction, ret"
+        "text": " denied. Let me retry"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " instruction, ret",
+      "text": " denied. Let me retry",
       "thinking": false
     }
   },
@@ -171,13 +168,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "rying ex"
+        "text": " it"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "rying ex",
+      "text": " it",
       "thinking": false
     }
   },
@@ -186,13 +183,43 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "actly once."
+        "text": " exactly once as"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "actly once.",
+      "text": " exactly once as",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " instruct"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " instruct",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "ed."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ed.",
       "thinking": false
     }
   },
@@ -258,13 +285,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "The"
+        "text": "The c"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "The",
+      "text": "The c",
       "thinking": false
     }
   },
@@ -273,13 +300,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " codeword is **tanger"
+        "text": "odeword is"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " codeword is **tanger",
+      "text": "odeword is",
       "thinking": false
     }
   },
@@ -288,13 +315,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "ine-42**.\n\nThe first"
+        "text": ": **"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "ine-42**.\n\nThe first",
+      "text": ": **",
       "thinking": false
     }
   },
@@ -303,109 +330,36 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " call was denied "
+        "text": "tangerine-42**"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " call was denied ",
+      "text": "tangerine-42**",
       "thinking": false
     }
   },
   {
     "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": "(\"Kiro Crew"
-      }
-    ],
+    "events": [],
     "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "(\"Kiro Crew",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": " did not approve 'mc"
-      }
+    "session_update": "usage_update",
+    "usage": [
+      2455,
+      200000
     ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": " did not approve 'mc",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": "p__probe__codeword"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "p__probe__codeword",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": "'\");"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "'\");",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": " the single retry you auth"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": " the single retry you auth",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": "orized succeeded."
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "orized succeeded.",
-      "thinking": false
-    }
+    "usage_cost": null
   },
   {
     "frame": "response",
     "id": 3,
+    "prompt_tokens": [
+      75,
+      212,
+      5904,
+      1064
+    ],
     "stop_reason": "end_turn"
   }
 ]

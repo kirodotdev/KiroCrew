@@ -121,7 +121,7 @@ NATIVE_ALLOW_STORES_NONE: Mapping[str, str] = {
     ACP_BACKEND_DEEPSEEK: "no on-disk allow list is known; every call goes through "
     "Crew's gate extension",
     ACP_BACKEND_STRANDS: "in the Python-project ACP mode Crew runs, the CLI consults "
-    "no allow list of its own (its ~/.strands/cli/config.json permissions apply to its "
+    "no allow list of its own (its ~/.strands/cli.toml permissions apply to its "
     "terminal UI only); every call raises Crew's gate module interrupt",
 }
 

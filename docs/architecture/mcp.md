@@ -1665,7 +1665,7 @@ prompt and never while a turn holds the lock, the marked client is replaced
 through the disposed-session path (`acp/relaunch_reload.py`): the old process is
 killed, the new one launches with a freshly written `--mcp-config`, and
 `session/load` of the same id brings the conversation back. Measured on Strands
-CLI 0.2.3: `test/fixtures/acp_frames/strands/mcp-relaunch-add-live.jsonl` (an
+CLI 0.6.0: `test/fixtures/acp_frames/strands/mcp-relaunch-add-live.jsonl` (an
 added server's tool offered and called, the earlier turns kept) and
 `mcp-relaunch-remove-live.jsonl` (a withdrawn server's tool no longer offered).
 The launch clears the mark right before it reads the spec, so a client still

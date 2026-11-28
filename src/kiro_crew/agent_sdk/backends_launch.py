@@ -188,24 +188,24 @@ COPILOT_VERIFIED_VERSION = "1.0.100"
 #: Python-project ACP server forwards a Strands interrupt as
 #: ``session/request_permission`` and refuses a non-empty ``session/new``
 #: ``mcpServers`` array, and its worker reads the project and session overrides the
-#: gate module depends on. Measured on 0.2.3; the published 0.2.4 package differs
-#: from it only in its version. The install hint pins it; another release is named
+#: gate module depends on (``session={"id", "dir"}`` passed to ``create_agent``).
+#: Measured on 0.6.0. The install hint pins it; another release is named
 #: at the handshake (``acp.harness.strands``). Re-measure against a fresh capture
 #: before raising it to a release whose code differs.
-STRANDS_VERIFIED_VERSION = "0.2.4"
+STRANDS_VERIFIED_VERSION = "0.6.0"
 #: The Python packages the Strands CLI's project worker imports, at the versions the
 #: gate was measured on. Installed into the project environment Crew runs Strands in.
 #: strands-harness loads each provider's SDK only through its own extra, so the
 #: requirement carries one extra for every ``agent.strands_provider`` but ``bedrock``
 #: (``openai`` serves both ``openai`` and ``bedrock-mantle``, ``gemini`` serves
 #: ``google``).
-STRANDS_PYTHON_REQUIREMENT = "strands-harness[anthropic,gemini,litellm,ollama,openai]==0.3.3"
+STRANDS_PYTHON_REQUIREMENT = "strands-harness[anthropic,gemini,litellm,ollama,openai]==0.6.0"
 #: botocore's CRT extra, installed beside it: boto3's credential chain refuses an AWS
 #: profile using the ``login`` provider without it, and the worker dies before it
 #: loads the gate.
 STRANDS_PYTHON_CRT_REQUIREMENT = "botocore[crt]"
 #: The CLI's own ``engines.node`` floor.
-STRANDS_NODE_FLOOR = (22, 0, 0)
+STRANDS_NODE_FLOOR = (22, 12, 0)
 
 #: Harness id -> the fixed facts of LAUNCHING it, for the harnesses whose own binary
 #: serves ACP.
