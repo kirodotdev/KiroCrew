@@ -37,7 +37,7 @@ import ast
 import inspect
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import source_corpus
@@ -1050,6 +1050,38 @@ class TestAScriptCronSendIsTheCrons:
         assert kwargs.get("_turn_actor") == actor
         # Authority is unchanged: only who the turn is filed under moves.
         assert kwargs["_directive_user_origin"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_cron_steer_keeps_the_run_quiet(
+        self, state: Any, chat_run: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.dashboard.chat_delivery import STEER_STEERED
+
+        self._as_cron(monkeypatch, "cron:job-1")
+        slot = state.get_or_create_slot("s1")
+        task = MagicMock()
+        task.done.return_value = False
+        slot.task = task
+        slot._run_automation_started = True
+        seen: dict[str, Any] = {}
+
+        async def _steer(_state: Any, target: Any, _message: str, **kwargs: Any) -> str:
+            seen.update(kwargs)
+            target._run_automation_started &= bool(kwargs.get("automation_origin"))
+            return STEER_STEERED
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.steer_into_running_turn", _steer)
+        async with _client(state, "") as client:
+            resp = await client.post(
+                "/api/chat?ws=1",
+                json={"slot": "s1", "message": "tick", "steer": True},
+            )
+            assert resp.status == 200, await resp.text()
+            assert (await resp.json())["steered"] is True
+
+        assert seen["automation_origin"] is True
+        assert slot._run_automation_started is True
+        chat_run.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("creator, actor", [("cron:job-1", "cron"), ("", None)])

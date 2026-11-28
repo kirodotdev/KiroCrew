@@ -106,6 +106,8 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
         const crewWorkerQuiet = !!crewRootOf(soundSlot) && !completionNeedsInput && !turnErrored
         completionNeedsAttention = shouldChimeOnTurnDone({
           slot: data.slot,
+          automationStarted: data.automation_started,
+          errored: turnErrored,
           reconnecting: reconnectingRef.current,
           continuing,
           needsInput: completionNeedsInput,

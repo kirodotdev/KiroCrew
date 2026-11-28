@@ -22,7 +22,11 @@ from steer_requeue_helpers import _running_slot
 
 from kiro_crew.context_assembly.replay import build_interrupted_turn_preamble
 from kiro_crew.dashboard import chat_runner, session_deliver
-from kiro_crew.dashboard.chat_delivery import STEER_STEERED, steer_into_running_turn
+from kiro_crew.dashboard.chat_delivery import (
+    SOUND_AUTOMATION_META_KEY,
+    STEER_STEERED,
+    steer_into_running_turn,
+)
 from kiro_crew.dashboard.chat_runner import _requeue_unconsumed_steers
 from kiro_crew.dashboard.chat_utils import _dequeue_next_message
 from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
@@ -196,7 +200,8 @@ class TestRequeuedAutomationSteer:
         entry = slot._queue[0]
         assert entry["id"] == qid
         assert entry["content"] == "my own words"
-        assert entry["meta"] == {"sendId": "s-1"}
+        # Their edit also marks the entry as theirs for the turn-done sound.
+        assert entry["meta"] == {"sendId": "s-1", SOUND_AUTOMATION_META_KEY: False}
         assert entry["_directive_user_origin"] is True
         with (
             patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),

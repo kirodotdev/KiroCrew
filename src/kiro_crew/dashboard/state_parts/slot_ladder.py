@@ -42,6 +42,7 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_tool_stall_exhausted_emitted``, ``_tool_stall_retries``, ``_transient_5xx_retries``,
 ``_transient_ladder_started``, ``_turn_agent_started``, ``_turn_channel_narrowed``,
 ``_turn_channel_origin``, ``_turn_owner_sent``, ``_turn_retries``, ``_turn_user_sent``,
+``_run_automation_started``,
 ``_turn_wrote_text``,
 ``_wait_contested``, ``_wait_last_ping``,
 ``_wait_state``, ``_wait_steer_baseline``, ``replays``.
@@ -437,6 +438,11 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # that is not the user's clears it (`chat_delivery`), so the guide routes
     # that act for the user refuse them.
     self._turn_user_sent = False
+    # Sound provenance fails toward the chime. It stays True only while every
+    # turn (`turn_entry._turn_open`) and steer (`chat_delivery`) in the run is
+    # positively known automation. The run's final `chat_done` reports it as
+    # `automation_started` and resets it (`queue_cycle._report_run_automation`).
+    self._run_automation_started = True
     # Whether the RUNNING turn's words are the OWNER's: the person whose dashboard
     # claim `is_owner_dashboard_request` accepts, not any holder of a dashboard
     # token (a channel user allow-listed for `/kirocrew dashboard` holds one too,

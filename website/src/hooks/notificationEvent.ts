@@ -53,14 +53,23 @@ export const DICTATION_STOPPED_KIND = 'dictation' as const
  * merely that one model turn returned. Continuation comes from the terminal
  * frame, with live activity selectors as the fallback for older frames.
  * Reconnect replay and slot-less frames never request audio.
+ *
+ * An automation-started run (`automation_started: true`) finishes quietly:
+ * nobody is waiting on it. It still sounds when it stops for the person, on a
+ * question or a terminal error (`errored`). A missing field fails toward the
+ * chime for older gateways and remote relays.
  */
 export function shouldChimeOnTurnDone(opts: {
   slot: string | undefined | null
   reconnecting: boolean
   continuing?: boolean
   needsInput?: boolean
+  automationStarted?: unknown
+  errored?: boolean
 }): boolean {
-  return !!opts.slot && !opts.reconnecting && (!!opts.needsInput || !opts.continuing)
+  if (!opts.slot || opts.reconnecting) return false
+  if (opts.needsInput) return true
+  return !opts.continuing && (opts.automationStarted !== true || !!opts.errored)
 }
 
 /**

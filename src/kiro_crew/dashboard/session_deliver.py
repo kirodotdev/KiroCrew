@@ -23,6 +23,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.chat_delivery import SOUND_AUTOMATION_META_KEY
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Awaitable, Callable
 
@@ -445,7 +447,9 @@ async def _deliver_peer(
     ``user`` row a queued or started send gets. ``user_origin=False`` on both, so
     a peer never inherits the person's exemption from the drain's linked drop.
     *queue_meta* rides the queue entry only (``enqueue_or_run_prompt``'s
-    ``extra_meta``), and *admission* is the steer's requeue baseline.
+    ``extra_meta``), and *admission* is the steer's requeue baseline. This server
+    adds :data:`SOUND_AUTOMATION_META_KEY` after the caller's metadata, so request
+    input cannot choose the sound verdict.
     """
     if origin.steer:
         if not slot.running:
@@ -463,6 +467,7 @@ async def _deliver_peer(
             slot,
             text,
             user_origin=False,
+            automation_origin=True,
             admission=admission,
             relay_meta=relay_meta,
             held_peer=bool(origin.held),
@@ -478,13 +483,20 @@ async def _deliver_peer(
     from kiro_crew.dashboard.chat_runner import _run_chat
     from kiro_crew.tracing import steps as trace_steps
 
+    async def _run_peer_chat(run_state, run_slot, prompt: str) -> None:
+        await _run_chat(run_state, run_slot, prompt, _sound_automation=True)
+
     # The turn this starts, now or at its drain, links to the sender's (tracing/steps.py).
     with trace_steps.sending(origin.sender) as sender_meta:
         started = slot.enqueue_or_run_prompt(
             text,
-            _run_chat,
+            _run_peer_chat,
             state,
-            extra_meta={**(queue_meta or {}), **sender_meta} or queue_meta,
+            extra_meta={
+                **(queue_meta or {}),
+                **sender_meta,
+                SOUND_AUTOMATION_META_KEY: True,
+            },
             relay_meta=relay_meta,
             at_head=origin.at_head,
         )

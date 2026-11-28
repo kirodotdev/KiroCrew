@@ -104,6 +104,7 @@ class _ChatTurn:
     _mirror_reply_only: "bool"
     _slack_voice: "tuple[str, str, bool] | None"
     _turn_actor: "str"
+    _sound_automation: "bool | None"
     regenerate_hint: "str"
     _on_consumed: "Callable[[bool], None] | None"
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None"
@@ -422,6 +423,7 @@ class _ChatTurn:
         _mirror_reply_only: "bool" = False,
         _slack_voice: "tuple[str, str, bool] | None" = None,
         _turn_actor: "str",
+        _sound_automation: "bool | None",
         regenerate_hint: "str",
         _on_consumed: "Callable[[bool], None] | None",
         _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None",
@@ -464,6 +466,7 @@ class _ChatTurn:
         self._mirror_reply_only = _mirror_reply_only
         self._slack_voice = _slack_voice
         self._turn_actor = _turn_actor
+        self._sound_automation = _sound_automation
         self.regenerate_hint = regenerate_hint
         self._on_consumed = _on_consumed
         self._on_irreversibly_consumed = _on_irreversibly_consumed

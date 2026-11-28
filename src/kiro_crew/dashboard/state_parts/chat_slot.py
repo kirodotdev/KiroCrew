@@ -381,6 +381,7 @@ class _ChatSlot:
         "_turn_channel_narrowed",
         "_turn_channel_origin",
         "_turn_user_sent",
+        "_run_automation_started",
         "_turn_owner_sent",
         "_turn_agent_started",
         "_turn_wrote_text",
@@ -777,6 +778,9 @@ class _ChatSlot:
     _turn_channel_narrowed: bool
     _turn_channel_origin: bool
     _turn_user_sent: bool
+    # True until a turn or steer not positively established as automation runs.
+    # The final ``chat_done`` reports and resets it as ``automation_started``.
+    _run_automation_started: bool
     _turn_owner_sent: bool
     #: The turn running now is one the agent started on its own between prompts
     #: (``chat_turn.agent_started``); its assistant rows carry ``meta.origin``.

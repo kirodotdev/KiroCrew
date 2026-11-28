@@ -440,9 +440,10 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
 
     Provenance is dropped for the same reason and matters most:
     ``_directive_user_origin``, ``_directive_channel_origin``,
-    ``_directive_owner_origin`` and the entry's
-    ``meta`` turn actor are never restored, so a restored entry is non-directive
-    and actor-less by construction. The drain
+    ``_directive_owner_origin`` and the entry's ``meta`` turn actor are never
+    restored. The server-only sound mark is restored only when False, because
+    False can add a chime while True could silence a person's words. A restored
+    entry is non-directive and actor-less by construction. The drain
     reduces the consumed entries' flags into the authenticated-human authority a
     directive is admitted under, and this line is an ordinary writable file — a
     carried flag would be authority granted to whoever edited it. The writer does
@@ -482,7 +483,10 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
         return []
     # Local import: session_control reaches this module through state, so taking
     # the key at module level would close an import cycle.
-    from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY
+    from kiro_crew.dashboard.chat_delivery import (
+        SOUND_AUTOMATION_META_KEY,
+        TURN_ACTOR_META_KEY,
+    )
     from kiro_crew.dashboard.chat_utils_injected_rows import COMPOSER_SEND_META
     from kiro_crew.dashboard.session_control import (
         CHANNEL_RECIPIENT_META_KEY,
@@ -583,18 +587,24 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # sub-agent hold (``releases_past_subagent_hold``), a path that never
             # runs the drain's containment sweep. Restored, a composer send is
             # an ordinary card that waits for the user like every other one.
-            entry["meta"] = {
+            restored_meta = {
                 k: v
                 for k, v in meta.items()
                 if k
                 not in (
                     QUEUED_CONTAINMENT_META_KEY,
                     TURN_ACTOR_META_KEY,
+                    SOUND_AUTOMATION_META_KEY,
                     SEND_ORIGIN_META_KEY,
                     CHANNEL_RECIPIENT_META_KEY,
                     COMPOSER_SEND_META,
                 )
             }
+            # False can only add a chime, so a person's persisted edit keeps it.
+            # True could silence a person's restored words and is never trusted.
+            if meta.get(SOUND_AUTOMATION_META_KEY) is False:
+                restored_meta[SOUND_AUTOMATION_META_KEY] = False
+            entry["meta"] = restored_meta
         try:
             # Costed against the same key projection the WRITER admits
             # (:data:`_DURABLE_QUEUE_KEYS`, which has no ``kind``), not against
@@ -1072,7 +1082,10 @@ class SlotQueueRepository:
             # the same set: the server-written cards' pencil
             # (`isServerWrittenQueued`), a gateway prompt's whole card
             # (`isNonInteractiveQueued`).
-            from kiro_crew.dashboard.chat_delivery import EXPANSIONS_OFF_META_KEY
+            from kiro_crew.dashboard.chat_delivery import (
+                EXPANSIONS_OFF_META_KEY,
+                SOUND_AUTOMATION_META_KEY,
+            )
             from kiro_crew.dashboard.chat_utils import MCP_APP_MESSAGE_KIND
             from kiro_crew.dashboard.chat_utils_injected_rows import (
                 AUTOMATION_STEER_META,
@@ -1109,10 +1122,17 @@ class SlotQueueRepository:
             # Replacement words belong to the editor, not the automation that
             # queued them, nor the peer session whose ``session_send`` did (its
             # ``relay`` would draw the editor's words as that session's message).
+            # Keep actor and authority provenance unchanged; False is a sound-only
+            # override that can add a chime but cannot silence one.
             meta = item.get("meta")
+            if directive_user_origin and not isinstance(meta, dict):
+                meta = {}
+                item["meta"] = meta
             if isinstance(meta, dict):
                 meta.pop(AUTOMATION_STEER_META, None)
                 meta.pop("relay", None)
+                if directive_user_origin:
+                    meta[SOUND_AUTOMATION_META_KEY] = False
                 # The label summarized the old text; an edited row shows its own.
                 if previous != item["content"]:
                     meta.pop("banner", None)

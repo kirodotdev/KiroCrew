@@ -881,6 +881,7 @@ async def fire(state: Any, job: Any) -> str:
         with_language(prompt, language, in_thread=True),
         human_seen=False,
         mirror_reply_only=cadence == member_goals.CADENCE_HEARTBEAT,
+        sound_automation=True,
     )
     return "started"
 

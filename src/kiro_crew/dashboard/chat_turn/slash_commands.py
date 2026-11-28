@@ -692,6 +692,7 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                     _prompt_on_channel=turn._prompt_on_channel,
                     _slack_voice=turn._slack_voice,
                     _turn_actor=_turn_actor,
+                    _sound_automation=turn._sound_automation,
                 )
             elif status == "blocked":
                 sel().log_tool_invocation(

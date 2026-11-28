@@ -93,6 +93,11 @@ ACTORS = frozenset(
     }
 )
 
+#: Turn actors whose runs finish quietly unless they stop for the person. This is
+#: deliberately narrower than :data:`ACTORS`: an unclassified actor fails toward
+#: the chime instead of silently hiding a reply.
+TURN_SOUND_AUTOMATION_ACTORS = frozenset({"app", "crew", "cron", "autonudge", "subagent"})
+
 
 def close_open_tool_calls(
     session_id: str,

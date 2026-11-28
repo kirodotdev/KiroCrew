@@ -74,7 +74,16 @@ class _State:
 def dispatched(monkeypatch):
     calls: list[tuple[str, str]] = []
 
-    def dispatch(state, slot, prompt, *, human_seen, heartbeat=False, actor="gateway"):
+    def dispatch(
+        state,
+        slot,
+        prompt,
+        *,
+        human_seen,
+        heartbeat=False,
+        actor="gateway",
+        sound_automation=None,
+    ):
         calls.append((slot.key, prompt))
 
     monkeypatch.setattr("kiro_crew.dashboard.mate_welcome.dispatch_hidden_turn", dispatch)
@@ -900,11 +909,11 @@ def test_no_page_line_without_page_tools_or_fields(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_the_wake_a_worker_report_starts_carries_the_page_line(monkeypatch):
-    calls: list[str] = []
+    calls: list[tuple[str, bool]] = []
     seen: list[str] = []
 
-    def dispatch(state, slot, prompt, *, human_seen, heartbeat=False):
-        calls.append(prompt)
+    def dispatch(state, slot, prompt, *, human_seen, sound_automation=None, **_kwargs):
+        calls.append((prompt, sound_automation))
 
     def line(slug: str) -> str:
         seen.append(slug)
@@ -918,7 +927,9 @@ async def test_the_wake_a_worker_report_starts_carries_the_page_line(monkeypatch
     wakes.note_turn_end(state, worker, "Fixed; 3/3 suites pass.")
     await _settle(state)
     assert seen == ["atlas"]
-    assert len(calls) == 1 and calls[0].endswith("\n\nPAGE LINE")
+    assert len(calls) == 1
+    assert calls[0][0].endswith("\n\nPAGE LINE")
+    assert calls[0][1] is True
 
 
 @pytest.mark.asyncio

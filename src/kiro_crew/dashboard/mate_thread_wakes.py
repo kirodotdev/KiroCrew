@@ -653,11 +653,17 @@ async def _flush(state: Any, key: str) -> None:
 
             _notices(state).discard(key)
             prompt = _notice_prompts(state).pop(key, NOTICE_PROMPT)
-            dispatch_hidden_turn(state, slot, prompt, human_seen=False)
+            dispatch_hidden_turn(state, slot, prompt, human_seen=False, sound_automation=True)
             logger.info("upgrade notice started on %s", key)
             continue
         if _idle(slot) and key in _kept_notices(state):
-            dispatch_hidden_turn(state, slot, _kept_notices(state).pop(key), human_seen=False)
+            dispatch_hidden_turn(
+                state,
+                slot,
+                _kept_notices(state).pop(key),
+                human_seen=False,
+                sound_automation=True,
+            )
             logger.info("kept notice started on %s", key)
             continue
         if _idle(slot) and key in _rebind_notices(state):
@@ -783,6 +789,7 @@ async def _flush(state: Any, key: str) -> None:
                     page,
                 ),
                 human_seen=False,
+                sound_automation=True,
             )
             for names in sign_in_names.values():
                 _sign_in_told(state).setdefault(key, set()).update(names)

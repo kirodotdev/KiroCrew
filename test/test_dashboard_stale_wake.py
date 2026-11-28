@@ -87,7 +87,8 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(goal_reminder, "_load_thread", _no_load)
     monkeypatch.setattr(mate_welcome, "hidden_turn_language", lambda: "")
 
-    def _dispatch(state, slot, prompt, *, human_seen):
+    def _dispatch(state, slot, prompt, *, human_seen, sound_automation=None):
+        assert sound_automation is True
         w.turns.append(prompt)
         return True
 
@@ -213,7 +214,8 @@ def test_the_row_is_saved_before_the_turn_starts(world, monkeypatch, tmp_path) -
     world.stale = [("headline", "2026-11-08T00:00:00+00:00")]
     seen: list[Any] = []
 
-    def _dispatch(state, slot, prompt, *, human_seen):
+    def _dispatch(state, slot, prompt, *, human_seen, sound_automation=None):
+        assert sound_automation is True
         seen.append(json.loads((tmp_path / stale_wake.BOOK_NAME).read_text()).get(SLUG))
         world.turns.append(prompt)
         return True

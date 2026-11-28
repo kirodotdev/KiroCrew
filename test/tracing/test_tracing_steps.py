@@ -456,7 +456,13 @@ async def test_a_peer_delivery_carries_its_sender_on_both_arms(spans):
     await await_until(started[0], what="the started turn")
     sender.finish(None)
     # The queue arm's entry names the sender, beside the caller's own meta.
-    assert calls == [{"q": 1, steps.META_SENDER: f"{tool.trace_id:032x}:{tool.span_id:016x}"}]
+    assert calls == [
+        {
+            "q": 1,
+            steps.META_SENDER: f"{tool.trace_id:032x}:{tool.span_id:016x}",
+            session_deliver.SOUND_AUTOMATION_META_KEY: True,
+        }
+    ]
     (link,) = _turn_span(spans, "acp-recv").links
     assert link.context.span_id == tool.span_id
 
