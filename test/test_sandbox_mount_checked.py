@@ -469,10 +469,11 @@ _CHECKED_RAW_MOUNTS = {
 #: remount, the read-only remount of each mount below an operator read-only directory,
 #: credential dirs, the read-only seal on a windowless masked directory, the
 #: private window's two -- staging its real contents out before the parent is masked,
-#: then binding them onto the placeholder inside the stand-in -- the nested re-mask that
+#: then binding them onto the placeholder inside the stand-in -- the read-only remount
+#: of a read-only window, the nested re-mask that
 #: re-hides a masked leaf sitting INSIDE such a window, sensitive files and the read-only
 #: seal on an unreadable mask, ~/.ssh, and the self-bind that pins a seal's parent.
-_GUARDED_SITES = 13
+_GUARDED_SITES = 14
 
 _EXPECTED_SITES = (_PERMITTED_RAW_MOUNTS, _CHECKED_RAW_MOUNTS, _GUARDED_SITES)
 

@@ -2,8 +2,8 @@
 
 ``get_or_create`` imports each of these and stays the path callers and tests import
 them from. None is a ``SessionAllocationService`` member: each takes its inputs as
-arguments and imports what it reads at call time. The three marked "Blocking" run
-off the event loop at their call sites.
+arguments and imports what it reads at call time. Those marked "Blocking" run off the
+event loop at their call sites.
 """
 
 from __future__ import annotations
@@ -43,6 +43,25 @@ def _held_to_parent_denies(owner: Any, key: str, agent: str | None) -> bool:
 
     on_kas = owner._cfg.agent.acp_backend == ACP_BACKEND_KAS
     return on_kas and run_is_held(key, agent or owner._pool_agent or "", owner._pool_cwd or "")
+
+
+def _session_masks_need_cold_start(key: str) -> bool:
+    """Whether the edition hides anything from *key*'s agent, which a pooled process lacks.
+
+    A pooled process was spawned for no session, so its masks were resolved for none. A
+    failed answer cold-starts too, where the spawn's own resolution refuses it; a
+    companion without the method has asked for nothing. Blocking.
+    """
+    from kiro_crew.platform.context import PlatformCompositionError, current_context
+    from kiro_crew.platform.interfaces import SpawnIdentity
+
+    try:
+        ask = getattr(current_context().sandbox, "session_masks", None)
+        return bool(ask(SpawnIdentity(key)).hidden_dirs) if ask is not None else False
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        return True
 
 
 def _is_crewmate_worker_key(key: str) -> bool:

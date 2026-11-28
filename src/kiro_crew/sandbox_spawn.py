@@ -396,6 +396,7 @@ async def wrap_argv_async(
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
+    extra_readonly_windows: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     exec_cwd: str = "",
@@ -427,6 +428,8 @@ async def wrap_argv_async(
         options["extra_visible_dirs"] = extra_visible_dirs
     if extra_private_dirs:
         options["extra_private_dirs"] = extra_private_dirs
+    if extra_readonly_windows:
+        options["extra_readonly_windows"] = extra_readonly_windows
     if extra_writable_dirs:
         options["extra_writable_dirs"] = extra_writable_dirs
     if extra_expose_files:

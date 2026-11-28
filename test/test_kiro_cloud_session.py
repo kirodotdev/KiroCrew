@@ -500,6 +500,14 @@ async def test_a_cloud_choice_is_unreachable_with_the_developer_flag_off(tmp_pat
     assert checked == []
 
 
+def _context(governance):
+    """A stand-in platform context: the governance ceiling, and the default sandbox
+    policy the agent launch tail asks for session masks."""
+    from kiro_crew.platform.defaults import DefaultSandboxPolicy
+
+    return SimpleNamespace(governance=governance, sandbox=DefaultSandboxPolicy())
+
+
 def _ceiling(**controls):
     from kiro_crew.platform.governance import parse_policy
 
@@ -509,7 +517,7 @@ def _ceiling(**controls):
 def _governed(monkeypatch, ceiling, profile=None):
     from kiro_crew.platform import context, governance_profiles
 
-    monkeypatch.setattr(context, "current_context", lambda: SimpleNamespace(governance=ceiling))
+    monkeypatch.setattr(context, "current_context", lambda: _context(ceiling))
     monkeypatch.setattr(governance_profiles, "resolve_active_scope", lambda _key, **_kw: profile)
 
 
@@ -541,7 +549,7 @@ async def test_cloud_provider_enforces_the_execution_agents_profile(
     )
     monkeypatch.setattr(gp, "_PROFILES_DIR", profiles)
     monkeypatch.setattr(gp, "_STORE", gp.ProfileStore())
-    monkeypatch.setattr(context, "current_context", lambda: SimpleNamespace(governance=None))
+    monkeypatch.setattr(context, "current_context", lambda: _context(None))
     key = "dashboard:agent-bound-cloud"
     choices = sl.SessionEnvironmentChoices(tmp_path / "coder" / "session-choices.json")
     choices.set(key, "cloud", sl.KIRO_CLOUD_PROVIDER_ID)
@@ -580,7 +588,7 @@ def _boardroom_profile(tmp_path, monkeypatch):
     monkeypatch.setattr(gp, "_PROFILES_DIR", profiles)
     monkeypatch.setattr(gp, "_STORE", gp.ProfileStore())
     allow = _ceiling(capabilities={"kiro_cloud_sessions": {"enabled": True}})
-    monkeypatch.setattr(context, "current_context", lambda: SimpleNamespace(governance=allow))
+    monkeypatch.setattr(context, "current_context", lambda: _context(allow))
     # A transcript an agent rewrote to claim no app is never read for this.
     monkeypatch.setattr(
         execution_context, "read_session_execution", lambda *_a, **_kw: SimpleNamespace(app="")
@@ -632,7 +640,7 @@ def test_an_unreadable_profile_file_refuses_a_cloud_start(tmp_path, monkeypatch,
     monkeypatch.setattr(gp, "_STORE", gp.ProfileStore())
     # Even a policy that allows cloud sessions does not override the unknown profile.
     allow = _ceiling(capabilities={"kiro_cloud_sessions": {"enabled": True}})
-    monkeypatch.setattr(context, "current_context", lambda: SimpleNamespace(governance=allow))
+    monkeypatch.setattr(context, "current_context", lambda: _context(allow))
     refusal = sl.kiro_cloud_governance_refusal("dashboard:unreadable-profile")
     if unreadable:
         assert refusal is not None and "restricted.json" in refusal

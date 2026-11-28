@@ -1353,6 +1353,16 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   `safe_context_call`, so an older companion's `AttributeError`, or any other
   raise, answers `False`, and `PlatformCompositionError` propagates out of
   `ensure`.
+- `SandboxPolicy.session_masks(identity: SpawnIdentity) -> SessionMasks`: asked by
+  the agent launch tail (`acp/launch.py::resolve_session_masks`) once per spawn, off
+  the event loop, with `SpawnIdentity.session_key` naming the session the process is
+  started for (empty for a pooled or background runtime). Its hidden directories must
+  exist before spawning and join the harness's mask. All paths and containment checks
+  use canonical spellings; its existing read-only directories become live read-only
+  windows strictly inside its own mask, never inside a harness mask. ADD-only and
+  fail-closed, including a wrap that returns unwrapped argv; the contract is in
+  [security](security.md) ("Per-session masks"). Default `SessionMasks()`; a
+  companion without the method asks for nothing.
 - `SlackEnterpriseGate.heartbeat_safe_tools() -> frozenset[str]` — consulted by
   `slack/gateway_runtime/tool_policy.py::_is_heartbeat_safe_tool` after the core
   branches, matched only as the exact trusted `@server/tool` identity. Default

@@ -26,7 +26,7 @@ Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``
 ``_mcp_secret_server`` and ``_mcp_prereg_sent``.
 
 Instance fields read: ``_acp_backend``, ``_agent_env_override``, ``_background_qos``, ``_extra_env``, ``_kas_telemetry_override``, ``_forward_ssh_auth_sock_override``,
-``_harness_pin``, ``_launch_agent``, ``_member_context``, ``_model``, ``_native_skill_projection_enabled``, ``_record_tree_in_background``, ``_refuse_over_ceiling_launch``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
+``_governance_scope``, ``_harness_pin``, ``_launch_agent``, ``_member_context``, ``_model``, ``_native_skill_projection_enabled``, ``_record_tree_in_background``, ``_refuse_over_ceiling_launch``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
 ``_work_dir``.
 """
 
@@ -101,6 +101,7 @@ from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.member_essential_context import MemberEssentialContextError
 from kiro_crew.owner_only_files import ensure_directory
+from kiro_crew.platform.interfaces import SpawnIdentity
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     _forward_ssh_auth_sock,
@@ -909,6 +910,11 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             pod_home_remap=self._harness.pod_home_remap,
             guard_scratch_hops=True,
             forward_ssh_auth_sock_override=getattr(self, "_forward_ssh_auth_sock_override", None),
+            # The session this process is started for; a pooled or background
+            # runtime serves none yet. Sessions that join it later share its masks.
+            identity=SpawnIdentity(
+                session_key=(getattr(self, "_governance_scope", None) or ("",))[0],
+            ),
         ),
         _launch_tools(),
     )

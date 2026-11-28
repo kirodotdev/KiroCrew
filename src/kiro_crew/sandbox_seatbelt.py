@@ -182,17 +182,22 @@ def render_seatbelt_profile(plan: ConfinementPlan) -> str:
             # Deny the tree except the window, in every direction: the window is the
             # process's own state, so it stays read-WRITE, while every sibling -- and
             # anything installed into the tree after the profile was built -- stays
-            # denied. An exposed file keeps its READ carve-out only.
-            window_exceptions = " ".join(
+            # denied. An exposed file and a read-only window keep their READ carve-out
+            # only. A path rule reads the live tree, so a read-only window shows files
+            # written after the spawn.
+            read_exceptions = " ".join(
                 f"(require-not (subpath {json.dumps(w)}))" for w in mask.windows
-            )
-            read_exceptions = window_exceptions + "".join(
-                f" (require-not (literal {json.dumps(f)}))" for f in mask.exposed
+            ) + "".join(f" (require-not (literal {json.dumps(f)}))" for f in mask.exposed)
+            write_exceptions = "".join(
+                f" (require-not (subpath {json.dumps(w)}))"
+                for w in mask.windows
+                if w not in plan.readonly_windows
             )
             subpath = f"(subpath {json.dumps(mask.path)})"
             rules.append(f"(deny file-read* (require-all {subpath} {read_exceptions}))")
+            written = f"(require-all {subpath}{write_exceptions})" if write_exceptions else subpath
             for operation in ("file-write*", "file-link"):
-                rules.append(f"(deny {operation} (require-all {subpath} {window_exceptions}))")
+                rules.append(f"(deny {operation} {written})")
             ancestors = (*mask.window_ancestors, *mask.exposed_ancestors)
             rules.extend(_metadata_allows(tuple(dict.fromkeys(ancestors))))
             continue

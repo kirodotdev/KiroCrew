@@ -390,6 +390,7 @@ def _plan_cwd(request: sandbox_plan.SandboxRequest, host_paths: list[str]) -> st
         *request.extra_hidden_dirs,
         *request.extra_visible_dirs,
         *request.extra_private_dirs,
+        *request.extra_readonly_windows,
         *request.extra_expose_files,
         *host_paths,
     )
@@ -717,7 +718,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         *readonly_ancestor_guards,
         *project_ancestor_guards,
     ]
-    return sandbox_plan.PlanHost(
+    host = sandbox_plan.PlanHost(
         home=home,
         cwd=_plan_cwd(request, host_paths),
         tier_dirs=tier_dirs,
@@ -774,6 +775,21 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
             _runtime_dir_is_durable(sandbox_plan.user_runtime_root(uid)) if namespace else False
         ),
     )
+    # Call-time import, so the facade's census of this module's names is unchanged.
+    import dataclasses
+
+    caps = sandbox_plan.CAPABILITIES[request.backend]
+    sources = sandbox_plan._mask_sources(sandbox_plan._tier_dirs(request, host, caps), host)
+    return dataclasses.replace(
+        host,
+        mask_target_spellings=tuple(
+            dict.fromkeys(
+                resolved
+                for source in sources
+                if os.path.exists(source) and (resolved := os.path.realpath(source)) != source
+            )
+        ),
+    )
 
 
 def _spawn_plan(
@@ -789,6 +805,7 @@ def _spawn_plan(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_readonly_windows: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     fail_closed_file_masks: tuple[tuple[str, int, int], ...] = (),
@@ -816,6 +833,7 @@ def _spawn_plan(
         extra_visible_dirs=tuple(extra_visible_dirs),
         extra_private_dirs=tuple(extra_private_dirs),
         extra_private_dir_ids=tuple(extra_private_dir_ids),
+        extra_readonly_windows=tuple(extra_readonly_windows),
         extra_writable_dirs=tuple(extra_writable_dirs),
         extra_expose_files=tuple(extra_expose_files),
         fail_closed_file_masks=tuple(fail_closed_file_masks),
@@ -843,6 +861,7 @@ def _build_launcher_script(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_readonly_windows: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     fail_closed_file_masks: tuple[tuple[str, int, int], ...] = (),
@@ -873,6 +892,7 @@ def _build_launcher_script(
             extra_visible_dirs=extra_visible_dirs,
             extra_private_dirs=extra_private_dirs,
             extra_private_dir_ids=extra_private_dir_ids,
+            extra_readonly_windows=extra_readonly_windows,
             extra_writable_dirs=extra_writable_dirs,
             extra_expose_files=extra_expose_files,
             fail_closed_file_masks=fail_closed_file_masks,
@@ -893,6 +913,7 @@ def _build_seatbelt_profile(
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
+    extra_readonly_windows: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     project_folder: str = "",
@@ -910,6 +931,7 @@ def _build_seatbelt_profile(
             extra_hidden_dirs=extra_hidden_dirs,
             extra_visible_dirs=extra_visible_dirs,
             extra_private_dirs=extra_private_dirs,
+            extra_readonly_windows=extra_readonly_windows,
             extra_writable_dirs=extra_writable_dirs,
             extra_expose_files=extra_expose_files,
             project_folder=project_folder,
@@ -930,6 +952,7 @@ def namespace_argv(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_readonly_windows: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     exec_cwd: str = "",
@@ -1101,6 +1124,7 @@ def namespace_argv(
         extra_visible_dirs=extra_visible_dirs,
         extra_private_dirs=extra_private_dirs,
         extra_private_dir_ids=extra_private_dir_ids,
+        extra_readonly_windows=extra_readonly_windows,
         extra_writable_dirs=extra_writable_dirs,
         extra_expose_files=extra_expose_files,
         required_mask_targets=tuple(_required_targets),
@@ -1171,6 +1195,7 @@ def sandbox_exec_argv(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_readonly_windows: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     project_folder: str = "",
@@ -1308,6 +1333,7 @@ def sandbox_exec_argv(
         extra_hidden_dirs=extra_hidden_dirs + tuple(m.path for m in alias_masks),
         extra_visible_dirs=extra_visible_dirs,
         extra_private_dirs=extra_private_dirs,
+        extra_readonly_windows=extra_readonly_windows,
         extra_writable_dirs=extra_writable_dirs,
         extra_expose_files=extra_expose_files,
         project_folder=project_folder,

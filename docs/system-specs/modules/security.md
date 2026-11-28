@@ -2363,6 +2363,68 @@ with the old code's plan; a package whose program cannot be read or assembled (a
 missing or unreadable, a marker missing, repeated or unknown) still imports, and every
 Linux spawn then refuses.
 
+#### Per-session masks: `SandboxPolicy.session_masks`
+
+The harness mask (`SpawnPlan.extra_hidden_dirs`) and the operator's read-only layer
+are the same for every session on an install. `SandboxPolicy.session_masks(identity)`
+is the edition seam that is not: the agent launch tail both drivers share
+(`acp.launch.launch`, through `resolve_session_masks`) asks it once per agent spawn, off
+the event loop, with a `SpawnIdentity` naming the session the process is started for
+(`session_key`, empty for a pooled or background runtime that serves none yet).
+It returns `SessionMasks(hidden_dirs, readonly_dirs)`. The hidden directories
+join the harness mask, so every reader of the spawn's mask sees one list: the
+`SSH_AUTH_SOCK` forward verdict, the wrap, and the recorded set a sandbox-refusal
+diagnosis re-runs. The resolver canonicalizes hidden, read-only and harness paths
+with `os.path.realpath` before checking containment or handing session paths to the
+wrap, so Seatbelt rules match the kernel's spelling on symlinked layouts. Each existing
+read-only directory must sit strictly inside one of the session's hidden directories
+and outside every harness mask or it is dropped with a warning, because opening it
+would widen the sandbox rather than narrow a mask; it reaches the wrap as
+`extra_readonly_windows`.
+The default policy returns nothing, and a companion without the method has asked for
+nothing.
+
+The seam fails closed. A policy that raises, or names a hidden path that is not
+absolute or does not exist (`os.path.lexists`, including the canonical target), refuses
+the spawn (`SessionMaskRefused`). The edition creates its folders before spawning on
+every platform: a Linux bind mask cannot cover an absent name that the host creates
+later, even though a Seatbelt path rule can. A non-empty answer on
+a tier that would drop every mask (`credential_mask_applies` is False: `off`, no
+backend, or a passthrough inside an outer Crew sandbox) also refuses the spawn, the
+same question the enforced-harness floor asks. After the wrap, the launch tail checks
+its returned argv actually carries Crew's sandbox. If the wrap dropped the masks
+(a governance floor changed between the reads), it reclaims the launcher/profile
+through the driver's existing cleanup and refuses before creating any process.
+On native Windows there is no backend, so a masked
+session never starts there. On macOS, a masked kiro-cli spawn with kiro-cli's own
+sandbox on is refused before scratch allocation or wrapping: the masks need Kiro
+Crew's sandbox, and the two layers cannot nest. Turn kiro-cli's sandbox off so
+Crew's Seatbelt profile owns isolation, then start the session again.
+
+A read-only window is LIVE on both backends: the process reads the real tree,
+including files written after the spawn (a credential refreshed later), which the
+`expose_files` copy cannot do. The namespace launcher binds the window from the
+descriptor it pinned, like a private window, then remounts that bind `MS_RDONLY` with
+the locked flags re-asserted, and refuses the spawn if the remount fails. Seatbelt
+carves the window out of its mask's read deny and leaves the write and hardlink
+denies in force. Either way a write, rename or hard link inside it is refused. A
+window opens only inside a caller's own mask: never in or holding a tier mask (even
+one the session also names, including its resolved symlink target), never holding a
+nested hidden directory, never over or under a private window
+(`sandbox_plan.readonly_windows`), and the resolver drops one inside the harness's
+own mask before the launch tail merges the two lists. Both planners compare the tier
+mask sources' resolved spellings recorded by the live host, so a window cannot shadow
+a credential mask reached through a symlink. A session whose policy answer hides
+anything bypasses the warm pool and cold-starts with its own masks
+(`session_allocation_parts.cold_start_reads._session_masks_need_cold_start`). A failed answer also bypasses the pool,
+so the cold-start resolver can refuse the spawn; a platform composition error
+propagates. A companion without the method keeps the pool. The masks are the
+process's, not the session's: a process serves one session tree, so the sessions that
+join it later (its subagents, or a chat in the same tree under runtime sharing) run
+under the answer for the session it was started for.
+`test_session_masks_real_sandbox.py` runs two sessions on one install under the real
+backend and checks each reads only its own folder, live, and writes nothing.
+
 The stand-ins every mask binds live on a tmpfs of the child's own mount namespace
 (`stage_stand_ins_privately`), mounted on one stage directory under the chosen stand-in
 root and reached through a descriptor on its root. The host roots are not stable while a

@@ -577,6 +577,7 @@ def wrap_argv(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_readonly_windows: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     exec_cwd: str = "",
@@ -601,6 +602,12 @@ def wrap_argv(
         extra_private_dirs: The spawn's OWN directories inside a hidden tree
             (its ``agent_scratch`` dir under the masked scratch root). Re-exposed
             read-write as a window; the parent's mask and every sibling stay hidden.
+        extra_readonly_windows: Directories inside an ``extra_hidden_dirs`` entry
+            re-exposed READ-ONLY as a live window: the real tree, so a file written
+            after the spawn is read too. Linux binds the directory and remounts the
+            bind ``MS_RDONLY``; Seatbelt carves it out of the mask's read deny and
+            leaves its write and hardlink denies in force. One under no caller mask
+            opens nothing.
         extra_expose_files: Absolute files to keep READABLE inside dirs that
             ``extra_hidden_dirs`` hides. Linux restores a read-only COPY via
             the launcher's ``expose_files`` primitive (cc mode's mechanism
@@ -949,6 +956,7 @@ def wrap_argv(
             extra_hidden_dirs
             or extra_hidden_dir_ids
             or extra_visible_dirs
+            or extra_readonly_windows
             or extra_writable_dirs
             or extra_expose_files
         ):
@@ -966,6 +974,7 @@ def wrap_argv(
                     extra_visible_dirs=extra_visible_dirs,
                     extra_private_dirs=extra_private_dirs,
                     extra_private_dir_ids=extra_private_dir_ids,
+                    extra_readonly_windows=extra_readonly_windows,
                     extra_writable_dirs=extra_writable_dirs,
                     extra_expose_files=extra_expose_files,
                     project_folder=project_folder,
@@ -1010,6 +1019,7 @@ def wrap_argv(
             extra_hidden_dirs
             or extra_visible_dirs
             or extra_private_dirs
+            or extra_readonly_windows
             or extra_writable_dirs
             or extra_expose_files
             or exec_cwd
@@ -1027,6 +1037,7 @@ def wrap_argv(
                 extra_visible_dirs=extra_visible_dirs,
                 extra_private_dirs=extra_private_dirs,
                 extra_private_dir_ids=extra_private_dir_ids,
+                extra_readonly_windows=extra_readonly_windows,
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
                 exec_cwd=exec_cwd,
@@ -1050,6 +1061,7 @@ def wrap_argv(
             or extra_hidden_dir_ids
             or extra_visible_dirs
             or extra_private_dirs
+            or extra_readonly_windows
             or extra_writable_dirs
             or extra_expose_files
             or project_folder
@@ -1064,6 +1076,7 @@ def wrap_argv(
                 extra_visible_dirs=extra_visible_dirs,
                 extra_private_dirs=extra_private_dirs,
                 extra_private_dir_ids=extra_private_dir_ids,
+                extra_readonly_windows=extra_readonly_windows,
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
                 project_folder=project_folder,

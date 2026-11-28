@@ -695,6 +695,19 @@ def mask_sensitive(launch):
                 "opening private window %s" % p,
             )
             launch.bound_windows.add(p.rstrip("/"))
+            # A read-only window is the same live bind, remounted MS_RDONLY (ignored on
+            # the bind itself) with the kernel-locked bits re-asserted. Named by path:
+            # it resolves inside the stand-in this launcher just created, so the name
+            # can only reach the bind above. A failed seal ends the spawn rather than
+            # leave the window writable.
+            if p in launch.readonly_windows:
+                _mount_or_die(
+                    launch,
+                    p.encode(),
+                    p.encode(),
+                    _MS_REMOUNT | _MS_BIND | _MS_RDONLY | _locked_mount_flags(p.encode()),
+                    "sealing read-only window %s" % p,
+                )
         # No window inside this mask means no in-sandbox writer should reach it: seal the
         # empty stand-in read-only so a write fails loudly rather than landing in the
         # throwaway tmpfs. A windowed mask keeps its stand-in writable (the window IS the

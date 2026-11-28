@@ -156,6 +156,9 @@ class Launch:
         self.sensitive_dir_ids = plan["sensitive_dir_ids"]
         self.private_dirs = plan["private_dirs"]
         self.private_dir_ids = plan["private_dir_ids"]
+        #: The private windows remounted read-only after their bind. Absent from the
+        #: payload when no spawn asked for one, which seals none.
+        self.readonly_windows = frozenset(plan.get("readonly_windows", ()))
         self.readonly_dirs = plan["readonly_dirs"]
         self.parent_pins = plan["parent_pins"]
         #: The ``apps/<app>`` folder of each credential-masking app, pinned after every mask.

@@ -29,6 +29,7 @@ from test_acp_launch_goldens import (
 from kiro_crew import env as env_mod
 from kiro_crew.acp.agent_env import agent_env_overlay
 from kiro_crew.config import loader as L
+from kiro_crew.platform.context import current_context
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX launcher fixture (an executable shell script)"
@@ -39,6 +40,10 @@ _NON_LOGIN_PATH = "/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin"
 
 @pytest.fixture(autouse=True)
 def _clean_registry(_floor_monkeypatch):
+    # The launch tail asks the platform context for session masks. Build it first, as
+    # boot does, so its one-time lazy config load cannot republish the config's PATH
+    # dirs over the ones a test publishes.
+    current_context()
     _floor_monkeypatch.setattr(env_mod, "_registered_path_dirs", ())
     _floor_monkeypatch.setattr(env_mod, "_config_path_dirs", ())
 

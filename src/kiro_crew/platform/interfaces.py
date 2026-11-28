@@ -222,6 +222,38 @@ class AgentExecutableResolver(Protocol):
     def resolve_executable(self, executable: str) -> str: ...
 
 
+@dataclass(frozen=True)
+class SpawnIdentity:
+    """Who one agent process is spawned for, as :meth:`SandboxPolicy.session_masks` sees it.
+
+    ``session_key`` is the session the process was started for, or ``""`` for a process
+    that serves no one session yet (a pooled or background runtime). A process serves one
+    session tree: the sessions that join it later (its subagents, and a chat in the same
+    tree under runtime sharing) run under the masks resolved for this identity.
+    """
+
+    session_key: str = ""
+
+
+@dataclass(frozen=True)
+class SessionMasks:
+    """What an edition hides from one agent process, on top of every other mask.
+
+    ``hidden_dirs`` are absolute directories denied to the process. The edition must
+    create them before spawning: an absent name or symlink target refuses the spawn,
+    because a Linux bind mask cannot cover a directory the host creates later. Paths
+    are canonicalized before applying masks or checking containment. ``readonly_dirs``
+    are existing absolute directories strictly inside one of ``hidden_dirs``, outside
+    every harness mask, handed back READ-ONLY and LIVE: the process reads what is there
+    now, including files written after the spawn (a credential refreshed later), and
+    cannot write, rename or hard-link anything in them. Directories, not files: a live
+    view of one file would have to follow an atomic replace, and a directory view does.
+    """
+
+    hidden_dirs: Tuple[str, ...] = ()
+    readonly_dirs: Tuple[str, ...] = ()
+
+
 class SandboxPolicy(Protocol):
     """The sandbox *data*: which dirs/files to hide/expose.
 
@@ -233,6 +265,21 @@ class SandboxPolicy(Protocol):
     def strict_dirs(self) -> List[str]: ...
 
     def cc_dirs(self) -> List[str]: ...
+
+    def session_masks(self, identity: SpawnIdentity) -> SessionMasks:
+        """The masks for the one agent process spawned for *identity*.
+
+        Asked by the agent launch tail (``acp/launch.py``) off the event loop, once per
+        spawn, so it may read the filesystem. ADD-only: the result joins the harness's
+        own mask and can never lift one. Hidden paths must be absolute and exist before
+        spawning, including their symlink targets, or the spawn is refused. Canonical
+        paths decide containment: a ``readonly_dirs`` entry that is absent, is not
+        strictly inside its own ``hidden_dirs``, or sits in a harness mask is dropped.
+        A spawn whose tier or actual wrap cannot apply a non-empty result is refused,
+        and so is a spawn this call raised for. Default ``SessionMasks()``; a companion
+        without the method gets the default. v1 addition (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
 
 
 class CredentialPolicy(Protocol):
