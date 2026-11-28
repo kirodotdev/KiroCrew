@@ -104,6 +104,10 @@ export interface BrowserLiveEvent {
   /** When the turn began and ended on the gateway's clock (epoch ms; 0: not yet). */
   started_at_ms?: number
   ended_at_ms?: number
+  /** Present and true when this session is a secondary view (opened via /views/open);
+   *  sent by the gateway so every connected owner tab can track the key without the
+   *  opening tab having to call reviveView on its behalf. */
+  secondary_view?: boolean
 }
 
 export type BrowserLiveTab = '' | 'open' | 'closed'
@@ -293,6 +297,7 @@ export function readBrowserLiveEvent(raw: unknown): BrowserLiveEvent | null {
     ask: d.ask === undefined ? undefined : readQuickAsk(d.ask),
     started_at_ms: epochMs(d.started_at_ms),
     ended_at_ms: epochMs(d.ended_at_ms),
+    secondary_view: d.secondary_view === true ? true : undefined,
   }
 }
 
@@ -415,7 +420,19 @@ class BrowserLiveStore {
   applyEvent(raw: unknown, now: number = Date.now()): void {
     const ev = readBrowserLiveEvent(raw)
     if (!ev) return
+    // A secondary view that was explicitly forgotten (via forgetView): do not
+    // recreate its record for a late `done` event that the gateway always sends.
+    // The mounted BrowserView already called forgetView after close, so it does
+    // not need the event; other owner tabs also skip it, keeping their own records
+    // from accumulating.  Drop ALL events for a forgotten key: a late non-ended
+    // event would otherwise recreate the session record and fill its frame ring,
+    // and the closing done event that would clear the ring is then also dropped,
+    // leaving the JPEG retained until a page reload.
+    if (this.forgottenViews.has(ev.session_key)) return
     const s = this.session(ev.session_key)
+    // Register the key as a secondary view on every owner tab so ring eviction
+    // works in all tabs, not only the one that called reviveView on open.
+    if (ev.secondary_view) this.secondaryViewKeys.add(ev.session_key)
     const prev = s.turns.get(ev.turn_id)
     // A new turn ends the one before it: the relay streams one turn at a time.
     if (!prev && s.current && !isEnded(s.current.state)) {
@@ -478,12 +495,29 @@ class BrowserLiveStore {
       // restart), so the last visibility it heard is not this turn's: report again.
       s.reportedVisible = null
     }
+    // A secondary-view session that just ended: drop its rings on every owner tab,
+    // not only the one that mounted the view, so JPEG memory does not accumulate
+    // across repeated tabId changes.  The session record stays (BrowserView needs
+    // the `done` state to trigger its reopen); only the frame buffers are released.
+    // Use the secondaryViewKeys set (populated by reviveView on every successful
+    // /views/open) rather than pattern-matching the key string: a user-chosen slot
+    // name such as "comparison.viewcafe" could match any regex we write.
+    if (isEnded(next.state) && this.secondaryViewKeys.has(ev.session_key)) {
+      for (const turn of s.turns.values()) {
+        // Clear the ring contents, not the ring object: replay code reads ring.length
+        // and calls ring.all(), so removing the object would crash the replay viewer.
+        (turn.ring as FrameRing | undefined)?.clear()
+      }
+    }
     this.notify()
   }
 
   /** Keep one decoded frame, ack it once, and paint it where a canvas listens. */
   applyFrame(frame: DecodedBrowserFrame): void {
     const key = frame.header.session_key
+    // A forgotten key means the view was closed: drop the late frame so the ring
+    // is never populated after forgetView, and the JPEG is not retained.
+    if (this.forgottenViews.has(key)) return
     const s = this.session(key)
     // A turn no card shows (another slot's browsing, a Slack-driven turn, a new
     // turn whose card the virtualised transcript has not mounted while an older
@@ -605,6 +639,10 @@ class BrowserLiveStore {
    * The gateway hears the OR over the instances showing the CURRENT turn.
    */
   setVisible(sessionKey: string, instanceId: string, visible: boolean, turnId: string): void {
+    // Do not recreate a session for a forgotten secondary view: a cleanup path
+    // may call setVisible after forgetView (e.g. the effect cleanup in BrowserView),
+    // and that would leak the record until the next reload.
+    if (this.forgottenViews.has(sessionKey)) return
     const s = this.session(sessionKey)
     if (visible) s.visibleInstances.set(instanceId, turnId)
     else s.visibleInstances.delete(instanceId)
@@ -813,6 +851,44 @@ class BrowserLiveStore {
   }
 
   /**
+   * Drop the store record and frame rings for a closed secondary view key.
+   *
+   * Secondary-view sessions are transient: they open and close as `BrowserView tabId`
+   * mounts and unmounts. Each gets its own record and JPEG rings; without cleanup
+   * those accumulate in memory. Call this after the backend view is closed.
+   *
+   * The key is also added to a tombstone set so that a late `done` event from the
+   * gateway does not recreate the record for every connected owner tab.
+   */
+  forgetView(key: string): void {
+    const s = this.sessions.get(key)
+    if (s) {
+      // Clear ring contents (not the ring object) so replay code that reads
+      // ring.length or ring.all() does not crash on a null/undefined ring.
+      for (const turn of s.turns.values()) {
+        (turn.ring as FrameRing | undefined)?.clear()
+      }
+      this.sessions.delete(key)
+    }
+    this.forgottenViews.add(key)
+  }
+
+  /**
+   * Register *key* as a known secondary-view key so that ring eviction and
+   * tombstone logic can identify it without pattern-matching the key string.
+   * Call this when `/views/open` succeeds and returns the key to the front end.
+   */
+  reviveView(key: string): void {
+    this.forgottenViews.delete(key)
+    this.secondaryViewKeys.add(key)
+  }
+
+  /** @internal Keys that have been forgotten by `forgetView`; late events do not recreate them. */
+  private readonly forgottenViews = new Set<string>()
+  /** @internal Keys opened as secondary views; used for ring eviction without pattern-matching. */
+  private readonly secondaryViewKeys = new Set<string>()
+
+  /**
    * The finished card's "Open live". The server's `browser_live` event is what
    * turns the card live; this only waits for the answer. `tab_gone` marks the
    * record's tab closed (the card says so and keeps Replay); any other refusal
@@ -902,6 +978,8 @@ class BrowserLiveStore {
     this.frameListeners.clear()
     this.handBackDrains.clear()
     this.handBackDrafts.clear()
+    this.forgottenViews.clear()
+    this.secondaryViewKeys.clear()
     this.notify()
   }
 }
