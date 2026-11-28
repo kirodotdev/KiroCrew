@@ -90,10 +90,15 @@ class Answer:
 
 
 def _root_owned_and_sealed(path: str) -> bool:
-    """Whether *path* and its directory are owned by root and not writable by others.
+    """Whether *path* and its directory are owned by root and sealed from the gateway user.
 
     The LocalAPI is an identity oracle here, so a socket or token file someone
-    else could replace is not one to trust.
+    else could replace is not one to trust. A world-writable directory is
+    refused. A group-writable one (stock macOS ``/var/run`` is ``root:daemon``
+    ``0775``) is accepted only when the gateway user cannot write it; a root
+    gateway, for whom the access check says nothing, still refuses it. This
+    exception is the LocalAPI's own: the CLI check refuses any group-writable
+    directory.
     """
     try:
         st_file = os.lstat(path)
@@ -104,7 +109,14 @@ def _root_owned_and_sealed(path: str) -> bool:
         return False
     if st_file.st_uid != 0 or st_dir.st_uid != 0:
         return False
-    return not (st_dir.st_mode & 0o022)
+    if st_dir.st_mode & 0o002:
+        return False
+    if not st_dir.st_mode & 0o020:
+        return True
+    # getattr: os.geteuid does not exist on Windows.
+    if getattr(os, "geteuid", lambda: -1)() == 0:
+        return False
+    return not os.access(os.path.dirname(path) or "/", os.W_OK)
 
 
 class _UnixHTTPConnection(http.client.HTTPConnection):
