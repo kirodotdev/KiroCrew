@@ -18,7 +18,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from kiro_crew.apps.bridges_agents import _deregister_agents, _register_agents
+from kiro_crew.apps.bridges_agents import (
+    _deregister_agents,
+    _owned_agents_dir,
+    _register_agents,
+)
 from kiro_crew.apps.bridges_crons import _deregister_crons, _register_crons
 from kiro_crew.apps.bridges_mcp import (
     _deregister_mcp_servers,
@@ -142,23 +146,31 @@ def _prune_stale_app_resources(app_name: str, manifest: AppManifest, app_root: P
         current_agent_names.add(str(agent_name))
     agents_dir = _kiro_agents_dir()
     if current_links is not None and agents_dir.is_dir():
-        prefix = _safe_link_name(app_name + "/")
-        for entry in agents_dir.iterdir():
-            if (
-                entry.name.startswith(prefix)
-                and entry.name.endswith(".json")
-                and entry.name not in current_links
-            ):
-                try:
-                    entry.unlink()
-                    logger.info("Pruned stale app agent %s (absent from manifest)", entry.name)
-                except OSError:
-                    pass
         # A dropped agent's launch copy (apps.agent_launch) carries its grants, and
         # kiro-cli would keep loading it as a mode, so it goes with the spec.
         from kiro_crew.apps.agent_launch import remove_app_agent_launches
 
-        remove_app_agent_launches(app_name, keep_agents=current_agent_names)
+        prefix = _safe_link_name(app_name + "/")
+        try:
+            with _owned_agents_dir(agents_dir) as owned:
+                if owned:
+                    for entry in agents_dir.iterdir():
+                        if (
+                            entry.name.startswith(prefix)
+                            and entry.name.endswith(".json")
+                            and entry.name not in current_links
+                        ):
+                            try:
+                                entry.unlink()
+                                logger.info(
+                                    "Pruned stale app agent %s (absent from manifest)",
+                                    entry.name,
+                                )
+                            except OSError:
+                                pass
+                    remove_app_agent_launches(app_name, keep_agents=current_agent_names)
+        except OSError as exc:
+            logger.warning("Could not prune stale agents for %s: %s", app_name, exc)
 
     # MCP servers: keep only servers the current manifest still declares.
     current_servers = {f"{app_name}:{srv}" for srv in (manifest.mcpServers or {})}
@@ -173,8 +185,8 @@ def _prune_stale_app_resources(app_name: str, manifest: AppManifest, app_root: P
                 del servers[k]
             if stale:
                 _sync_app_tool_refs(data, app_name)
-                _write_mcp_json_unlocked(data)
-                logger.info("Pruned %d stale app MCP server(s) for %s", len(stale), app_name)
+                if _write_mcp_json_unlocked(data, removal=True):
+                    logger.info("Pruned %d stale app MCP server(s) for %s", len(stale), app_name)
 
 
 def register_app(

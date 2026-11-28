@@ -74,6 +74,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _may_auto_approve,
         _mounted_mcp_servers,
         _own_mcp_servers,
+        _owned_agents_dir,
         _placeholder_values,
         _preserve_user_agent_edits,
         _read_agent_config,

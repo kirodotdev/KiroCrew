@@ -26,7 +26,9 @@ if TYPE_CHECKING:
         _audit_allowed_shared_write,
         _decline_shared_agent_home,
         _mc_config_path,
+        _owned_by_another_home,
         _rebuild_spec_install_admitted,
+        _shared_agents_target,
         _warn_declined_home_once,
         kiro_agents_dir,
         logger,
@@ -55,10 +57,16 @@ def _declined_foreign_spec_write(path: Path) -> bool:
     covered the day it is added, and such a writer cannot forget the check. It
     is NOT every spec write in the tree — ``apps/bridges_agents.py`` renders app agent
     specs into the same directory through :func:`atomic_write`, a different
-    primitive this guard never sees; that writer, the auto_improvement runner's
-    self-registration call this function themselves, under
-    :func:`agents_spec_lock`. What this covers on its own is the set that goes
-    through
+    primitive this guard never sees; that writer, the app MCP registry writer
+    (``apps/bridges_mcp_config.py`` ``_write_mcp_json_unlocked``, the other
+    writer of ``kirocrew.json`` itself) and the auto_improvement runner's
+    self-registration call this function themselves, the first under
+    :func:`agents_spec_lock` and the second under the file's own ``_mcp_lock``.
+    The app removals in the same directory (``_deregister_agents``, the agent
+    prune in ``_prune_stale_app_resources`` and the app MCP entry removals) ask
+    :func:`_declined_foreign_spec_removal` instead, which keeps only the
+    ownership arm.
+    What this covers on its own is the set that goes through
     :func:`_atomic_json_write`: ``worker_agent``, the conductor agents, the
     service agents, the default-spec commit, the fork refresh and the read-only
     side spec. The decision itself is not re-implemented — it is the same
@@ -139,6 +147,50 @@ def _declined_foreign_spec_write(path: Path) -> bool:
         )
     except Exception:  # noqa: BLE001 — a lost record must not turn a refusal into a write
         logger.debug("SEL audit unavailable for a refused shared write", exc_info=True)
+    return True
+
+
+def _declined_foreign_spec_removal(path: Path) -> bool:
+    """Must this instance leave *path*'s agents directory untouched when removing?
+
+    The removal half of :func:`_declined_foreign_spec_write`. A removal of this
+    home's own app entries writes nothing of THIS instance into the directory, so
+    the ephemeral arms of :func:`_decline_shared_agent_home` (a linked worktree, a
+    temp checkout) do not apply: they guard against stamping this tree's venv and
+    data home into specs the owner loads, and a removal stamps nothing. Refusing
+    there left a denied app's agents and MCP server in place on a default-home
+    gateway run from a linked worktree. The one refusal kept is the ownership
+    arm: specs another data home owns are not this home's to remove.
+    """
+    try:
+        if path.parent.resolve() != kiro_agents_dir_path().resolve():
+            return False
+    except OSError:
+        return True
+    shared = _shared_agents_target()
+    if shared is None:
+        return False
+    if not _owned_by_another_home(*shared):
+        _audit_allowed_shared_write(path)
+        return False
+    _warn_declined_home_once(
+        "derived-spec-removal",
+        path.parent,
+        "Not removing app entries from %s: its specs belong to another data home, "
+        "so nothing in it was registered by this one.",
+        path.parent,
+    )
+    try:
+        sel().log_api_access(
+            caller="system",
+            operation="agent_home_write",
+            outcome="denied",
+            source="derived-spec",
+            resources=str(path.parent),
+            error="data home does not own the shared agent home; removal refused",
+        )
+    except Exception:  # noqa: BLE001 — a lost record must not turn a refusal into a write
+        logger.debug("SEL audit unavailable for a refused shared removal", exc_info=True)
     return True
 
 

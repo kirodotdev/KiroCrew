@@ -43,9 +43,10 @@ if TYPE_CHECKING:
 def _audit_allowed_shared_write(path: Path) -> None:
     """Record the "allowed" half of an admitted derived-spec write, best-effort.
 
-    Called only from :func:`_declined_foreign_spec_write` when the write is
+    Called from :func:`_declined_foreign_spec_write` when the write is
     admitted (``_decline_shared_agent_home`` returned ``None``) and NOT inside an
-    already-admitted rebuild. It closes the audit gap a per-dispatch writer leaves
+    already-admitted rebuild, and from :func:`_declined_foreign_spec_removal` when
+    a removal from the shared directory is admitted. It closes the audit gap a per-dispatch writer leaves
     when it is admitted OUTSIDE the boot rebuild -- the worker mirror re-derived
     on spawn after an app deregistration left it stale is the motivating case --
     so that write carries an ``agent_home_write`` / ``allowed`` event under its
@@ -299,6 +300,56 @@ def _warn_declined_home_once(arm: str, target: Path, msg: str, *args: object) ->
     logger.warning(msg, *args)
 
 
+def _new_shared_spec_needs_owner_pin(target_dir: Path) -> bool:
+    """Must a spec this instance creates in *target_dir* carry its own home pin?
+
+    True only where :func:`_decline_shared_agent_home` would later judge the
+    directory by :func:`_existing_specs_are_mine`: the shared ambient directory,
+    from a non-default home that is not writing its own ``isolated_agents_dir``.
+    A file created there without a ``KIROCREW_HOME`` pin reads as owned by nobody,
+    and the same home is refused every later write to it.
+    """
+    target = target_dir.resolve()
+    if target != ambient_agents_dir().resolve():
+        return False
+    own_home = _valid_override_home()
+    if own_home is None or target == isolated_agents_dir(own_home).resolve():
+        return False
+    return not shared_kiro_agents_writable()
+
+
+def _shared_agents_target() -> tuple[Path, Path | None] | None:
+    """The shared agents directory and this instance's override home, or ``None``.
+
+    ``None`` when the target is provably private: a caller redirected it somewhere
+    the ambient environment would never produce (a test's ``tmp_path``), or it is
+    EXACTLY ``isolated_agents_dir(own data home)``, the dedicated agents dir this
+    instance's teardown owns. Matched exactly, not by ancestry: "anywhere beneath
+    the data home" reads the machine-wide ``~/.kiro/agents`` as private whenever
+    the data home is an ancestor of it (``KIROCREW_HOME=$HOME`` suffices). A
+    different ``KIRO_HOME`` layout is refused rather than guessed.
+    """
+    target = kiro_agents_dir_path().resolve()
+    if target != ambient_agents_dir().resolve():
+        return None
+    own_home = _valid_override_home()
+    if own_home is not None and target == isolated_agents_dir(own_home).resolve():
+        return None
+    return target, own_home
+
+
+def _owned_by_another_home(target: Path, own_home: Path | None) -> bool:
+    """Do the specs in the shared *target* belong to a data home other than this one?
+
+    Only a non-default home can find them foreign: a default-home instance owns the
+    shared directory (:func:`shared_kiro_agents_writable`). The answer is read from
+    the specs' own provenance (:func:`_existing_specs_are_mine`). This is the one
+    refusal a removal asks (``_declined_foreign_spec_removal``); a write also asks
+    the ephemeral arms in :func:`_decline_shared_agent_home`.
+    """
+    return not shared_kiro_agents_writable() and _existing_specs_are_mine(target, own_home) is False
+
+
 def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     """Return the spec path to report, WITHOUT writing, when this instance must
     not own the shared agent home; ``None`` when writing is safe.
@@ -358,22 +409,10 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     ``~/.kiro/agents`` as private the moment the data home is an ancestor of it
     (``KIROCREW_HOME=$HOME`` is enough).
     """
-    target = kiro_agents_dir_path().resolve()
-    if target != ambient_agents_dir().resolve():
-        # A caller pointed the write somewhere of its own choosing; nothing is
-        # shared with the ambient install, so there is nothing to protect.
+    shared = _shared_agents_target()
+    if shared is None:
         return None
-
-    own_home = _valid_override_home()
-    if own_home is not None and target == isolated_agents_dir(own_home).resolve():
-        # The one supported opt-in: the DEDICATED agents dir beneath this
-        # instance's own data home, which its teardown owns. Matched exactly, not
-        # by ancestry — "anywhere beneath the data home" reads the machine-wide
-        # ~/.kiro/agents as private whenever the data home is an ancestor of it
-        # (KIROCREW_HOME=$HOME suffices), handing an ephemeral instance the very
-        # specs this guard protects. A different KIRO_HOME layout is refused
-        # rather than guessed; the warning below names the supported path.
-        return None
+    target, own_home = shared
 
     # A non-default data home refuses the SHARED write when the specs already
     # there belong to SOMEONE ELSE. The spec this write would produce pins THIS
@@ -404,7 +443,7 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     # harness points ``KIRO_HOME`` at its own home, so its target is private
     # and exempted above, and an override that resolves to the default home
     # still writes (see :func:`shared_kiro_agents_writable`).
-    if not shared_kiro_agents_writable() and _existing_specs_are_mine(target, own_home) is False:
+    if _owned_by_another_home(target, own_home):
         if audit:
             _warn_declined_home_once(
                 "non-default-home",
