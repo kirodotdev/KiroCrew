@@ -684,3 +684,47 @@ class TestStdioLoopExitsWhenItsInstallIsPruned:
         assert result is None
         assert error["code"] == -32000 and "restart" in error["message"]
         assert exits == []
+
+    def test_a_pooled_server_whose_interpreter_survived_a_partial_prune_keeps_its_transport(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """Windows keeps a running ``python.exe`` through the prune, so the
+        respawn command still exists, but a relaunch from it cannot import the
+        package. The server must stay up and ask for a restart."""
+        from kiro_crew import install_liveness
+
+        package = tmp_path / "0.8.0.4" / "kiro_crew"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        interpreter = tmp_path / "0.8.0.4" / "python.exe"
+        interpreter.write_text("")
+        interpreter.chmod(0o755)
+        monkeypatch.setattr(install_liveness, "_PACKAGE_ROOT", package)
+        monkeypatch.setenv(
+            install_liveness.POOLED_BACKEND_ENV, install_liveness.POOLED_BACKEND_VALUE
+        )
+        monkeypatch.setenv(install_liveness.POOLED_RESPAWN_COMMAND_ENV, str(interpreter))
+        exits: list = []
+        monkeypatch.setattr(mcp_shared.sys, "exit", exits.append)
+        calls: list[str] = []
+
+        def call_tool(name, args):
+            calls.append(name)
+            return f"done:{name}"
+
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call(1, "before"))
+            assert harness.wait_for(lambda: len(harness.responses) == 1)
+            (package / "__init__.py").unlink()  # the prune; the interpreter stays
+            harness.send(_tools_call(2, "spawn_run"))
+            assert harness.wait_for(lambda: len(harness.responses) == 2), harness.responses
+            assert harness._thread.is_alive(), "exited into a respawn that cannot start"
+        finally:
+            harness.close()
+
+        assert calls == ["before"], "a tool ran from the pruned install"
+        _req_id, result, error = harness.responses[1]
+        assert result is None
+        assert error["code"] == -32000 and "restart" in error["message"]
+        assert exits == []
