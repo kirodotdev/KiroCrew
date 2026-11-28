@@ -413,7 +413,7 @@ async def api_auth_me(request: web.Request) -> web.Response:
     # authenticated while the owner gate keeps denying it. Imported
     # inside the function because this module sits on the auth path and its
     # owner is a 7900-line handler module; the name is the one
-    # ``aws_control`` and ``meetings`` already gate on.
+    # ``aws_control`` already gates on.
     owner_ok = False
     try:
         from kiro_crew.dashboard.handlers.source_providers import (

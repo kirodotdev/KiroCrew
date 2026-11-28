@@ -303,7 +303,7 @@ class TestTheAddressDecisionItself:
     equivalent is how
     a later edit to the screen (say, dropping the ``is_private`` predicate, or turning
     the fail-closed ``except`` into fail-open) would land silently. Same split as the
-    ``public_dns`` precedent in ``test/test_meetings_providers.py``: the scheme tests
+    Meetings app's ``public_dns`` calendar fixture: the scheme tests
     stub resolution, and the address decision is tested on its own.
     """
 

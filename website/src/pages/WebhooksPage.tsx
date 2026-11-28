@@ -931,7 +931,7 @@ export default function WebhooksPage() {
                   agents={agents}
                   defaultAgent={selectedToken.agent
                     ? agents[0]?.name ?? ''
-                    : i18nT('apps.meetings.taskSidebar.unassigned')}
+                    : i18nT('pages.webhooksPage.unassigned')}
                   value={selectedToken.agent}
                   onChange={agent => updateToken.mutate({ id: selectedToken.id, patch: { agent } })}
                 />

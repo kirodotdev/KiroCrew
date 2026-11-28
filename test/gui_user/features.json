@@ -5,15 +5,15 @@
     "smoke": 42,
     "nightly": 164,
     "native-only": 13,
-    "needs-secret": 27,
+    "needs-secret": 26,
     "excluded": 24,
-    "total": 270
+    "total": 269
   },
   "priorities": {
     "P0": 10,
     "P1": 35,
     "P2": 159,
-    "P3": 64
+    "P3": 63
   },
   "per_feature": {
     "chat": {
@@ -125,7 +125,7 @@
       "smoke": 3,
       "nightly": 10,
       "native-only": 2,
-      "needs-secret": 7,
+      "needs-secret": 6,
       "excluded": 2
     },
     "task-runner": {
@@ -3799,35 +3799,6 @@
         "app-issue-radar-connect-triage"
       ],
       "component": "website/src/apps/issue-radar/IssueRadarPage.tsx"
-    },
-    {
-      "id": "app-meetings-live-transcribe",
-      "feature": "apps",
-      "title": "Meetings: start a meeting and capture live transcript with notes",
-      "user_story": "As an attendee, I want to start a meeting and have it transcribed with notes and action items, so that I can review tasks before filing them.",
-      "start_url": "/meetings",
-      "entry_path": "Enable Meetings > Rail > Meetings > New/upcoming meeting > Start > allow microphone > End > Task review",
-      "preconditions": {
-        "seed": "apps-installed",
-        "members": [],
-        "feature_flags": [],
-        "notes": "Needs browser microphone permission and Kiro Crew's speech-to-text over /api/ws/stt (STT backend dependencies like faster-whisper are optional heavy installs not present in the target image). Calendar via optional .ics path; agents via ACP backend."
-      },
-      "runnable": "needs-secret",
-      "estimated_steps": 7,
-      "rationale": "The primary flow needs a working STT backend (an optional heavy install the no-network target cannot fetch) and a calendar/audio source; only the empty meeting list and settings views render from fixtures, and that is not the primary flow.",
-      "source": [
-        "src/kiro_crew/apps/builtins/meetings/app.json",
-        "website/src/apps/meetings/MeetingsPage.tsx",
-        "website/src/apps/meetings/api.ts",
-        "src/kiro_crew/apps/builtins/meetings/backend/routes/settings.py",
-        "src/kiro_crew/apps/builtins/meetings/backend/routes/audio_import.py"
-      ],
-      "priority": "P3",
-      "merged_from": [
-        "app-meetings-live-transcribe"
-      ],
-      "component": "website/src/apps/meetings/MeetingsPage.tsx"
     },
     {
       "id": "app-mochi-dashboard",

@@ -637,8 +637,8 @@ handlers.push(
   http.get('/api/guide/pending', () => HttpResponse.json({ guides: [] })),
 )
 
-// Vendor script paths that happy-dom eager-loads when buildSrcdoc /
-// buildSketchSrcdoc append a <script src="..."> to a detached document.
+// Vendor script paths that happy-dom eager-loads when a srcdoc builder appends a
+// <script src="..."> to a detached document.
 // Explicit handlers (not just the catch-all) because:
 //   1. They fire even if the catch-all's origin check has a stale TEST_ORIGIN.
 //   2. They return valid JS (empty string, not 501) so happy-dom's script

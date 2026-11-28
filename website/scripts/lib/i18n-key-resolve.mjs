@@ -111,7 +111,7 @@ export function collectFileScopeConsts(sourceFile, absPath) {
   //
   // Without this, a key map shared by several components is unresolvable at every
   // consumer even though it is exactly the `as const` map shape this gate asks
-  // for — `PRIORITY_LABEL_KEY` in apps/meetings/api.ts is read by three views.
+  // for — a priority-label map one `api.ts` exports can be read by three views.
   // The only way to satisfy the gate would have been to copy the map into each
   // consumer, i.e. duplicate the data to please the checker, which is worse code
   // AND worse i18n (three places to update a key).

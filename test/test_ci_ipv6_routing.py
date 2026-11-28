@@ -24,19 +24,14 @@ from scripts.ci_file_shards import file_shard
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = (
-    "test/test_meetings_providers.py",
     "test/test_platform_compat.py",
     "test/test_platform_compat_listening_ports.py",
 )
-DNS = TARGETS[0] + "::TestDnsRebindingIsRefused::"
-PEER = TARGETS[1] + "::test_native_tcp_peer_identifies_client_process_not_server"
+PEER = TARGETS[0] + "::test_native_tcp_peer_identifies_client_process_not_server"
 WINDOWS_NAME = "test_windows_finds_real_ipv6_loopback_listener"
 EXPECTED = {
-    DNS + "test_the_fetch_lands_on_the_vetted_address_not_the_rebound_one",
-    DNS + "test_an_unpinned_connector_would_have_been_rebound",
-    DNS + "test_a_redirect_hop_is_pinned_to_its_own_vetted_address",
     PEER + f"[{int(socket.AF_INET6)}-::1]",
-    TARGETS[2] + "::TestFindListeningPidsErrors::" + WINDOWS_NAME,
+    TARGETS[1] + "::TestFindListeningPidsErrors::" + WINDOWS_NAME,
 }
 
 
@@ -185,10 +180,10 @@ def test_a_nested_collection_reads_only_the_named_files(tmp_path):
     assert offered == {(ROOT / target).resolve() for target in TARGETS}
 
 
-# One nested ``--collect-only`` of the three TARGETS takes about 2 s on an idle host and
-# 8 to 13 s on a host running the full suite at 8 workers. The test needs six of them.
-# Run sequentially, that put up to 360 s of inner budget inside the 120 s ``--timeout``
-# every test gets, so pytest-timeout fired on the sum. The six are independent (each
+# One nested ``--collect-only`` of the two TARGETS takes about 2 s on an idle host and
+# 8 to 13 s on a host running the full suite at 8 workers. The test needs up to five of
+# them. Run sequentially, that puts up to 300 s of inner budget inside the 120 s
+# ``--timeout`` every test gets, so pytest-timeout fires on the sum. They are independent (each
 # is its own interpreter), so they run CONCURRENTLY -- wall time is the slowest one, not
 # the sum -- and each keeps ``_run``'s 60 s cap: that cap is the ratchet on how slow a
 # single collection may get, and concurrency is what fixes the budget, not a looser cap.
@@ -207,7 +202,7 @@ def test_real_collected_nodes_are_the_disjoint_fleet_and_hosted_union(tmp_path):
         assert nodes and len(nodes) == len(set(nodes))
         return set(nodes)
 
-    # Only the owners of these three files can collect their ordinary items.
+    # Only the owners of these two files can collect their ordinary items.
     owners = sorted({file_shard(ROOT / target, ROOT, 8) for target in TARGETS})
     jobs = [
         (),
@@ -231,8 +226,6 @@ def test_real_collected_nodes_are_the_disjoint_fleet_and_hosted_union(tmp_path):
     assert not fleet & hosted
     assert original == fleet | hosted
     assert PEER + f"[{int(socket.AF_INET)}-127.0.0.1]" in fleet
-    assert DNS + "test_a_normal_public_host_still_fetches" in fleet
-    assert DNS + "test_resolution_stays_off_the_event_loop" in fleet
     assert sum(map(len, shards)) == len(fleet)
     assert set().union(*shards) == fleet
 

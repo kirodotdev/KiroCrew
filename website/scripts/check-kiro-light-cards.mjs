@@ -97,7 +97,6 @@ const ROUTES = [
   { path: '/workflows', name: 'app-workflows', ready: 'Run a workflow to see its phases' },
   { path: '/dev-fleet', name: 'app-dev-fleet', ready: 'Manage the git worktrees' },
   { path: '/issue-radar', name: 'app-issue-radar', ready: 'Welcome to Issue Radar' },
-  { path: '/meetings', name: 'app-meetings', ready: 'Live notes, diagrams, and action items' },
   { path: '/papyrus', name: 'app-papyrus', ready: 'LaTeX papers with a live PDF preview' },
   { path: '/pptx-maker', name: 'app-pptx-maker', ready: 'Quarterly review' },
   { path: '/ops-mission-control', name: 'app-ops-mission-control', ready: 'Checkout latency above budget' },

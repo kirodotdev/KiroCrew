@@ -237,7 +237,6 @@ BUILTIN_SKILL_IDS: tuple[str, ...] = (
     "living-ui",
     "living-ui-blocks",
     "llm-council",
-    "meetings",
     "ops-mission-control",
     "papyrus-diagnose-compilation",
     "papyrus-latex-comments",

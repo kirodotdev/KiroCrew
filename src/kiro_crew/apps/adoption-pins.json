@@ -184,6 +184,28 @@
       "legacyNav": {
         "route": "/meetings",
         "icon": "CalendarClock"
+      },
+      "deletedCopy": {
+        "permissions": {
+          "api": [
+            "/api/apps/meetings",
+            "/api/apps/meetings/*",
+            "/api/ws/stt"
+          ],
+          "network": true,
+          "storage": true,
+          "agentTurns": true
+        },
+        "grants": {
+          "api": [
+            "/api/apps/meetings",
+            "/api/apps/meetings/*",
+            "/api/ws/stt"
+          ]
+        },
+        "agentReadOnlyDirs": [
+          "notes"
+        ]
       }
     },
     {

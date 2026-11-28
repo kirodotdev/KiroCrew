@@ -122,7 +122,6 @@ agent loads only the one it needs.
 | [aws-control.md](aws-control.md) | The AWS account portal and S3-backed cloud drive app: accounts, Drive/Library/Backup, consent and confirmation guards, sharing, the crew bundle builder, and the crew container runtime a remote crew runs as. |
 | [command-bar.md](command-bar.md) | The dashboard's quick-search launcher and its on/off setting: the request-free root, ranking, scopes, and the fold of the former Command Bar app. |
 | [pptx-maker.md](pptx-maker.md) | Deck generation. |
-| [meetings.md](meetings.md) | Meeting capture and summarization. |
 | [issue-radar.md](issue-radar.md) | Issue triage and grouping. |
 | [ops-mission-control.md](ops-mission-control.md) | Autonomous ops first responder: alarms, pages and monitors. |
 | [mochi.md](mochi.md) | The Mochi app. |

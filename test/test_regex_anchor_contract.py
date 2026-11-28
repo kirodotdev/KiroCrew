@@ -50,9 +50,6 @@ from kiro_crew.apps.builtins.aws_control.backend.backup_parts import (
 from kiro_crew.apps.builtins.design_tweak import backend as design_tweak_backend
 from kiro_crew.apps.builtins.design_tweak.backend import request_state as design_tweak_request_state
 from kiro_crew.apps.builtins.design_tweak.backend import server as design_tweak_server
-from kiro_crew.apps.builtins.meetings import backend as meetings_backend
-from kiro_crew.apps.builtins.meetings.backend import store as meetings_store
-from kiro_crew.apps.builtins.meetings.backend.routes import meeting_lifecycle as meetings_lifecycle
 from kiro_crew.apps.builtins.mochi import appearance_store, petdex_import
 from kiro_crew.apps.builtins.mochi import settings as mochi_settings
 from kiro_crew.apps.builtins.papyrus import backend as papyrus_backend
@@ -79,7 +76,6 @@ _REQUEST_PATH_PACKAGES = (
     crew_log,
     mochi,
     pptx_maker_backend,
-    meetings_backend,
     design_tweak_backend,
     spec_builder_backend,
     aws_control_backend,
@@ -132,12 +128,6 @@ _VALIDATORS = (
     pytest.param(petdex_import._SLUG_RE, "space-cat.v2", id="mochi-petdex-slug"),
     pytest.param(mochi_settings._LANGUAGE_TAG_RE, "zh-Hant-TW", id="mochi-language-tag"),
     pytest.param(pptx_maker_paths.SEGMENT_RE, "deck-1", id="pptx-maker-path-segment"),
-    pytest.param(meetings_store._SAFE_ID_RE, "sprint-standup", id="meetings-meeting-id"),
-    pytest.param(meetings_store._SAFE_AGENT_ID_RE, "note-taker", id="meetings-agent-id"),
-    pytest.param(
-        meetings_store._SAFE_NOTE_IMAGE_RE, "0" * 32 + ".png", id="meetings-note-image-name"
-    ),
-    pytest.param(meetings_lifecycle._NOTE_EDITOR_RE, "tab-a", id="meetings-note-editor"),
     pytest.param(
         design_tweak_request_state.REQUEST_ID_RE,
         "1700000000000-abc123",

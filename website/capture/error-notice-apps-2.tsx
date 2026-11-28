@@ -1,13 +1,13 @@
 /**
  * Isolated capture entry for the apps-2 batch of the error-state sweep
- * (issue-radar detail / settings surfaces, md-notebook, meetings).
+ * (issue-radar detail / settings surfaces, md-notebook).
  *
  * WHY ISOLATED: these failure states only appear once a repo is connected and a
  * request against the provider fails; booting the full SPA for that needs the
  * app shell, a gateway and a forge session. The components below are
  * prop-driven, so the failed states render directly with the exact values the
- * app would hand them; the hook-driven views (CrewPageView, PrActionsBar,
- * MeetingsPage) are shown as the exact `ErrorNotice` call this branch makes.
+ * app would hand them; the hook-driven views (CrewPageView, PrActionsBar) are
+ * shown as the exact `ErrorNotice` call this branch makes.
  *
  * Two columns per frame:
  *   BEFORE — the hand-written surfaces reconstructed verbatim from origin/main
@@ -41,7 +41,6 @@ const SUMMARY_ERROR = new Error('HTTP 503: model backend unavailable')
 const LABELS_ERROR = new Error('HTTP 403: resource not accessible by integration')
 const CREW_LOAD_ERROR = 'HTTP 404: crew "tucana" not found'
 const ACTION_ERROR = 'HTTP 422: review cannot be requested from the author'
-const SYNC_ERROR = 'Calendar sync failed: token expired'
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -85,9 +84,6 @@ function Before() {
           </Btn>
         </div>
       </Section>
-      <Section title="MeetingsPage — sync failure was toast-only (nothing in-page)">
-        <div className="text-[12px] text-muted italic">(no in-page surface; the toast fades)</div>
-      </Section>
     </Column>
   )
 }
@@ -112,9 +108,6 @@ function After() {
             <Btn>Request changes</Btn>
           </div>
         </div>
-      </Section>
-      <Section title="MeetingsPage — in-page ErrorNotice askAgent (toast kept as transient feedback)">
-        <ErrorNotice message={SYNC_ERROR} askAgent onDismiss={() => {}} />
       </Section>
     </Column>
   )

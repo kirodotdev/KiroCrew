@@ -13,8 +13,8 @@ outcomes that must stay distinct:
   a real empty result.
 
 This is the anti-conflation rule: Zoom's native AI Companion summary is a
-vendor-side product and is NEVER the builtin Meetings app's own STT+LLM summary
-(see ``docs/system-specs/modules/connector-zoom.md`` and ``meetings.md``).
+vendor-side product and is NEVER the Meetings app's own STT+LLM summary
+(see ``docs/system-specs/modules/connector-zoom.md``).
 
 See ``docs/system-specs/modules/connector-zoom.md``.
 """

@@ -705,11 +705,10 @@ fails, the broken-image fallback names and probes the path as written, as it
 does for any other image, so its "no longer exists" wording speaks for that path
 alone. That fallback states the failure through an inline `ErrorNotice` beside
 a chip that copies the on-disk path. The notice offers no agent hand-off: the
-renderer also previews unsaved drafts (the meeting note's Preview), and the
+renderer also previews unsaved drafts (the Meetings app's note Preview), and the
 navigation would unmount one. Every surface that
-provides `BasePathCtx` gets this (the file preview, the file explorer, the
-meeting notes sidebar); outside them (chat, artifacts) a leading-slash path
-stays absolute only.
+provides `BasePathCtx` gets this (the file preview, the file explorer); outside
+them (chat, artifacts) a leading-slash path stays absolute only.
 
 To SHOW a gateway path's file name, use `pathBasename` (and
 `stripTrailingSeparators` for a directory) from `utils/pathBasename.ts`, never

@@ -455,9 +455,8 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   // Each row's Rename button, by source id. Closing a rename unmounts whatever
   // had focus in it (the input, or its Save or Cancel button), and a browser
   // then drops focus to document.body, so every close hands focus back to the
-  // Rename button of the row it was opened from once that button has remounted
-  // (the pattern in MeetingTitle). The field has no blur handler, so there is
-  // no pointer-blur path to exclude.
+  // Rename button of the row it was opened from once that button has remounted.
+  // The field has no blur handler, so there is no pointer-blur path to exclude.
   const renameButtons = useRef(new Map<string, HTMLButtonElement>())
   const closeRename = (id: string | null) => {
     // Commit the close now: a save closes from its PATCH callback, outside any

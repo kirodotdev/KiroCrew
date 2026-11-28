@@ -116,7 +116,6 @@ export const SURFACES = [
   { id: 'code-review-sage', url: '/code-review-sage' },
   { id: 'papyrus', url: '/papyrus' },
   { id: 'crew-companion', url: '/crew-companion' },
-  { id: 'meetings', url: '/meetings' },
   { id: 'md-notebook', url: '/md-notebook' },
   { id: 'worlds', url: '/worlds' },
 

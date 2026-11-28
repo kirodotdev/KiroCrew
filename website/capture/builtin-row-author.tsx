@@ -70,7 +70,7 @@ const shared = {
 }
 
 /**
- * Four rows spanning both outcomes. `author` is the only field that differs
+ * Three rows spanning both outcomes. `author` is the only field that differs
  * between the two scenes, because artwork, tags and version are byte-identical
  * across the two sources (measured against the live catalog).
  *
@@ -89,7 +89,6 @@ const ROWS: {
   // `iconUrl` is each app's own value, copied from its app.json — the same
   // string the store serves, so the tile in the frame is the tile in the UI.
   { name: 'projects', displayName: 'Projects', iconUrl: '/app-assets/projects/icon.svg', localAuthor: 'kirocrew', catalogAuthor: 'Kiro Crew' },
-  { name: 'meetings', displayName: 'Meetings', iconUrl: '/app-assets/meetings/icon.svg', localAuthor: 'adunuthu', catalogAuthor: 'adunuthu' },
   { name: 'papyrus', displayName: 'Papyrus', iconUrl: '/app-assets/papyrus/icon.svg', localAuthor: 'tricatte', catalogAuthor: 'tricatte' },
   { name: 'pptx-maker', displayName: 'PPTX Maker', iconUrl: '/app-assets/pptx-maker/icon.svg', localAuthor: 'sktok', catalogAuthor: 'sktok' },
 ]

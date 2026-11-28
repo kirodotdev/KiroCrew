@@ -26,7 +26,7 @@ under `scenarios/` says how the lane checks it.
 
 | | Total | smoke | nightly | native-only | needs-secret | excluded |
 |---|---|---|---|---|---|---|
-| **All features** | 270 | 42 | 164 | 13 | 27 | 24 |
+| **All features** | 269 | 42 | 164 | 13 | 26 | 24 |
 | Chat sessions (`chat`) | 26 | 3 | 19 | 0 | 2 | 2 |
 | Side panel tabs (`side-panel`) | 4 | 1 | 3 | 0 | 0 | 0 |
 | Terminal panel (`terminal`) | 3 | 0 | 3 | 0 | 0 | 0 |
@@ -42,7 +42,7 @@ under `scenarios/` says how the lane checks it.
 | Artifacts (`artifacts`) | 10 | 1 | 5 | 0 | 3 | 1 |
 | File viewer & project files (`files`) | 1 | 1 | 0 | 0 | 0 | 0 |
 | Browser panel (`browser-panel`) | 3 | 0 | 1 | 1 | 0 | 1 |
-| Apps & App Store (`apps`) | 24 | 3 | 10 | 2 | 7 | 2 |
+| Apps & App Store (`apps`) | 23 | 3 | 10 | 2 | 6 | 2 |
 | Task Runner (`task-runner`) | 1 | 1 | 0 | 0 | 0 | 0 |
 | Worlds (3D scenes) (`worlds`) | 1 | 0 | 1 | 0 | 0 | 0 |
 | Dev Fleet (`dev-fleet`) | 1 | 0 | 1 | 0 | 0 | 0 |
@@ -63,7 +63,7 @@ under `scenarios/` says how the lane checks it.
 | Security & governance (`security`) | 10 | 1 | 9 | 0 | 0 | 0 |
 | Developer tools (`developer`) | 11 | 0 | 11 | 0 | 0 | 0 |
 
-Priorities: P0 10 · P1 37 · P2 159 · P3 64. Deduped from 387 raw records.
+Priorities: P0 10 · P1 37 · P2 159 · P3 63. Deduped from 387 raw records.
 
 ## Chat sessions (`chat`)
 
@@ -472,7 +472,6 @@ Features the lane cannot drive on its target. Listed so the gap is a decision, n
 | needs-secret | `app-aws-control-drive` | apps | AWS Control: view account health and browse the S3 cloud drive | Every meaningful surface (account health, drive listing, share links) requires live AWS credentials and an S3 bucket the user owns; the target has no network and no credentials. |
 | needs-secret | `app-code-review-sage-review-pr` | apps | Code Review Sage: add a repo and review a pull request | Repository discovery, PR listing, and draft review staging all go through the authenticated gh CLI against GitHub. |
 | needs-secret | `app-issue-radar-connect-triage` | apps | Issue Radar: connect a repository and triage issues | Repository connection, issue caching, and every write go through authenticated provider CLIs; only the welcome carousel is reachable without them. |
-| needs-secret | `app-meetings-live-transcribe` | apps | Meetings: start a meeting and capture live transcript with notes | The primary flow needs a working STT backend (an optional heavy install the no-network target cannot fetch) and a calendar/audio source; only the empty meeting list and settings views render from fixtures, and that is n… |
 | needs-secret | `app-ops-mission-control-board` | apps | Ops Mission Control: configure a provider and work an incident on the board | Primary flow needs a real monitoring provider credential; a signed generic webhook could degrade this to nightly but the board is empty without a configured provider. |
 | needs-secret | `app-pptx-maker-studio` | apps | PPTX Maker: open the studio, browse the library, and start a deck chat | The primary flow (start a deck chat, watch preview) requires the engine download and MCP tools that need network, which the target does not have; the Decks/Library/Settings views render headless but are not the primary … |
 | needs-secret | `chat-channel-mirroring` | channels | Channel mirroring | Linking requires a real messaging-provider token to list channel targets; the menu shell alone renders without one. |

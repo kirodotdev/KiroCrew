@@ -27,12 +27,12 @@ export const TAILWIND_RUNTIME_SRC = './node_modules/@tailwindcss/browser/dist/in
 /** Public URL path the dashboard serves the Mermaid browser bundle from.
  *
  * Same three-site contract as the Tailwind runtime above (consumer, dev-serve
- * middleware, build emit), and same reason it exists: the Meetings sketch artist
- * renders into a null-origin sandboxed iframe whose CSP is `connect-src 'none'`,
- * so it cannot fetch Mermaid from a public CDN. Serving it from our own origin
- * is what lets that frame draw a diagram with NO network egress at all — the
- * app works fully offline and a prompt-injected document has no exfiltration
- * channel. Consumed by src/apps/meetings/lib/sketchSrcdoc.ts. */
+ * middleware, build emit), and same reason it exists: the Meetings app's sketch
+ * artist renders into a null-origin sandboxed iframe whose CSP is `connect-src
+ * 'none'`, so it cannot fetch Mermaid from a public CDN. Serving it from our own
+ * origin is what lets that frame draw a diagram with NO network egress at all —
+ * the app works fully offline and a prompt-injected document has no exfiltration
+ * channel. The app, installed from its own repository, loads it from this path. */
 export const MERMAID_RUNTIME_PATH = '/vendor/mermaid.min.js'
 
 /** Build-time source of the Mermaid bundle, copied from the tracked `mermaid`

@@ -11,7 +11,6 @@ BUILTIN_NAMES: list[str] = [
     # gateway process (gateway_routes.py), so the package exports register_routes.
     "dev_fleet",
     "issue_radar",
-    "meetings",
     "ops_mission_control",
     "papyrus",
     "mochi",

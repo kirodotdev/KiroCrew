@@ -164,7 +164,7 @@ function BrokenImage({ path, alt, probeUrl, media }: { path: string; alt?: strin
           : <Copy size={12} aria-hidden="true" className="shrink-0 opacity-70" />}
       </span>
       {/* No hand-off: this fallback renders in every MarkdownRenderer host,
-          including the meeting note's Preview (NoteSidebar), where the note
+          including the Meetings app's note Preview, where the note
           draft lives only in the view the hand-off would unmount, and which
           withholds the hand-off on its own notice for that reason. A shared
           renderer cannot tell which host holds a draft, so it never offers

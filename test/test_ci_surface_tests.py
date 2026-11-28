@@ -86,7 +86,6 @@ _BACKEND_GUARDS = (
     "test/test_artifact_import_parity.py",
     "test/test_knowledge_formats_parity.py",
     "test/test_windows_signing_contract.py",
-    "test/test_meetings_routes.py",
     # Under the third testpath root, src/kiro_crew/apps/builtins in _BACKEND_ROOTS.
     "src/kiro_crew/apps/builtins/design_critique/tests/test_manifest.py",
     "src/kiro_crew/apps/builtins/crew_companion/tests/test_manifest.py",

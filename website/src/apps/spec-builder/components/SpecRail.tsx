@@ -232,7 +232,7 @@ export default function SpecRail({
             {active.map(row)}
             {ready.length > 0 && groupHeader(i18nT('apps.specBuilder.components.specRail.plan_ready'), ready.length)}
             {ready.map(row)}
-            {archived.length > 0 && groupHeader(i18nT('apps.meetings.review.archivedSection'), archived.length)}
+            {archived.length > 0 && groupHeader(i18nT('apps.specBuilder.components.specRail.archived'), archived.length)}
             {archived.map(row)}
             {specs.length > 0 && active.length === 0 && ready.length === 0 && archived.length === 0 && (
               /* The shared filtered-to-nothing state: echoes the query back and
