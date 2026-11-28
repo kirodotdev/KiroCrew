@@ -599,8 +599,20 @@ def _lexical_runtime_overlap(
     return None
 
 
-def voice_runtime_workspace_conflict(workspace: str | os.PathLike[str]) -> str | None:
+def voice_runtime_workspace_conflict(
+    workspace: str | os.PathLike[str], *, backend: str | None = None
+) -> str | None:
     """Pre-flight: describe why *workspace* would be rejected, or ``None``.
+
+    *backend* is the runtime id the session will launch on, when the caller
+    knows it. The spawn-time guards run only for a backend whose isolation is
+    delegated to kiro-cli's internal sandbox (``ACP_BACKENDS_INTERNAL_SANDBOX``,
+    or a relay in ``ACP_BACKENDS_RELAY_INTERNAL_SANDBOX`` whose plan may say
+    so), so for any other backend this pre-flight answers ``None`` too: refusing
+    there would turn away a workspace the launch accepts (``~`` for a Claude
+    chat). ``None`` (unknown, e.g. a folder that any slot may use) keeps the
+    strict answer. A later switch onto a delegating backend is still refused at
+    spawn, which stays authoritative.
 
     A non-raising lexical version of
     :func:`assert_voice_runtime_outside_agent_workspace` for validation
@@ -620,6 +632,14 @@ def voice_runtime_workspace_conflict(workspace: str | os.PathLike[str]) -> str |
     """
     if sys.platform != "darwin":
         return None
+    if backend is not None:
+        from kiro_crew.agent_sdk.backends_launch import (
+            ACP_BACKENDS_INTERNAL_SANDBOX,
+            ACP_BACKENDS_RELAY_INTERNAL_SANDBOX,
+        )
+
+        if backend not in ACP_BACKENDS_INTERNAL_SANDBOX | ACP_BACKENDS_RELAY_INTERNAL_SANDBOX:
+            return None
     workspace_paths = tuple(
         dict.fromkeys(
             (
