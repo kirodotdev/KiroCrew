@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_AUTOMATION
 from kiro_crew.config import live
+from kiro_crew.dashboard.chat_paste_meta import PASTES_META_KEY
 from kiro_crew.dashboard.chat_utils import (
     COMPOSER_SEND_META,
     STEER_POSSIBLY_DELIVERED_META,
@@ -1322,6 +1323,12 @@ TURN_ACTOR_META_KEY = "turnActor"
 #: provenance flags, which grant authority and are therefore never persisted.
 COMMANDS_OFF_META_KEY = "commands_off"
 
+#: Entry meta key keeping a queued payload's ``@prompt`` and ``$skill`` mentions as
+#: text: stamped beside ``COMMANDS_OFF_META_KEY`` on a chat option tap, whose
+#: label the model wrote. A separate key because a channel's typed text carries
+#: commands-off too and still expands. Like that key, it only REMOVES something.
+EXPANSIONS_OFF_META_KEY = "expansions_off"
+
 #: Entry meta key asking for a BACKGROUND cold start for the turn the entry runs as,
 #: whoever's provenance it carries. The bulk Resume stamps it on every entry it
 #: queues: its request answers at once, so no person waits on any one of those
@@ -1365,8 +1372,13 @@ def queue_for_next_turn(
     banner: str = "",
     queued_work: Any = None,
     knowledge: dict[str, Any] | None = None,
+    pastes: list[dict[str, Any]] | None = None,
+    source_channels: tuple[str, ...] = (),
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
+
+    *source_channels* are the channels admission judges the entry by. The entry
+    carries them from the moment it joins the queue.
 
     *queued_work* is the fair-admission result for a parked send; its work id is
     stamped on the entry before the durable verdict, because the write weighs it.
@@ -1443,6 +1455,10 @@ def queue_for_next_turn(
 
     *knowledge* is the send's :func:`knowledge_meta`, stamped on the entry and its
     ``queue_push`` frame so the queue card finds the knowledge envelope exactly.
+
+    *pastes* is the send's :func:`~kiro_crew.dashboard.chat_paste_meta.paste_meta`:
+    the drained row keeps them, so it draws the paste chips a dispatched send's
+    row draws.
     """
     # circular import: session_control imports this module at module level.
     from kiro_crew.dashboard.session_control import CHANNEL_RECIPIENT_META_KEY, containment_meta
@@ -1487,12 +1503,16 @@ def queue_for_next_turn(
         meta[CHAT_BANNER_META_KEY] = banner
     if knowledge:
         meta.update(knowledge)
+    if pastes:
+        meta[PASTES_META_KEY] = pastes
+    channels: dict[str, Any] = {"source_channels": source_channels} if source_channels else {}
     qid = slot.queue_append(
         message,
         meta=meta,
         directive_user_origin=directive_user_origin,
         directive_channel_origin=directive_channel_origin,
         directive_owner_origin=directive_owner_origin,
+        **channels,
     )
     if queued_work is not None:
         from kiro_crew.shared_crew import admission_entry as _sc_entry

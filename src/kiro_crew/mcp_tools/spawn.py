@@ -36,11 +36,9 @@ from kiro_crew.mcp_tools.spawn_parts.listing import spawn_list, spawn_status
 from kiro_crew.mcp_tools.spawn_parts.session_memory import session_memory_lines
 from kiro_crew.mcp_tools.spawn_parts.wave import _SA_ERROR_MAX_CHARS, spawn_sub_agents
 from kiro_crew.spawn_label import normalize_spawn_label
-from kiro_crew.subagent import (  # noqa: F401 - the last two are read by spawn_parts.schemas
-    AGENT_INTERNAL_CODE,
-    AGENT_NOT_AVAILABLE_CODE,
-    AGENT_NOT_FOUND_CODE,
+from kiro_crew.subagent_standalone import (  # noqa: F401 - the last two are read by spawn_parts.schemas
     agent_matches_allowlist,
+    agent_refusal_codes,
     parent_spawn_allowlists,
     resolve_max_subagents,
 )
@@ -54,6 +52,9 @@ from kiro_crew.validation import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: The refusal wire codes (plain strings), bound once as the facade import bound them.
+AGENT_INTERNAL_CODE, AGENT_NOT_AVAILABLE_CODE, AGENT_NOT_FOUND_CODE = agent_refusal_codes()
 
 #: Bound on one ``/api/spawn/lost`` report posted from a deferred's ``cancel()``
 #: or ``abandon()``, which the dispatch loop runs on its own thread: a gateway
@@ -1011,6 +1012,7 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
         SCOPE_GLOBAL,
         _kiro_agents_dir,
         _read_agent_spec,
+        is_internal_agent_spec,
         list_agents,
         spec_is_toolless,
     )
@@ -1029,12 +1031,11 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
     from kiro_crew.spawn_label import SPAWN_LABEL_MAX_CHARS  # noqa: F401
-    from kiro_crew.subagent import (  # noqa: F401
+    from kiro_crew.subagent_read_collected import post_mark_collected  # noqa: F401
+    from kiro_crew.subagent_standalone import (  # noqa: F401
         format_subagent_usage,
-        is_internal_agent_spec,
         visible_agent_names,
     )
-    from kiro_crew.subagent_read_collected import post_mark_collected  # noqa: F401
     from kiro_crew.subagent_wait_reasons import queued_wait_text  # noqa: F401
     from kiro_crew.validation import (  # noqa: F401
         MAX_LONG_STRING,

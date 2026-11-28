@@ -52,6 +52,7 @@ vi.mock('../api/client', () => ({
   api: {
     tailnetMobile: vi.fn(),
     tailnetMobileConfigure: vi.fn(),
+    tailnetMobileClearOverrides: vi.fn(),
     restartGateway: vi.fn(),
     tailnetMobilePublish: vi.fn(),
     tailnetMobileUnpublish: vi.fn(),
@@ -693,6 +694,44 @@ describe('TailnetMobileCard — mutating actions', () => {
     fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
 
     expect(await screen.findByText('zzz network unreachable')).toBeInTheDocument()
+    // Nothing in config.local.json caused it, so there is nothing to fix.
+    expect(screen.queryByRole('button', { name: 'Fix this' })).toBeNull()
+  })
+
+  it('removes the confirmed config.local overrides, then retries setup', async () => {
+    mockApi.tailnetMobileConfigure.mockRejectedValueOnce(Object.assign(
+      new Error('config.local.json overrides the safe phone-access settings'),
+      {
+        status: 409,
+        body: JSON.stringify({
+          code: 'config_overlay_conflict',
+          fields: ['dashboard.tailscale.allowed_logins'],
+          overrides: [{
+            field: 'dashboard.tailscale.allowed_logins',
+            local: ['someone@example.com'],
+            applies: ['owner@example.com'],
+          }],
+        }),
+      },
+    ))
+    mockApi.tailnetMobileClearOverrides.mockResolvedValue({
+      removed: ['dashboard.tailscale.allowed_logins'],
+    })
+    await mount(data({ step: 'trust_off' }))
+
+    fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Fix this' }))
+
+    // Both values are on screen before anything is removed.
+    expect(await screen.findByText('["someone@example.com"]')).toBeInTheDocument()
+    expect(screen.getByText('["owner@example.com"]')).toBeInTheDocument()
+    expect(mockApi.tailnetMobileClearOverrides).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove and retry' }))
+
+    await waitFor(() => expect(mockApi.tailnetMobileClearOverrides)
+      .toHaveBeenCalledWith(['dashboard.tailscale.allowed_logins']))
+    await waitFor(() => expect(mockApi.tailnetMobileConfigure).toHaveBeenCalledTimes(2))
   })
 
   it('names the config.local overrides that block persistent setup', async () => {

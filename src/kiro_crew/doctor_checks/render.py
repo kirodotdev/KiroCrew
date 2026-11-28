@@ -81,6 +81,26 @@ def _probe_file(path: Path) -> tuple[bool, OSError | None]:
         return False, exc
 
 
+def _known_confined(confined: Callable[[], bool] | None) -> bool:
+    """*confined*'s answer, with a probe that raises read as "not known to be confined"."""
+    if confined is None:
+        return False
+    try:
+        return bool(confined())
+    except Exception:  # noqa: BLE001 — a broken probe must not end the report
+        return False
+
+
+def _print_confined_skip(label: str, shown: str) -> None:
+    """The row for a section whose data-home read a sandbox decides, not the data home."""
+    print(f"  {label}: ⏭  skipped — {shown} is not readable from this shell")
+    _print_wrapped(
+        "This shell runs inside a sandbox (an agent's shell is one), which "
+        "can hide part of the Kiro Crew data home. Run `kirocrew doctor` from "
+        "your own terminal to check this section."
+    )
+
+
 @contextlib.contextmanager
 def _unreadable_skips_section(
     issues: list[str],
@@ -109,19 +129,8 @@ def _unreadable_skips_section(
             if exc.filename is not None
             else "a file it reads"
         )
-        is_confined = False
-        if confined is not None:
-            try:
-                is_confined = bool(confined())
-            except Exception:  # noqa: BLE001 — a broken probe must not end the report
-                is_confined = False
-        if is_confined:
-            print(f"  {label}: ⏭  skipped — {shown} is not readable from this shell")
-            _print_wrapped(
-                "This shell runs inside a sandbox (an agent's shell is one), which "
-                "can hide part of the Kiro Crew data home. Run `kirocrew doctor` from "
-                "your own terminal to check this section."
-            )
+        if _known_confined(confined):
+            _print_confined_skip(label, shown)
             return
         print(f"  {label}: ❌ {shown} is not readable ({exc.strerror or exc})")
         _print_wrapped(

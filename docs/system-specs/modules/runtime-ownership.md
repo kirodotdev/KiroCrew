@@ -858,9 +858,7 @@ recover.
   chain pid (`session_keys_bound_to_pid`, read by
   `token_auth._bound_session_keys_on_chain`). The residual gap is the empty case:
   when neither table speaks about the pid the check changes nothing and the token
-  keeps fail-open bearer semantics. Tracked in issue #14646 together with the
-  recycled-ancestor case, where the lenient MCP identity refuses every call for an
-  identity-less caller.
+  keeps fail-open bearer semantics.
 - **The `tenancy` seam in `acp.liveness.LivenessOracle` has no production
   declarer.** All four construction sites take the single-tenant reading, so the
   model-wait DEAD verdict is not degraded on a shared runtime. Wiring it means

@@ -413,7 +413,7 @@ export const CodeBlock = memo(function CodeBlock(
 
   return (
     // 'code-block' is a stable theming hook — see website/docs/theming-contract.md
-    <div ref={nearRef} className="code-block group/code rounded-xl border border-border bg-bg-elevated overflow-hidden">
+    <div ref={nearRef} className="code-block group/code rounded-xl border border-border bg-bg-elevated overflow-hidden has-[>.pierre-surface:focus-visible]:outline-2 has-[>.pierre-surface:focus-visible]:outline-solid has-[>.pierre-surface:focus-visible]:outline-accent has-[>.pierre-surface:focus-visible]:outline-offset-[-2px]">
       <div className="flex items-center justify-between px-3 py-1">
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="text-muted text-[13px] font-mono">{lang || i18nT('components.codeBlock.code_label')}</span>
@@ -451,7 +451,7 @@ export const CodeBlock = memo(function CodeBlock(
           conditioning tabIndex on the tag would move keyboard behavior with content
           type, and a focusable non-scrolling region is harmless. */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
-      <div ref={contentRef} className="pierre-surface" style={isWrapped ? WRAPPED_SURFACE_STYLE : undefined} tabIndex={0} role="region" aria-label={lang ? i18nT('components.codeBlock.code_region', { lang }) : i18nT('components.codeBlock.code_label')}>
+      <div ref={contentRef} /* focus-cue-ok: the ring is drawn on the .code-block card above, via has-[>.pierre-surface:focus-visible]. */ className="pierre-surface outline-hidden" style={isWrapped ? WRAPPED_SURFACE_STYLE : undefined} tabIndex={0} role="region" aria-label={lang ? i18nT('components.codeBlock.code_region', { lang }) : i18nT('components.codeBlock.code_label')}>
         {/* The fade sits on this inner box, not on the focusable region: a
             mask hides everything outside its box, the focus ring included. */}
         <div data-fade-right={fadeRight ? 'true' : undefined} className="edge-fade-x">

@@ -27,6 +27,7 @@ from kiro_crew.dashboard.handlers.agent_templates import (
     api_agent_template_delete,
     api_agent_templates,
 )
+from kiro_crew.dashboard.side_readonly_spec import _home_relative
 
 
 @pytest.fixture(autouse=True)
@@ -129,9 +130,8 @@ async def test_an_unreadable_spec_is_listed_named_by_the_refusal_and_deletable(a
     status, payload = await _create("broken")
     assert status == 409 and payload["code"] == "name_taken"
     assert payload["unlisted"] == roster["unlisted"][0]
-    assert "~/.kiro/agents/broken.json" in payload["error"]
+    assert f"{_home_relative(agents_dir)}/broken.json" in payload["error"]
     assert "cannot be read as an agent spec" in payload["error"]
-    assert str(agents_dir) not in payload["error"]
 
     resp = await api_agent_template_delete(_request("DELETE", "broken"))
     assert resp.status == 200, resp.text
@@ -168,7 +168,7 @@ async def test_a_spec_whose_row_cannot_be_built_is_listed_as_unreadable(agents_d
     status, payload = await _create("weird")
     assert status == 409 and payload["code"] == "name_taken"
     assert payload["unlisted"] == roster["unlisted"][0]
-    assert "~/.kiro/agents/weird.json" in payload["error"]
+    assert f"{_home_relative(agents_dir)}/weird.json" in payload["error"]
     assert (await _create("fresh"))[0] == 201
 
     resp = await api_agent_template_delete(_request("DELETE", "weird"))
@@ -205,7 +205,7 @@ async def test_the_name_a_spec_with_no_buildable_row_declares_is_named_by_its_re
         status, payload = await _create(name)
         assert status == 409 and payload["code"] == "name_taken", (name, payload)
         assert payload["unlisted"] == roster["unlisted"][0], name
-        assert "~/.kiro/agents/odd.json" in payload["error"], name
+        assert f"{_home_relative(agents_dir)}/odd.json" in payload["error"], name
         refusals[name] = payload["error"]
     assert "declares 'zeta' but cannot be read as an agent spec" in refusals["zeta"]
     assert "declares" not in refusals["odd"]
@@ -811,7 +811,7 @@ async def test_a_symlink_loop_fails_neither_the_tab_nor_its_delete(agents_dir):
     status, payload = await _create("loop")
     assert status == 409 and payload["code"] == "name_taken"
     assert payload["unlisted"] == roster["unlisted"][0]
-    assert "~/.kiro/agents/loop.json" in payload["error"]
+    assert f"{_home_relative(agents_dir)}/loop.json" in payload["error"]
     assert (await _create("fresh"))[0] == 201
 
     resp = await api_agent_template_delete(_request("DELETE", "loop"))
@@ -894,7 +894,10 @@ async def test_a_copy_saved_as_name_custom_is_named_by_the_refusal_of_its_stem(a
     assert status == 409 and payload["code"] == "name_taken"
     assert payload["listed"] == {"filename": "src-custom.json", "name": "src"}
     assert "unlisted" not in payload
-    assert "~/.kiro/agents/src-custom.json, which the list shows as 'src'" in payload["error"]
+    assert (
+        f"{_home_relative(agents_dir)}/src-custom.json, which the list shows as 'src'"
+        in payload["error"]
+    )
 
 
 @pytest.mark.asyncio
@@ -1015,3 +1018,27 @@ async def test_unlisted_masks_like_the_rows(agents_dir):
     (agents_dir / f"{github_classic(seed=109)}.json").write_text("{", encoding="utf-8")
     _seed_config()
     assert (await _roster())["unlisted"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_name_taken_refusals_name_the_agents_folder_outside_the_home(tmp_path):
+    """``KIRO_HOME`` can put the agents folder outside the home, as a pod gateway
+    does: both ``name_taken`` sentences then name that folder, not ``~/.kiro/agents``."""
+    home = tmp_path / "home"
+    home.mkdir()
+    agents = tmp_path / "pod" / "kiro" / "agents"
+    agents.mkdir(parents=True)
+    _write(agents, "src.json")
+    _write(agents, "src-custom.json", name="src")
+    (agents / "broken.json").write_text('{"name": "broken",}\n', encoding="utf-8")
+    with (
+        patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents),
+        patch("pathlib.Path.home", return_value=home),
+    ):
+        _seed_config()
+        unlisted = (await _create("broken"))[1]["error"]
+        listed = (await _create("src-custom"))[1]["error"]
+
+    assert unlisted.startswith(f"'broken' is taken by {agents}/broken.json: ")
+    assert listed.startswith(f"'src-custom' is taken by {agents}/src-custom.json, which the list ")
+    assert "~/.kiro/agents" not in unlisted + listed

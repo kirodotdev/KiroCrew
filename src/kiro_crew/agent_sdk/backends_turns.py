@@ -514,13 +514,14 @@ ACP_BACKENDS_SENT_IMAGE_RECORD = frozenset(
 # ``acp_frames/codex/compact-live.jsonl``, and claude's standard ACP
 # ``compaction_update``).
 #
-# Its one reader is the reply-format rules block (``build_message`` in
-# ``context_assembly.turn_message``, through ``LLMProvider.reports_compaction``):
-# in the set the block is bound as the provider's delivery envelope, so the
-# engine is sent it once per conversation and again after a compaction; outside
-# it, and on a harness that is not known, it is sent on every message, so a
-# compaction the harness ran on its own can never leave a conversation without
-# the rules (harness-parity H6).
+# Its one reader is the send-once binding in ``build_message``
+# (``context_assembly.turn_message``, through ``LLMProvider.reports_compaction``):
+# in the set the reply-format rules block and the ``[RUNTIME]`` and ``[PROJECT]``
+# lines are bound as the provider's delivery envelopes, so the engine is sent
+# each once per conversation and again after a compaction; outside it, and on a
+# harness that is not known, they are sent on every message, so a compaction the
+# harness ran on its own can never leave a conversation without them
+# (harness-parity H6).
 ACP_BACKENDS_COMPACTION_REPORTED = ACP_BACKENDS_SENT_IMAGE_RECORD
 
 # How long each backend's provider keeps a conversation's prompt prefix cached
@@ -745,8 +746,10 @@ ACP_BACKENDS_NATIVE_CHILD_CANCEL = frozenset({ACP_BACKEND_CLAUDE})
 # Backends whose ``tool_call_update`` carries a call's real title after a first
 # ``tool_call`` that named it before its input had streamed, so a Crew-spawned
 # subagent's Subagents card takes the refined title for that call's row, as the
-# dashboard's own tool row does (``SessionCapabilities.refines_tool_call_titles``,
-# read by ``subagent_manager.card_tool_titles``). claude is the member:
+# dashboard's own tool row does, and so does a channel turn's task card
+# (``SessionCapabilities.refines_tool_call_titles``, read by
+# ``subagent_manager.card_tool_titles``, ``messaging.driver`` and
+# ``slack.handler_runtime.turn``). claude is the member:
 # claude-agent-acp reports each call first at the stream's start, with an empty
 # ``rawInput`` and the tool's generic title ("Terminal", "Edit", "Read File",
 # "Task"), and then as a ``tool_call_update`` with the call's ``title``, ``kind``

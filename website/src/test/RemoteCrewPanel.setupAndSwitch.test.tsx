@@ -5,7 +5,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { renderWithProviders } from './helpers'
+import { createConnectedTestStore, renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 import { copyToClipboard } from '../utils/clipboard'
 import { __resetErrorJournalForTests } from '../utils/errorReport'
@@ -550,7 +550,7 @@ describe('RemoteCrewPanel per-crew enable toggle', () => {
 
   it('turns an enabled crew off without connecting it', async () => {
     vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [MANUAL_INSTANCE] })
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
     await expandRows()
     const sw = await screen.findByRole('switch', { name: 'dev-box-1 enabled' })
     expect(sw).toHaveAttribute('aria-checked', 'true')
@@ -563,7 +563,7 @@ describe('RemoteCrewPanel per-crew enable toggle', () => {
     vi.mocked(api.listInstances).mockResolvedValue({
       active: true, warm_set_cap: 5, instances: [{ ...MANUAL_INSTANCE, disabled: true }],
     })
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
     await expandRows()
     const sw = await screen.findByRole('switch', { name: 'dev-box-1 enabled' })
     expect(sw).toHaveAttribute('aria-checked', 'false')
@@ -576,7 +576,7 @@ describe('RemoteCrewPanel per-crew enable toggle', () => {
     vi.mocked(api.listInstances).mockResolvedValue({
       active: true, warm_set_cap: 5, instances: [{ ...MANUAL_INSTANCE, disabled: true }],
     })
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
     await expandRows()
     await userEvent.setup().click(await screen.findByRole('switch', { name: 'dev-box-1 enabled' }))
     await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('m1'))
@@ -588,7 +588,7 @@ describe('RemoteCrewPanel enabled after the gateway started', () => {
   it('says enabled-but-not-active and mutes Connect until the restart', async () => {
     vi.mocked(api.listInstances).mockResolvedValue({ active: false, warm_set_cap: 5, instances: [MANUAL_INSTANCE] })
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     expect(await screen.findByText('dev-box-1')).toBeInTheDocument()
     const banner = screen.getByText(/not active yet/).closest('[role="status"]') as HTMLElement
@@ -624,7 +624,7 @@ describe('RemoteCrewPanel enabled after the gateway started', () => {
         JSON.stringify({ error: 'instances manager not running', code: 'instances_manager_unavailable' }),
       ),
     )
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     expect(await screen.findByText('dev-box-1')).toBeInTheDocument()
     const connect = screen.getByRole('button', { name: /^Connect$/i })

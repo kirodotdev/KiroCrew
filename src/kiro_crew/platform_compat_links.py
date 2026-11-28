@@ -535,6 +535,16 @@ class PinnedDirectory:
         """The path this was opened on -- for MESSAGES, not for operations."""
         return self._path
 
+    def fileno(self) -> int:
+        """The pinning descriptor, owned by this pin: never close it yourself.
+
+        On POSIX it is the ``dir_fd`` for a caller's own descriptor-relative call
+        in this directory, such as creating and renaming a file the methods here
+        do not cover. On Windows there are no ``dir_fd`` calls: it is the handle
+        that holds the path still, and the caller goes by path while it lives.
+        """
+        return self._fd
+
     def __enter__(self) -> PinnedDirectory:
         return self
 

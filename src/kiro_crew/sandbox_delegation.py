@@ -251,7 +251,9 @@ def delegated_workspace_exposes_sealed_target(
     """Reason a kiro-cli spawn must be refused because its workspace would leave a
     SEALED target writable, or ``None`` when it may proceed.
 
-    One guard over every sealed target. Each seal is a rule of Kiro Crew's OWN
+    One guard over the sealed targets a workspace could reach; the Bot-move ledger
+    seal is not guarded here, since any workspace holding it other than its own
+    folder also holds the kiro agents tree. Each seal is a rule of Kiro Crew's OWN
     launcher: the kiro agents tree (:func:`_resolved_kiro_agents_targets`), whose fork
     and template specs decide what the next spawn may do, plus every data-home leaf in
     :data:`_DELEGATED_OVERLAP_LEAF_REASONS`, each with its own stated reason -- for

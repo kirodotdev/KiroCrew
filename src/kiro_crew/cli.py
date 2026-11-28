@@ -599,11 +599,16 @@ def main() -> None:
 
     cli_parser_agent.register_knowledge_parser(sub)
     cli_parser_admin.register_secrets_parser(sub)
+    from kiro_crew.connected_computers.cli import register_parser as register_connected_computer
+
+    register_connected_computer(sub)
     cli_parser_admin.register_pod_parser(sub)
     cli_parser_gateway.register_update_parser(sub)
     cli_parser_gateway.register_stop_parser(sub)
     cli_parser_gateway.register_restart_parser(sub)
+    cli_parser_gateway.register_resume_parser(sub)
     cli_parser_gateway.register_gateway_pid_parser(sub)
+    cli_parser_gateway.register_mcp_parser(sub)
     cli_parser_gateway.register_service_parser(sub)
     cli_parser_gateway.register_sandbox_parser(sub)
     cli_parser_gateway.register_kas_parser(sub)
@@ -927,8 +932,8 @@ def main() -> None:
         # they surface at exit, stamped with the stop time, or never after a
         # kill or an in-app os.execv. One reconfigure here, before the first
         # status print, covers every launcher; a terminal is already
-        # line-buffered and is left alone. Gateway-only: no other subcommand
-        # is long-lived under a service manager.
+        # line-buffered and is left alone. The gateway and `doctor` are the
+        # only subcommands that take it (doctor's reason is at its branch).
         platform_compat.ensure_line_buffered_stdout()
         # Seam-supplied pre-launch checks (CPP IdentityProvider seam). Runs
         # HERE in the gateway dispatch — not in boot_platform (which runs for
@@ -1033,6 +1038,11 @@ def main() -> None:
             whatsapp=getattr(args, "whatsapp", False),
         )
     elif args.command == "doctor":
+        # Doctor's rows are print() calls and its probes log WARNING records to
+        # stderr, which CPython writes at once. Captured (a pipe or a file),
+        # stdout is block-buffered, so a record lands inside a half-written
+        # row; written line by line, a record can fall only between rows.
+        platform_compat.ensure_line_buffered_stdout()
         _doctor(
             platform_boot_error=_platform_boot_error,
             bundle=getattr(args, "bundle", False),
@@ -1251,6 +1261,11 @@ def main() -> None:
             kept_grants.run_user_stop(
                 lambda: _stop(args.port, expect_pid=args.expect_pid), via="cli"
             )
+            # A headless Windows desktop install installs an update armed for it
+            # once a person stops the gateway; on every other install this is a no-op.
+            from kiro_crew.cli_desktop_update import apply_after_stop
+
+            apply_after_stop()
     elif args.command == "restart":
         if args.max_wait is not None and not args.when_idle:
             print("❌ --max-wait applies only with --when-idle.", file=sys.stderr)
@@ -1263,10 +1278,20 @@ def main() -> None:
             from kiro_crew.cli_server import _restart
 
             _restart(args.port)
+    elif args.command == "resume":
+        from kiro_crew.cli_resume import resume_cmd
+
+        resume_cmd(args)
     elif args.command == "gateway-pid":
         from kiro_crew.cli_server import _gateway_pid
 
         _gateway_pid(args.port)
+    elif args.command == "mcp":
+        from kiro_crew.cli_commands_mcp import mcp_cmd
+
+        rc = mcp_cmd(args)
+        if rc:
+            raise SystemExit(rc)
     elif args.command == "service":
         from kiro_crew.cli_server import _service_cmd
 
@@ -1289,6 +1314,10 @@ def main() -> None:
         from kiro_crew.cli_server import _token
 
         _token(args)
+    elif args.command == "connected-computer":
+        from kiro_crew.connected_computers.cli import run as connected_computer_cmd
+
+        sys.exit(connected_computer_cmd(args))
     elif args.command == "open":
         from kiro_crew.cli_open import cmd_open
 
@@ -1296,7 +1325,14 @@ def main() -> None:
     elif args.command == "logout":
         from kiro_crew.cli_server import _logout, resolve_client_port
 
-        _logout(resolve_client_port(args.port))
+        # An omitted --link (None) revokes everything and a given one, blank
+        # included, is passed on for `_logout` to judge, so the two stay apart.
+        link = getattr(args, "link", None)
+        port = resolve_client_port(args.port)
+        if link is None:
+            _logout(port)
+        else:
+            _logout(port, link)
     elif args.command == "status":
         from kiro_crew.cli_server import _status
 

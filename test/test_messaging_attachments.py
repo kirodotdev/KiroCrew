@@ -13,9 +13,9 @@ Focused on the guarantees that did NOT exist when this logic lived inside
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
-import time
 
 import pytest
 
@@ -38,7 +38,7 @@ from kiro_crew.messaging.attachments import (
     sniff_image_mime,
 )
 from kiro_crew.testing.synthetic_credentials import github_classic
-from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 _JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 32
@@ -848,34 +848,32 @@ class TestBlockingWorkLeavesTheEventLoop:
         assert loop_thread not in observed, "signature sniff ran on the event loop thread"
 
     async def test_the_loop_stays_responsive_during_a_slow_blocking_step(self, monkeypatch):
-        """End-to-end: a concurrent task keeps running while a SLOW read happens.
+        """End-to-end: the loop keeps running while a slow read is in progress.
 
-        The blocking step is given real duration (a synchronous sleep inside the
-        text reader). Offloaded, the ticker keeps advancing; inline, the loop is
-        frozen for the whole 150ms and the tick count barely moves. Without the
-        induced delay this test would pass either way, since the awaited download
-        yields to the loop on its own.
+        The read cannot finish until the event loop has run a callback the read
+        scheduled on it. Offloaded, the loop is free and runs the callback; inline,
+        the loop thread is the one blocked inside the read, so the callback never
+        runs and the read gives up at its bound. The verdict is that signal, not a
+        count of ticks inside a wall-clock span, so a slow or starved runner
+        cannot flip it.
         """
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        answered_by_the_loop = threading.Event()
+        answering_threads: list[int] = []
+        answered_while_reading: list[bool] = []
         real_reader = attachments._read_text_file
 
-        def _slow_read(path: str, limit: int) -> tuple[str, str]:
-            time.sleep(0.15)  # blocking, as a large/slow filesystem read would be
+        def _answer_from_the_loop() -> None:
+            answering_threads.append(threading.get_ident())
+            answered_by_the_loop.set()
+
+        def _read_that_waits_for_the_loop(path: str, limit: int) -> tuple[str, str]:
+            loop.call_soon_threadsafe(_answer_from_the_loop)
+            answered_while_reading.append(answered_by_the_loop.wait(timeout=default_timeout()))
             return real_reader(path, limit)
 
-        monkeypatch.setattr(attachments, "_read_text_file", _slow_read)
-
-        ticks = 0
-        stop = False
-
-        async def _ticker():
-            nonlocal ticks
-            while not stop:
-                ticks += 1
-                await asyncio.sleep(0.005)  # flake-ok: the tick that measures free loop time
-
-        t = asyncio.create_task(_ticker())
-        await asyncio.sleep(0.01)
-        before = ticks
+        monkeypatch.setattr(attachments, "_read_text_file", _read_that_waits_for_the_loop)
 
         await ingest_attachments(
             [Attachment(name="n.txt", mimetype="text/plain", size=20, url="u")],
@@ -883,13 +881,8 @@ class TestBlockingWorkLeavesTheEventLoop:
             source="test",
         )
 
-        during = ticks - before
-        stop = True
-        await t
-
-        # 150ms of blocking work at a 5ms tick interval leaves room for ~20+
-        # ticks when offloaded; a frozen loop yields approximately none.
-        assert during >= 5, f"loop was starved during the blocking read (ticks={during})"
+        assert answered_while_reading == [True], "the loop was blocked for the whole read"
+        assert answering_threads == [loop_thread]
 
 
 # ── append_attachment_context (shared utility) ────────────────────────────────
@@ -1138,3 +1131,35 @@ class TestChannelReadsNoAttachments:
         assert out.count("[") == 1
         assert out.count("]") == 1
         assert " — " in out
+
+
+def test_a_refused_attachment_temp_delete_is_logged_without_its_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A delete the OS refuses (Windows: a scanner holding the file) logs one
+    WARNING naming the error and no path; a missing file stays silent."""
+    held, gone, freed = (tmp_path / f"{n}.png" for n in ("held", "gone", "freed"))
+    held.write_bytes(b"png")
+    freed.write_bytes(b"png")
+    real_unlink = os.unlink
+
+    def unlink(path: str) -> None:
+        if path == str(held):
+            raise PermissionError(13, "Permission denied", path)
+        real_unlink(path)
+
+    # Scoped to the call: a fixture teardown's rmtree calls os.unlink(dir_fd=).
+    with (
+        monkeypatch.context() as patched,
+        caplog.at_level(logging.DEBUG, logger="kiro_crew.messaging.attachments"),
+    ):
+        patched.setattr(os, "unlink", unlink)
+        cleanup([str(held), str(gone), str(freed)])
+    records = [r for r in caplog.records if r.name == "kiro_crew.messaging.attachments"]
+    assert len(records) == 1, [r.getMessage() for r in records]
+    record = records[0]
+    message = record.getMessage()
+    assert record.levelno == logging.WARNING
+    assert "PermissionError" in message and "errno=13" in message
+    assert str(tmp_path) not in message and "held" not in message
+    assert held.exists() and not freed.exists()

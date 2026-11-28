@@ -39,7 +39,8 @@ export type StreamFlushSlot = {
 
 export type StreamFlushPayload = {
   slots: StreamFlushSlot[]
-  subagents: { id: string; slot: string; text: string }[]
+  /** `thinking` is a card's buffered `subagent_thinking` text, beside its output. */
+  subagents: { id: string; slot: string; text: string; thinking?: string }[]
   recency: { key: string; ts: string; settled: boolean }[]
 }
 

@@ -12,7 +12,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_crew_log_previous_from_mapping``, ``_crew_log_previous_sid``,
 ``_crew_log_previous_undecided``, ``_detail_render_lock``, ``_eager_spawn_failures``,
 ``_eager_spawn_reported_resume``, ``_eager_spawn_retry_at``, ``_eager_spawn_task``,
-``_effort_pick_gen``, ``_engine_promoted_model``, ``_fork_lock``, ``_fork_title_spent``,
+``_effort_overlay_clear``, ``_effort_pick_gen``, ``_engine_promoted_model``, ``_fork_lock``, ``_fork_title_spent``,
 ``_hidden_scratch_notice_shown``, ``_human_seen``, ``_last_stop_reason``, ``_lineage_minted``,
 ``_mcp_banner_shown``, ``_mcp_report``,
 ``_mcp_report_session_id``, ``_mcp_sign_in_notice_shown``, ``_memory_assignment_from_history``, ``_model_pick_gen``,
@@ -115,6 +115,10 @@ def init_session_fields(self: _ChatSlot) -> None:
     # selection gate decides as before. Set at birth and restored with the slot;
     # every allocation passes it as ``backend_override``.
     self.backend = ""
+    # The skills a conductor chose for this worker's trigger matching
+    # (``session_create(skills=...)``, ``worker_trigger_skills``); ``None`` = no list.
+    # Set at birth, never cleared, and restored with the slot.
+    self.trigger_skills = None
     # The agent Crew Mode turned on with ("" when the chat never turned it on):
     # stamped by the agent switch (``crew_mode.stamp_for_switch``) and persisted,
     # so the chat stays in Crew Mode after ``agent.crew_mode_agent`` changes.
@@ -217,6 +221,10 @@ def init_session_fields(self: _ChatSlot) -> None:
     # choice landed even when that choice returned to the level it saw.
     self._effort_pick_gen = 0
     self._reasoning_effort = ""
+    # A Default the effort route recorded with no live clear: the slot's next
+    # spawn removes its model's level from the workspace cli.json, then this
+    # drops (``chat_turn.effort_overlay_mark``). Persisted beside the effort.
+    self._effort_overlay_clear = False
     # The crew's memory silo, or "" for the global store. Held on the slot
     # rather than re-resolved per save because it is SLOT-OWNED metadata:
     # absence retracts it, so a save that could not name it would drop the

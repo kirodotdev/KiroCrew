@@ -769,16 +769,19 @@ def test_the_chat_turn_hands_the_spec_hooks_its_session_id(sid, expected):
     assert seen["acp_session_id"] == expected
 
 
-@pytest.mark.parametrize(("exit_code", "warned"), [(3, True), (0, False)])
-def test_a_failed_post_tool_use_hook_warns_even_with_an_empty_stderr(caplog, exit_code, warned):
+def test_a_failed_post_tool_use_hook_is_not_warned_again_by_the_turn(caplog):
+    """``fire`` logs a failed hook's one WARNING; the turn that reads the result adds none."""
     from kiro_crew.dashboard.chat_turn import turn_spec_hooks
 
     result = ScriptHookResult(
-        hook_id="h1", hook_name="h", event=HOOK_EVENT_POST_TOOL_USE, exit_code=exit_code, stderr=""
+        hook_id="h1", hook_name="h", event=HOOK_EVENT_POST_TOOL_USE, exit_code=3, stderr=""
     )
 
+    fired: list[str] = []
+
     class _Store:
-        async def fire(self, *a, **kw):
+        async def fire(self, event, *a, **kw):
+            fired.append(event)
             return [result]
 
     turn = SimpleNamespace(
@@ -792,8 +795,8 @@ def test_a_failed_post_tool_use_hook_warns_even_with_an_empty_stderr(caplog, exi
     )
     with caplog.at_level("WARNING", logger=chat_runner.logger.name):
         asyncio.run(turn_spec_hooks._fire(turn, HOOK_EVENT_POST_TOOL_USE, tool_name="t"))
-    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
-    assert warnings == (["Hook h (PostToolUse) failed: exited with code 3"] if warned else [])
+    assert fired == [HOOK_EVENT_POST_TOOL_USE]
+    assert [r.getMessage() for r in caplog.records if r.levelname == "WARNING"] == []
 
 
 @pytest.mark.parametrize(
@@ -1127,16 +1130,32 @@ _UNREAD_STEERING = "does not load them"
 _MIRRORED = [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_GOOSE]
 
 
+@pytest.fixture
+def project(tmp_path) -> Path:
+    """A checkout holding a file for every relative entry these tests name."""
+    root = tmp_path / "proj"
+    for rel in [".kiro/steering/a.md", ".kiro/steering/review.md", "x.md"] + [
+        f"s{i}.md" for i in range(5)
+    ]:
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text("guide", encoding="utf-8")
+    return root
+
+
+def _in(backend: str, project: Path) -> SimpleNamespace:
+    return _client(backend, cwd=str(project))
+
+
 @pytest.mark.parametrize("backend", _MIRRORED)
 def test_a_mirrored_new_session_names_the_custom_agents_unread_steering(
-    backend, agents_dir, notices
+    backend, agents_dir, notices, project
 ):
     _write_spec(
         agents_dir,
         "a1",
         resources=["skill://~/s/**/SKILL.md", "file://.kiro/steering/**/*.md"],
     )
-    _prepare(_client(backend), "a1", is_new=True)
+    _prepare(_in(backend, project), "a1", is_new=True)
     steering = [t for t in notices if _UNREAD_STEERING in t]
     assert len(steering) == 1
     assert "a1 lists steering files in resources (file://.kiro/steering/**/*.md)" in steering[0]
@@ -1145,40 +1164,83 @@ def test_a_mirrored_new_session_names_the_custom_agents_unread_steering(
 
 @pytest.mark.parametrize("backend", _MIRRORED)
 def test_the_unread_steering_notice_needs_a_new_session_and_a_file_entry(
-    backend, agents_dir, notices
+    backend, agents_dir, notices, project
 ):
     _write_spec(agents_dir, "a1", resources=["file://x.md"])
     _write_spec(agents_dir, "skills_only", resources=["skill://~/s/**/SKILL.md"])
-    _prepare(_client(backend), "a1", is_new=False)
-    _prepare(_client(backend), "skills_only", is_new=True)
+    _prepare(_in(backend, project), "a1", is_new=False)
+    _prepare(_in(backend, project), "skills_only", is_new=True)
     assert not any(_UNREAD_STEERING in t for t in notices)
 
 
 @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_PI])
 def test_no_unread_steering_notice_where_resources_are_read_or_nothing_is_ruled(
-    backend, agents_dir, notices
+    backend, agents_dir, notices, project
 ):
     _write_spec(agents_dir, "a1", resources=["file://x.md"])
-    _prepare(_client(backend), "a1", is_new=True)
+    _prepare(_in(backend, project), "a1", is_new=True)
     assert not any(_UNREAD_STEERING in t for t in notices)
 
 
-def test_the_default_agent_gets_no_unread_steering_notice(agents_dir, notices):
+def test_the_default_agent_gets_no_unread_steering_notice(agents_dir, notices, project):
     _write_spec(agents_dir, "kirocrew", resources=["file://.kiro/steering/**/*.md"])
-    _prepare(_client(ACP_BACKEND_CODEX), "kirocrew", is_new=True)
+    _prepare(_in(ACP_BACKEND_CODEX, project), "kirocrew", is_new=True)
     assert not any(_UNREAD_STEERING in t for t in notices)
 
 
-def test_the_unread_steering_notice_counts_entries_past_three(agents_dir, notices):
+def test_the_unread_steering_notice_counts_entries_past_three(agents_dir, notices, project):
     _write_spec(agents_dir, "a1", resources=[f"file://s{i}.md" for i in range(5)])
-    _prepare(_client(ACP_BACKEND_CODEX), "a1", is_new=True)
+    _prepare(_in(ACP_BACKEND_CODEX, project), "a1", is_new=True)
     assert "(file://s0.md, file://s1.md, file://s2.md and 2 more)" in notices[0]
 
 
-def test_an_unreadable_spec_renders_no_unread_steering_notice(agents_dir, notices):
+def test_an_unreadable_spec_renders_no_unread_steering_notice(agents_dir, notices, project):
     (agents_dir / "a1.json").write_text("{not json", encoding="utf-8")
-    _prepare(_client(ACP_BACKEND_CODEX), "a1", is_new=True)
+    _prepare(_in(ACP_BACKEND_CODEX, project), "a1", is_new=True)
     assert not any(_UNREAD_STEERING in t for t in notices)
+
+
+@pytest.mark.parametrize("backend", _MIRRORED)
+def test_no_unread_steering_notice_when_the_entry_matches_no_file(
+    backend, agents_dir, notices, tmp_path
+):
+    """An entry matching nothing loads nothing anywhere, so no row may name it as lost."""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    _write_spec(agents_dir, "a1", resources=["file://.kiro/steering/**/*.md"])
+    _prepare(_in(backend, empty), "a1", is_new=True)
+    assert not any(_UNREAD_STEERING in t for t in notices)
+
+
+def test_the_unread_steering_notice_names_only_the_entries_that_match(agents_dir, notices, project):
+    _write_spec(
+        agents_dir,
+        "a1",
+        resources=["file://missing/**/*.md", "file://.kiro/steering/**/*.md", "file://gone.md"],
+    )
+    _prepare(_in(ACP_BACKEND_CLAUDE, project), "a1", is_new=True)
+    (row,) = [t for t in notices if _UNREAD_STEERING in t]
+    assert "(file://.kiro/steering/**/*.md)" in row
+    assert "missing" not in row and "gone.md" not in row
+
+
+def test_entries_matching_a_file_anchors_like_kiro_cli(tmp_path, monkeypatch):
+    from kiro_crew.steering_plan import entries_matching_a_file
+
+    home = tmp_path / "home"
+    (home / ".kiro/steering").mkdir(parents=True)
+    (home / ".kiro/steering/g.md").write_text("g", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    proj = tmp_path / "p"
+    (proj / "docs").mkdir(parents=True)
+    (proj / "docs/r.md").write_text("r", encoding="utf-8")
+    absolute = f"file://{proj}/docs/*.md"
+    entries = ["file://docs/*.md", "file://~/.kiro/steering/*.md", absolute, "file://none/*.md"]
+    assert entries_matching_a_file(entries, str(proj)) == entries[:3]
+    # No checkout bound: a relative entry is read from the home, as kiro-cli does.
+    assert entries_matching_a_file(["file://.kiro/steering/*.md"], None) == [
+        "file://.kiro/steering/*.md"
+    ]
 
 
 @pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE])
@@ -1196,10 +1258,10 @@ def test_the_resources_ruling_says_no_reader_not_injected_steering(backend):
         assert "reaches nothing" not in text
 
 
-def test_the_unread_steering_notice_names_the_field_not_a_loss(agents_dir, notices):
+def test_the_unread_steering_notice_names_the_field_not_a_loss(agents_dir, notices, project):
     """The row must not say the file has no effect: other routes may carry it."""
     _write_spec(agents_dir, "a1", resources=["file://.kiro/steering/review.md"])
-    _prepare(_client(ACP_BACKEND_OPENCODE), "a1", is_new=True)
+    _prepare(_in(ACP_BACKEND_OPENCODE, project), "a1", is_new=True)
     (row,) = [t for t in notices if _UNREAD_STEERING in t]
     assert "from that field" in row
     assert "can still reach the model through folder steering" in row
@@ -1239,12 +1301,17 @@ def test_the_spec_fields_doc_gives_goose_its_withheld_ruling():
     assert "`goose` rules it `no-channel`" not in doc
 
 
-def test_the_unread_steering_notice_redacts_an_entry_before_cutting_it(agents_dir, notices):
+def test_the_unread_steering_notice_redacts_an_entry_before_cutting_it(
+    agents_dir, notices, project, monkeypatch
+):
     """A cut at 120 characters must not split a credential so it escapes redaction."""
+    # The row's text is under test, not the match: keep the entry as if it matched.
+    # The notice runs in chat_runner's namespace, so the stub goes there.
+    monkeypatch.setattr(chat_runner, "entries_matching_a_file", lambda e, _p: list(e))
     secret = "Zq7xLw9pRt3vNk2sQ8"
     head = "file://https://alice:"
     entry = head + "a" * (120 - len(head) - len(secret)) + secret + "@example.com/x.md"
     _write_spec(agents_dir, "a1", resources=[entry])
-    _prepare(_client(ACP_BACKEND_OPENCODE), "a1", is_new=True)
+    _prepare(_in(ACP_BACKEND_OPENCODE, project), "a1", is_new=True)
     (row,) = [t for t in notices if _UNREAD_STEERING in t]
     assert secret not in row

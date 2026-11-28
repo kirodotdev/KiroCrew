@@ -396,8 +396,10 @@ class OrphanStallMonitor(ManagerComponent):
             callbacks: list[Any] = []
             # A run still parking counts: its report can reach the writer thread
             # ahead of this tick before ``yield_slot`` has set ``_slot_released``.
+            # ``or None`` is the generation the park's report recorded
+            # (``_dependency_verdict``), so a run with no row matches its waiter.
             live_waiters = frozenset(
-                (task_id, info._taskq_generation)
+                (task_id, info._taskq_generation or None)
                 for task_id, info in self._manager._agents.items()
                 if not info.done
                 and not info.reaped
@@ -829,7 +831,10 @@ class OrphanStallMonitor(ManagerComponent):
         ``tombstone_recovery_action`` and the task queue's boot probe read, so
         the three cannot disagree.
         """
-        task_preview = (state.get("task", "") or "")[:100]
+        # Imported here: an ``_impl`` runs on the subagent module's globals.
+        from kiro_crew.preview_text import clip_preview
+
+        task_preview = clip_preview(_redact(state.get("task", "") or ""), 100)
         parent_session = state.get("parent_session", "")
         # Off the loop: the display path resolves the run directory (a realpath).
         run_dir = await asyncio.to_thread(agent_dir_for_display, agent_id)

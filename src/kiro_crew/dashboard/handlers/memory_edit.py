@@ -7,7 +7,7 @@ import secrets
 
 from aiohttp import web
 
-from kiro_crew import memory_edit
+from kiro_crew import memory_edit, memory_record_facets
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.validation import LESSON_LIST_OFFSET_MAX
 
@@ -33,6 +33,29 @@ def _secret(state) -> bytes:
     return key
 
 
+# Every query parameter GET /api/memory/records reads; any other is refused.
+_RECORD_PARAMS = {
+    "store",
+    "q",
+    "kind",
+    "limit",
+    "offset",
+    "token",
+    "sort",
+    "order",
+    "facets",
+    "ref",
+    "conf_min",
+    "conf_max",
+    "since",
+    "until",
+    "date_field",
+    "mode",
+    "weak",
+    *memory_record_facets.FACET_GROUPS,
+}
+
+
 def _error(exc: memory_edit.MemoryEditError) -> web.Response:
     return web.json_response({"error": str(exc), "code": exc.code}, status=exc.status)
 
@@ -46,8 +69,34 @@ async def api_memory_records(request: web.Request) -> web.Response:
         return refusal
     try:
         # Authentication retains its token in the query; it is not a record filter.
-        if set(request.query) - {"store", "q", "kind", "limit", "offset", "token"}:
+        if set(request.query) - _RECORD_PARAMS:
             raise memory_edit.MemoryEditError("Invalid memory filter.")
+        sort = request.query.get("sort") or None
+        direction = request.query.get("order", "desc")
+        if direction not in ("asc", "desc"):
+            raise memory_edit.MemoryEditError("Order must be asc or desc.")
+        want_facets = request.query.get("facets", "0")
+        if want_facets not in ("0", "1"):
+            raise memory_edit.MemoryEditError("Facets must be 0 or 1.")
+        mode = request.query.get("mode", "words")
+        if mode not in ("words", "meaning"):
+            raise memory_edit.MemoryEditError("Mode must be words or meaning.")
+        want_weak = request.query.get("weak", "0")
+        if want_weak not in ("0", "1"):
+            raise memory_edit.MemoryEditError("Weak must be 0 or 1.")
+        filters: dict = {
+            group: request.query.getall(group)
+            for group in memory_record_facets.FACET_GROUPS
+            if group in request.query
+        }
+        if "ref" in request.query:
+            filters["ref"] = request.query.getall("ref")
+        for bound in ("conf_min", "conf_max", "since", "until", "date_field"):
+            if bound in request.query:
+                filters[bound] = request.query[bound]
+        query: dict = {key: request.query[key] for key in ("q", "kind") if key in request.query}
+        if filters:
+            query["filters"] = filters
         tier = await vector_memory_for_store(request.app["state"], name)
         if tier is None:
             return _store_unavailable(name)
@@ -60,15 +109,37 @@ async def api_memory_records(request: web.Request) -> web.Response:
         result = await asyncio.to_thread(
             memory_edit.list_records,
             tier,
-            {key: request.query[key] for key in ("q", "kind") if key in request.query},
+            query,
             limit=limit,
             offset=offset,
+            sort=sort,
+            descending=direction == "desc",
+            facets=want_facets == "1",
+            meaning=mode == "meaning",
+            weak=want_weak == "1",
         )
     except memory_edit.MemoryEditError as exc:
         return _error(exc)
     except (OSError, sqlite3.Error):
         return _store_unavailable(name)
+    if "facets" in result:
+        result["facets"] = _redacted_facets(result["facets"])
     return web.json_response(_redact_memory_field(result))
+
+
+def _redacted_facets(facets: dict) -> dict:
+    """Drop every facet value the memory redaction would change.
+
+    The response redaction rewrites values, never keys, and a facet value is a
+    key here. A redacted label would also not select its rows, so the
+    bucket goes instead of showing a placeholder.
+    """
+    return {
+        group: {
+            value: count for value, count in counts.items() if _redact_memory_field(value) == value
+        }
+        for group, counts in facets.items()
+    }
 
 
 async def api_memory_records_refresh(request: web.Request) -> web.Response:

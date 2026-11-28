@@ -260,11 +260,12 @@ def test_a_bot_moved_now_is_not_told_earlier_work_ran_without_its_limits():
 
 
 def test_an_unreadable_ledger_holds_every_call_of_the_bots_it_still_names(ledger, monkeypatch):
-    """A damaged ``migrated.json`` cannot say which limits a Bot has, so every call of
-    a Bot it still names is held; a Bot its text does not name runs as before."""
+    """A damaged ``migrated.json``, complete but not JSON, cannot say which limits a Bot
+    has, so every call of a Bot it still names is held; a Bot its text does not name
+    runs as before."""
     from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 
-    ledger.write_text('{"held_rules": {"zxc": {"member_id": "zxc", "rul', encoding="utf-8")
+    ledger.write_text('{"held_rules": {"zxc": {"member_id": "zxc", "rul\n}', encoding="utf-8")
     cfg = KiroCrewConfig()
     cfg.agents = {
         "zxc": KiroCrewAgentConfig(member_id="zxc", kiro_agent="zxc"),
@@ -278,11 +279,68 @@ def test_an_unreadable_ledger_holds_every_call_of_the_bots_it_still_names(ledger
     assert mate_held_rules.held_for(_event("read"), agent="kirocrew") == []
 
     # An entry recorded with no member id is matched by its Bot's name.
-    ledger.write_text('{"held_rules": {"kirocrew": {"member_id": "", "rul', encoding="utf-8")
+    ledger.write_text('{"held_rules": {"kirocrew": {"member_id": "", "rul\n}', encoding="utf-8")
     assert mate_held_rules.held_for(_event("read"), agent="kirocrew") == [
         mate_held_rules.UNREADABLE
     ]
     assert mate_held_rules.held_for(_event("read"), agent="zxc") == []
+
+
+def test_a_ledger_save_keeps_the_inode_a_sandbox_sealed(ledger):
+    """A running Linux sandbox bind-mounts ``migrated.json`` read-only, and a rename
+    over it would detach that seal there, so a gateway save rewrites it in place."""
+    _hold(ledger, "shell")
+    inode = ledger.stat().st_ino
+
+    mate_held_rules.record_held("abc", "", [{"text": "deny shell", "capability": "shell"}])
+
+    assert ledger.stat().st_ino == inode
+    assert mate_held_rules.held_for(_event("execute"), agent="abc") == ["deny shell"]
+
+
+def test_a_read_racing_a_ledger_save_is_read_again_under_its_lock(ledger, monkeypatch):
+    """A save rewrites ``migrated.json`` in place under the ledger lock, so a read
+    racing it sees the record cut off; read again under that lock, a Bot the cut-off
+    text does not name keeps its limits."""
+    import contextlib
+
+    from kiro_crew import mate_ledger_lock
+
+    _hold(ledger, "shell")
+    whole = ledger.read_text(encoding="utf-8")
+    ledger.write_text('{"migrated": ["a', encoding="utf-8")  # the save, mid-write
+    real_lock = mate_ledger_lock.ledger_lock
+
+    @contextlib.contextmanager
+    def save_finishes_first():
+        with real_lock():
+            ledger.write_text(whole, encoding="utf-8")
+            yield
+
+    monkeypatch.setattr(mate_ledger_lock, "ledger_lock", save_finishes_first)
+
+    assert mate_held_rules.held_for(_event("execute"), agent="zxc") == [
+        "its permissions rule to deny shell"
+    ]
+
+
+@pytest.mark.parametrize(
+    "record",
+    ["", '{\n  "held_rules": {\n    "zxc": {\n      "member_id": "zxc"'],
+    ids=["empty", "cut-off"],
+)
+def test_a_cut_off_ledger_holds_every_call_of_every_bot(ledger, monkeypatch, record):
+    """A save rewrites ``migrated.json`` in place, so one cut short leaves the record
+    empty or cut off before the closing brace every save ends with. The Bots its
+    entries after the cut held are not in its text, so every Bot is held."""
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+
+    ledger.write_text(record, encoding="utf-8")
+    cfg = KiroCrewConfig()
+    cfg.agents = {"abc": KiroCrewAgentConfig(member_id="abc", kiro_agent="abc")}
+    monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(lambda: cfg))
+
+    assert mate_held_rules.held_for(_event("read"), agent="abc") == [mate_held_rules.UNREADABLE]
 
 
 def test_a_call_that_cannot_be_matched_against_read_rules_is_held(ledger, monkeypatch):
@@ -348,6 +406,8 @@ def test_a_claude_worker_asks_for_the_built_ins_a_held_limit_covers(ledger, monk
             memory_mode="persistent",
             _session_key="k",
             _session_mcp_cache=[{"name": "gh"}, {"name": "dot.probe"}],
+            _agent=None,
+            _work_dir=None,
         )
         # The ledger is read off the loop before the envelope is built.
         asyncio.run(_prepare_claude_held_asks(client))
@@ -660,6 +720,76 @@ def test_undoing_a_hold_clears_only_the_identity_it_was_recorded_for(ledger):
     assert "zxc" not in json.loads(ledger.read_text())["held_rules"]
 
 
+_SHELL = [{"text": "deny shell", "capability": "shell"}]
+
+
+def test_a_release_clears_only_the_bots_own_entry_and_its_hold_ends(ledger):
+    other = {"member_id": "abc", "rules": _SHELL}
+    ledger.write_text(
+        json.dumps({"held_rules": {"zxc": {"member_id": "zxc", "rules": _SHELL}, "abc": other}})
+    )
+    spec = {"allowedTools": ["execute_bash"], "tools": ["execute_bash"]}
+    assert mate_held_rules.strip_held_approvals(dict(spec), "zxc", "zxc")["allowedTools"] == []
+
+    assert mate_held_rules.held_rules_of("zxc", "zxc") == _SHELL
+    assert mate_held_rules.release_held("zxc", "zxc", _SHELL) is True
+
+    assert json.loads(ledger.read_text())["held_rules"] == {"abc": other}
+    assert mate_held_rules.strip_held_approvals(dict(spec), "zxc", "zxc") == spec
+    assert mate_held_rules.held_rules_of("zxc", "zxc") == []
+
+
+def test_a_release_of_a_list_that_changed_writes_nothing(ledger):
+    entry = {"member_id": "zxc", "rules": [*_SHELL, {"text": "t", "capability": "fs_read"}]}
+    ledger.write_text(json.dumps({"held_rules": {"zxc": entry}}))
+    before = ledger.read_bytes()
+
+    assert mate_held_rules.release_held("zxc", "zxc", _SHELL) is False
+    assert mate_held_rules.release_held("zxc", "other", entry["rules"]) is False
+    assert mate_held_rules.release_held("zxc", "zxc", []) is False
+    assert ledger.read_bytes() == before
+
+
+def test_an_entry_recorded_with_no_member_id_is_listed_and_released(ledger):
+    _hold(ledger, "shell")
+    rules = mate_held_rules.held_rules_of("zxc", "zxc")
+    assert mate_held_rules.held_for(_event("execute"), agent="zxc")
+
+    assert rules == json.loads(ledger.read_text())["held_rules"]["zxc"]["rules"]
+    assert mate_held_rules.release_held("zxc", "zxc", rules) is True
+    assert mate_held_rules.held_for(_event("execute"), agent="zxc") == []
+
+
+def test_a_release_removes_only_the_asks_its_hold_wrote(ledger, monkeypatch):
+    """The hold's asks outrank an allow, so a Bot that kept them would still ask."""
+    shell_ask = {"capability": "shell", "effect": "ask"}
+    write_ask = {"capability": "fs_write", "effect": "ask"}
+    read_ask = {"capability": "fs_read", "effect": "ask"}
+    deny = {"capability": "shell", "effect": "deny", "match": ["rm *"]}
+    rules = [{"text": "deny shell", "capability": "shell"}, {"text": "t", "capability": "fs_write"}]
+    held = {"zxc": {"member_id": "zxc", "rules": rules}}
+    ledger.write_text(json.dumps({"threads": {"zxc": {"from": "old"}}, "held_rules": held}))
+    monkeypatch.setattr(
+        "kiro_crew.mate_mount_repair._old_agent",
+        lambda source: {"permissions": {"rules": [write_ask]}},
+    )
+    bot = ledger.parent / "agents" / "zxc.json"
+    bot.write_text(json.dumps({"permissions": {"rules": [shell_ask, write_ask, deny, read_ask]}}))
+
+    assert mate_held_rules.release_held("zxc", "zxc", rules) is True
+
+    assert json.loads(bot.read_text())["permissions"]["rules"] == [write_ask, deny, read_ask]
+    assert "zxc" not in json.loads(ledger.read_text())["held_rules"]
+
+
+def test_held_rules_of_an_unreadable_record_is_none(ledger):
+    ledger.write_text('{"held_rules": {"zxc"', encoding="utf-8")
+
+    assert mate_held_rules.held_rules_of("zxc", "zxc") is None
+    with pytest.raises(Exception, match="unreadable"):
+        mate_held_rules.release_held("zxc", "zxc", _SHELL)
+
+
 def test_a_repair_records_no_hold_for_a_bot_file_another_gateway_keeps(ledger):
     """The other gateway's Bot of the same name keeps the hold it has."""
     from kiro_crew import mate_restriction_carry
@@ -769,7 +899,14 @@ def test_clearing_one_bots_hold_does_not_erase_a_write_made_meanwhile(ledger, ot
 
 
 @pytest.mark.parametrize(
-    "write", [_hold_b, _check_b, _move_b, lambda: mate_held_rules.drop_held("a", "")]
+    "write",
+    [
+        _hold_b,
+        _check_b,
+        _move_b,
+        lambda: mate_held_rules.drop_held("a", ""),
+        lambda: mate_held_rules.release_held("a", "", _SHELL),
+    ],
 )
 def test_every_ledger_write_holds_the_file_lock_another_gateway_takes(ledger, monkeypatch, write):
     """Two gateways with their own data homes can share one Kiro home and its ledger,

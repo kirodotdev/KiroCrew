@@ -1124,8 +1124,6 @@ class _GateMixin(ManagerComponent):
         # admission charges it until it settles. Without it, a parent waiting on
         # its own child at the floor could only end at the max wait.
         nested_shared = False
-        # A remote session's child: its engine reserve only, never the gateway floor.
-        remote_child = False
         settled = self._manager._learned_settled_gb
         # The fields the sharing decision reads, shared by the prediction's probe
         # and the row registered below so the two cannot describe different runs.
@@ -1144,6 +1142,28 @@ class _GateMixin(ManagerComponent):
             "cwd": resolved_cwd,
             "isolate": isolate,
         }
+        # A remote session's child works in that workspace; only its engine runs
+        # here, and it is never put on its parent's runtime (``_run_inner``).
+        remote_child = _parent_runs_remotely(parent_session_key)
+        # Whether this start will put its session on its parent's running runtime,
+        # read once for the price below and for the spawn stagger. The stagger
+        # spaces process launches, so a start that launches none neither waits on
+        # it nor stamps it. Only a real True counts: an unknown answer is a
+        # dedicated start.
+        starts_shared = False
+        if _dispatch_now:
+            # A claim re-entry keeps the answer its first half admitted it on, as
+            # it keeps that half's price: recomputed here, a claim admitted shared
+            # could turn dedicated with the stagger check already behind it.
+            starts_shared = agent_id in self._manager._shared_claims
+        else:
+            try:
+                plan = self._manager._sharing_plan(
+                    SubagentInfo(task="", agent=agent, **run_fields), cfg=loaded_cfg
+                )
+                starts_shared = plan.shared is True and not remote_child
+            except Exception:
+                logger.debug("Subagent spawn: sharing prediction failed", exc_info=True)
         if _dispatch_now:
             # The claim re-entry registers at the price its first half CHECKED;
             # recomputing here would store a price no admission ever tested. A
@@ -1160,20 +1180,13 @@ class _GateMixin(ManagerComponent):
             # here. So it is priced from its ``@remote`` bucket and owes the engine
             # reserve, not ``spawn_min_memory_gb``; the 0 off-switch and posture gate
             # still apply, and it is never priced shared (``_run_inner``).
-            remote_child = _parent_runs_remotely(parent_session_key)
             candidate_price = _dedicated_start_price_gb(
                 start_cost, settled, _cost_bucket(agent, execution, remote=remote_child)
             )
-            try:
-                plan = self._manager._sharing_plan(
-                    SubagentInfo(task="", agent=agent, **run_fields), cfg=loaded_cfg
-                )
-                if plan.shared is True and not remote_child:
-                    candidate_price = _shared_start_price_gb(candidate_price)
-                    priced_shared = True
-                    nested_shared = _is_child
-            except Exception:
-                logger.debug("Subagent spawn: sharing prediction failed", exc_info=True)
+            if starts_shared:
+                candidate_price = _shared_start_price_gb(candidate_price)
+                priced_shared = True
+                nested_shared = _is_child
             # RSS grows after a process starts. Reserve the unobserved part so
             # a fast drain cannot repeatedly spend the same free memory before
             # the next controller sample: this start at its own price, and each
@@ -1305,14 +1318,19 @@ class _GateMixin(ManagerComponent):
             # evaluated for it): one an earlier hold started is dropped, so time
             # spent below the floor never counts toward the hold's bound.
             self._manager._forget_pressure_clock(agent_id)
-            headroom_unknown = memory_cause == MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
+            headroom_unknown = memory_cause in (
+                MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE,
+                MEMORY_CAUSE_READ_UNANSWERED,
+            )
             memory_wait = {
                 "reason": QUEUED_REASON_LOW_MEMORY,
                 # No figure when nothing was read: -1 is not an amount. An
                 # unreadable cgroup usage file reads as 0, which is not an amount
-                # either: the wait names the cause so the chip says "unknown". A
-                # start the lane share holds names no bar either: the bar is not
-                # what holds it, so the UI says "waiting for memory" figure-less.
+                # either. Both name their cause, so the chip says free memory is
+                # unknown, or that the reading did not answer, instead of naming
+                # a shortage nothing measured. A start the lane share holds
+                # names no bar either: the bar is not what holds it, so the UI
+                # says "waiting for memory" figure-less.
                 **(
                     {"available_gb": round(float(avail_gb), 2)}
                     if avail_gb >= 0 and not headroom_unknown
@@ -1445,7 +1463,7 @@ class _GateMixin(ManagerComponent):
             )
 
         now = time.monotonic()
-        should_queue, slot_free = self._manager._should_stagger_queue(now)
+        should_queue, slot_free = self._manager._should_stagger_queue(now, shared=starts_shared)
         if _dispatch_now:
             should_queue = False
         if memory_wait is not None:
@@ -1646,7 +1664,11 @@ class _GateMixin(ManagerComponent):
                 # re-entry skips the admission gate, so it must have been
                 # counted by every admission decided in between.
                 self._manager._startup_reservations += 1
-                self._manager._last_spawn_ts = time.monotonic()
+                if starts_shared:
+                    # Holds its place on the parent's runtime until it registers.
+                    self._manager._shared_claims[agent_id] = parent_session_key or ""
+                else:
+                    self._manager._last_spawn_ts = time.monotonic()
                 if candidate_price is not None:
                     # Charged at its checked price while the claim is pending,
                     # and carried to the re-entry that registers it.
@@ -1742,6 +1764,9 @@ class _GateMixin(ManagerComponent):
         )
         info._start_price_gb = candidate_price
         info._start_priced_shared = priced_shared
+        info._admitted_shared = starts_shared
+        # Registered: the row's own flag now holds the place a pending claim held.
+        self._manager._shared_claims.pop(agent_id, None)
         info._raw_task = task  # unredacted prompt for kiro-cli execution
         info._memory_mode_ready = not bool(conversation_key)
         info._taskq_generation = taskq_generation
@@ -1764,10 +1789,15 @@ class _GateMixin(ManagerComponent):
             self._manager._startup_reservations = max(
                 0, int(self._manager._startup_reservations) - 1
             )
-        self._manager._last_spawn_ts = time.monotonic()  # stagger gate: one start per interval
+        started_at = time.monotonic()
+        if not starts_shared:
+            # Stagger gate: one process launch per interval. A shared start
+            # launches none, so a burst of them leaves the clock where the last
+            # dedicated start put it.
+            self._manager._last_spawn_ts = started_at
         if not _is_child:
             # Progress of the lane the pressure hold may keep rows waiting in.
-            self._manager._pressure_lane_started(parent_session_key, self._manager._last_spawn_ts)
+            self._manager._pressure_lane_started(parent_session_key, started_at)
         # Batch lifecycle: announce the wave ONCE, on its first member to
         # actually start (queued members haven't started yet — the event marks
         # execution begin, and the UI uses it to key batch progress).
@@ -1818,6 +1848,9 @@ class _GateMixin(ManagerComponent):
                 )
             )
         held_spawn = bool(_parent_held_spawn)
+        # Counted in startup from here when the run starts now; a start sent to
+        # the approval prompt below is counted only once the pump releases it.
+        info._startup_before_exec = starts_shared
         if held_spawn:
             logger.info("Subagent %s asks a person: its Bot holds a sub-agent limit", agent_id)
 
@@ -1856,6 +1889,7 @@ class _GateMixin(ManagerComponent):
                     metadata={"subagent_id": agent_id, "reason": "tool_calls_gated"},
                 )
             elif self._manager._on_spawn_approval:
+                info._startup_before_exec = False
                 self._manager._tasks[agent_id] = asyncio.create_task(
                     self._manager._spawn_with_approval(info, _parent_held_spawn or ())
                 )
@@ -1883,6 +1917,7 @@ class _GateMixin(ManagerComponent):
                 self._manager._admission.taskq_settle(info)
                 return self._manager._announce_rejection(info)
         elif self._manager._on_spawn_approval:
+            info._startup_before_exec = False
             self._manager._tasks[agent_id] = asyncio.create_task(
                 self._manager._spawn_with_approval(info, _parent_held_spawn or ())
             )

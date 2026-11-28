@@ -905,3 +905,191 @@ class TestBuiltinDenyPatterns:
         from kiro_crew.security import is_denied
 
         assert is_denied("cr --summary 'Fix test discovery'") is None
+
+
+def _catalog_rule(rule_id: str):
+    from kiro_crew import security
+
+    return next(r for r in security.BUILTIN_DENIED_RULES if r.id == rule_id)
+
+
+def _refused_by(rule_id: str, command: str) -> bool:
+    """True when the real gate refuses *command* and names *rule_id*'s pattern."""
+    from kiro_crew.security import is_denied
+
+    reason = is_denied(command)
+    return reason is not None and _catalog_rule(rule_id).pattern in reason
+
+
+_EXPORT_RULE = "credential-exfil-aws-configure-export-credentials"
+_GET_SECRET_RULE = "credential-exfil-aws-configure-get-secret"
+_ADA_PRINT_RULE = "credential-exfil-ada-credentials-print"
+
+
+class TestAwsGuardsPrintRules:
+    """Three commands whose output is a credential are refused; a mention is not (RFC M10).
+
+    Speed bumps: each rule refuses the plain command; ``NOT_MATCHED`` pins what it misses.
+    """
+
+    REFUSED = (
+        (_EXPORT_RULE, "aws configure export-credentials"),
+        (_EXPORT_RULE, "aws configure export-credentials --profile dev --format env"),
+        (_EXPORT_RULE, "aws --profile dev configure export-credentials"),
+        (_EXPORT_RULE, "sudo aws configure export-credentials"),
+        (_EXPORT_RULE, "/usr/local/bin/aws configure export-credentials"),
+        (_EXPORT_RULE, "AWS_PROFILE=dev aws configure export-credentials"),
+        (_EXPORT_RULE, "bash -c 'aws configure export-credentials'"),
+        (_EXPORT_RULE, "eval $(aws configure export-credentials --format env)"),
+        (_EXPORT_RULE, "Running: aws configure export-credentials"),
+        (_EXPORT_RULE, "AWS.EXE configure export-credentials"),
+        (_GET_SECRET_RULE, "aws configure get aws_secret_access_key"),
+        (_GET_SECRET_RULE, "aws configure get aws_session_token --profile dev"),
+        (_GET_SECRET_RULE, "aws configure get --profile  dev aws_secret_access_key"),
+        (_GET_SECRET_RULE, "aws configure get profile.dev.aws_secret_access_key"),
+        (_GET_SECRET_RULE, "aws.exe configure get aws_security_token"),
+        (_ADA_PRINT_RULE, "ada credentials print"),
+        (_ADA_PRINT_RULE, "ada credentials print --account 123 --role Admin"),
+        (_ADA_PRINT_RULE, "ada --verbose credentials print --account 1"),
+        (_GET_SECRET_RULE, "aws --region us-west-2 configure get aws_secret_access_key"),
+        (_ADA_PRINT_RULE, 'echo "$(ada credentials print)"'),
+        # A shell that runs the command it is handed.
+        (_EXPORT_RULE, "bash <<'EOF'\naws configure export-credentials\nEOF"),
+        (_ADA_PRINT_RULE, 'sh -c "ada credentials print"'),
+    )
+
+    # A search, a doc read, a commit message, a harmless key, help, a file written.
+    ALLOWED = (
+        "grep -rn 'aws configure export-credentials' docs/ src/",
+        "cat docs/blocked-commands.md | grep -n export-credentials",
+        "grep -rn 'aws configure get aws_secret_access_key' docs/",
+        "sed -n '1,40p' docs/aws.md | grep -n 'configure get'",
+        "grep -rn 'ada credentials print' src/ docs/",
+        "head -50 docs/ada.md | grep -c credentials",
+        "Running: grep -rn 'aws configure export-credentials' docs/",
+        "grep -rnE 'x|aws configure get aws_secret_access_key' docs/",
+        "git grep -nE 'export-credentials|ada credentials print' -- docs/",
+        "git log -G 'aws configure export-credentials|ada credentials print' --oneline",
+        "grep -rnE '(ada credentials print)' docs/",
+        'git commit -m "feat(security): deny credential print commands (ada credentials print)"',
+        'gh pr create --title "deny aws configure export-credentials" --body-file /tmp/b.md',
+        'aws configure set credential_process "ada credentials print --profile dev" --profile dev',
+        "cat >> docs/notes.md <<'EOF'\naws configure export-credentials\nEOF",
+        "aws configure get region",
+        "aws configure get aws_access_key_id --profile dev",
+        "aws configure get profile.secrets_reader.region",
+        "aws.exe configure get profile.secrets_reader.region",
+        "aws configure get --profile secrets-prod region",
+        "aws configure get --profile  secret --output text region",
+        # An option's value and a ``configure set`` variable are not rule words.
+        "aws s3api head-object --bucket configure --key export-credentials",
+        "aws configure get region --query secret",
+        "aws configure set get aws_secret_access_key",
+        "aws configure set aws_session_token x",
+        "aws configure export-credentialsx",
+        "aws configure export-credentials --help",
+        "aws configure export-credentials help",
+        "ada credentials print --help",
+        "ada credentials print -h",
+        "ada profile list",
+        "nevada credentials print",
+    )
+
+    # What the speed bump does not reach: a substitution or variable, a launcher the
+    # reader does not list.
+    NOT_MATCHED = (
+        "$(echo aws) configure export-credentials",
+        'v=aws_secret_access_key; aws configure get "$v"',
+        "aws-vault exec dev -- aws configure export-credentials",
+        "watch -n 1 aws configure export-credentials",
+        # ``ada``'s own valued options are not listed, so a value between its words hides it.
+        "ada credentials --account 1 print",
+    )
+
+    # The reader's over-block: single quotes and a quoted here-document body are read
+    # as a payload, as the same text in double quotes (which runs) must be.
+    READER_OVER_BLOCK = (
+        "git commit -m 'Example: $(aws configure export-credentials)'",
+        "cat <<'EOF' > /tmp/example.txt\n$(aws configure export-credentials)\nEOF",
+        'git commit -m "Example: $(aws configure export-credentials)"',
+    )
+
+    @pytest.mark.parametrize("rule_id, command", REFUSED)
+    def test_a_command_that_prints_a_credential_is_refused(self, rule_id, command) -> None:
+        assert _refused_by(rule_id, command), command
+
+    @pytest.mark.parametrize("command", ALLOWED + NOT_MATCHED)
+    def test_a_mention_or_a_harmless_command_is_allowed(self, command: str) -> None:
+        from kiro_crew.security import is_denied
+
+        assert is_denied(command) is None, command
+
+    @pytest.mark.parametrize("command", READER_OVER_BLOCK)
+    def test_what_the_shared_reader_still_refuses(self, command: str) -> None:
+        assert _refused_by(_EXPORT_RULE, command), command
+
+    ARGV_RULES = {
+        _EXPORT_RULE: "aws configure export-credentials",
+        _GET_SECRET_RULE: "aws configure get aws_secret_access_key",
+        _ADA_PRINT_RULE: "ada credentials print",
+    }
+    SHAPES = (
+        "{}",
+        "sudo {}",
+        "timeout 5 {}",
+        "A=1 {}",
+        "/usr/bin/{}",
+        "bash -c '{}'",
+        "echo $({})",
+        "Running: {}",
+    )
+
+    @pytest.mark.parametrize("shape", SHAPES)
+    @pytest.mark.parametrize("rule_id", ARGV_RULES)
+    def test_every_shape_that_runs_the_command_names_its_rule(self, rule_id, shape) -> None:
+        from kiro_crew.security import argv_rules, is_denied
+
+        reason = is_denied(shape.format(self.ARGV_RULES[rule_id])) or ""
+        assert f"rule={rule_id} " in reason and argv_rules.ARGV_RULE_NOTE in reason, reason
+
+    @pytest.mark.parametrize("rule_id", ARGV_RULES)
+    def test_the_rule_is_matched_on_argv(self, rule_id: str) -> None:
+        from kiro_crew.security import argv_rules
+
+        assert _catalog_rule(rule_id).pattern in argv_rules.ARGV_RULE_PATTERNS
+
+    @pytest.mark.parametrize("rule_id", ARGV_RULES)
+    def test_a_switched_off_row_stays_off(self, rule_id: str) -> None:
+        from kiro_crew import security
+        from kiro_crew.security import is_denied
+
+        pattern = _catalog_rule(rule_id).pattern
+        enabled = [r.pattern for r in security.BUILTIN_DENIED_RULES if r.pattern != pattern]
+        assert is_denied(self.ARGV_RULES[rule_id], denied_regexes=enabled) is None
+        assert is_denied(self.ARGV_RULES[rule_id], denied_regexes=[pattern]) is not None
+
+    def test_the_always_on_tier_does_not_read_the_three_rules(self) -> None:
+        from kiro_crew.security import denied_rules
+
+        assert not set(self.ARGV_RULES) & set(denied_rules._ENV_CRED_SHARED_RULE_IDS)
+        for command in self.ARGV_RULES.values():
+            assert denied_rules._check_env_credential_access(command) is None, command
+
+    def test_the_new_rules_answer_with_the_aws_credential_advice(self) -> None:
+        from kiro_crew import deny_guidance as dg
+        from kiro_crew.security import is_denied
+
+        for command in self.ARGV_RULES.values():
+            assert dg.classify_deny(is_denied(command)) == dg.DENY_CLASS_AWS_CREDENTIAL, command
+
+    def test_an_operators_own_copy_of_the_pattern_stays_a_regex(self) -> None:
+        from kiro_crew import security
+        from kiro_crew.security import is_denied
+
+        own = _catalog_rule(_EXPORT_RULE).pattern
+        launcher = "aws-vault exec dev -- aws configure export-credentials"
+        rules = security.BUILTIN_DENIED_RULES
+        shipped_only = security.compute_effective_denied(rules, (), False, (), ())
+        with_own = security.compute_effective_denied(rules, (), False, (own,), ())
+        assert is_denied(launcher, denied_regexes=shipped_only) is None
+        assert is_denied(launcher, denied_regexes=with_own) is not None

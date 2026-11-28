@@ -31,6 +31,9 @@ Only these shapes are read differently: a ``data`` mapping that names a string
 ``Internal error`` boilerplate. A string ``data``, an ``errorKind`` mapping (claude-agent-acp) and
 a frame with no ``data`` read exactly as before.
 
+The structured readers that tag an ``AcpError`` live here too: ``errorKind``
+(claude-agent-acp's provider answers) and the ACP SDK's unknown-session answer.
+
 Split out of ``transport_errors.py`` to keep that module under the file-line cap.
 """
 
@@ -96,3 +99,20 @@ def _error_kind_from_frame(error: object) -> str:
         kind = data_field.get("errorKind")
         return kind if isinstance(kind, str) else ""
     return ""
+
+
+def frame_is_unknown_session(error: object) -> bool:
+    """True when a raw ACP frame says the backend holds no session under the asked id.
+
+    The ACP SDK's ``RequestError.sessionNotFound``, which newer claude-agent-acp
+    releases (verified on 0.107.0) send for a session they do not hold::
+
+        {"code": -32002, "message": "Resource not found", "data": {"sessionId": "<id>"}}
+
+    The same code with ``data: {"uri": ...}`` is the SDK's generic
+    ``resourceNotFound`` and is not read as a lost session.
+    """
+    if not isinstance(error, dict) or error.get("code") != -32002:
+        return False
+    data_field = error.get("data")
+    return isinstance(data_field, dict) and isinstance(data_field.get("sessionId"), str)

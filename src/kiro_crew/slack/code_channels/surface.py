@@ -566,7 +566,9 @@ def channel_admits(cfg: Any, binding: Binding) -> bool:
 # ── The Stop fence ────────────────────────────────────────────────────────
 #
 # One fence for every Stop of a code channel (Slack's native Stop and ``!stop``
-# both go through ``routing._stop_bound``, which calls :func:`mark_stopped`).
+# both go through ``routing._stop_bound``, which calls :func:`mark_stopped`). A
+# Conductor thread's ``!stop`` (``thread_stop_gate.decide``) marks the thread's
+# room key instead, which its board's writes are fenced under.
 # A stop gets the next number of one process-wide sequence. A turn records the
 # sequence at its start, and a tool call or wrap-up records it when admitted
 # (:func:`admit`, a context variable that every await below it inherits). Work

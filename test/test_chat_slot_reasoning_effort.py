@@ -1022,8 +1022,10 @@ class TestChatSlotReasoningEffortLiveProvider:
             assert slot.reasoning_effort == ""
             provider.change_effort.assert_not_awaited()
             provider.clear_effort.assert_not_awaited()
+            # Default drops what a respawn reads now, with no RPC under the turn.
+            provider.forget_effort.assert_awaited_once_with()
             state.sessions.reset.assert_not_called()
-            state.sessions.record_effort_override.assert_not_called()
+            state.sessions.record_effort_override.assert_called_once_with("dashboard:test", "")
 
     @pytest.mark.asyncio
     async def test_no_active_turn_pushes_live(self):

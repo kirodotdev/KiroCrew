@@ -1829,6 +1829,8 @@ def test_the_shared_envelope_asks_what_the_per_session_client_asks(
         memory_mode="persistent",
         _session_key=f"dashboard:{tmp_path.name}",
         _session_mcp_cache=list(_SERVERS),
+        _agent=None,
+        _work_dir=None,
     )
     asyncio.run(_prepare_claude_held_asks(client))
     per_session = _claude_session_meta(client)["claudeCode"]["options"]

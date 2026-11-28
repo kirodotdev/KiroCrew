@@ -363,3 +363,10 @@ class TestWithinAny:
     def test_prefix_lookalike_does_not_match(self, tmp_path: Path) -> None:
         """``/x/skills-evil`` is not under ``/x/skills`` despite the string prefix."""
         assert not _within_any(str(tmp_path / "skills-evil"), (str(tmp_path / "skills"),))
+
+    def test_extended_spelling_matches_on_either_side(self, tmp_path: Path) -> None:
+        r"""A data home spelled ``\\?\C:\...`` is the root its plain spelling is."""
+        prefixed = "\\\\?\\" + str(tmp_path)
+        assert _within_any(str(tmp_path / "a"), (prefixed,))
+        assert _within_any("\\\\?\\" + str(tmp_path / "a"), (str(tmp_path),))
+        assert not _within_any(str(tmp_path.parent / "other"), (prefixed,))

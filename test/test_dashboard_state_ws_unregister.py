@@ -54,7 +54,10 @@ class TestWebSocketUnregisteredOnEveryExit:
 
         class Request(dict):
             def __init__(self) -> None:
-                super().__init__({"user": state.owner_id, "app": "", "is_dashboard_user": True})
+                # The owner's own session: with no owner configured that is the
+                # desktop app's subject.
+                owner = state.owner_id or "local-app"
+                super().__init__({"user": owner, "app": "", "is_dashboard_user": True})
                 self.app = {"state": state}
 
         class FakeWebSocket(dict):

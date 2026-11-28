@@ -33,10 +33,12 @@ if TYPE_CHECKING:
         _WORKING,
         CONTEXT_EVENT_COMPACTION,
         EVENT_COMPLETE,
+        EVENT_MODEL_FALLBACK,
         EVENT_PERMISSION_REQUEST,
         EVENT_TEXT_CHUNK,
         EVENT_THINKING_CHUNK,
         EVENT_TOOL_CALL,
+        EVENT_TOOL_CALL_UPDATE,
         SESSION_NOT_FOUND_GIVE_UP_TEXT,
         SESSION_NOT_FOUND_NOT_REPLAYED_TEXT,
         SESSION_NOT_FOUND_RETRY_NOTICE,
@@ -86,10 +88,12 @@ if TYPE_CHECKING:
         build_session_replay,
         build_working_blocks,
         canonical_key,
+        capabilities_of,
         consume_reinjection,
         context_template,
         continue_timed_out_calls,
         credential_give_up_text,
+        drop_echo,
         enter_turn,
         exit_turn,
         expire_slack_options,
@@ -651,6 +655,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             # there); a waiter admitted now finds an idle session.
             sessions.close_replay_gap(session_key)
 
+    _delivery_pending = False
     try:
         task.start()
         while True:
@@ -975,10 +980,19 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             await turn.clear_working_indicators()
             return False
 
+        _refines_titles = capabilities_of(client).refines_tool_call_titles
         # A call whose own silence timer ends the prompt is handed back to the
         # model inside this turn (``acp.timed_out_continuation``): the same session
         # is told the call timed out, and its answer streams on into this reply.
-        async for event in continue_timed_out_calls(client.stream, full_message):
+        # Each prompt's opening alternation placeholder is dropped (``drop_echo``).
+        from kiro_crew.slack.thread_trust import end_grants_on_turn_event
+
+        async for event in continue_timed_out_calls(
+            lambda prompt: drop_echo(client.stream(prompt)), full_message
+        ):
+            # A harness that switches this session's agent in place ends the Trust
+            # a shared user set for their own turns, before any later call asks.
+            end_grants_on_turn_event(session_key, event)
             if event.kind == EVENT_TEXT_CHUNK:
                 await answer.on_text(event)
 
@@ -989,10 +1003,21 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 await answer.release_quoted_hold()
                 await _screen_tool_call(turn, event)
 
+            elif event.kind == EVENT_TOOL_CALL_UPDATE:
+                # Refining backends only: a kiro-cli update titles a failed call by its tool.
+                if _refines_titles:
+                    await answer.on_tool_title(event)
+
             elif event.kind == EVENT_PERMISSION_REQUEST:
                 await answer.release_quoted_hold()
                 if await _answer_permission_request(turn, client, event):
                     break
+
+            elif event.kind == EVENT_MODEL_FALLBACK:
+                # The engine moved this turn onto another model. On a refusal hop
+                # the refused model's streamed text is dropped here; the delivery
+                # path prepends the fallback notice and overwrites the live copy.
+                await answer.on_model_fallback(event)
 
             elif event.kind == CONTEXT_EVENT_COMPACTION:
                 # The backend compacted the session on its own: the session-start
@@ -1167,6 +1192,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                     exc_info=True,
                 )
         _body_completed = True
+        _delivery_pending = True
 
     except AcpTimeoutError as e:
         _had_error = True
@@ -1189,6 +1215,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 logger.debug(
                     "Failed to reset session %s after a timed-out turn", session_key, exc_info=True
                 )
+        _delivery_pending = True
     except AcpProcessDied:
         _had_error = True
         answer.accumulated = answer.accumulated or "💀 Agent process died. Please try again."
@@ -1250,6 +1277,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                     _shared_streak,
                 )
         Stats().inc_message_failed()
+        _delivery_pending = True
     except AcpPromptBusy as e:
         _had_error = True
         # Session is wedged mid-prompt — reset the provider so the next
@@ -1262,6 +1290,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         task.fail(str(e))
         await sessions.record_failure(session_key)
         Stats().inc_message_failed()
+        _delivery_pending = True
     except AcpError as e:
         _had_error = True
         # Only once this attempt holds a claim: the binding to reset is the one
@@ -1334,6 +1363,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             task.fail(str(e))
             await sessions.record_failure(session_key)
             Stats().inc_message_failed()
+        _delivery_pending = True
     except (UnknownMemoryStore, EmbedAdmissionTimeout) as exc:
         _had_error = True
         if _acquired and isinstance(exc, EmbedAdmissionTimeout):
@@ -1353,6 +1383,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         answer.accumulated = redact_local_paths(redact(str(exc)))[0][:1000]
         task.fail("memory_unavailable")
         Stats().inc_message_failed()
+        _delivery_pending = True
     except Exception:
         _had_error = True
         logger.exception("Unexpected error handling message")
@@ -1360,6 +1391,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         task.fail("unexpected")
         await sessions.record_failure(session_key)
         Stats().inc_message_failed()
+        _delivery_pending = True
     finally:
         # A turn that consumed the post-compaction flag but never landed (an
         # error arm, a cancel) discarded the prompt carrying the re-injected
@@ -1390,6 +1422,9 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # A raise that left the body after the model completed (``_body_completed``
         # still False) is released now too: ``_deliver_answer`` never runs.
         _release_deferred = _acquired and _turn_completed_ok and _body_completed
+        # Handled failures still deliver an answer; returns and escaping exceptions do not.
+        if not _delivery_pending:
+            await answer.abandon()
         if _acquired and not _release_deferred:
             sessions.release(session_key)
             _acquired = False

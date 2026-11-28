@@ -34,8 +34,8 @@ import { signedInNow } from '../pages/developer/kiroSignInState'
 import { FEATURE_REQUEST_FORM_URL, FEATURE_REQUEST_ROW_META_KEY } from '../prompts/featureRequest'
 import { isWorkflowRunTool } from '../pages/chat/WorkflowRunCard'
 import { isSpawnRunTool } from '../pages/chat/SubagentRunCard'
-import { isWorkflowCompletionMessage } from '../pages/chat/WorkflowCompletionCard'
-import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
+import { isWorkflowCompletionMessage } from '../lib/workflowCompletion'
+import { isSubagentCompletionMessage } from '../lib/subagentCompletion'
 import { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
 import CrewmateMessage from '../pages/chat/CrewmateMessage'
 import { CARD_ROLE } from '../cards/ConversationCard'
@@ -894,6 +894,15 @@ describe("a change card in a mate's chat", () => {
     const el = render(card, { slot: 's1', crewmate: mate }, { index: 2, messages }) as ReactElement<{ pos: string }>
     expect(el.type).toBe(CrewmateMessage)
     expect(el.props.pos).toBe('cont')
+  })
+
+  // #30200: as wide as a mate's bubble, the content column; never a fixed measure.
+  it('takes the content column, like a mate bubble', () => {
+    const el = render(card, { slot: 's1', crewmate: mate }, { index: 0, messages: [card] }) as ReactElement<{ children: ReactElement<{ className?: string }> }>
+    expect(el.type).toBe(CrewmateMessage)
+    const cls = el.props.children.props.className ?? ''
+    expect(cls).toMatch(/(^|\s)max-w-full(\s|$)/)
+    expect(cls).not.toMatch(/(^|\s)max-w-(?!full(\s|$))/)
   })
 
   it('stays a plain card outside a mate chat', () => {

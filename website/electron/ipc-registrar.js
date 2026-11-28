@@ -8,6 +8,7 @@ const {
 const {
   DEFAULT_GLOBAL_HOTKEY,
   createSummonHandler,
+  parseRecordedHotkey,
   bindGlobalHotkey: bindStoredGlobalHotkey,
   unregisterGlobalHotkey,
   currentGlobalHotkey,
@@ -886,11 +887,34 @@ function createIpcRegistrar({
     // The shortcuts UI reports what is ACTUALLY bound beside what was asked
     // for. Registration may have fallen back to the default or degraded to no
     // shortcut at all.
-    ipcMain.handle("global-hotkey:get", () => ({
+    const globalHotkeyInfo = () => ({
       accelerator: currentGlobalHotkey(),
       requested: requestedGlobalHotkey(),
       default: DEFAULT_GLOBAL_HOTKEY,
-    }));
+    });
+    ipcMain.handle("global-hotkey:get", globalHotkeyInfo);
+
+    // The Settings recorder stores a summon shortcut ("" turns it off) and binds
+    // it at once. It is grabbed from every program on THIS machine, so only the
+    // local dashboard may set it, and only a chord the recorder can produce
+    // (parseRecordedHotkey): never a bare key. Requests run one at a time in
+    // arrival order, gate probe included, so a Clear is never overtaken by the
+    // recording sent before it. Resolves like `global-hotkey:get`, after the bind.
+    let hotkeySetQueue = Promise.resolve();
+    ipcMain.handle("global-hotkey:set", (event, value) => {
+      const result = hotkeySetQueue.then(async () => {
+        await assertLocalDashboard(event, "global-hotkey:set");
+        const accelerator = parseRecordedHotkey(value);
+        if (accelerator === null) {
+          throw new Error("global-hotkey:set: not a shortcut the recorder can produce");
+        }
+        store.set("globalHotkey", accelerator);
+        bindGlobalHotkey();
+        return globalHotkeyInfo();
+      });
+      hotkeySetQueue = result.catch(() => {});
+      return result;
+    });
 
     // The theme accent and splash art are written under userData for the next
     // launch's first paint, so only the main window's dashboard reports them
@@ -1506,7 +1530,9 @@ function createIpcRegistrar({
       }
       relayHandoff.listen(event.sender, on, seq);
     });
-    ipcMain.handle("relay-crew:open-pane", async (event, endpointId, rect, viewport) => {
+    // `ownHeader`: only a dashboard that says it keeps to its tab strip above
+    // the pane has the Crew's page asked to draw its own header (#42922).
+    ipcMain.handle("relay-crew:open-pane", async (event, endpointId, rect, viewport, ownHeader) => {
       if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
       const main = windows.getMainWindow();
       try {
@@ -1526,12 +1552,12 @@ function createIpcRegistrar({
       const bounds = paneRect(parent, rect, viewport);
       // Before any mint, like a bad ID.
       if (!bounds) return { ok: false, error: "INVALID_BOUNDS" };
-      return relayCrewOpener().open(endpointId, { parent, dashboard: parent._mcView, bounds });
+      return relayCrewOpener().open(endpointId, { parent, dashboard: parent._mcView, bounds, ownHeader: ownHeader === true });
     });
 
     // The warm set's background load: the main window's dashboard only, and never
     // handed off, so no other window can bring the main one forward with it.
-    ipcMain.handle("relay-crew:prewarm-pane", async (event, endpointId, rect, viewport) => {
+    ipcMain.handle("relay-crew:prewarm-pane", async (event, endpointId, rect, viewport, ownHeader) => {
       if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
       try {
         await assertLocalDashboard(event, "relay-crew:prewarm-pane");
@@ -1542,7 +1568,7 @@ function createIpcRegistrar({
       const main = windows.getMainWindow();
       const bounds = paneRect(main, rect, viewport);
       if (!bounds) return { ok: false, error: "INVALID_BOUNDS" };
-      return relayCrewOpener().prewarm(endpointId, { parent: main, dashboard: main._mcView, bounds });
+      return relayCrewOpener().prewarm(endpointId, { parent: main, dashboard: main._mcView, bounds, ownHeader: ownHeader === true });
     });
 
     // The calls that steer an open pane take it only from the dashboard view

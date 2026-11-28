@@ -1046,6 +1046,64 @@ def test_model_wait_flat_no_socket_is_dead(tmp_path):
     assert "no established backend socket" in evidence
 
 
+def _first_tcp_read_skips_the_rows(monkeypatch) -> list[str]:
+    """From now on, the first read of a ``net/tcp`` table answers its header alone:
+    the pass that skipped a live row. Returns the paths read."""
+    from kiro_crew.acp import liveness_proc
+
+    real_read_text = liveness_proc._read_text
+    reads: list[str] = []
+
+    def read_text(path: str) -> str | None:
+        text = real_read_text(path)
+        if path.endswith(f"{os.sep}net{os.sep}tcp") or path.endswith("/net/tcp"):
+            reads.append(path)
+            if len(reads) == 1 and text is not None:
+                return text.splitlines(keepends=True)[0]
+        return text
+
+    monkeypatch.setattr(liveness_proc, "_read_text", read_text)
+    return reads
+
+
+def test_model_wait_socket_a_first_pass_skipped_is_not_dead(tmp_path, monkeypatch):
+    """One pass over /proc/<pid>/net/tcp can skip a live row; DEAD is acted on at
+    once, so a held socket the first pass did not find is read again."""
+    clock = _Clock()
+    fake = FakeProc(tmp_path / "proc")
+    fake.add_pid(100, io_bytes=1000)
+    monkeypatch.setattr(liveness, "socket_inodes", lambda proc, pid: {"31337"})
+    fake.set_net_tcp(100, ["31337"])
+    oracle = _oracle(fake, clock, sample_min=1.0)
+
+    oracle.check_model_wait(100)  # baseline
+    reads = _first_tcp_read_skips_the_rows(monkeypatch)
+    clock.advance(2.0)
+    verdict, evidence = oracle.check_model_wait(100)
+    assert verdict == VERDICT_UNKNOWN
+    assert evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
+    assert len(reads) == 2
+
+
+def test_model_wait_held_socket_never_established_is_dead_after_the_last_pass(
+    tmp_path, monkeypatch
+):
+    clock = _Clock()
+    fake = FakeProc(tmp_path / "proc")
+    fake.add_pid(100, io_bytes=1000)
+    monkeypatch.setattr(liveness, "socket_inodes", lambda proc, pid: {"31337"})
+    fake.set_net_tcp(100, [])
+    oracle = _oracle(fake, clock, sample_min=1.0)
+
+    oracle.check_model_wait(100)  # baseline
+    reads = _first_tcp_read_skips_the_rows(monkeypatch)
+    clock.advance(2.0)
+    verdict, evidence = oracle.check_model_wait(100)
+    assert verdict == VERDICT_DEAD
+    assert "no established backend socket" in evidence
+    assert len(reads) == liveness._NET_TCP_PASSES
+
+
 def test_model_wait_flat_no_socket_on_a_shared_tree_is_unknown(tmp_path):
     """Two sessions on one runtime: the wedge signature is tree-wide evidence,
     so it cannot name WHICH tenant lost its frame → UNKNOWN, tagged

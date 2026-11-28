@@ -96,6 +96,8 @@ export interface Slot {
   // The slot snapshot can report live child work before the detailed activity
   // map hydrates after reconnect. Never present that gap as an idle interruption.
   subagents_running?: boolean
+  // Sub-agents queued for this session, as the slots push last published them.
+  subagents_queued?: number
   // Queued turns are also a server-rejected Resume state, even when the slot's
   // own turn is currently idle.
   queue_depth?: number
@@ -116,6 +118,8 @@ export interface Slot {
   // positive claim only: a falsy value never means "mismatch".
   effective_agent?: string
   model?: string  // '' / absent = provider-default ("auto")
+  /** The session's own effort level; '' / absent = runs at the configured default. */
+  reasoning_effort?: string
   // Message count from the slot payload. Already carried by every ChatSlot
   // (redux seeds it in addSlotOptimistic and SessionGridView renders it); it was
   // simply never declared on this local view of the type.
@@ -155,6 +159,8 @@ export interface Slot {
   pinned?: boolean
   /** The per-row mute (see ChatSlot.muted); drawn as a marker at rest. */
   muted?: boolean
+  /** The per-session chip switch (see ChatSlot.source_links_off). */
+  source_links_off?: boolean
   /** A worker tab's process: `released` once the idle sweep stopped it. */
   process?: 'live' | 'released'
   tags?: string[]

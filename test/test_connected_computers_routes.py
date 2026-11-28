@@ -45,6 +45,13 @@ _LOADED_ON_FIRST_REQUEST = (
     "kiro_crew.connected_computers.authenticated",
     "kiro_crew.connected_computers.protocol",
     "kiro_crew.remote_session.link",
+    "kiro_crew.connected_computers.connector",
+    "kiro_crew.connected_computers.controller",
+    "kiro_crew.connected_computers.local_store",
+    "kiro_crew.connected_computers.desktop_host",
+    "kiro_crew.connected_computers.enroll",
+    "kiro_crew.connected_computers.confinement",
+    "kiro_crew.connected_computers.protected_store",
 )
 
 _PROBE = textwrap.dedent("""
@@ -73,6 +80,10 @@ def _expected_paths() -> list[str]:
         devices,
         devices + "/{device_id}/revoke",
         devices + "/{device_id}/remove",
+        # No route grants: native consent runs on the desktop host's pipe only.
+        "/api/connected-computers/local/grants",
+        "/api/connected-computers/local/grants/{grant_id}",
+        "/api/connected-computers/local/off",
     ]
 
 

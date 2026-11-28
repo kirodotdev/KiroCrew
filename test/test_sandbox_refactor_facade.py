@@ -163,7 +163,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _CREW_CHILD_WITHHELD_LEAVES _CREW_CHILD_READABLE_LEAVES crew_host_runtime_leaves
         """.split()),
     "kiro_crew.sandbox_tiers": tuple("""
-        _resolved_kiro_agents_targets _PACKAGED_INSTALL_DIR_NAMES install_root_targets_for
+        _resolved_kiro_agents_targets _resolved_mate_ledger_targets
+        _PACKAGED_INSTALL_DIR_NAMES install_root_targets_for
         _install_root_targets_with _install_root_targets_cached _resolved_install_root_targets
         _bundled_kas_targets_cached _bundled_kiro_cli_targets_cached _bundled_root_spellings
         _gateway_package_dir _APP_BACKEND_OWNED_LEAVES app_backend_visible_targets
@@ -200,7 +201,9 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _publish_empty_ceiling _materialize_sealable_parent_dirs _note_established
         _mint_gateway_id_before_seal _materialize_sealable_ceilings _warn_aliased_strict_leaves
         require_unaliased_cloud_config _delete_file_command require_unaliased_launch_state
-        require_unaliased_model_file
+        require_unaliased_model_file _resolved_kiro_mcp_registry_targets
+        _EMPTY_KIRO_MCP_REGISTRY _materialize_kiro_mcp_registry _materialize_mate_ledger
+        _MAX_REGISTRY_LINK_HOPS _registry_chain_end
         """.split()),
     "kiro_crew.sandbox_aliases": tuple("""
         _CREW_ALIAS_TOLERATED_LEAVES _CREW_ALIAS_CHAIN_DEGRADE_LEAVES _CREW_HARDLINK_REFUSED_LEAVES
@@ -280,7 +283,9 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _PROBE_SPAWN_TIMEOUT_SECONDS _probe_spawn_unavailable_logged _probe_spawned_death
         _probe_unshare_via_spawn _probe_unshare_via_fork is_wsl is_docker_container
         _probe_sandbox_exec _inside_kirocrew_sandbox _macos_sandbox_state
-        _inside_macos_sandbox
+        _inside_macos_sandbox _MAX_USER_NAMESPACES_PATH _read_max_user_namespaces
+        REMEDY_USERNS_CAP_ZERO _last_sandbox_exec_failure _sandbox_exec_failed
+        sandbox_exec_failure_reason
         """.split()),
     "kiro_crew.sandbox_unavailable": tuple("""
         _allow_no_isolation UNSANDBOXED_BY_OPERATOR UNSANDBOXED_BY_PLATFORM
@@ -288,7 +293,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _SSH_VISIBLE_TIERS _ssh_dir_masked _tier_lists_ssh _forward_ssh_auth_sock
         _forward_for_effective_tier _forwards_without_consent ssh_auth_sock_consent_notice
         unsandboxed_exec_permitted_by _bundled_cli_invocation
-        _apparmor_userns_restricted _no_backend_guidance _classify_unavailable
+        _apparmor_userns_restricted _no_backend_guidance _classify_unavailable _config_not_read _platform_allows_unsandboxed
+        CONFIG_MISSING CONFIG_UNREADABLE
         agent_confinement_evidence agent_confinement_is_kirocrew_own _warn_mode_off_unconfined
         _warn_first_party_unconfined_once _first_party_no_backend_passthrough
         CRON_SCRIPT_CHILD_ENV UnauditedSpawnRefused refuse_unaudited_on_dead_fs
@@ -303,6 +309,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _background_warm _kick_background_warm
         prewarm_backend warm_backend _probe_unshare userns_available _backend
         unavailable_kind _warn_no_isolation detect_backend reset_backend wrap_argv
+        remedy_recovery
         """.split()),
     "kiro_crew.sandbox_cgroup": tuple("""
         _CGROUP_DEFAULT_MAX_PROCESSES _CGROUP_DEFAULT_CPU_WEIGHT _CGROUP_MEMORY_FRACTION
@@ -389,7 +396,9 @@ _BOUND_HERE: frozenset[str] = frozenset()
 _CARVED_IMPORTS: dict[str, frozenset[str]] = {
     "kiro_crew.sandbox_tiers": frozenset({"kiro_crew.sandbox_leaves"}),
     "kiro_crew.sandbox_precreate": frozenset({"kiro_crew.sandbox_leaves"}),
-    "kiro_crew.sandbox_seals": frozenset({"kiro_crew.sandbox_precreate"}),
+    "kiro_crew.sandbox_seals": frozenset(
+        {"kiro_crew.sandbox_precreate", "kiro_crew.sandbox_tiers"}
+    ),
     "kiro_crew.sandbox_aliases": frozenset({"kiro_crew.sandbox_leaves", "kiro_crew.sandbox_seals"}),
     "kiro_crew.sandbox_staging": frozenset(
         {

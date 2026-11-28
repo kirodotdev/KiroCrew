@@ -512,6 +512,21 @@ describe('SecurityPanel — denied commands', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 
+  it('Cancel in the Edit dialog hands focus back to the row menu trigger once the dialog has unmounted', async () => {
+    await renderPanel()
+    const trigger = screen.getByRole('button', { name: `Actions for pattern ${NOTED_PATTERN}` })
+
+    await openRowMenu(NOTED_PATTERN)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    // The modal restores focus as it unmounts, so the hand-back is read once
+    // it has gone, not before; the drain `waitFor` ends on is the barrier for
+    // the unmount's effect cleanup.
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(document.activeElement).toBe(trigger)
+  })
+
   it('a REJECTED edit keeps the dialog and its drafts, with the server reason', async () => {
     ;(api.editUserDeniedCommand as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new ApiError(400, 'Bad Request', JSON.stringify({ error: 'pattern rejected: unsafe (catastrophic-backtracking) regex' })),

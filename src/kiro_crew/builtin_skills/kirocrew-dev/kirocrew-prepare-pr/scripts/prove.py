@@ -147,7 +147,9 @@ EXIT_ENV = 2
 # The REMOTE base, deliberately.  A local `main` that has fallen behind makes the
 # diff include hunks already upstream; reverting those can turn some other
 # commit's test red and report this change PROVEN on evidence it did not earn.
-DEFAULT_BASE = "origin/main"
+# Spelled in full because git reads a short `origin/main` as a local branch of
+# that name first, when one exists.
+DEFAULT_BASE = "refs/remotes/origin/main"
 
 # Per-run wall-clock ceiling.  A proof is meant to cost seconds over one or two
 # files; a run that reaches this bound is reported as an environment fault
@@ -556,12 +558,37 @@ def dirty_among(changed: list[str], repo: Path) -> list[str]:
     return [ln[3:].strip() for ln in out.splitlines() if ln.strip()]
 
 
+def resolve_base(repo: Path, base: str) -> str:
+    """The ref ``--base`` diffs against: a branch name means its ``origin`` copy.
+
+    ``push_guard.py``, ``green_age.py`` and ``diff_signals.py`` all read
+    ``--base main`` as ``origin/main``, so this does too. A local ``main`` in a
+    long-lived clone can sit weeks behind its remote; diffing against it sweeps
+    every commit main gained since into the change under proof, and the baseline
+    then runs tests the change never touched. A name with no remote-tracking
+    branch, a remote ref such as ``origin/main``, or a commit is used as given.
+
+    Only an exact branch name is mapped. ``show-ref --verify`` matches one full
+    ref and evaluates no ``~`` or ``^``, so ``HEAD~1`` is never read as
+    ``origin/HEAD~1``. ``HEAD`` itself is left alone: a clone's
+    ``refs/remotes/origin/HEAD`` names the remote's default branch, not this one.
+    A local branch with an ``origin`` copy is still reachable by its full name,
+    ``refs/heads/<name>``, for a stacked base not pushed yet.
+    """
+    if base == "HEAD":
+        return base
+    remote = "refs/remotes/origin/" + base
+    probe = _git(["show-ref", "--verify", "--quiet", remote], repo)
+    return remote if probe.returncode == 0 else base
+
+
 def prove(repo: Path, base: str, per_hunk: bool, commit: str = "HEAD") -> dict:
     """Run the proof on *commit* and return a result record; see module docstring for exits.
 
     *commit* is diffed against the merge base and checked out in the throwaway
     worktree, so a HEAD that moves during the run changes nothing here.
     """
+    base = resolve_base(repo, base)
     # "--" is required: without it a base like "--octopus" is parsed as a git
     # option, merge-base returns HEAD, and the empty diff that follows reports
     # NOTHING_TO_PROVE for a change that has plenty to prove.
@@ -724,7 +751,11 @@ def prove(repo: Path, base: str, per_hunk: bool, commit: str = "HEAD") -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
-        "--base", default=DEFAULT_BASE, help=f"base ref to diff against (default: {DEFAULT_BASE})"
+        "--base",
+        default=DEFAULT_BASE,
+        help="base to diff against; a branch name reads its origin copy when there is one, "
+        "as the other prepare-pr scripts do, and refs/heads/<name> names the local branch "
+        f"(default: {DEFAULT_BASE})",
     )
     ap.add_argument(
         "--per-hunk",

@@ -210,6 +210,7 @@ REPO_SKILL_IDS: tuple[str, ...] = (
 #: compares it with the package tree.
 BUILTIN_SKILL_IDS: tuple[str, ...] = (
     "artifacts",
+    "best-of-n",
     "blocked-by-policy",
     "browser-auth",
     "browser-recording",
@@ -220,6 +221,7 @@ BUILTIN_SKILL_IDS: tuple[str, ...] = (
     "debug-gateway",
     "explain-for",
     "feature-request",
+    "find-sources",
     "five-whys",
     "frontend-design-workflow",
     "goal-conductor",
@@ -315,14 +317,19 @@ def refresh_public_app_ids() -> dict[str, str] | None:
 def app_public_id(app: object, ids: dict[str, str] | None = None) -> str:
     """*app*'s public id: a shipped built-in's or a store install's name, else ``private``.
 
-    Not a string is ``other``. Whether an install came from the store is read from
-    its install record, so an app the store later delists keeps its id. Reads only
-    memory. *ids* is a map :func:`refresh_public_app_ids` returned; default the last
-    one filled.
+    An app from a registry the edition named has ``<namespace>.<name>`` instead
+    (``store_origin.PublicAppIds.names``). Not a string is ``other``. Whether an
+    install came from the store is read from its install record, so an app the
+    store later delists keeps its id. Reads only memory. *ids* is a map
+    :func:`refresh_public_app_ids` returned; default the last one filled.
     """
     if not isinstance(app, str):
         return OTHER
-    return app if app in (_public_app_ids if ids is None else ids) else APP_PRIVATE
+    known = _public_app_ids if ids is None else ids
+    if app not in known:
+        return APP_PRIVATE
+    names = getattr(known, "names", None)
+    return names.get(app, app) if isinstance(names, dict) else app
 
 
 #: A version an app with a public id sends as itself: three dot-separated numbers.
@@ -554,9 +561,10 @@ def record_app_present(
 # They count owner views, unlike ``session.started`` and ``turn.completed``,
 # which count every session.
 
-#: Where an app was opened: its routed page, its pop-out window, or its
-#: ``openCommand`` launched from the Library (``desktop``).
-APP_OPENED_SURFACE_VALUES: tuple[str, ...] = ("desktop", "page", "popout", OTHER)
+#: Where an app was opened: its routed page, its pop-out window, its
+#: ``openCommand`` launched from the Library (``desktop``), or one of its
+#: ``desktop.shortcuts`` pressed, which the desktop shell reports (``shortcut``).
+APP_OPENED_SURFACE_VALUES: tuple[str, ...] = ("desktop", "page", "popout", "shortcut", OTHER)
 
 #: Where a foreground span was measured. An ``openCommand`` app has no page here.
 APP_FOREGROUND_SURFACE_VALUES: tuple[str, ...] = ("page", "popout", OTHER)
@@ -567,7 +575,8 @@ APP_FOREGROUND_MAX_SECONDS = 24 * 3600
 
 
 def record_app_opened(app: object, surface: object) -> None:
-    """The owner opened *app*'s page (``page`` / ``popout``) or launched it (``desktop``)."""
+    """The owner opened *app*'s page (``page`` / ``popout``), launched it (``desktop``)
+    or pressed one of its desktop shortcuts (``shortcut``)."""
     _emit(
         APP_OPENED,
         {
@@ -682,9 +691,10 @@ TIP_ACTION_VALUES: tuple[str, ...] = (
 )
 
 #: Where the tip came from: a hand-authored tip shipped in ``tips_curated.json``,
-#: a catalog tip built from a shipped doc, a tip the model wrote, or ``other``
-#: when the id matches none of them (an opt-out carries no tip id at all).
-TIP_SOURCE_VALUES: tuple[str, ...] = ("curated", "catalog", "generated", OTHER)
+#: a catalog tip built from a shipped doc, a tip the model wrote, a one-line tip
+#: shipped in ``tips_exploratory.json``, or ``other`` when the id matches none of
+#: them (an opt-out carries no tip id at all).
+TIP_SOURCE_VALUES: tuple[str, ...] = ("curated", "catalog", "generated", "exploratory", OTHER)
 
 
 @functools.lru_cache(maxsize=1)
@@ -704,18 +714,21 @@ def tip_feature_label(feature: object, edition_tip_ids: frozenset[str] = frozens
     """*feature* when it names a shipped tip or doc, else ``other``.
 
     Kept when it is a doc in ``TIP_DOC_ALLOWLIST`` (the shipped, user-facing
-    feature docs), the id of a tip shipped in ``tips_curated.json``, or one of
+    feature docs), the id of a tip shipped in ``tips_curated.json`` or
+    ``tips_exploratory.json``, or one of
     *edition_tip_ids*, the fixed ids an edition pool lists for its own curated
     tips (``TipsPool.metric_tip_ids``). All are lists a build ships, so a kept
     value names nothing the user wrote.
     """
     from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
+    from kiro_crew.tips_exploratory import exploratory_tip_ids
 
     if not isinstance(feature, str) or not feature:
         return OTHER
     if (
         feature in TIP_DOC_ALLOWLIST
         or feature in shipped_curated_tip_ids()
+        or feature in exploratory_tip_ids()
         or feature in edition_tip_ids
     ):
         return feature

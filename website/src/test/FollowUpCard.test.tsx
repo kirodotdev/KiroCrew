@@ -44,11 +44,11 @@ describe('FollowUpCard', () => {
     expect(screen.getByRole('button', { name: /skip/i })).toBeInTheDocument()
   })
 
-  it('pre-fills by default: the footer says nothing is sent and Start shows no send glyph', () => {
+  it('pre-fills by default: the footer says where the prompt goes and Start shows no send glyph', () => {
     const { container } = setup()
     const start = screen.getByRole('button', { name: /start in a separate copy/i })
     // The worktree footer says what the copy is, so the label needs no git term.
-    expect(start).toHaveAccessibleDescription(/^Start in a separate copy opens a new session on a fresh copy of this project, in a new folder next to it, with the prompt in its message box\. Your current files and this session stay as they are\..*Nothing is sent until you press send\.$/)
+    expect(start).toHaveAccessibleDescription(/^Start in a separate copy opens a new session on a fresh copy of this project, in a new folder next to it, with the prompt in its message box\. Your current files and this session stay as they are\. Add to this session puts the prompt in your message box\.$/)
     expect(container.querySelector('.lucide-send')).toBeNull()
     expect(screen.queryByText(/sends the prompt/i)).not.toBeInTheDocument()
   })
@@ -233,7 +233,7 @@ describe('FollowUpCard', () => {
 
   it('keeps the standard footer for an unscoped session, with no git terms', () => {
     setup({ projectDir: undefined })
-    expect(screen.getByText('Start and Add to this session both put the prompt in a message box. Nothing is sent until you press send.')).toBeInTheDocument()
+    expect(screen.getByText('Start and Add to this session both put the prompt in a message box.')).toBeInTheDocument()
     expect(screen.queryByText(/unavailable|worktree|git/i)).not.toBeInTheDocument()
   })
 
@@ -256,7 +256,7 @@ describe('FollowUpCard', () => {
     fireEvent.click(newChat)
     await waitFor(() => expect(onStartInNewChat).toHaveBeenCalledWith(item(), 0, 'prefill'))
     expect(onStartInWorktree).not.toHaveBeenCalled()
-    expect(screen.getByText(/nothing is sent until you press send\. The new chat opens in this session's project directory/i)).toBeInTheDocument()
+    expect(screen.getByText(/message box\. The new chat opens in this session's project directory/i)).toBeInTheDocument()
     expect(screen.queryByText(/unavailable|worktree|git/i)).not.toBeInTheDocument()
   })
 

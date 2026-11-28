@@ -70,7 +70,7 @@ def _home(tmp_path, _floor_monkeypatch):
     )
     _floor_monkeypatch.setattr(routes, "_member_names_for_slug", lambda cfg, slug: [MEMBER])
     _floor_monkeypatch.setattr(routes, "_deny_app_caller", _none)
-    _floor_monkeypatch.setattr(routes, "_owner_only", _none)
+    _floor_monkeypatch.setattr(routes, "require_owner_dashboard_request", _none)
     _floor_monkeypatch.setattr(routes, "_write_session", lambda slug, member: "")
     _floor_monkeypatch.setattr(routes, "_render", lambda *a, **k: None)
     yield
@@ -217,7 +217,7 @@ async def test_a_non_owner_is_refused(url: str, _floor_monkeypatch) -> None:
     async def deny(_request: Any, _operation: str) -> web.Response:
         return web.json_response({"error": "no", "code": "owner_only"}, status=403)
 
-    _floor_monkeypatch.setattr(routes, "_owner_only", deny)
+    _floor_monkeypatch.setattr(routes, "require_owner_dashboard_request", deny)
     instance.adopt(SLUG, "fixture-board")
     staged_ms = _stage()
     async with _client() as (client, _):
@@ -232,7 +232,9 @@ async def test_a_non_owner_is_refused(url: str, _floor_monkeypatch) -> None:
 async def test_the_real_owner_gate_guards_keep(_floor_monkeypatch) -> None:
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
-    _floor_monkeypatch.setattr(routes, "_owner_only", require_owner_dashboard_request)
+    _floor_monkeypatch.setattr(
+        routes, "require_owner_dashboard_request", require_owner_dashboard_request
+    )
 
     @asynccontextmanager
     async def as_user(user: str):

@@ -82,8 +82,11 @@ async def _maybe_answer_approval(
     keeping a tool request alive.
     """
     answer = (inbound.text or "").strip().lower()
-    approved = answer in _APPROVE_REPLIES
     denied = answer in _DENY_REPLIES
+    # Only the owner approves a tool; anyone else's "yes" is read as a deny.
+    approved = answer in _APPROVE_REPLIES
+    if approved and not self._is_owner(inbound.person_email):
+        approved, denied = False, True
     if not approved and not denied:
         return False
     if approved and not permitted:
@@ -141,7 +144,8 @@ async def _handle_card_press(
         )
         return
     if kind == cards.KIND_APPROVAL:
-        approved = choice == "approve"
+        # Only the owner approves a tool; anyone else's Approve is read as Deny.
+        approved = choice == "approve" and self._is_owner(inbound.person_email)
         # Governance may block an approve while still letting a deny through:
         # a policy that forbids this channel has no interest in keeping a tool
         # request alive for its whole window.

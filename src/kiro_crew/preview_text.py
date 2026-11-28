@@ -20,6 +20,7 @@ import unicodedata
 from typing import Callable
 
 from kiro_crew.constants import OPTIONS_RE_LINE, md_link_destination, strip_control_comments
+from kiro_crew.messaging.steer_ack import strip_steering_acks
 
 # Fenced code blocks — ```lang ... ``` or a line-anchored ~~~lang ... ~~~ (or
 # unterminated, running to the end of the message). Replaced with a short
@@ -63,10 +64,6 @@ _LINK_RE = re.compile(rf"\[([^\[\]]+)\]\({_LINK_DESTINATION_UNIT}*\)")
 # ReDoS-hardened, line-anchored parser (constants.OPTIONS_RE_LINE) so this strip
 # can't drift from the dashboard/Slack copies and handles `]` inside a label.
 _OPTIONS_RE = OPTIONS_RE_LINE
-# kiro-cli's inline steer ack ``[STEERING steer-<id>: <summary>]``, drawn as a
-# "Steered" chip in chat. The summary stops at ``[`` as well as ``]`` to keep the
-# scan linear; a summary containing ``[`` is left visible.
-_STEER_ACK_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f-]+(?:\s*:[^\[\]]*)?\]", re.IGNORECASE)
 _HEADER_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 # Line-anchored markers: leading whitespace is HORIZONTAL only (``[^\S\n]``,
 # i.e. ``\s`` minus newline). A MULTILINE ``^\s*`` lets the quantifier run
@@ -169,6 +166,28 @@ def drop_format_chars(text: str) -> str:
     return text.translate(drop) if drop else text
 
 
+def clip_preview(text: str, limit: int) -> str:
+    """*text* cut to at most *limit* characters plus `` …``, never inside a link.
+
+    A plain slice can land inside a link and leave a shorter one that names
+    another target: ``.../pull/43162`` cut to ``.../pull/4316``. So a cut that
+    splits a word drops that word. A single word longer than *limit* is cut
+    where it stands unless it is a link, which is dropped whole. The mark is
+    set off by a space so a link kept whole still ends where it did. Redact
+    before clipping, so the cut cannot split a credential.
+    """
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    if not text[limit].isspace():
+        end = len(cut)
+        while end and not cut[end - 1].isspace():
+            end -= 1
+        if end or "://" in cut or cut.startswith("www."):
+            cut = cut[:end]
+    return (cut.rstrip() + " …").lstrip()
+
+
 #: The one length a roster preview is cut to. Both spellings of a member's
 #: ``last_message`` (the cold transcript read and the live ``member/message``
 #: event) go through :func:`speech_preview`, so this is the only place the cap lives.
@@ -228,7 +247,8 @@ def strip_markdown_preview(text: str) -> str:
     # The quick-reply line goes before code is protected: a backtick-wrapped
     # ``[OPTIONS: ...]`` line still renders as buttons, not as text.
     t = _OPTIONS_RE.sub("", t)
-    t = _STEER_ACK_RE.sub("", t)
+    # kiro-cli's inline steer ack, drawn as a "Steered" chip in chat.
+    t = strip_steering_acks(t)
     spans: list[str] = []
     t = _protect_inline_code(t, spans)
     t = _IMAGE_RE.sub(lambda m: m.group(1) or "(image)", t)

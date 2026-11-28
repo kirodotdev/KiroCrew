@@ -27,6 +27,7 @@ On Webex, use the finite legacy path even for a supported pull request.
 |---|---|
 | User is waiting, total work under 30 minutes | Bounded in-turn `wait` + poll |
 | One supported pull request, readiness decided by typed provider facts | `monitor_watch` |
+| One GitHub pull request that waits on others | `monitor_watch`, up to 3 of them in `also_wake_on` |
 | PR comments/advisory findings | Finite `monitor_start`, `judge: false` |
 | A required final turn, or acting on silence | Finite `monitor_start`, `gate=false` |
 | Act on a schedule, multiple subjects, unsupported ticket or deployment | Finite `monitor_start` |
@@ -49,14 +50,9 @@ A gated `monitor_start` hands its whole pull-request reading, comment and review
 bodies included, to the wake judge, so `wake_when` may name prose. No
 judge lane: only an unchanged subject is free.
 
-An installation can set how firmly this table's facts-decided row points at the
-structured path. With `monitoring.prefer_structured_arming` on, `monitor_watch` is
-this gateway's default for a supported pull request and the prompt loop is the
-exception; off (the default) the table reads as written. The setting changes what
-the two tool descriptions say and refuses neither tool, so the row that matters
-never moves: evidence the typed provider cannot see -- generic comments, advisory
-findings, a required final report -- stays on `monitor_start` in either
-position. Read the descriptions you were given rather than assuming a position.
+An installation setting can make `monitor_watch` the default for a supported
+pull request; evidence the typed provider cannot see stays on `monitor_start`.
+See [references/arming-preference.md](references/arming-preference.md).
 
 ### In-turn wait and poll
 
@@ -96,7 +92,9 @@ monitor_watch(kind=<kind>, target=<full PR URL>, objective="review_ready",
 Inspect the schema: positive `max_tokens`/`max_provider_errors`, and
 `max_agent_turns` where 0 = no wake cap. Ordinary unchanged/pending/retry/terminal probes
 spend no agent turn; a new actionable fingerprint wakes the owning session at
-most once with a bounded summary. Fetch logs, comments or diffs only when needed
+most once with a bounded summary, and a pending pull request wakes it once when its
+checks finish green outside draft or, on GitHub, a person other than its author
+writes. Fetch logs, comments or diffs only when needed
 on that wake. The token cap applies only when usage is reported;
 `token_usage_known` exposes that gap; runtime always caps, turns only if
 set positive. Provider errors are bounded too. GitLab uses installed
@@ -146,8 +144,7 @@ its runtime defaults to the `monitoring.max_runtime_secs` ceiling (7 days as
 shipped), a runaway backstop. A `gate=false` loop wakes every interval, so it
 keeps a finite cap (24 by default); never pass `0` for unlimited work.
 Every delivered cycle is a full model turn. Name the readiness conditions below
-by reference rather than copying their text into the message: a copy inside the
-instruction drifts from the list it duplicates while still reading as
+by reference, not by copy: a copied list drifts while still reading as
 authoritative.
 Follow the execution steps below.
 
@@ -265,19 +262,10 @@ using its CLI or API help rather than field names remembered from elsewhere. Wai
 states, hidden allowed-failure jobs and "no single merge verdict" hosts all fail
 closed until you have confirmed the mapping on the actual host.
 
-Conflict, `BEHIND`, or `green_age.py` exit 30 requires an authorized sync, not
-another unchanged poll (for exit 30, a local rebase and re-check, pushed only when
-it conflicts or goes red):
-GitHub cannot build a conflicted merge ref, so `pull_request` checks may never
-start while old checks look green. `BEHIND` is the weakest of the three and on
-some repositories never appears at all: `mergeStateStatus` reports it only under
-strict up-to-date protection, so where that is off, a base that moved underneath
-a green head is visible only through the green-age reading below. Rebase
-unambiguous conflicts under the repo's history rules, re-verify and push only
-with authorization; escalate ambiguous conflicts. A draft or `CHANGES_REQUESTED`
-also survives waiting. Read the reviewer:
-a product hold needs a human decision, not repeated patches. Report it once and
-stop with the blocking review quoted.
+A conflict, `BEHIND` or `green_age.py` exit 30 needs an authorized sync, not
+another unchanged poll; a draft or `CHANGES_REQUESTED` hold also survives waiting.
+A product hold needs a human decision: report it once and stop with the blocking
+review quoted. How to act on each: [references/sync-and-holds.md](references/sync-and-holds.md).
 
 ### Optional GitHub helper
 
@@ -317,24 +305,13 @@ your recollection of earlier cycles. The stall key below is a separate file.
 
 ## Stall tripwire
 
-For legacy cycles, persist a JSON progress key AND an integer streak count,
-read before each settled cycle. Use a durable file in the active data home's
-`workspace/` beside loop state, e.g. `.babysit-key-<loop-id>`, NOT scratch/TMPDIR
-or conversation memory. Resolve the home first; a tilde inside a shell default
-does not expand. The engine does not track this streak for you.
+For legacy cycles, persist a JSON progress key AND an integer streak count, read
+before each settled cycle, in a durable file in the active data home's
+`workspace/` beside loop state (e.g. `.babysit-key-<loop-id>`), NOT
+scratch/TMPDIR or conversation memory. Resolve the home first; a tilde inside a
+shell default does not expand. The engine does not track this streak for you.
 
-For GitHub the optional helper emits these key fields; otherwise derive equivalent
-fields from the host verdict above. GitLab and Bitbucket need their own equivalent
-key before applying this rule:
-
-| Field | Meaning |
-|---|---|
-| `head_sha` | Exact revision |
-| `failing_checks` | Sorted workflow-qualified identities, not just names |
-| `checks_failing` | Failure count |
-| `readiness_kind` | Running, failing or unpublished |
-| `exit_code` | Verdict |
-| `status` | Verdict reason, so changed blockers count as progress |
+The key's fields are in [references/stall-key.md](references/stall-key.md).
 
 On a settled cycle (`0` or `20`), matching key increments the streak; a new key
 sets it to 1. Three byte-identical settled keys with no push means stop and

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 
-from kiro_crew.hooks import _normalize_tool_name
+from kiro_crew.hooks import _normalize_tool_name, is_fetch_url_text
 from kiro_crew.platform.tool_paths import edit_target_candidates
 from kiro_crew.security import (
     MAX_SCANNABLE_COMMAND_CHARS,
@@ -208,6 +208,7 @@ def _title_denial(
     denied_regexes: list[str] | None,
     *,
     exempt_command: str | None = None,
+    exempt_url: str = "",
     identity_exempt: bool = False,
     bash_subject: str | None = None,
 ) -> tuple[str, str] | None:
@@ -238,10 +239,13 @@ def _title_denial(
     # ``identity_exempt`` is the same reasoning for a tool NAME: the caller sets
     # it only when the title is exactly the call's own verified ``@server/tool``
     # identity (``title_is_trusted_mcp_identity``), which names a tool, not a
-    # file. The bash and regex tiers below still read it.
+    # file. The bash and regex tiers below still read it. ``exempt_url`` is the
+    # same again for a proven fetch's URL (``hooks.proven_fetch_url``).
     path_refusal = (
         None
-        if identity_exempt or _is_exempt_command_text(title, exempt_command)
+        if identity_exempt
+        or _is_exempt_command_text(title, exempt_command)
+        or is_fetch_url_text(title, exempt_url)
         else sensitive_path_refusal(title)
     )
     if path_refusal:
@@ -333,6 +337,7 @@ def _first_tool_input_denial(
     *,
     exempt_command: str | None = None,
     command_rules: bool = True,
+    path_rule: bool = True,
 ) -> tuple[str, str, str] | None:
     """Return the first tool_input denial among *strings*, or ``None``.
 
@@ -357,6 +362,9 @@ def _first_tool_input_denial(
     not a command line. The 20 KiB ceiling bounds the command matchers, which
     this path never runs, so it uses the 256 KiB
     :data:`~kiro_crew.security.MAX_SCANNABLE_SOURCE_BODY_CHARS` instead.
+    ``path_rule=False`` is its mirror: every tier but the path tier, for the
+    strings of a proven web fetch that are never opened as a file
+    (``platform.tool_paths.FETCH_PATH_FREE_FIELDS``).
 
     The tuple is ``(kind, reason, matched_string)`` where *kind* is
     ``"path"`` / ``"bash"`` / ``"regex"`` / ``"oversize"``. Mechanism
@@ -382,7 +390,9 @@ def _first_tool_input_denial(
         # ``use_aws`` argument naming a path) stay path-gated -- see
         # :func:`_path_tier_exempt`.
         path_refusal = (
-            None if _is_exempt_command_text(s, exempt_command) else sensitive_path_refusal(s)
+            None
+            if not path_rule or _is_exempt_command_text(s, exempt_command)
+            else sensitive_path_refusal(s)
         )
         if path_refusal:
             if is_unverifiable_path_refusal(path_refusal):

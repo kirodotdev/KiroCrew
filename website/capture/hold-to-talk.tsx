@@ -12,7 +12,7 @@
  *   - the real `ChatInput`, at a real 390px viewport, with production classes
  *   - the real `useTouchPushToTalk` (reached through ChatInput, not called here)
  *   - the real `useVoiceInput`: real `getUserMedia`, real `MediaRecorder`, real
- *     level meter and Strands sample ref
+ *     level meter and waveform sample ref
  *   - the real prop wiring, mirroring what ChatPage passes
  *
  * WHAT IS STOOD IN — one HTTP boundary, nothing else:
@@ -79,9 +79,8 @@ function Harness() {
         voiceLevel={voice.level}
         voiceDeviceLabel={voice.deviceLabel}
         voiceDeviceId={voice.deviceId}
-        voicePartial={voice.partial}
         voiceSampleRef={voice.sampleRef}
-        voiceStreaming={voice.streamEnabled}
+        voiceTransport={voice.transport}
         voiceDictationPanel
         onSelectVoiceDevice={voice.switchDevice}
         onClearVoiceError={voice.clearError}

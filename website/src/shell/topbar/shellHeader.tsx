@@ -17,6 +17,9 @@ import { getTopBarWidgets } from '../../apps/topBarWidgets'
 import { getCapsuleSegments } from '../../apps/capsuleSegments'
 import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
 import { useNavShortcutHint } from '../../hooks/useNavShortcutHint'
+import { usePaletteShortcutsEnabled } from '../../hooks/useCommandPalette'
+import { useQuickSearchShortcut } from '../../hooks/useQuickSearchShortcut'
+import { formatQuickSearchShortcut } from '../../lib/quickSearchShortcut'
 import FeedbackPill from '../../components/FeedbackPill'
 import HoverTip from '../../components/HoverTip'
 import { Glass } from '../../components/Glass'
@@ -33,6 +36,8 @@ import MilestonesSheet from '../../components/milestones/MilestonesSheet'
 import { useExplorePreviewSwitch } from '../../components/milestones/useMilestones'
 import { useExplorePreview } from '../../hooks/usePreviewFlag'
 import { isEmbeddedPane } from '../../lib/embedded'
+import { useAppSelector } from '../../store'
+import { relayHeaderInFront } from '../../store/instancesSlice'
 
 // Lazy, like App.tsx's update-found popup: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
@@ -105,8 +110,14 @@ export function MobileNavGlyph({ avatar }: { avatar: string }) {
  * (portaled to the body-level overlay root to escape the topbar's
  * backdrop-filter containing block); clicking an item slides out a detail panel. The full page is
  * preserved at /notifications via the popover's "Open inbox" link.
+ *
+ * `hidden` leaves the button out and keeps the rest: the sheet's hook (the
+ * notes, the banner the sheet portals, a banner tap's way into the sheet) and
+ * the dock badge. The local bar sets it above a relay Crew that draws its own
+ * bell, so the window shows one bell while local notes still raise a banner
+ * and count on the dock.
  */
-function NotificationsBellButton() {
+function NotificationsBellButton({ hidden = false }: { hidden?: boolean }) {
   // The Notifications surface is `hiddenFromNav`, so this bell — not a rail row —
   // is the control Alt+N operates. Resolved through the same route-keyed helper
   // the rail uses, so the chord has exactly one derivation in the dashboard.
@@ -124,7 +135,8 @@ function NotificationsBellButton() {
   }, [unacked.length])
 
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef} className="relative" data-testid="notifications-bell-host">
+      {!hidden && (
       <HoverTip label={unacked.length > 0 ? i18nT('app.notification_count', { count: unacked.length }) : i18nT('app.notifications')}>
       <button
         className={`flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 relative ${open ? 'text-accent' : 'text-muted hover:text-text'}`}
@@ -148,6 +160,7 @@ function NotificationsBellButton() {
         )}
       </button>
       </HoverTip>
+      )}
       {/* The sheet's scope owner, outside the sheet's own open conditional. */}
       <GuideRevealScope id="menu:shell.notifications" open={open}>
         <NotificationSheet sheet={sheet} />
@@ -160,8 +173,8 @@ function NotificationsBellButton() {
  * The top bar: the left cluster (window menu, history arrows, the phone menu
  * button, the instance selector), the centre search and focus-mode toggle, the
  * readout capsule and the right cluster, and the phone chat page's single bar.
- * Markup only: it calls no hook, and every value it reads comes from
- * {@link useAppShell}.
+ * Markup only: apart from the Explore preview and the search gesture it names,
+ * every value it reads comes from {@link useAppShell}.
  */
 export function ShellHeader({ shell }: { shell: AppShell }) {
   const {
@@ -170,20 +183,45 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
     setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroSignInPrompt, openKiroSignIn, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, setReportProblemOpen,
     requestFeature, toggleNav, mobileSingle, membersRoute, membersBarPending, mobileNavOpen, topbarSearch,
+    relayPaneHeader,
   } = shell
+  // The two forms a relay Crew tab gives this bar (#42922). Each is decided
+  // here and read below, so what either row holds changes in one place.
+  //
+  // `paneForm`: this page IS the relay Crew, in a pane of the desktop app's
+  // window, which asked it to draw its header (`isRelayCrewPaneHeader`). It
+  // leaves out the Crew switcher, because the window's own tab strip sits one
+  // row above; it is never a window drag region (styles/shell-chrome.css).
+  const paneForm = relayPaneHeader
+  // `tabStripOnly`: this is the desktop app's own bar and the relay Crew in
+  // front drew a header of its own, as the shell confirmed for that pane. The
+  // bar keeps the tab strip, the window's own menu and controls clearance, and
+  // the update pill; every control that reads or opens the LOCAL Crew goes, so
+  // the window shows one bell and one set of readouts, the relay Crew's.
+  // Until the shell confirms it, and for any other tab, the bar is whole.
+  const tabStripOnly = useAppSelector(relayHeaderInFront)
   // Every Explore surface below mounts only while its Feature Preview is on.
   // Turning it off closes an open sheet; turning it on reads milestones once.
   const explore = useExplorePreview()
   useExplorePreviewSwitch(explore)
   // Desktop only: the phone form has no full-width search to hide (its centre
   // track is already `auto`), and its layout is not this setting's to change.
-  const searchHidden = !isMobile && !topbarSearch
+  const searchHidden = !isMobile && (!topbarSearch || tabStripOnly)
+  // The search trigger names the gesture that opens search on this computer:
+  // ⌘K on a Mac, Ctrl+K elsewhere, or whatever Settings → Shortcuts picked;
+  // '' when no gesture opens it (shortcuts off, an unreachable custom chord).
+  const searchConfig = useQuickSearchShortcut().config
+  const searchShortcut = usePaletteShortcutsEnabled() ? formatQuickSearchShortcut(searchConfig) : ''
   // The search trigger's hint, gated on the same condition as the trigger's
   // label and aria-label, so the hint never contradicts the words under the
   // cursor or promises the corpus search the launcher deliberately omits. The
   // owned branch drops "(K)" because the chord is already printed in the
   // visible label.
-  const searchHint = quickSearchLauncher ? i18nT('app.open_command_bar') : i18nT('app.search_everywhere_k')
+  const searchHint = quickSearchLauncher
+    ? i18nT('app.open_command_bar')
+    : searchShortcut
+      ? i18nT('app.search_everywhere_k', { shortcut: searchShortcut })
+      : i18nT('components.commandPalette.search_everywhere')
   return (
     <>
       {/* The one Milestones panel; the top-bar indicator, the phone menu row
@@ -216,6 +254,9 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
         // transcript: inert while a transcript selection is held, so a dragged
         // handle cannot land on the title (useSelectionInertOverlays).
         {...{ [SELECTION_INERT_ATTR]: '' }}
+        // What the desktop shell reads to confirm this pane's page drew a header.
+        data-relay-pane-header={paneForm ? '' : undefined}
+        data-relay-tab-strip-only={tabStripOnly ? '' : undefined}
         // Both z-indexes come from lib/themeDecorLayer.ts, which derives the
         // theme-overlay ceiling from them — the header must outrank pack
         // decoration in both layouts (#7377), and a literal here could drift.
@@ -244,6 +285,13 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
         {...hiddenChromeProps(focusActive && !topChromeShown && focusChromeInert)}
         {...(focusActive ? topPeek.surfaceProps : {})}
       >
+        {/* Tab strip only: the capsule's live region went with the capsule, and it
+            was the one place the LOCAL gateway's state is spoken while a relay
+            Crew is in front (the relay Crew's own header speaks its own). Kept
+            as words for a screen reader; nothing visible. */}
+        {tabStripOnly && (
+          <span role="status" className="sr-only" data-testid="tab-strip-gateway-status">{gatewayStatusAnnounce}</span>
+        )}
         {/* Left: mobile menu toggle + inline instance selector. The brand now
             lives in the sidebar (item 1.1). The selector reuses InstanceTabBar's
             visibility rule — it renders nothing unless >=1 remote instance
@@ -296,9 +344,9 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               would walk an unrelated stack. Order: after the Windows app menu,
               before the instance selector — the leftmost NAVIGATION control,
               matching where every browser puts it. */}
-          {!isMobile && <NavHistoryArrows />}
-          {isMobile && (
-            <button className="group p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0" onClick={toggleNav} aria-label={i18nT('app.open_menu')} {...uiLocation('shell.mobile-menu')}>
+          {!isMobile && !tabStripOnly && <NavHistoryArrows />}
+          {isMobile && !tabStripOnly && (
+            <button className="group p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0 focus-visible:outline-offset-[-2px]" onClick={toggleNav} aria-label={i18nT('app.open_menu')} {...uiLocation('shell.mobile-menu')}>
               {/* The product logo, not a generic menu glyph. A narrow layout has exactly
                   one nav affordance, and it opens the same rail whose header carries this
                   same `avatar` on a wide one -- so it is the same asset, the same
@@ -325,7 +373,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
           )}
           {/* Desktop app only: the same switcher, plus Team Crews while the relay
               viewer is on. Until its code loads, the plain switcher stands in. */}
-          <CrewSwitcher />
+          {!paneForm && <CrewSwitcher />}
           </div>
         </div>
         )}
@@ -344,8 +392,8 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
           <div data-testid="topbar-lead" className="relative h-full flex items-center gap-1.5 min-w-0">
             {/* The same switcher as the wide bar, so a note's Open on a Team Crew
                 (`?relay_crew=`) is read at every width. */}
-            <CrewSwitcher />
-            {getTopBarWidgets().map(w => (
+            {!paneForm && <CrewSwitcher />}
+            {!tabStripOnly && getTopBarWidgets().map(w => (
               <ErrorBoundary key={w.id} scope={`topbar-widget:${w.id}`} fallback={null}>
                 <w.component />
               </ErrorBoundary>
@@ -375,7 +423,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             the toggle, and gives the freed width to the side tracks. The
             command palette's keyboard trigger (useCommandPalette) still opens
             search, or the owning app's launcher. */}
-        {!isMobile && (
+        {!isMobile && !tabStripOnly && (
           <div data-topbar-overlay className="flex items-center gap-1.5 min-w-0">
           {/* The trigger IS a Liquid Glass pane (components/Glass.tsx, chip
               recipe) rendered as the button, the same material as the
@@ -406,7 +454,9 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             <span className="text-[13px] truncate min-w-0">
               {quickSearchLauncher
                 ? i18nT('app.k_run_a_command')
-                : i18nT('app.k_search_for_anything')}
+                : searchShortcut
+                  ? i18nT('app.k_search_for_anything', { shortcut: searchShortcut })
+                  : i18nT('app.search_sessions_files_and_commands')}
             </span>
           </Glass>
           </HoverTip>
@@ -460,9 +510,14 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             so the slot holds a nav-drawer toggle and the bar never sits empty.
             It wears the logo row's `Menu` glyph, not the roster drawer's panel
             glyph, so one icon never opens two different drawers. */}
-        {isMobile && (mobileSingle
+        {/* Tab strip only: the cell stays (the three tracks need their third
+            child) and the chat page's portal target stays mounted, but what the
+            local chat page put in it is not shown (hidden from view, not from
+            layout: the single bar's centre track needs its in-flow child too).
+            The class names stay literal: topbarSingleVariant.test.ts reads them. */}
+        {(isMobile || tabStripOnly) && (mobileSingle
           ? (
-            <div id="mobile-topbar-slot" data-testid="mobile-topbar-slot" className="flex items-center gap-1 min-w-0 h-full">
+            <div id="mobile-topbar-slot" data-testid="mobile-topbar-slot" className="flex items-center gap-1 min-w-0 h-full" style={tabStripOnly ? { visibility: 'hidden' } : undefined}>
               {membersBarPending && (
                 <button
                   type="button"
@@ -519,7 +574,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
           <span ref={metricsProbeRef} className="tb-drop-metrics tb-metrics-probe" aria-hidden="true" />
 
           {/* Theme decoration: extra aside control (e.g. a stardate / clock). */}
-          {branding?.topBarAside && !(branding?.topBarHideOnMobile && isMobile) && (
+          {!tabStripOnly && branding?.topBarAside && !(branding?.topBarHideOnMobile && isMobile) && (
             <ErrorBoundary key={`${colorTheme}:${resolvedMode}`} scope="theme-aside" fallback={null}>
               <branding.topBarAside />
             </ErrorBoundary>
@@ -539,7 +594,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               (bell + the chat page's overflow menu) and a resource readout is
               not something a phone user acts on; the session-expired banner
               stays the offline signal there. */}
-          {!isMobile && (() => {
+          {!isMobile && !tabStripOnly && (() => {
             const offline = !connected && !gatewayConnecting
             // `gatewayStatusMsg` (useAppShell) is the announced cause; see its
             // comment for why auth wording wins over transport state. It mirrors
@@ -570,7 +625,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             segments.push(
               <HoverTip key="conn" label={capsuleActionMsg} className="tb-capsule-keep">
               <button
-                className="flex items-center justify-center p-1.5 -m-1.5 rounded-full bg-transparent border-none cursor-pointer shrink-0"
+                className="flex items-center justify-center -mx-1 -my-0.5 px-1.5 py-0.5 rounded-md bg-transparent border-none cursor-pointer shrink-0"
                 onClick={() => { pulseCapsuleLayout(); setCapsuleCollapsed(c => !c) }}
                 aria-label={capsuleActionMsg}
                 aria-expanded={!capsuleCollapsed}
@@ -678,13 +733,13 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
           {/* A relay Crew window still retrying says so quietly: a warn dot and
               one muted word, no error surface. The window's centre view
               (RelayReconnectingView) explains it and is the live region. */}
-          {!isMobile && relayRetrying && (
+          {!isMobile && !tabStripOnly && relayRetrying && (
             <span data-testid="topbar-reconnecting" className="tb-offline-notice shrink-0 flex items-center gap-1.5 text-xs text-muted min-w-0">
               <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-[var(--warn)] shrink-0" />
               <span className="tb-offline-notice-msg truncate">{i18nT('app.relay_crew_connecting')}</span>
             </span>
           )}
-          {!isMobile && !connected && !gatewayConnecting && !authRequired && !relayRetrying && (
+          {!isMobile && !tabStripOnly && !connected && !gatewayConnecting && !authRequired && !relayRetrying && (
             <ErrorNotice
               variant="inline"
               announce={false}
@@ -695,19 +750,19 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               testId="topbar-offline-notice"
             />
           )}
-          {!isMobile && <MetricsErrorNotice metrics={metrics} />}
+          {!isMobile && !tabStripOnly && <MetricsErrorNotice metrics={metrics} />}
           {/* Explore (RFC "Milestones for New-User Feature Discovery" 4.6): its
               own pill next to the readout capsule (after the capsule's own
               metrics notice), not a capsule segment, so the capsule's row of
               buttons does not grow. Renders nothing until the milestones read
               says it is on. */}
-          {explore && !isMobile && <MilestonesPill />}
+          {explore && !isMobile && !tabStripOnly && <MilestonesPill />}
           {/* Extension slot: downstream-registered top-bar widgets (e.g. a
               credential-TTL capsule or spend pill). Empty in the stock build.
               Each widget is isolated in its own ErrorBoundary (fallback=null) so
               a throwing widget disables only itself, not the shell or its
               sibling widgets. */}
-          {getTopBarWidgets().map(w => (
+          {!tabStripOnly && getTopBarWidgets().map(w => (
             <ErrorBoundary key={w.id} scope={`topbar-widget:${w.id}`} fallback={null}>
               <w.component />
             </ErrorBoundary>
@@ -726,7 +781,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               channel chip that opens the same Report a Problem flow. Its own
               bordered pill (28px tall, 12px radius), separated from the readout
               capsule (item 2.3). */}
-          {!isMobile && (
+          {!isMobile && !tabStripOnly && (
             <span className="tb-drop-feedback flex items-center">
               <FeedbackPill
                 onRequestFeature={requestFeature}
@@ -741,8 +796,8 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               no readout capsule, the Explore ring sits just before it; with the
               update pill up the group would hold three controls, so it stands
               down (the chat page's ⋯ menu carries an Explore row). */}
-          {explore && isMobile && !updateAvailable && <MilestonesIndicator compact />}
-          <NotificationsBellButton />
+          {explore && isMobile && !updateAvailable && !tabStripOnly && <MilestonesIndicator compact />}
+          <NotificationsBellButton hidden={tabStripOnly} />
           </div>
         </div>
         )}
@@ -765,8 +820,8 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
                 <UpdatePill showLabel />
               </Suspense>
             )}
-            <NotificationsBellButton />
-            <div id="mobile-topbar-trail-slot" data-testid="mobile-topbar-trail-slot" className="flex items-center empty:hidden" />
+            <NotificationsBellButton hidden={tabStripOnly} />
+            <div id="mobile-topbar-trail-slot" data-testid="mobile-topbar-trail-slot" className="flex items-center empty:hidden" style={tabStripOnly ? { display: 'none' } : undefined} />
           </div>
         )}
         {/* Phone: the generic offline signal. The readout capsule (whose dot
@@ -781,7 +836,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             `pointer-events-none`: the strip hangs over the top 24px of
             whatever <main> paints; a readout must not swallow the taps and
             scroll starts that land there while the socket is down. */}
-        {isMobile && !connected && !gatewayConnecting && !authRequired && !relayRetrying && (
+        {isMobile && !tabStripOnly && !connected && !gatewayConnecting && !authRequired && !relayRetrying && (
           <ErrorNotice
             variant="inline"
             noHandoffReason="The gateway is offline, so a hand-off to the agent cannot be delivered."
@@ -800,7 +855,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             carrier is not rendered below 768px -- so this is the one
             announcement a screen-reader user gets. Nothing visible: the banner
             already says it. */}
-        {isMobile && !connected && authRequired && (
+        {isMobile && !tabStripOnly && !connected && authRequired && (
           <span role="status" data-testid="mobile-offline-sr" className="sr-only">{i18nT('app.gateway_offline_session_expired_see_banner_above')}</span>
         )}
       </header>

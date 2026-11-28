@@ -68,11 +68,25 @@ export interface ChatPaneProps {
    *  sets it (a Bot's chat on the Bots page): the key listens on the whole
    *  document, and the Sessions chat answers it itself. False closes the bar. */
   findInChat?: boolean
+  /** The element the history search draws into: the host's side panel tab,
+   *  so the search never covers this transcript. */
+  historySearchHost?: HTMLElement | null
+  /** Told when the history search opens (again on each ⌘F while open) and
+   *  closes, so the host can show the tab `historySearchHost` lives in. */
+  onHistorySearchOpenChange?: (open: boolean) => void
+  /** Handed the pane's own opener and closer for its history search on mount,
+   *  and null on unmount, so the host's Search button and side panel + menu
+   *  open the same search ⌘F does, and its Search tab's close button ends it. */
+  onHistorySearchOpener?: (open: (() => void) | null, close?: () => void) => void
   /** Suppress the "Session ready. Type a message to start." hint on an empty
    *  transcript. A host that is showing its own verdict about this thread
    *  above the pane (the Members page's "Couldn't reconnect" notice) sets it,
    *  so the pane does not say "go" one line under a host that says "broken". */
   hideEmptyHint?: boolean
+  /** Withhold the Sign in button on a signed-out (`auth_required`) row, so it
+   *  reads as text. Set where the single-chat page withholds it too (an
+   *  embedded or popout chat); every other pane offers it in place. */
+  noSignIn?: boolean
   /** ISO time of a fresh start on this thread. Rows written before it fold
    *  under one closed "Earlier conversation" divider the reader can open.
    *  Display only: the rows stay in the transcript. */

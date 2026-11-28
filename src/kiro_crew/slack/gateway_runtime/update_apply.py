@@ -152,9 +152,15 @@ async def _auto_apply_wheel_update(
     elif outcome.status in wheel_apply.RETRY_SOON:
         # Another apply holds the lock, memory is still preparing, or the
         # apply was stopped: retry on the short cadence, pushing nothing onto
-        # another apply's progress feed.
+        # another apply's progress feed. A deferred or stopped apply held the
+        # lock itself, so the progress on screen is its own and is cleared:
+        # left up, its last frame would read as an install still running.
         self._update_apply_deferred = True
+        if state and outcome.status != "busy":
+            state.clear_update_progress(announce=True)
     elif outcome.status == "incompatible":
+        if state:
+            state.clear_update_progress(announce=True)
         self._notice_wheel_update_once(
             f"incompatible:{version}",
             f"Kiro Crew {version} cannot be applied automatically",

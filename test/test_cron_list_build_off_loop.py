@@ -43,6 +43,7 @@ def _request(jobs: list[CronJob]) -> MagicMock:
     state.crons.list_jobs_async = AsyncMock(return_value=jobs)
     state.crons.is_running.return_value = False
     state.crons.running_since.return_value = None
+    state.crons.run_waiting_until.return_value = None
     state.has_slot.return_value = False
     request = MagicMock()
     request.app = {"state": state}

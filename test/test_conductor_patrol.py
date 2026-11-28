@@ -777,7 +777,13 @@ async def test_an_audit_outage_that_races_closure_still_logs_its_refusal_at_warn
 def test_the_patrol_stays_open_while_work_is_queued_and_old_loops_still_pass():
     """Queued work lives outside the ledger, so the patrol's stop names it; the text
     from before that change stays a shipped one for loops armed with it."""
-    assert "every item is terminal and nothing is queued" in conductor_patrol.PATROL_MESSAGE
+    queued = next(
+        message
+        for message in conductor_patrol.SHIPPED_PATROL_MESSAGES
+        if sha256(message.encode("utf-8")).hexdigest()
+        == "4e646a98e7e0110a2ce2b34d3320984fcae6fbf547e5416383b816bcb2d1054a"
+    )
+    assert "every item is terminal and nothing is queued" in queued
     old = next(
         message
         for message in conductor_patrol.SHIPPED_PATROL_MESSAGES
@@ -789,6 +795,16 @@ def test_the_patrol_stays_open_while_work_is_queued_and_old_loops_still_pass():
     assert old in conductor_patrol.SHIPPED_PATROL_MESSAGES
 
 
+def test_the_patrol_says_the_gateway_ends_it_and_keeps_stop_for_open_items():
+    """The final report goes out in the closing turn; no separate stop step for it."""
+    message = conductor_patrol.PATROL_MESSAGE
+    assert "the gateway ends this loop" in message
+    assert "open the next item in that same turn" in message
+    # autonudge_stop is left only for a user's stop while items are still open.
+    assert message.count("autonudge_stop") == 1
+    assert "says stop while items are open" in message
+
+
 # Exact persisted text is the fire-time grant; fingerprints keep this expectation
 # independent of edits to PATROL_MESSAGE and its compatibility literals.
 SHIPPED_PATROL_FINGERPRINTS = (
@@ -798,6 +814,7 @@ SHIPPED_PATROL_FINGERPRINTS = (
     "53f137d75b5cd6efd277b5e5e7f604745609909b911b11398364435b4b82d98b",
     "8f43cc5a34af73ebbb070ed4fd95e8098b05f8cdd136abbb7bd3b2ba126bf599",
     "e7defe601f98ada0d43c9891bb6ee3bfe4a5c09851b95963e8f47e6c89b99963",
+    "4e646a98e7e0110a2ce2b34d3320984fcae6fbf547e5416383b816bcb2d1054a",
 )
 
 

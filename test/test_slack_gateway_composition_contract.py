@@ -321,6 +321,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_wait_for_memory_preparation", "async method", "(self) -> 'bool'"),
         ("_repair_member_memory_once", "method", "(self) -> 'None'"),
+        (
+            "_repair_store_once",
+            "method",
+            "(self, name: 'str', store: 'Any', *, fresh: 'bool') -> 'bool'",
+        ),
         ("_repair_member_memory", "async method", "(self) -> 'None'"),
         ("_start_embeddings", "async method", "(self) -> 'None'"),
         ("_auto_migrate_memory", "async method", "(self) -> 'None'"),
@@ -624,7 +629,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "_deliver_script_result",
             "async method",
             "(self, job: 'CronJob', message: 'str', *, remove: 'bool' = False,"
-            " pin: 'tuple[str, str] | None' = None) -> 'None'",
+            " pin: 'tuple[str, str] | None' = None, to_session: 'bool' = True) -> 'None'",
         ),
         ("_cron_run_script", "async method", "(self, job: 'CronJob') -> 'str | None'"),
         ("_live_internal_secret", "method", "(self) -> 'str'"),
@@ -647,6 +652,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "async method",
             "(self, job: 'CronJob', session_key: 'str', client: 'LLMProvider', result_text: 'str', rh: 'str', _ctx_reading: 'Any', _turn_stats: 'dict[str, Any] | None') -> 'str'",
         ),
+        ("_deliver_cron_reminder", "async method", "(self, job: 'CronJob') -> 'str'"),
         ("_CRON_MSG_LIMIT", "value", "'int'"),
     ),
     "cron_failure": (
@@ -682,7 +688,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "_alert_cron_failure",
             "async method",
             "(self, job: 'CronJob', detail: 'str', *, denied: 'bool' = False, "
-            "exit_code: 'int | None' = None, pin: 'tuple[str, str] | None' = None) -> 'None'",
+            "awaiting_sign_in: 'bool' = False, "
+            "exit_code: 'int | None' = None, pin: 'tuple[str, str] | None' = None) -> 'bool'",
         ),
         (
             "_alert_cron_interrupted",

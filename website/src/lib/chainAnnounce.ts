@@ -21,6 +21,7 @@
  * A no-op at top level: a gateway nobody is embedding has no host to tell.
  */
 import { isEmbeddedPane } from './embedded'
+import { parseErrorField } from '../utils/errorReport'
 
 /** What the pane tells its host about a crew it just connected. */
 export interface ChainedCrewNotice {
@@ -214,6 +215,24 @@ export function chainAdoptionPlan(
   announcedPort: number,
 ): ChainAdoptionPlan {
   return { repoint: existingRemotePort !== announcedPort, connect: true }
+}
+
+/**
+ * The `error_code` of a connect the gateway's cycle guard refused: the crew at
+ * the far end of the hop is this dashboard, or a crew already carrying the hop.
+ * It arrives on the failed connect, not on the add, because the guard can only
+ * run once the hop is open, after the add has stored the row.
+ */
+export const CHAIN_CYCLE_CODE = 'chain_cycle'
+
+/**
+ * Whether a rejected connect is the cycle guard's refusal. Read off the error's
+ * raw body, where the failed status carries `error_code` beside the generic
+ * top-level `code`; duck-typed on `body` like `chainRefusalCode`.
+ */
+export function isChainCycleRefusal(err: unknown): boolean {
+  const body = (err as { body?: unknown } | null)?.body
+  return parseErrorField(typeof body === 'string' ? body : undefined, 'error_code') === CHAIN_CYCLE_CODE
 }
 
 /**

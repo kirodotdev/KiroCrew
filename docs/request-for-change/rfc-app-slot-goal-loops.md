@@ -1,12 +1,12 @@
 ---
 title: An app with permissions.chatSlots may start, change, fire and stop goal loops on its own chat slots over /api/autonudge
-status: draft
+status: accepted
 author: tilakputta
 created: 2026-11-16
 last-audited: 2026-11-23
 audited-at: b6e2c8a6
 doc-pr: null
-implementation-prs: []
+implementation-prs: [42097]
 tracking-issues: [37388]
 supersedes: []
 superseded-by: []
@@ -14,11 +14,11 @@ superseded-by: []
 
 # RFC: Goal loops on an app's own chat slots over HTTP
 
-Status: draft. Nothing is built and this document changes no code. It answers
-[#37388](https://github.com/kirodotdev/KiroCrew/issues/37388), which a
-maintainer labelled `tier:T3` and parked as a design-level change, pointing at
-this process. Acceptance is requested from a maintainer, who records it on this
-Status line. Every code reference below was read at `b6e2c8a6`.
+Status: accepted. Accepted 2026-11-23 by Bolin Chen (maintainer) in
+[the design sign-off on #37981](https://github.com/kirodotdev/KiroCrew/pull/37981#pullrequestreview-6016390322);
+built in [#42097](https://github.com/kirodotdev/KiroCrew/pull/42097), which fixes
+[#37388](https://github.com/kirodotdev/KiroCrew/issues/37388), and takes effect
+when it merges. Every code reference below was read at `b6e2c8a6`.
 
 It lands on its own because it widens four routes that are owner-only today to
 a second kind of caller, an app token. That changes who may arm work that runs

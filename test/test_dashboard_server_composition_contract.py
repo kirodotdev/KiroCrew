@@ -129,7 +129,7 @@ _BASE_NAMES = frozenset("""
         _wire_status_delta_sink _wire_tunnel_shutdown _withdraw_listener_sidecar
         _would_soften_a_strict_path _write_instance_credentials _write_secret_file
         annotations api_artifact_asset api_artifact_comments api_artifact_delete
-        api_artifact_delete_comment api_artifact_detail api_artifact_edit_comment
+        api_artifact_delete_comment api_artifact_detail api_artifact_docx api_artifact_edit_comment
         api_artifact_events api_artifact_folder_create api_artifact_folder_delete
         api_artifact_folder_update api_artifact_folders api_artifact_mark_review
         api_artifact_materialize api_artifact_overwrite_remote
@@ -299,7 +299,7 @@ def _global_names(code: types.CodeType):
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
     """Tests and other modules read private names off the server as well as public
     ones, so every module-level binding survives the split."""
-    assert len(_BASE_NAMES) == 317
+    assert len(_BASE_NAMES) == 318
     assert sorted(name for name in _BASE_NAMES if not hasattr(server, name)) == []
 
 

@@ -17,7 +17,7 @@
  *     with the real text riding Redux `pendingInput`), so honouring one would
  *     spawn a spurious empty session and type the marker into it.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import type { ReactNode } from 'react'
 import { render, act, waitFor, screen, fireEvent, cleanup } from '@testing-library/react'
 import { store as singletonStore, type RootState } from '../store'
@@ -41,6 +41,8 @@ import { performSlotSwitch } from '../lib/slotSwitch'
 import { captureUrlToken } from '../lib/urlToken'
 import { bindSlotReadSender, flushSlotRead, _resetSlotReadRelayForTest } from '../lib/slotReadRelay'
 import { i18nT } from '../i18n/t'
+import i18next from 'i18next'
+import { resetCrewModeCatalog, setCrewModeCatalog } from '../lib/crewMode'
 import * as transport from '../chat-core/transport/sendTurn'
 import * as revisionSeed from '../hooks/sharedCrew/sendRevisionSeed'
 import type { useKnowledgeFetch } from '../pages/chat/useKnowledgeFetch'
@@ -70,8 +72,10 @@ const cancelQueuedRequest = vi.fn()
 const deleteChatSlot = vi.fn()
 const discardChatSlot = vi.fn()
 const slackLink = vi.fn()
+const chatSlotAgent = vi.fn()
 vi.mock('../api/client', () => ({
   api: {
+    chatSlotAgent: (...a: unknown[]) => chatSlotAgent(...a),
     answerQuestion: (...a: unknown[]) => answerQuestion(...a),
     cancelQueuedMessage: (...a: unknown[]) => cancelQueuedRequest(...a),
     chatSlots: vi.fn().mockResolvedValue([]),
@@ -200,6 +204,7 @@ beforeEach(() => {
   chatSlotDetail.mockResolvedValue({ messages: [], running: false, has_more: false, total: 0 })
   sendChat.mockReset()
   sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) })
+  chatSlotAgent.mockReset()
   createChatSlot.mockResolvedValue({ key: NEW_SLOT, title: NEW_SLOT, messages: 0, running: false })
 })
 
@@ -287,6 +292,104 @@ describe('ChatPage — /chat?new=1&prefill= seeds a fresh session', { timeout: 2
     await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
     expect(createChatSlot).not.toHaveBeenCalled()
     expect(composer().value).toBe('')
+  })
+})
+
+/* `&bot=<name>` and `&conductor=1` choose who answers the session the link
+ * creates; neither sends anything. */
+describe('ChatPage — /chat?new=1 with bot= or conductor=', { timeout: 20_000 }, () => {
+  afterEach(() => { resetCrewModeCatalog() })
+
+  it('creates the session on the named Bot, in the Bot namespace', async () => {
+    const store = await renderAt(`/chat?new=1&bot=my-bot&prefill=${encodeURIComponent(PROMPT)}`)
+
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
+    expect(createChatSlot.mock.calls[0][1]).toBe('my-bot')
+    expect(createChatSlot.mock.calls[0][8]).toBe('member')
+    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    expect(sendChat).not.toHaveBeenCalled()
+    expect(chatSlotAgent).not.toHaveBeenCalled()
+  })
+
+  it('opens the session on the conductor the gateway names, never a fixed agent', async () => {
+    setCrewModeCatalog('next-conductor', ['next-conductor'], 'kirocrew')
+    createChatSlot.mockResolvedValue({ key: NEW_SLOT, title: NEW_SLOT, messages: 0, running: false, agent: 'kirocrew', agent_kind: 'template', memory_mode: 'persistent' })
+    chatSlotAgent.mockResolvedValue({ ok: true, agent: 'next-conductor', agent_kind: 'template' })
+    const store = await renderAt(`/chat?new=1&conductor=1&prefill=${encodeURIComponent(PROMPT)}`)
+
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
+    expect(createChatSlot.mock.calls[0][1]).toBeUndefined()
+    expect(chatSlotAgent).toHaveBeenCalledWith(NEW_SLOT, 'next-conductor', 'template')
+    expect(sendChat).not.toHaveBeenCalled()
+  })
+
+  it('keeps the chat and says so when the conductor switch fails', async () => {
+    setCrewModeCatalog('next-conductor', ['next-conductor'], 'kirocrew')
+    createChatSlot.mockResolvedValue({ key: NEW_SLOT, title: NEW_SLOT, messages: 0, running: false, agent: 'kirocrew', agent_kind: 'template', memory_mode: 'persistent' })
+    chatSlotAgent.mockRejectedValue(Object.assign(new Error('409'), { status: 409 }))
+    const store = await renderAt(`/chat?new=1&conductor=1&prefill=${encodeURIComponent(PROMPT)}`)
+
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
+    expect(await screen.findByText(i18nT('pages.chatPage.conductor_link_not_started'))).toBeTruthy()
+    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    expect(createChatSlot).toHaveBeenCalledTimes(1)
+    expect(sendChat).not.toHaveBeenCalled()
+  })
+
+  async function renderConductorFailure() {
+    setCrewModeCatalog('next-conductor', ['next-conductor'], 'kirocrew')
+    createChatSlot.mockResolvedValue({ key: NEW_SLOT, title: NEW_SLOT, messages: 0, running: false, agent: 'kirocrew', agent_kind: 'template', memory_mode: 'persistent' })
+    chatSlotAgent.mockRejectedValue(Object.assign(new Error('409'), { status: 409 }))
+    const store = await renderAt('/chat?new=1&conductor=1')
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
+    expect(await screen.findByText(i18nT('pages.chatPage.conductor_link_not_started'))).toBeTruthy()
+    return store
+  }
+
+  it('drops the conductor notice when another session is opened', async () => {
+    const store = await renderConductorFailure()
+    await act(async () => { await store.dispatch(switchSlot('chat-old')) })
+
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-old'))
+    await waitFor(() => expect(screen.queryByText(i18nT('pages.chatPage.conductor_link_not_started'))).toBeNull())
+  })
+
+  it('drops the conductor notice in the language it was raised in after a language change', async () => {
+    const store = await renderConductorFailure()
+    const raised = i18nT('pages.chatPage.conductor_link_not_started')
+    onTestFinished(async () => { await i18next.changeLanguage('en') })
+    i18next.addResourceBundle('de', 'translation', { pages: { chatPage: { conductor_link_not_started: 'Conductor mode wurde nicht gestartet.' } } }, true, true)
+    await act(async () => { await i18next.changeLanguage('de') })
+    expect(i18nT('pages.chatPage.conductor_link_not_started')).not.toBe(raised)
+    await act(async () => { await store.dispatch(switchSlot('chat-old')) })
+
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-old'))
+    await waitFor(() => expect(screen.queryByText(raised)).toBeNull())
+  })
+
+  it('drops the conductor notice once the new chat runs a conductor', async () => {
+    const store = await renderConductorFailure()
+    await act(async () => { store.dispatch(updateSlot({ key: NEW_SLOT, agent: 'next-conductor', agent_kind: 'template' })) })
+
+    await waitFor(() => expect(screen.queryByText(i18nT('pages.chatPage.conductor_link_not_started'))).toBeNull())
+    expect(store.getState().chat.activeSlot).toBe(NEW_SLOT)
+  })
+
+  it('lets a Bot win over conductor=1', async () => {
+    setCrewModeCatalog('next-conductor', ['next-conductor'], 'kirocrew')
+    const store = await renderAt('/chat?new=1&conductor=1&bot=my-bot')
+
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
+    expect(createChatSlot.mock.calls[0][1]).toBe('my-bot')
+    expect(chatSlotAgent).not.toHaveBeenCalled()
+  })
+
+  it('ignores bot= and conductor= without new=1', async () => {
+    await renderAt('/chat?bot=my-bot&conductor=1')
+
+    await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+    expect(createChatSlot).not.toHaveBeenCalled()
+    expect(chatSlotAgent).not.toHaveBeenCalled()
   })
 })
 
@@ -1143,6 +1246,50 @@ describe('Signed channel link', () => {
   beforeEach(() => {
     slackLink.mockReset()
     slackLink.mockResolvedValue({ ok: true })
+  })
+
+  it('reconnects a context-only link without sending or overwriting the target draft', async () => {
+    const draft = 'Keep my unsent notes'
+    saveDrafts({ 'chat-old': draft })
+    openLink({ session_key: 'dashboard:chat-old' })
+    const store = await renderAt('/chat', undefined, 'chat-other')
+
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-old'))
+    await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+    await waitFor(() => expect(composer().value).toBe(draft))
+    expect(chatSlotDetail).toHaveBeenCalledWith('chat-old', 100)
+    expect(createChatSlot).not.toHaveBeenCalled()
+    expect(slackLink).not.toHaveBeenCalled()
+    expect(sendChat).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
+  })
+
+  it.each([undefined, '1700.6'])('creates and links a context-only fresh thread without sending (msg_ts=%s)', async (msgTs) => {
+    openLink({ channel: 'C123', thread_ts: '1700.5', ...(msgTs ? { msg_ts: msgTs } : {}) })
+    const store = await renderAt('/chat', undefined, 'chat-old')
+
+    await waitFor(() => expect(slackLink).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
+    await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+    expect(createChatSlot).toHaveBeenCalledTimes(1)
+    expect(slackLink.mock.calls[0]).toEqual([NEW_SLOT, 'C123', '1700.5', ...(msgTs ? [msgTs] : [])])
+    expect(composer().value).toBe('')
+    expect(sendChat).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
+  })
+
+  it.each([{}, { channel: 'C123' }, { thread_ts: '1700.5' }])('ignores a token without a prompt or usable Slack context (%j)', async (claims) => {
+    openLink({ sub: 'U1', ...claims })
+    const store = await renderAt('/chat?sid=chat-old')
+
+    // Normal URL selection finishing proves that the token guard was released.
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-old'))
+    await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+    expect(createChatSlot).not.toHaveBeenCalled()
+    expect(slackLink).not.toHaveBeenCalled()
+    expect(sendChat).not.toHaveBeenCalled()
+    expect(composer().value).toBe('')
+    expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
   })
 
   it('sends the link prompt tagged as already in the channel thread, and nothing after it', async () => {

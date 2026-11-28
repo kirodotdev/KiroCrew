@@ -41,6 +41,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import session_ledger, work_ledger
+from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.dashboard.conditional_get import conditional_json_response
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.crew_board_flight import BoardAnswer, shared_board
@@ -50,7 +51,10 @@ from kiro_crew.dashboard.handlers.work_ledger import (
     _board_lock,
     _find_slot,
     _own_ledger,
+    _refuse_409,
+    _refuse_503,
     _refuse_if_dirty,
+    _refuse_store_error,
     _slot_closed,
     _slot_loop_held,
     _slot_looping,
@@ -391,18 +395,59 @@ def names_person(
     )
 
 
+def ask_stands(item: work_ledger.WorkItem, events: list[dict[str, Any]]) -> bool:
+    """Whether the conductor's ``ask`` record on *item* still waits for its answer:
+    the item carries one, and neither a ``report`` (the record then explains an
+    earlier question, :func:`~kiro_crew.work_vocab.ask_is_current`) nor a person's
+    ``steer`` (their answer, typed into the worker) follows the newest ``ask`` event
+    in *events*. The order decides, as there: stamps have whole-second resolution. A
+    ``decide`` or ``close`` clears the record itself.
+
+    A tail without the ``ask`` event (cut short of it, or not sent) leaves the
+    stamps to decide what the order cannot: a ``steer`` answers the record only
+    when stamped at or after its ``written_at``, and with no ``report`` in the tail
+    the record stands unless the item's last report is newer than it. A ``report``
+    in such a tail supersedes the record, as in
+    :func:`~kiro_crew.work_vocab.ask_is_current`."""
+    if not item.ask:
+        return False
+    in_tail = any(event.get("kind") == "ask" for event in events)
+    written = work_ledger.parse_stamp(str(item.ask.get("written_at") or ""))
+    for event in reversed(events):
+        kind = event.get("kind")
+        if kind == "ask":
+            return True
+        if kind == "report" or (kind == "steer" and in_tail):
+            return False
+        if kind == "steer":
+            raw = event.get("ts")
+            stamp = work_ledger.parse_stamp(raw) if isinstance(raw, str) and raw else None
+            if stamp is not None and (written is None or stamp >= written):
+                return False
+    reported = work_ledger.parse_stamp(item.last_report_at or "")
+    if reported is None:
+        return True
+    return written is not None and written >= reported
+
+
 def awaits_person(
     item: work_ledger.WorkItem, events: list[dict[str, Any]], *, running: bool = False
 ) -> bool:
-    """Whether *item* waits on the PERSON: its worker names one (:func:`names_person`)
-    AND the conductor relayed the question with a current ``ask`` record (the item
-    carries ``ask`` and no report follows the newest ``ask`` event in *events*,
-    :func:`~kiro_crew.work_vocab.ask_is_current`). Until the conductor records it,
-    the question is still the conductor's to vet. The one test behind every "needs
-    you" reader -- the Board's Needs your input, the sidebar's crew count, the
-    goal-board facts, the headless run and the warm welcome -- so they agree
-    (rfc-delayed-task-brief, section 3.11)."""
-    return bool(item.ask) and ask_is_current(events) and names_person(item, events, running=running)
+    """Whether *item* waits on the PERSON: the conductor relayed a question about it
+    and recorded that with an ``ask`` nobody has answered since (:func:`ask_stands`),
+    and its worker's turn is not *running* (a running turn means the worker moved on).
+
+    The conductor's record alone decides. A worker's report that names a person
+    (:func:`names_person`) is its claim, still the conductor's to vet until the
+    record is written; and the record stands whatever the worker last said, so a task
+    the conductor asked the person about reads "needs you" when its worker reported
+    ``progress``, or a ``blocked`` the conductor already answered. The one test
+    behind every "needs you" reader -- the Board's Needs your input, the sidebar's
+    crew count, the goal-board facts, the headless run and the warm welcome -- so
+    they agree (rfc-delayed-task-brief, section 3.11). The Slack work board reads
+    the same record beside its own rule (a worker's person-naming report
+    alone waits there too)."""
+    return not running and ask_stands(item, events)
 
 
 def item_person_state(slot_key: str, item: Mapping[str, Any], *, running: bool = False) -> str:
@@ -426,9 +471,9 @@ def item_person_state(slot_key: str, item: Mapping[str, Any], *, running: bool =
     remote = work_ledger.remote_liveness(slot_key, stored)
     running = remote[0] if remote is not None else running
     events = [event.to_dict() for event in tail]
-    if not names_person(stored, events, running=running):
-        return ""
-    return "waits" if readable and awaits_person(stored, events, running=running) else "checking"
+    if readable and awaits_person(stored, events, running=running):
+        return "waits"
+    return "checking" if names_person(stored, events, running=running) else ""
 
 
 def item_ask_is_current(slot_key: str, item: Mapping[str, Any]) -> bool:
@@ -572,14 +617,21 @@ def _own_worker_records_locked(
         # It is computed for EVERY asking item and is authoritative, False
         # included: a decide in the same second as a newer question has a stamp
         # equal to the report's, and only the event tail's order tells them apart.
-        answered = False
-        if item.status in {"blocked", "question"}:
+        # ``asks_person`` is the events half of :func:`awaits_person` (the conductor's
+        # ``ask`` record still stands), read from the same tail, so a reader of this
+        # snapshot calls "needs you" what the Board does.
+        answered = asked = False
+        if item.status in {"blocked", "question"} or item.ask:
             events = [
                 dataclasses.asdict(e)
                 for e in work_ledger.read_events(slot_key, item.item_id, limit=_BOARD_EVENT_TAIL)
             ]
-            answered = answered_since_report(item, events)
+            answered = item.status in {"blocked", "question"} and answered_since_report(
+                item, events
+            )
+            asked = not item.is_terminal and ask_stands(item, events)
         setattr(item, "answered_by_event", answered)  # noqa: B010 - a snapshot mark, not a field
+        setattr(item, "asks_person", asked)  # noqa: B010 - a snapshot mark, not a field
     return record, items
 
 
@@ -755,9 +807,31 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
     # Single flight (see crew_board_flight): concurrent reads share one build that
     # started after each of them arrived; nothing is kept afterwards. The owner gate and
     # the request's own validation ran above, so only an admitted caller joins a build.
-    answer = await shared_board(
-        key, requested, lambda: _build_board(request.app["state"], requested, key, caller)
-    )
+    #
+    # A build that raises is answered here with a code, the way the sibling ledger routes
+    # answer the same faults. Left to aiohttp it is a bare 500 that says neither what
+    # failed nor whether the Board's next poll can clear it.
+    try:
+        answer = await shared_board(
+            key, requested, lambda: _build_board(request.app["state"], requested, key, caller)
+        )
+    except work_ledger.WorkLedgerError as exc:
+        logger.warning("crew board: the store refused the read of %s", key, exc_info=True)
+        return _refuse_store_error(exc)
+    except CrewLogError as exc:
+        logger.warning("crew board: the crew log fold refused the read of %s", key, exc_info=True)
+        return _refuse_409("crew_log_unreadable", f"the crew log could not be read ({exc.code})")
+    except OSError:
+        logger.warning("crew board: the work ledger of %s could not be read", key, exc_info=True)
+        return _refuse_503(
+            "ledger_unreadable",
+            "the work ledger could not be read right now (a transient I/O error); try again",
+        )
+    except Exception:  # noqa: BLE001 - any other failure still answers with a code
+        logger.exception("crew board: the read of %s failed", key)
+        return web.json_response(
+            {"error": "the board could not be read", "code": "read_failed"}, status=500
+        )
     if answer.status != 200:
         return web.Response(body=answer.body, status=answer.status, content_type="application/json")
     # Record the ALLOWED read, not only denials: an owner gate that logs a grant

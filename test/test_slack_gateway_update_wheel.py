@@ -230,6 +230,26 @@ class TestWheelAutoApplyUsesTheShadowEngine:
 
         assert orch._update_apply_deferred is True, "retried on the short cadence"
         ds.push_update_progress.assert_not_called()
+        # The progress on screen belongs to the apply that holds the lock.
+        ds.clear_update_progress.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_deferred_apply_clears_its_progress_for_every_tab(self, monkeypatch):
+        """Memory still preparing: the apply stops after its first frames, and
+        those frames must not stay on screen as an install that is running."""
+        from kiro_crew.platform.wheel_engine import WheelUpdateNotReady
+
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        wire_wheel_apply(
+            monkeypatch, apply=MagicMock(side_effect=WheelUpdateNotReady("memory is preparing"))
+        )
+
+        await orch._auto_apply_wheel_update("stable", "9.9.9")
+
+        assert orch._update_apply_deferred is True
+        ds.clear_update_progress.assert_called_once_with(announce=True)
 
     @pytest.mark.asyncio
     async def test_a_cancelled_apply_is_retried_on_the_short_cadence(self, monkeypatch):
@@ -247,6 +267,7 @@ class TestWheelAutoApplyUsesTheShadowEngine:
 
         assert orch._update_apply_deferred is True
         ds.push_update_progress.assert_not_called()
+        ds.clear_update_progress.assert_called_once_with(announce=True)
 
     @pytest.mark.asyncio
     async def test_an_incompatible_release_is_noticed_once_and_decided_again_each_cycle(
@@ -275,6 +296,7 @@ class TestWheelAutoApplyUsesTheShadowEngine:
         assert "Re-run the installer" in body and "cli.sh" in body, body
         assert engine.call_count == 2, "the signed metadata is checked again every cycle"
         ds.push_update_progress.assert_not_called()
+        assert ds.clear_update_progress.call_args_list == [((), {"announce": True})] * 2
 
     @pytest.mark.asyncio
     async def test_a_failed_apply_reports_redacted_and_does_not_restart(self, monkeypatch):
@@ -344,3 +366,24 @@ class TestWheelAutoApplyUsesTheShadowEngine:
         await orch._settle_update_work(task)
 
         assert task.done()
+
+
+def test_an_announced_clear_tells_every_connected_tab():
+    """`announce` broadcasts a `cleared` frame; a plain clear stays local."""
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard.state_parts import slots_push
+
+    state = SimpleNamespace(
+        _update_progress={"step": "building", "detail": ""}, _broadcast=MagicMock()
+    )
+    slots_push.clear_update_progress(state)
+    assert state._update_progress is None
+    state._broadcast.assert_not_called()
+
+    state._update_progress = {"step": "building", "detail": ""}
+    slots_push.clear_update_progress(state, announce=True)
+    assert state._update_progress is None
+    state._broadcast.assert_called_once_with(
+        {"_type": "update_progress", "step": "cleared", "detail": ""}
+    )

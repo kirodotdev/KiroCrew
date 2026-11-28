@@ -55,6 +55,9 @@ export interface CronJob {
   /** Epoch seconds at which `last_result` was produced; absent on an older gateway. */
   last_result_ts?: number | null
   is_running?: boolean; running_since?: number | null
+  /** Epoch seconds at which a claimed run starts executing, while it waits out
+   *  its random start delay; null once it runs. Absent on an older gateway. */
+  waiting_until?: number | null
   /** The installed app that owns this job, or null/absent for a person-owned
    * one. Host-derived from the job's `created_by` stamp, which an app never
    * supplies, so it cannot be used to claim another app's jobs. Absent on an

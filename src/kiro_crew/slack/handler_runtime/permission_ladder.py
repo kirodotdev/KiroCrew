@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         _ACTION_APPROVE,
         _ACTION_REJECT,
         _ACTION_TRUST,
+        _ACTION_TRUST_OWN,
         _APPROVAL_TIMEOUT,
         _OUTCOME_APPROVED,
         _OUTCOME_REJECTED,
@@ -57,6 +58,7 @@ if TYPE_CHECKING:
         add_trusted_session,
         capabilities_of,
         event_is_spawn_run,
+        grant_own_trust,
         hook_gate_busy,
         hook_gate_kwargs,
         is_allowed_user,
@@ -368,9 +370,20 @@ async def _answer_permission_request(
         )
         return False
 
-    # Trust mode (per-session) or YOLO mode (owner-only global) → auto-approve
+    # Trust mode (per-session) or YOLO mode (owner-only global) → auto-approve.
+    # Session Trust is the owner's grant: a shared user's turn still asks, unless
+    # that sender holds a grant of their own on this session and the call is the
+    # turn's own, not a helper agent's.
     _yolo_now = is_yolo_mode()
-    if not _held and (_yolo_now or is_session_trusted(session_key)):
+    if is_shared_listed(turn.user_id):
+        from kiro_crew.slack import thread_trust
+
+        _session_trusted = thread_trust.holds_grant(
+            session_key, turn.user_id
+        ) and thread_trust.sender_trusted(turn.sessions, session_key, turn.user_id, event)
+    else:
+        _session_trusted = is_session_trusted(session_key)
+    if not _held and (_yolo_now or _session_trusted):
         approval_sent = await client.approve_tool(event.request_id)
         if approval_sent is False:
             _outcome, _meta = _batch_refusal_outcome(client, event.request_id)
@@ -666,11 +679,14 @@ async def handle_interaction(
 
     Supports four actions:
     - approve_tool: approve this one tool call
-    - trust_tool: auto-approve all tools for this session (thread)
+    - trust_tool: auto-approve all tools for this session (thread); from a shared
+      user on a native prompt, only that person's own turns in it
+      (``grant_own_trust``), answered as ``_ACTION_TRUST_OWN``
     - reject_tool: reject this tool call
 
     Security: only the owner, or a shared user on the prompt their own turn posted,
-    may answer; only the owner grants Trust. Trust requires DM channel
+    may answer, Trust included; a shared user's Trust needs that live prompt, so a
+    late Trust click stays the owner's. Trust requires DM channel
     (verified via conversations.info by the gateway caller).
     """
 
@@ -692,7 +708,8 @@ async def handle_interaction(
     key = f"{channel}:{msg_ts}"
 
     # A code channel a shared user opened: they answer its own session's prompts
-    # there, posted in that channel, like the owner. Trust stays the owner's (below).
+    # there, posted in that channel, like the owner. Trust there stays the owner's:
+    # the opener is never a code channel prompt's requester (below).
     if is_shared_listed(user_id) and action_id != _ACTION_TRUST:
         from kiro_crew.slack.code_channels.shared_refusal import opener_answers_prompt
 
@@ -715,10 +732,12 @@ async def handle_interaction(
             return _resolve_linked_click(_cc_entry, key, action_id, user_id, sessions)
 
     # A shared user (slack.shared_access) answers only the prompt their own turn
-    # posted, and never grants Trust. Checked before the claim, so a refused click
-    # leaves the prompt pending for the person it belongs to. A linked dashboard
-    # slot's prompt names its requester as a native one does (empty: owner only),
-    # and only while its slot's running turn still names that person.
+    # posted, Trust included: Trust there covers their own turns in the thread only.
+    # Checked before the claim, so a refused click leaves the prompt pending for the
+    # person it belongs to. A linked dashboard slot's prompt names its requester as a
+    # native one does (empty: owner only), and only while its slot's running turn
+    # still names that person. An answered prompt names nobody, so a shared user's
+    # late Trust click is refused here.
     if is_shared_listed(user_id):
         from kiro_crew.slack.code_channels.shared_refusal import shared_user_refused_for_slot
 
@@ -726,6 +745,12 @@ async def handle_interaction(
             # Loads the code-channel store off the loop; everything below is read
             # after this, with nothing awaited before the answer.
             await asyncio.to_thread(shared_user_refused_for_slot, "", thread_ts)
+        elif action_id == _ACTION_TRUST:
+            # A Trust press on a native prompt reads the code-channel store for its
+            # grant, with nothing awaited before the answer: load it off the loop.
+            from kiro_crew.slack.code_channels.store import store as _code_channel_store
+
+            await asyncio.to_thread(_code_channel_store().load)
         _linked = _linked_approvals.get(key)
         _own: Any = _linked or _pending_approvals.get(key)
         _asker = str(getattr(_own, "requester", "") or "")
@@ -734,23 +759,36 @@ async def handle_interaction(
             from kiro_crew.slack.turn_requester import live_card_requester
 
             _asker = live_card_requester(_linked)
-            # A code channel's session is reached only through the opener gate
-            # above, never as a requester: a session relinked to another thread
-            # keeps its requester, so the card it posts there is not theirs.
+            # A code channel's or Conductor thread's session is reached as a
+            # requester only by its opener, in its own channel: a session relinked
+            # to another thread keeps its requester, so the card it posts there is
+            # not theirs.
             _cc_slots = tuple(s for s in (_linked.slot_key, _linked.session_key) if s)
+        # An answer can settle the future before the card's registry entry is removed.
+        # Check after the lookup await, with no await before a Trust grant.
+        _future = getattr(_own, "future", None)
+        if _future is None or _future.done():
+            _asker = ""
+        # Asked again here, with nothing awaited before the answer: the code
+        # channel check above awaits, and a removal during it answers nothing.
         _refusal = (
-            "trust is owner-only"
-            if action_id == _ACTION_TRUST
-            # Asked again here, with nothing awaited before the answer: the code
-            # channel check above awaits, and a removal during it answers nothing.
+            "shared access ended"
+            if not is_shared_user(user_id)
             else (
-                "shared access ended"
-                if not is_shared_user(user_id)
-                else (
-                    "code channel is owner-only"
-                    if any(shared_user_refused_for_slot(s, thread_ts) for s in _cc_slots)
-                    else ("not the requester" if not _asker or _asker != user_id else "")
+                "code channel is owner-only"
+                # The opener of the Conductor thread or code channel this card is
+                # in still reaches its own session (requester rule below). Trust
+                # there stays the owner's: no sender, so no opener is admitted.
+                if any(
+                    shared_user_refused_for_slot(
+                        s,
+                        thread_ts,
+                        sender="" if action_id == _ACTION_TRUST else user_id,
+                        channel=channel,
+                    )
+                    for s in _cc_slots
                 )
+                else ("not the requester" if not _asker or _asker != user_id else "")
             )
         )
         if _refusal:
@@ -814,11 +852,14 @@ async def handle_interaction(
     # guard's fallback reject can land as a cancelled outcome (ends the turn's
     # remaining tool calls) — still strictly better than a wedged subprocess.
     floor_refused = False
+    own_press = False  # a shared user pressed Trust on their own prompt
+    pressed_on: Any = None  # the running session that press was made on
     try:
         if action_id in (_ACTION_APPROVE, _ACTION_TRUST):
             # Set trust state BEFORE approving (so subsequent tools auto-approve)
             if action_id == _ACTION_TRUST:
-                if not is_allowed_user(user_id):
+                # A shared user reaches here only as this prompt's requester (above).
+                if not (is_allowed_user(user_id) or is_shared_user(user_id)):
                     logger.error("Rejecting trust escalation from non-owner %s", user_id)
                     sel().log_api_access(
                         caller=user_id,
@@ -834,9 +875,29 @@ async def handle_interaction(
                 elif not trust_permitted():
                     # A ``permission_mode`` deny of ``trust``: approve this one tool.
                     action_id = _ACTION_APPROVE
+                elif is_shared_listed(user_id):
+                    # A shared user's press covers their own turns in this thread,
+                    # never the session. Granted below, once this tool is approved,
+                    # on the session the press was made on: read before that await.
+                    from kiro_crew.slack import thread_trust
+
+                    own_press = True
+                    pressed_on = thread_trust.session_binding(sessions, pending.session_key)
+                    action_id = _ACTION_APPROVE
                 elif pending.session_key:
                     add_trusted_session(pending.session_key, sessions)
-                    logger.info("Trust mode ON for session %s", pending.session_key)
+                    logger.info(
+                        "Trust mode ON for session %s (granted by %s)",
+                        pending.session_key,
+                        user_id,
+                    )
+                    sel().log_api_access(
+                        caller=user_id,
+                        operation="slack.interactive.trust",
+                        outcome="allowed",
+                        source="slack",
+                        resources=pending.session_key,
+                    )
                 else:
                     logger.warning(
                         "No session_key on pending approval %s; approving without trust", key
@@ -848,6 +909,29 @@ async def handle_interaction(
                 pending.future.set_result(
                     _OUTCOME_APPROVED if approval_sent is not False else _OUTCOME_REJECTED
                 )
+            if own_press and approval_sent is not False:
+                # After the approval, so a press whose tool the gate refused (its
+                # card reads Rejected) leaves no grant, and after the future is
+                # settled, so a raise here cannot make the guard below answer the
+                # approved request a second time. Nothing is awaited since the
+                # approval; the claim above keeps every other answer out, and the
+                # grant asks again that the presser is still a shared user and that
+                # the session is the one pressed on (the approval awaited). The
+                # owner's turns and another shared user's still ask; where the
+                # thread cannot hold the grant, the press has approved this one tool.
+                own = pressed_on is not None and grant_own_trust(
+                    sessions, pending.session_key, user_id, channel, thread_ts, pressed_on
+                )
+                sel().log_api_access(
+                    caller=user_id,
+                    operation="slack.interactive.trust_own",
+                    outcome="allowed" if own else "denied",
+                    source="slack",
+                    resources=pending.session_key or "",
+                    error="" if own else "own_trust_unavailable",
+                )
+                if own:
+                    action_id = _ACTION_TRUST_OWN
             if approval_sent is not False:
                 Stats().inc_tool_approval()
                 _refused_outcome = "allowed"

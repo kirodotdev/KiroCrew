@@ -86,7 +86,8 @@ from kiro_crew.mcp_guide_tool_list import (  # noqa: F401
 )
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
-from kiro_crew.validation import MCP_GUIDE_SCHEMAS, validate_tool_args
+from kiro_crew.validation_parts.field_engine import validate_tool_args
+from kiro_crew.validation_parts.opt_in_server_schemas import MCP_GUIDE_SCHEMAS
 
 logger = logging.getLogger(__name__)
 
@@ -153,8 +154,8 @@ GUIDE_NOT_SHOWN_NOTE = (
 
 
 #: The instruction on every ``find_setting`` result. Some answers are not a
-#: Settings row (auto-approving one MCP tool on KAS is a ``permissions.yaml``
-#: rule), and the packaged docs say so where the registry cannot.
+#: Settings row (always allowing one MCP tool is a switch in MCP Servers and on
+#: its approval card), and the packaged docs say so where the registry cannot.
 _FIND_SETTING_NEXT = (
     "If no row here is what was asked, it may not be a setting: call search_docs "
     "with the same words before answering, and never suggest a config key from memory."

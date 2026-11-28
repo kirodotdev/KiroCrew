@@ -28,6 +28,11 @@ Contract
   tests that textually reference a changed file, and -- when the OTHER surface
   changed -- the cross-surface set ``ci-surface-tests.py`` computes for CI.
   A surface with nothing related is skipped and says so.
+- ``--tree-scans`` adds a pre-push tier: when the diff touches ``src/``, every
+  backend test that scans the whole source tree (``run_scoped_tests.tree_scan_targets``:
+  a ``tree_scan_*`` xdist group, a source_corpus tree reader, or a walk of ``src``),
+  since a ratchet or boundary guard fails on files it never names. It costs a few
+  minutes, so the inner loop leaves it off and runs it before a push.
 - The frontend runner starts the lockfile's own vitest
   (``node ./node_modules/vitest/vitest.mjs`` from ``website/``), so it never fetches a
   package or runs a global one. With that vitest not installed, a diff that touched no frontend file skips
@@ -59,9 +64,15 @@ Usage
     scripts/local-gate.py --dry-run        # print the plan, run nothing
     scripts/local-gate.py --full           # both surfaces' FULL suites (human-requested)
     scripts/local-gate.py --no-reuse       # run every command, even one that passed on this tree
+    scripts/local-gate.py --tree-scans     # add the whole-src-tree guards (before a push)
+    scripts/local-gate.py --fail-fast      # stop at the first failing command
+
+Every selected command runs even after one fails, so one run lists every failing
+batch; the summary names each one. ``--fail-fast`` stops at the first instead.
 
 Exit status is the gate's: 0 when every selected command passed (or nothing was
-related), 2 when the diff could not be read, non-zero otherwise. ``--dry-run``
+related), 2 when the diff could not be read, otherwise the first failing
+command's exit code (127 when it could not start). ``--dry-run``
 exits 0 after printing the plan. pytest runs as ``-n auto`` with
 ``PYTEST_XDIST_AUTO_NUM_WORKERS`` capped at ``min(max(cpu_count // 3, 2), 12)``,
 so the root ``xdist_budget.py`` still applies its memory clamp and shared slots
@@ -103,6 +114,7 @@ from run_scoped_tests import (  # noqa: E402  (path set immediately above)
     VITEST_ENTRY,
     pytest_worker_env,
     related_targets,
+    tree_scan_targets,
 )
 
 # Bucket rules -- MUST mirror ci.yml's `changes` job filters. test_local_gate.py
@@ -214,7 +226,23 @@ def _resolve_command(cmd: list[str]) -> list[str]:
     return [launcher, *cmd[1:]]
 
 
-def _add_related(plan: Plan, surface: str, paths: list[str], surface_changed: bool) -> None:
+def _add_tree_scans(plan: Plan, paths: list[str], already: set[str]) -> None:
+    """Append the whole-tree guards when the diff touches ``src/``.
+
+    A guard over the whole tree fails on a file it never names, so the related set
+    cannot reach it. This is the ``--tree-scans`` tier: costlier than the related
+    set, so it is opt-in rather than part of every inner-loop run.
+    """
+    if not any(p.startswith("src/") for p in paths):
+        plan.notes.append("tree scans: no src/ change, none needed")
+        return
+    targets = [t for t in tree_scan_targets() if t not in already]
+    plan.notes.append(f"tree scans: {len(targets)} whole-tree guard file(s) not already related")
+    if targets:
+        _add_batches(plan, "backend (tree scans)", argv_batches(backend_argv, targets), _REPO_ROOT)
+
+
+def _add_related(plan: Plan, surface: str, paths: list[str], surface_changed: bool) -> list[str]:
     """Append ``surface``'s related set to the plan, or a note that it is empty.
 
     Raises ``SelectionUntrustworthy`` (via ``related_targets`` /
@@ -225,11 +253,11 @@ def _add_related(plan: Plan, surface: str, paths: list[str], surface_changed: bo
     targets, verdict = related_targets(surface, paths)
     if not targets:
         plan.notes.append(f"{surface}: {verdict}")
-        return
+        return targets
     if surface == "backend":
         plan.notes.append(f"{surface}: {verdict}")
         _add_batches(plan, "backend (related)", argv_batches(backend_argv, targets), _REPO_ROOT)
-        return
+        return targets
     try:
         # `frontend_argv` resolves node to an absolute launcher itself, so
         # `_resolve_command` sees a non-launcher argv[0] and leaves it alone.
@@ -240,7 +268,7 @@ def _add_related(plan: Plan, surface: str, paths: list[str], surface_changed: bo
         # and leave these specs to CI, which runs them regardless.
         plan.notes.append(f"{surface}: {verdict} -- NOT RUN HERE: {exc}; CI runs them")
         plan.skipped.append(surface)
-        return
+        return targets
     if not frontend_dependencies_installed():
         # Node is here but the website's vitest is not (a fresh worktree, or a
         # partial install).
@@ -253,9 +281,10 @@ def _add_related(plan: Plan, surface: str, paths: list[str], surface_changed: bo
             )
         plan.notes.append(f"{surface}: {verdict} -- NOT RUN HERE: {_NO_NODE_MODULES}; CI runs them")
         plan.skipped.append(surface)
-        return
+        return targets
     plan.notes.append(f"{surface}: {verdict}")
     _add_batches(plan, "frontend (related)", batches, _REPO_ROOT / "website")
+    return targets
 
 
 def frontend_dependencies_installed() -> bool:
@@ -485,8 +514,10 @@ def build_plan(args: argparse.Namespace) -> Plan:
         f" (frontend={frontend} meta={meta} backend={backend})"
     )
     try:
-        _add_related(plan, "backend", paths, backend)
+        related = _add_related(plan, "backend", paths, backend)
         _add_related(plan, "frontend", paths, frontend)
+        if args.tree_scans:
+            _add_tree_scans(plan, paths, set(related))
     except SelectionUntrustworthy as exc:
         raise GateCannotSee(f"cannot select related tests -- running nothing (exit 2): {exc}") from exc
     return plan
@@ -504,6 +535,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-reuse", action="store_true",
                         help="run every selected command even when it already passed on "
                              "this exact tree")
+    parser.add_argument("--tree-scans", action="store_true",
+                        help="also run every backend test that scans the whole src/ "
+                             "tree when the diff touches src/ (a pre-push tier)")
+    parser.add_argument("--fail-fast", action="store_true",
+                        help="stop at the first failing command instead of running the rest")
     args = parser.parse_args(argv)
 
     try:
@@ -528,6 +564,7 @@ def main(argv: list[str] | None = None) -> int:
     # (harmless to npm/vitest) and the i18n base ref; see gate_env.
     env = gate_env(args.base)
     proofs = open_proofs(env)
+    failures: list[tuple[str, int]] = []
     for label, cmd, cwd in plan.commands:
         age = None if proofs is None else proofs.age(cmd, cwd)
         if age is not None and not args.no_reuse:
@@ -539,14 +576,27 @@ def main(argv: list[str] | None = None) -> int:
             proc = subprocess.run(_resolve_command(cmd), cwd=cwd, env=env)
         except OSError as exc:
             print(f"local-gate: [{label}] FAILED to start: {exc}", file=sys.stderr)
-            return 127
+            failures.append((label, 127))
+            if args.fail_fast:
+                break
+            continue
         if proc.returncode != 0:
             print(f"local-gate: [{label}] FAILED (rc={proc.returncode})", file=sys.stderr)
             if proofs is not None:
                 proofs.forget(cmd, cwd)
-            return proc.returncode
+            failures.append((label, proc.returncode))
+            if args.fail_fast:
+                break
+            continue
         if proofs is not None:
             proofs.record(cmd, cwd)
+    if failures:
+        print(
+            f"local-gate: {len(failures)} of {len(plan.commands)} command(s) failed: "
+            + ", ".join(f"[{label}] rc={rc}" for label, rc in failures),
+            file=sys.stderr,
+        )
+        return failures[0][1]
     if plan.skipped:
         print(
             "local-gate: every runnable gate passed; "

@@ -40,7 +40,7 @@ async def _with_client(coro_fn, monkeypatch, servers):
     monkeypatch.setattr(disc, "list_servers", lambda: servers)
     monkeypatch.setattr(mcp_probe, "_read_global_mcps", lambda: {})
     monkeypatch.setattr(mcp_probe, "_kirocrew_mcp_servers", lambda: {})
-    monkeypatch.setattr(mcp_probe, "_record_probe_verdicts", lambda rows: None)
+    monkeypatch.setattr(mcp_probe, "_record_probe_verdicts", lambda rows, servers: None)
 
     app = web.Application(middlewares=[_auth])
     app["state"] = type("S", (), {"_background_tasks": set(), "sessions": None})()

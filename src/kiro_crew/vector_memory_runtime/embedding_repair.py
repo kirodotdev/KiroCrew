@@ -321,6 +321,21 @@ def has_pending_embeddings(store: VectorMemoryStore) -> bool:
     )
 
 
+def pending_rows_at_least(store: VectorMemoryStore, count: int) -> bool:
+    """True when at least *count* live rows wait for a vector. Reads no more than that."""
+    found = 0
+    for relation in ("episodic_memories", "semantic_memory"):
+        row = store._fetch_one_locked(
+            f"SELECT count(*) FROM (SELECT 1 FROM {relation} "
+            "WHERE is_deleted = 0 AND embedding IS NULL LIMIT ?)",
+            (count - found,),
+        )
+        found += row[0] if row else 0
+        if found >= count:
+            return True
+    return False
+
+
 def _resolve_member_lesson_dedup(
     store: VectorMemoryStore, should_stop: "Callable[[], bool] | None"
 ) -> None:
@@ -330,13 +345,76 @@ def _resolve_member_lesson_dedup(
         resolve_pending(store)
 
 
+#: Most row ids one store keeps per kind for :func:`queue_fresh_vectors`. A row
+#: dropped past it still has a NULL vector, so the paged sweep reaches it later.
+_FRESH_MAX = 4096
+
+
+def queue_fresh_vectors(store: VectorMemoryStore, kind: str, identities: list[str]) -> None:
+    """Put rows just written without a vector ahead of the backlog in the sweep.
+
+    *kind* is a :func:`backfill_rows` kind (``directive``, ``fact``, ``episode``).
+    The queue is in this process only: the gateway's standing repair visit serves
+    it first (:func:`has_fresh_vectors`), and a row whose queue entry is lost (a
+    restart, another process) keeps its NULL vector for the paged sweep.
+    """
+    if not identities:
+        return
+    with store._db_lock:
+        fresh: dict[str, dict[str, None]] | None = getattr(store, "_fresh_vectors", None)
+        if fresh is None:
+            fresh = {}
+            store._fresh_vectors = fresh
+        queued = fresh.setdefault(kind, {})
+        for identity in identities:
+            queued.pop(identity, None)
+            queued[identity] = None
+        while len(queued) > _FRESH_MAX:
+            del queued[next(iter(queued))]
+
+
+def drop_fresh_vectors(store: object) -> None:
+    """Forget the queue; its rows keep their NULL vector for the paged sweep."""
+    fresh = getattr(store, "_fresh_vectors", None)
+    if isinstance(fresh, dict):
+        fresh.clear()
+
+
+def has_fresh_vectors(store: object) -> bool:
+    """True when :func:`queue_fresh_vectors` holds rows this store has not served."""
+    fresh = getattr(store, "_fresh_vectors", None)
+    return isinstance(fresh, dict) and any(fresh.values())
+
+
+def _take_fresh(store: VectorMemoryStore, kind: str, limit: int) -> list[str]:
+    fresh: dict[str, dict[str, None]] | None = getattr(store, "_fresh_vectors", None)
+    queued = fresh.get(kind) if fresh else None
+    taken: list[str] = []
+    while queued and len(taken) < limit:
+        identity = next(iter(queued))
+        del queued[identity]
+        taken.append(identity)
+    return taken
+
+
 def backfill_rows(
     store: VectorMemoryStore, sql: str, *, kind: str, identity: str, limit: int | None
 ) -> list[sqlite3.Row]:
-    """Page bounded repair fairly, including past rows whose inference failed."""
+    """Page bounded repair fairly, including past rows whose inference failed.
+
+    A bounded page serves rows from :func:`queue_fresh_vectors` first, newest
+    writes ahead of the paged backlog; the paging cursor does not move for them.
+    """
     if limit is None:
         return store._fetch_all_locked(sql)
     with store._db_lock:
+        while taken := _take_fresh(store, kind, max(0, limit)):
+            marks = ",".join("?" * len(taken))
+            rows = store._fetch_all_locked(
+                sql + f" AND {identity} IN ({marks}) ORDER BY {identity}", tuple(taken)
+            )
+            if rows:
+                return rows
         cursors: dict[str, str] | None = getattr(store, "_backfill_cursors", None)
         if cursors is None:
             cursors = {}
@@ -453,7 +531,7 @@ def backfill_missing_embeddings(
         if should_stop is not None and should_stop():
             break
         backfill_generation = store._space_generation
-        vec = store._embed_bulk_row(row["text"], pace=pace)
+        vec = store._embed_bulk_row(row["text"], pace=pace, should_stop=should_stop)
         if should_stop is not None and should_stop():
             break
         if not vec:
@@ -586,7 +664,7 @@ def backfill_lesson_embeddings(
         if should_stop is not None and should_stop():
             break
         lesson_generation = store._space_generation
-        vec = store._embed_bulk_row(text, pace=pace)
+        vec = store._embed_bulk_row(text, pace=pace, should_stop=should_stop)
         if should_stop is not None and should_stop():
             break
         if not vec:
@@ -670,7 +748,9 @@ def backfill_semantic_kv_embeddings(
         if should_stop is not None and should_stop():
             break
         backfill_generation = store._space_generation
-        vec = store._embed_bulk_row(f"{row['key']} {row['value_json']}", pace=pace)
+        vec = store._embed_bulk_row(
+            f"{row['key']} {row['value_json']}", pace=pace, should_stop=should_stop
+        )
         if should_stop is not None and should_stop():
             break
         if not vec:

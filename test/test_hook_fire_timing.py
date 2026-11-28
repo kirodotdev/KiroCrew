@@ -5,7 +5,11 @@ Each slow step advances a fake clock from inside itself, so host load cannot cha
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -383,3 +387,42 @@ async def test_a_slow_event_cancelled_mid_hook_still_logs_the_event_line(
 
     (event_line,) = _event_warnings(caplog)
     assert "took 2000ms; hooks=1: guard=2000ms" in event_line.getMessage()
+
+
+_HOP_MARKER: ContextVar[str] = ContextVar("hop_marker", default="")
+
+
+class _RefusingExecutor(ThreadPoolExecutor):
+    """A default executor that runs nothing, so a hop handed to it fails the test."""
+
+    def __init__(self) -> None:
+        super().__init__(max_workers=1)
+        self.submitted = 0
+
+    def submit(self, fn, /, *args, **kwargs):  # type: ignore[override]
+        self.submitted += 1
+        raise RuntimeError("a hook hop reached the loop's default executor")
+
+
+@pytest.mark.asyncio
+async def test_a_hop_runs_on_the_hook_pool_not_the_default_executor():
+    loop = asyncio.get_running_loop()
+    default = _RefusingExecutor()
+    loop.set_default_executor(default)
+    _HOP_MARKER.set("caller")
+
+    def check() -> tuple[str, str]:
+        return threading.current_thread().name, _HOP_MARKER.get()
+
+    try:
+        timing = hook_fire_timing.HookFireTiming("guard", HOOK_EVENT_PRE_TOOL_USE)
+        thread_name, seen = await asyncio.wait_for(timing.hop("gov_hook", check), 30)
+    finally:
+        default.shutdown(wait=True)
+
+    assert default.submitted == 0
+    assert thread_name.startswith("mc-hookhop")
+    assert seen == "caller"
+    pool = hook_fire_timing.hook_hop_executor()
+    assert pool is hook_fire_timing.hook_hop_executor()
+    assert pool._max_workers == hook_fire_timing._MAX_HOOK_HOP_WORKERS

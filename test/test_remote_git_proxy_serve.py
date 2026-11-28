@@ -229,8 +229,10 @@ def test_past_the_live_request_cap_git_gets_a_503(proxy, monkeypatch):
 def test_lend_frames_are_kept_beside_the_port_file_and_cleared_on_exit(proxy):
     assert not proxy.lend.exists()  # nothing routed until the gateway answers
     proxy.reply({"t": "lend", "id": 0, "hosts": ["github.com", "Not A Host", 7], "partial": True})
-    wait_until(proxy.lend.exists, timeout=WAIT)
-    assert proxy.lend.read_text() == f"{proxy.port} * github.com\n"
+    lend = wait_until(
+        proxy.lend.read_text, timeout=WAIT, ignoring=(FileNotFoundError, PermissionError)
+    )
+    assert lend == f"{proxy.port} * github.com\n"
     proxy.reply({"t": "lend", "id": 0, "hosts": ["dev.azure.com", "github.com"]})
     wait_until(lambda: "*" not in proxy.lend.read_text(), timeout=WAIT)
     assert proxy.lend.read_text() == f"{proxy.port} dev.azure.com github.com\n"

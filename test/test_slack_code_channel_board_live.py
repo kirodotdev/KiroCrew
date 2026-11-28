@@ -354,10 +354,11 @@ def test_a_waiting_row_leads_with_its_words_and_only_working_rows_spin():
         "pending",
     ]
     # Waiting and idle share the empty circle: the title's words set waiting apart.
-    assert tasks["it_2"]["title"] == "Waiting on you: Add retries"
-    assert not tasks["it_1"]["title"].startswith("Waiting") and tasks["it_3"]["title"] == "Docs"
+    assert tasks["it_2"]["title"] == "Needs you: Add retries"
+    assert tasks["it_1"]["title"] == "Working: Fix login"
+    assert tasks["it_3"]["title"] == "Idle: Docs"
     waiting = tasks["it_2"]["details"]["elements"][0]["elements"]
-    assert not any("Waiting on you" in str(e.get("text")) for e in waiting)  # said once
+    assert not any("Needs you" in str(e.get("text")) for e in waiting)  # said once
     assert waiting[-1]["type"] == "link" and waiting[-1]["text"] == "Open in dashboard"
 
 
@@ -390,7 +391,7 @@ def test_a_slack_that_refuses_the_pending_status_gets_the_plain_rows(slack, capl
     assert "C1" in publisher._plan_refused
     blocks = render.board_blocks(waiting, _link, look="rows")
     text = json.dumps(blocks)
-    assert '"plan"' not in text and "Waiting on you" in text and "Open in dashboard" in text
+    assert '"plan"' not in text and "Needs you" in text and "Open in dashboard" in text
 
 
 def test_every_edit_carries_new_block_ids_and_a_refused_plan_falls_back_once(
@@ -448,7 +449,7 @@ def test_plan_tasks_map_states_strip_the_shared_issue_prefix_and_cap_at_fifty():
         "error",
         "pending",
     ]
-    assert tasks["it_1"]["title"] == "Bitbucket"
+    assert tasks["it_1"]["title"] == "Working: Bitbucket"
     details = tasks["it_1"]["details"]["elements"][0]["elements"]
     assert details == [
         {"type": "text", "text": "Running "},

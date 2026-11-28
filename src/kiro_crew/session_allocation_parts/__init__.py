@@ -2,10 +2,15 @@
 
 * ``errors`` -- the refusals the allocation boundary raises, and the ending fence's wait
   bound.
+* ``cold_start_reads`` -- the reads a cold start makes about the session it starts:
+  its worker tool limits, the Crew OAuth bridge, a held KAS sub-agent's denies, and
+  whether its key is a crewmate's worker.
 * ``companions`` -- companion and run runtimes: the shared processes a parent session's
   subagents and a run's task sessions run on.
 * ``eviction`` -- ending a registered session a claim cannot hand out: a dead one, one
   flagged for an account change, or one spawned under a looser ``agent.sandbox`` tier.
+* ``pool_claim`` -- the model checks a warm-pool claim makes before it switches the
+  claimed process.
 * ``get_or_create`` -- ``SessionAllocationService.get_or_create``: claim the live session
   for a key, or cold-start one.
 

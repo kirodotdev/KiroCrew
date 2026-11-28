@@ -403,6 +403,7 @@ def test_handshake_params_come_from_the_shared_constants() -> None:
                 "openExternalUrl": True,
                 "userInput": True,
                 "approveForMeOption": True,
+                "sessionScopedMcpStatus": True,
             }
         },
     }

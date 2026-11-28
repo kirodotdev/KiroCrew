@@ -60,6 +60,13 @@ Windows run would be re-enabled by the very gate meant to run only what is
 related. The set subtracted is the hook's own (``platform_collect_ignore_helpers``):
 the same list file, the same platform rule, the same ``test/<name>``-only reach.
 
+Those explicit paths are collected with ``-p scripts.explicit_file_targets``
+loaded. pytest resolves each file argument by collecting its directory again and
+offering every sibling to the collection hooks; for a related set of hundreds of
+files under ``test/`` that is millions of offers per xdist worker, minutes before
+the first test runs. The plugin ignores every path pytest asks about, which is
+only ever a sibling no argument names, so the collected node IDs are unchanged.
+
 Frontend is the same shape over vitest specs, re-rooted to ``cwd=website``.
 
 The set is never silently swapped for the full suite because it came out large:
@@ -114,11 +121,28 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 _TEST_DIR = str(REPO_ROOT / "test")
 
 
+_COLLECT_IGNORE_DEPENDENCIES = frozenset({"pytest", "kiro_crew"})
+
+
 def _collect_ignore() -> ModuleType:
-    """The collector's helper module (one cached object, so a patch on it sticks)."""
+    """The collector's helper module (one cached object, so a patch on it sticks).
+
+    An interpreter without the helper's dependencies cannot run the backend set
+    either, so that is reported as ``SelectionUntrustworthy`` (exit 2, naming the
+    interpreter) rather than as a traceback from inside the selection.
+    """
     if _TEST_DIR not in sys.path:
         sys.path.insert(0, _TEST_DIR)
-    return importlib.import_module("platform_collect_ignore_helpers")
+    try:
+        return importlib.import_module("platform_collect_ignore_helpers")
+    except ModuleNotFoundError as exc:
+        if exc.name not in _COLLECT_IGNORE_DEPENDENCIES:
+            raise
+        raise SelectionUntrustworthy(
+            f"{sys.executable} cannot import {exc.name}, so it cannot select or run the "
+            "backend tests; run the gate with the repository's virtualenv active "
+            "(CONTRIBUTING.md: make build, then activate .venv)"
+        ) from exc
 
 
 # A change to any of these can affect anything, so no reduction is defensible.
@@ -191,6 +215,14 @@ _SCAN_EXCLUDE = ("node_modules", "__pycache__", "_vendor", "build", "dist", ".ve
 # that a rename cannot quietly turn "we ran a subset" back into a claim of a full
 # local run.
 RELATED_VERDICT = "related: {count} test file(s) (full suite deferred to CI)"
+
+#: Loaded with ``-p`` into every backend related-set run. pytest collects a file
+#: argument's directory once per argument and offers every sibling entry to its
+#: collection hooks each time; with hundreds of targets under ``test/`` that walk
+#: is minutes per xdist worker before the first test runs. The plugin answers the
+#: ignore hook for every sibling first, which pytest only asks about paths no file
+#: argument can match. Why that keeps node IDs identical: scripts/explicit_file_targets.py.
+EXPLICIT_FILE_TARGETS_PLUGIN = "scripts.explicit_file_targets"
 
 
 def local_gate_workers() -> int:
@@ -608,7 +640,16 @@ def backend_argv(targets: list[str] | None) -> list[str]:
         # `--` ends option parsing so nothing after it can be read as a flag.
         # Coverage is off: a subset's coverage is not comparable to the repo
         # floor, which is why CI skips the coverage lane for its reduced runs.
-        argv += ["--no-cov", "--", *validated_targets(targets, REPO_ROOT)]
+        # The plugin keeps pytest from re-walking every sibling of every target
+        # (see its docstring); `python -m pytest` with cwd=REPO_ROOT is what
+        # makes `scripts.` importable, the same way CI loads its own plugins.
+        argv += [
+            "--no-cov",
+            "-p",
+            EXPLICIT_FILE_TARGETS_PLUGIN,
+            "--",
+            *validated_targets(targets, REPO_ROOT),
+        ]
     return argv
 
 
@@ -859,6 +900,46 @@ def related_targets(
     return targets, verdict
 
 
+# A whole-tree guard reads `src/` through one of source_corpus's tree readers,
+# walks a root that names `src` or a package module's `__file__`, or declares itself one with the
+# `tree_scan_*` xdist group the suite gives every tree-scanning module (a guard
+# that hands its walk to a helper module is found only that way).
+_TREE_READER = re.compile(
+    r"\b(iter_source_texts|source_texts|iter_candidate_sources|candidate_sources|"
+    r"parsed_candidates|repo_files|repo_files_named|src_root)\b"
+)
+_TREE_WALK = re.compile(r"\.rglob\(|\bos\.walk\(|\.glob\(\s*[\"']\*\*")
+_SRC_ROOT_NAME = re.compile(
+    r"[\"']src[\"']|\b_?SRC(?:_ROOT|_DIR)?\b|\bsrc_dir\b|[\"']kiro_crew[\"']|\w\.__file__\b"
+)
+_TREE_SCAN_GROUP = re.compile(r"xdist_group\(\s*name\s*=\s*[\"']tree_scan")
+
+
+def tree_scan_targets(root: Path = REPO_ROOT) -> list[str]:
+    """Backend test files that scan the whole source tree, read from their text.
+
+    A ratchet or boundary guard (``test_hooks_composition_contract.py``'s "nothing
+    but the facade imports an owner") fails on a new file anywhere under ``src/``,
+    a file whose path and module it never names, so no per-file selection reaches
+    it. The set is recomputed on every call rather than kept as a list, so a new
+    guard joins it the day it lands. It is broad on purpose: a test that walks a
+    fixture tree in a file that also names ``src`` joins too, which costs run time,
+    where a guard the rule missed would cost a CI round trip. Platform-uncollected
+    suites are dropped for the same reason :func:`related_targets` drops them.
+    """
+    out: list[str] = []
+    for rel in _tree_files(root, _BACKEND_TEST_ROOTS, _BACKEND_TEST_NAME):
+        text = _read_text(root, rel)
+        if (
+            _TREE_SCAN_GROUP.search(text)
+            or ("source_corpus" in text and _TREE_READER.search(text))
+            or (_TREE_WALK.search(text) and _SRC_ROOT_NAME.search(text))
+        ):
+            out.append(rel)
+    uncollected = platform_uncollected_targets()
+    return [rel for rel in out if rel not in uncollected]
+
+
 def plan(surface: str, base: str) -> tuple[list[str], str]:
     """Return (targets, verdict). Raises rather than ever answering "everything".
 
@@ -934,10 +1015,15 @@ def main(argv: list[str]) -> int:
         return 0
 
     cwd = REPO_ROOT / "website" if args.surface == "frontend" else REPO_ROOT
-    for cmd in cmds:
-        rc = _run_batch(cmd, cwd)
-        if rc != 0:
-            return rc
+    # Every batch runs even after one fails, so one run shows every failing batch.
+    failed = [(index, rc) for index, cmd in enumerate(cmds, start=1) if (rc := _run_batch(cmd, cwd)) != 0]
+    if failed:
+        print(
+            f"run_scoped_tests[{args.surface}]: {len(failed)} of {len(cmds)} batch(es) failed: "
+            + ", ".join(f"batch {index} rc={rc}" for index, rc in failed),
+            file=sys.stderr,
+        )
+        return failed[0][1]
     return 0
 
 
@@ -1083,6 +1169,14 @@ def _self_test() -> int:
     be = backend_argv([real])
     check("backend reduced argv has --no-cov", "--no-cov" in be)
     check("backend reduced argv separates positionals with --", "--" in be and be[-1] == real)
+    check(
+        "backend reduced argv loads the explicit-file plugin as an option",
+        be.index("-p") + 1 == be.index(EXPLICIT_FILE_TARGETS_PLUGIN) < be.index("--"),
+    )
+    check(
+        "the explicit-file plugin is a real module",
+        (REPO_ROOT / "scripts" / "explicit_file_targets.py").is_file(),
+    )
     for hostile in ("--config=evil.ini", "-p no:randomly", "../outside.py", "/etc/passwd"):
         try:
             backend_argv([hostile])

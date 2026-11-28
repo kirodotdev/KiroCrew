@@ -1,0 +1,4 @@
++19
+text_redaction.StreamRedactor bounds a held header, cookie or command-line value (#38085).
+A value one of its own STRONG anchors also reads keeps that pass's ceiling, and a line
+drop that names a private-key block takes the rest of the text (compat.line_drop_tail).

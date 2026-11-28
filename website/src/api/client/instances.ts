@@ -4,7 +4,7 @@
  * connected peer's federated session search, capabilities and live slots.
  */
 
-import type { InstanceVersions, RemoteCrewApprovalState, RemoteCrewCapabilities, RemoteUpdateJob } from '../../types'
+import type { InstanceBots, InstanceVersions, RemoteCrewApprovalState, RemoteCrewCapabilities, RemoteUpdateJob } from '../../types'
 import { toApiError } from '../apiError'
 import type { ClientTransport } from './transport'
 
@@ -35,6 +35,7 @@ export interface InstanceTunnelStatus {
       | 'ssh_client_missing'
       | 'ssm_unreachable'
       | 'ssm_target_missing'
+      | 'ssm_target_unresolved'
       | 'ssm_access_denied'
       | 'ssm_user_unknown'
       | 'remote_wrong_port'
@@ -357,6 +358,11 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fet
      *  that has not turned remote crews on, so it is not journaled. */
     instancesVersions: () =>
       get('/api/instances/versions').then(jInstancesDisabled) as Promise<InstanceVersions>,
+    /** Every CONNECTED crew's bots in one read, for the Bots page's section of
+     *  bots on other crews. Read on the gateway through the same closed roster
+     *  read the crew window's header uses, never through the proxy. */
+    instancesBots: () =>
+      get('/api/instances/bots').then(jInstancesDisabled) as Promise<InstanceBots>,
 
     // A CONNECTED remote instance's LIVE sessions, read through an owner-only,
     // GET-only hub route. NOT the generic instance proxy, which this first used: the

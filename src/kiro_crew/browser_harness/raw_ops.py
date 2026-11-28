@@ -7,8 +7,10 @@ call (the browser entry in ``docs/decisions/``):
 
 * each call asks a person on its own card, which the op route opens and checks
   (``dashboard/handlers/browser_card_ask.py``), so it holds whatever the agent's
-  spec or the chat's trust auto-approves; no site grant names these ops
-  (``op_classes.card_only``);
+  spec or the chat's trust auto-approves; no site grant names ``cdp`` or
+  ``http_get`` (``op_classes.card_only``). A later ruling lifts the card from
+  ``js`` alone on a person's chat that trusts all tools or that YOLO reaches, and
+  in the current tab of a site that chat trusted for acting;
 * ``capabilities.browse`` is asked at the route and again on every helper call;
 * the own-tab fence: a ``js`` ``target_id`` and a ``cdp`` ``params.targetId`` must
   be a tab of the caller's (``ctx.agent_targets()``, what ``tabs switch`` admits);

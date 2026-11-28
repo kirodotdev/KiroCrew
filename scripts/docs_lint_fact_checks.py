@@ -87,6 +87,17 @@ _FORWARD_LOOKING_DOC_PREFIXES: tuple[str, ...] = (
 # schema's field names are absent by design, but a path it cites into today's code
 # is still a claim about this tree, so the path checks keep reading it.
 _PLANNED_STATUS_RE = re.compile(r"^Status:\s*planned\b", re.IGNORECASE)
+# Records of a past state, which keep the names that held when they were written.
+# A decision entry is immutable (``scripts/check_decisions_history.py``) and the
+# decisions index summarises entries, a changelog section describes a shipped
+# release, and the testing sweep findings record each measured pass as it ran. A
+# later rename cannot be followed there, so only the dead-identifier check skips
+# them; their paths are still claims about today's tree.
+_HISTORY_RECORD_DOC_PREFIXES: tuple[str, ...] = (
+    "docs/decisions/",
+    "CHANGELOG.md",
+    "docs/system-specs/common/testing-sweep-findings.md",
+)
 # How far down a doc its Status line may sit: under the title and a short lede.
 _STATUS_HEAD_LINES = 12
 
@@ -96,6 +107,14 @@ _STATUS_HEAD_LINES = 12
 # the only honest exemption is a curated list someone checked. A name this repo
 # defines never belongs here: it would hide its own rename.
 EXTERNAL_IDENTIFIERS_FILE = ".github/docs-lint-external-identifiers.txt"
+
+# Doc trees rendered from a spec, each paired with that spec's directory. The
+# spec sits in a forward-looking tree the code index never reads, so every error
+# code and field a planned endpoint names would read as dead on the rendered page.
+# A name the spec defines is live on its own pages only.
+_IDENT_SPEC_RENDERED_DOCS: tuple[tuple[str, str], ...] = (
+    ("docs/reference/crew-api/", "docs/request-for-change/assets/crew-api"),
+)
 
 # Names ONE doc owns: keys of an output schema it defines, fields an agent writes
 # into free-form notes (``defines``), or a name it cites because it is wrong or
@@ -195,6 +214,8 @@ _COUPLING_AMBIGUOUS_NAMES: frozenset[str] = frozenset({"README.md"})
 _IDENT_SNAKE_RE = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
 _IDENT_CAMEL_RE = re.compile(r"\b[A-Za-z][a-z0-9]*(?:[A-Z][a-z0-9]+)+\b")
 _IDENT_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+# ``<ApplicationName>`` inside a code span is a slot the reader fills in.
+_ANGLE_PLACEHOLDER_RE = re.compile(r"<[A-Za-z_][A-Za-z0-9_]*>")
 # Shorter than this and the token is a word, not a symbol.
 _IDENT_MIN_LEN = 8
 _IDENT_CODE_TREES: tuple[str, ...] = (
@@ -332,6 +353,17 @@ def _external_identifiers(root: Path) -> frozenset[str]:
         return frozenset()
     names = (line.split("#", 1)[0].strip() for line in _read(path).splitlines())
     return frozenset(name for name in names if name)
+
+
+def _spec_identifiers(root: Path, spec_dir: str) -> frozenset[str]:
+    """Every identifier-shaped token in the spec files under ``spec_dir``."""
+    tokens: set[str] = set()
+    base = root / spec_dir
+    if base.is_dir():
+        for path in sorted(base.iterdir()):
+            if path.suffix in _IDENT_CODE_SUFFIXES and _is_regular_file(path):
+                tokens.update(_IDENT_TOKEN_RE.findall(_read(path)))
+    return frozenset(tokens)
 
 
 def _iter_code_spans(text: str):
@@ -619,9 +651,13 @@ def check_dead_identifiers(root: Path, docs: list[Path], findings: Findings) -> 
     worth more here than a gate they learn to skip.
 
     Forward-looking genres are skipped for the same reason as the path check, and
-    so is a doc whose head says ``Status: planned``. Documentation placeholders
-    (``MyPage``) are meant to be absent, and a name in the curated external list
-    is defined somewhere this repo cannot see. A name the doc itself declares
+    so is a doc whose head says ``Status: planned`` and a record of a past state
+    (:data:`_HISTORY_RECORD_DOC_PREFIXES`). Documentation placeholders (``MyPage``,
+    or a name in angle brackets such as ``<ApplicationName>``) are meant to be
+    absent, and a name in the curated external list
+    is defined somewhere this repo cannot see. A page rendered from a spec
+    (:data:`_IDENT_SPEC_RENDERED_DOCS`) also counts the names its spec defines as
+    live. A name the doc itself declares
     (:data:`_DOC_DECLARATION_RE`) passes in that doc only, and fails the run once
     the code defines it or the doc stops naming it.
     """
@@ -640,15 +676,24 @@ def check_dead_identifiers(root: Path, docs: list[Path], findings: Findings) -> 
             )
         )
     live = code | external
+    spec_live = {
+        doc_prefix: live | _spec_identifiers(root, spec_dir)
+        for doc_prefix, spec_dir in _IDENT_SPEC_RENDERED_DOCS
+    }
     for doc in docs:
         rel_doc = _rel(doc, root)
         if _is_forward_looking(rel_doc):
             continue
+        doc_live = next(
+            (names for prefix, names in spec_live.items() if rel_doc.startswith(prefix)), live
+        )
         try:
             text = _read(doc)
         except OSError:
             continue
         if _declares_planned(text):
+            continue
+        if rel_doc.startswith(_HISTORY_RECORD_DOC_PREFIXES):
             continue
         spans = [span for _lineno, span in _iter_code_spans(text)]
         declared = _doc_declared_names(text)
@@ -659,17 +704,22 @@ def check_dead_identifiers(root: Path, docs: list[Path], findings: Findings) -> 
         for token in sorted(declared - named):
             detail = "is declared in this doc's docs-lint comment but no code span names it"
             findings.facts.append(FactFinding(CHECK_DEAD_IDENTIFIER, rel_doc, token, detail))
+        # One finding per name per doc: the baseline keys on that triple, and a doc
+        # naming one stale symbol eight times has one thing to fix, not eight.
+        reported: set[str] = set()
         for span in spans:
+            cited = _ANGLE_PLACEHOLDER_RE.sub(" ", span)
             for pattern in (_IDENT_SNAKE_RE, _IDENT_CAMEL_RE):
-                for token in pattern.findall(span):
+                for token in pattern.findall(cited):
                     if len(token) < _IDENT_MIN_LEN:
                         continue
                     if token.lower() in _IDENT_STOPWORDS:
                         continue
                     if token.startswith(_IDENT_PLACEHOLDER_PREFIXES):
                         continue
-                    if token in live or token in declared:
+                    if token in doc_live or token in declared or token in reported:
                         continue
+                    reported.add(token)
                     findings.advisories.append(FactFinding(CHECK_DEAD_IDENTIFIER, rel_doc, token))
 
 

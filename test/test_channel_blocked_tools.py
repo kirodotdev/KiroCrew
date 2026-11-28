@@ -209,6 +209,8 @@ def test_dispatch_tuple_names_the_verbs_that_start_work():
         "register_hook",
         "pod_up",
         "pod_restart",
+        "pod_api",
+        "pod_provision_start",
     }
 
 

@@ -144,6 +144,21 @@ describe('SecurityPanel - settings files changed outside the dashboard', () => {
     expect(api.applyConfigPending).toHaveBeenCalledWith('config.json', 'sig-1')
   })
 
+  it('gives a neutral Apply and Discard a resting fill and a strong edge on the card\'s tint', async () => {
+    await renderPanel(ONE)
+    for (const button of [applyBtn(), discardBtn()]) {
+      expect(button).toHaveClass('bg-bg-elevated', 'border-border-strong')
+      expect(button).not.toHaveClass('bg-transparent')
+      expect(button).not.toHaveClass('border-border')
+    }
+  })
+
+  it('keeps a primary Apply on its own accent fill', async () => {
+    await renderPanel(PLAIN)
+    expect(applyBtn()).toHaveClass(PRIMARY, 'border-accent')
+    expect(applyBtn()).not.toHaveClass('bg-bg-elevated')
+  })
+
   it('when the list is cut short, Apply asks first and says not every change is listed', async () => {
     await renderPanel({ ...PLAIN, pending: [{ ...PLAIN.pending[0], truncated: true }] })
     expect(applyBtn()).not.toHaveClass(PRIMARY)

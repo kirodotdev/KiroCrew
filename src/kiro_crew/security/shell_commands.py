@@ -25,6 +25,7 @@ from . import shell_normalizer_walk as _walk
 # One gate call's payloads per frame text are kept in ``_CALL_VIEWS`` under the plain
 # text; ``shell_normalizer._shell_payload_walk`` keeps its frames there under tuple keys.
 from .call_views import _CALL_VIEWS, sharing_views  # noqa: F401  (also served to importers)
+from .deny_gate_nesting import _MAX_SUBSTITUTION_DEPTH
 
 #: The step standing for a substitution read on its own: it may expand to nothing.
 SUBST = "\1"
@@ -464,6 +465,120 @@ def redirect_hidden_payloads(command: str) -> "list[str]":
     return cache[command]
 
 
+#: What closes each group opener: the separator ending ``( … )``, ``$( … )`` and a
+#: backtick body, and the reserved word ending a ``{ …; }`` group or a compound command.
+_GROUP_CLOSERS = {"(": ")", "`": "`", "{": "}", "if": "fi", "case": "esac"}
+_GROUP_CLOSERS.update(dict.fromkeys(("for", "select", "while", "until"), "done"))
+
+
+def xargs_pipelines(command: str) -> "list[tuple[str, str, int]]":
+    """Each pipeline in *command*, cut out to be judged as a line: the text before its own
+    first pipe, the text after it, and its number of pipes of its own. Whether it feeds
+    ``xargs`` is the rebuild's to decide, on the words the shell would run.
+
+    The xargs rebuild takes the piped words from the start of the text it reads, so a
+    command chained in front (``echo x; echo <name> | xargs <kill>``) left the name out
+    of the rebuilt argv. A pipeline is cut at the list separators of its own group, past
+    the reserved words that keep command position (``then``, ``do``), so it reads as the
+    line it would be typed alone; a compound command is one group, so its own separators
+    end only the commands inside it, and its reserved words count only where a command
+    starts; ``|&`` pipes like ``|``, and so does ``|`` before a newline. The text is read
+    after the shell's line-continuation fold, so ``es\\`` + newline + ``ac`` is ``esac``.
+    A pipeline nested more than ``_MAX_SUBSTITUTION_DEPTH`` groups deep is not cut: it
+    is read only in the line around it, as before, so the cuts cost at most one more
+    than that many times the line."""
+    folded = _shell._fold_line_continuations(command) if "\\\n" in command else command
+    views: list[tuple[str, str, int]] = []
+    # per open group: item start, pipes, opener, 1st pipe, how many groups it is nested in
+    groups: list[list] = [[-1, 0, "", 0, 0]]
+    boundary = end = 0
+    previous, branch_end = "", False  # the last separator; did it end a case branch (``;;``)
+
+    def close(item: list) -> None:
+        shallow = item[4] <= _MAX_SUBSTITUTION_DEPTH
+        if item[1] and shallow and folded[item[0] : end].strip() != folded.strip():
+            views.append((folded[item[0] : item[3]], folded[item[3] + 1 : end], item[1]))
+        item[:2] = [-1, 0]
+
+    unread: list[HereDoc] = []  # the unquoted bodies the next newline reads
+    skip = 0  # the commands of their substitutions, which ``_read_bodies`` lists next
+    for cmd in read_commands(folded, nested=False, heredocs=True):
+        if skip:  # a command a heredoc body runs is not the next command of the line
+            skip -= 1
+            continue
+        unread += [doc for doc in cmd.heredocs if not doc.quoted]
+        if cmd.separator == "\n" and unread:
+            skip = sum(len(_body_substitutions(d.body, d.start, True)) for d in unread)
+            unread = []
+        sep, at = cmd.separator, cmd.steps[-1].end if cmd.steps else boundary
+        boundary = max(boundary, at + len(sep), *(doc.tail + 1 for doc in cmd.heredocs))
+        if previous == "|" and sep in ("&", "\n") and not cmd.words:
+            continue  # ``|&``, or the pipeline goes on past a newline
+        last, after_branch = previous, branch_end
+        previous, branch_end = sep, not cmd.words and last == sep == ";"
+        piped = last == "|"
+        for word in cmd.words:  # the leading words that open, close or keep a command
+            # a compound keyword counts where a command starts, not past ``)`` (``$(date) for``)
+            reserved = piped or groups[-1][0] < 0 or word.raw in ("{", "}")
+            if reserved and word.raw == _GROUP_CLOSERS.get(groups[-1][2]):
+                close(groups.pop())
+            elif reserved and word.raw in _GROUP_CLOSERS:
+                groups[-1][0] = word.start if groups[-1][0] < 0 else groups[-1][0]
+                groups.append([-1, 0, word.raw, 0, len(groups)])
+            elif groups[-1][0] >= 0 or word.raw not in _shell._KEEPS_COMMAND_POSITION:
+                groups[-1][0] = word.start if groups[-1][0] < 0 else groups[-1][0]
+                break
+        end = at
+        # a ``(`` right after ``in`` or ``;;`` opens a case pattern, not a subshell
+        after_in = cmd.words[-1].raw == "in" if cmd.words else after_branch
+        pattern = groups[-1][2] == "case" and after_in
+        if sep == _GROUP_CLOSERS.get(groups[-1][2]):
+            close(groups.pop())
+        elif sep == "`" or sep == "(" and not pattern:
+            groups[-1][0] = at if groups[-1][0] < 0 else groups[-1][0]
+            groups.append([-1, 0, sep, 0, len(groups)])
+        elif sep == "|":
+            groups[-1][3] = groups[-1][3] if groups[-1][1] else at
+            groups[-1][1] += 1
+        else:
+            close(groups[-1])
+    return views
+
+
+def xargs_handed_on(head: str) -> "list[str]":
+    """The words of *head*, a cut pipeline's text before its own first pipe, as the line's
+    own rebuild chain hands them to the ``xargs`` after it: past each pipe nested in it,
+    only the arguments of the command its ``xargs`` runs (``(echo a | xargs echo <name>)``
+    hands on ``(echo a <name>)``), and nothing past an ``xargs`` that runs no command."""
+    words: list[str] = []
+    past = 0  # 1: past a nested pipe, 2: past its xargs, before the program that runs
+    for word in _shell._self_tokens(head):
+        if "|" in word:
+            if past == 2:
+                break
+            past = 1
+        elif past == 1 and _shell._program_basename(word) == "xargs":
+            past = 2
+        elif past == 2 and not word.startswith("-"):
+            past = 0  # the program itself is not handed on
+        elif not past:
+            words.append(word)
+    return words
+
+
+def xargs_cut_rebuilds(command: str, made: "dict[tuple[str, str], str]") -> "list[tuple[str, int]]":
+    """The xargs rebuild of each pipeline :func:`xargs_pipelines` cuts out of *command*,
+    made at its own first pipe from what its first command hands on, with the pipes left
+    in it. *made* keeps each rebuild once per walk: every enclosing ``$( )`` cuts it again."""
+    rebuilds: list[tuple[str, int]] = []
+    for head, tail, pipes in xargs_pipelines(command):
+        if (head, tail) not in made:
+            words = xargs_handed_on(head) + ["|"] + _shell._self_tokens(tail)
+            made[head, tail] = _shell._xargs_reconstructed_command(words)
+        rebuilds.append((made[head, tail], pipes - 1))
+    return rebuilds
+
+
 def without_substitutions(command: str) -> str:
     """*command* with each unquoted ``$(…)`` / ``<(…)`` / ``>(…)`` as the word ``_``, which
     :func:`read_commands` would cut (``bash -c 2>$(x) '<script>'``)."""
@@ -481,13 +596,50 @@ def without_substitutions(command: str) -> str:
         pos = _shell._matching_close_paren(command, hit + 2, quote_at[hit + 2])[0]
 
 
-def heredoc_text_spans(text: str) -> "list[tuple[int, int]]":
-    """Raw ``(start, end)`` of each here-document body :func:`read_commands` finds in *text*."""
+def _heredocs(text: str) -> "list[HereDoc]":
+    """Each here-document body :func:`read_commands` finds in *text*."""
     if "<<" not in text:
         return []
-    return [
-        (doc.start, doc.end) for cmd in read_commands(text, heredocs=True) for doc in cmd.heredocs
-    ]
+    return [doc for cmd in read_commands(text, heredocs=True) for doc in cmd.heredocs]
+
+
+def heredoc_text_spans(text: str) -> "list[tuple[int, int]]":
+    """Raw ``(start, end)`` of each here-document body :func:`read_commands` finds in *text*."""
+    return [(doc.start, doc.end) for doc in _heredocs(text)]
+
+
+def _close_past_heredocs(rest: str) -> "tuple[int, bool]":
+    """:func:`_matching_close_paren` of *rest* with each heredoc body blanked, read on a
+    prefix that doubles until it is proven to give the same answer as the whole of *rest*.
+
+    :func:`read_commands` reads left to right, and a body starts after the newline that ends
+    its ``<<`` line. So in a prefix, every body that closes before the prefix ends is the
+    body the whole text gives, and a ``<<`` on the prefix's last line has no body in it.
+    A body that runs to the prefix's end may close later, so that prefix is not enough.
+    A body counts as complete only when its tag line's newline is inside the prefix (a tag
+    line cut at the prefix's end can read as the tag when the whole text does not). A close
+    is taken from the prefix only when both walks of :func:`_matching_close_paren_reach`
+    finished inside it, since a ``${...}`` walk that runs on can move the close later.
+    Otherwise the prefix grows; at the whole of *rest* it is the answer.
+    """
+    size = 1024
+    while True:
+        part = rest[:size]
+        whole = len(part) == len(rest)
+        docs = _heredocs(part)
+        if whole or all(d.end < len(part) and d.tail < len(part) for d in docs):
+            for doc in docs:
+                part = (
+                    part[: doc.start]
+                    + re.sub("[^\n]", " ", part[doc.start : doc.end])
+                    + part[doc.end :]
+                )
+            end, proven, reach = _walk._matching_close_paren_reach(part, 0)
+            if whole:
+                return end, proven
+            if reach is not None and reach < len(part):
+                return end, proven
+        size *= 2
 
 
 def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]":
@@ -500,7 +652,7 @@ def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]
     the close walk read has no newline after its first ``<<`` (none at all, a ``<<<``
     here-string, a ``$(( 1 << n ))`` shift), no body can change that walk and the
     heredoc re-read is skipped. Each body that does hold a heredoc before its close
-    still re-reads the rest of *text*, so a line of many such bodies stays quadratic.
+    re-reads only a prefix of the rest of *text* (:func:`_close_past_heredocs`).
     """
     spans: "list[tuple[int, int, bool]]" = []
     i, state = 0, 0
@@ -515,9 +667,7 @@ def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]
                 window = rest if reach is None else rest[:reach]
                 k = window.find("<<")
                 if k >= 0 and "\n" in window[k:]:
-                    for start, stop in heredoc_text_spans(rest):
-                        rest = rest[:start] + re.sub("[^\n]", " ", rest[start:stop]) + rest[stop:]
-                    end, proven = _shell._matching_close_paren(rest, 0)
+                    end, proven = _close_past_heredocs(rest)
                 spans.append((at, at + 2 + end if proven else len(text), proven))
                 i, state = spans[-1][1], 2
                 break
@@ -538,7 +688,7 @@ def _proven_body_spans(text: str) -> "dict[int, int]":
     }
 
 
-def _double_quoted_substitution_bodies(text: str) -> "list[str]":
+def _double_quoted_substitution_bodies(text: str, messages: bool = False) -> "list[str]":
     """The body of each ``$(...)`` that sits directly inside double quotes in *text*.
 
     :func:`_mask_quoted_separators` keeps double-quoted text as data, but bash runs
@@ -546,26 +696,78 @@ def _double_quoted_substitution_bodies(text: str) -> "list[str]":
     unpaired ``$`` opens one (``$$`` is the PID, ``\\$`` is text); the body ends at
     its own matching ``)``, or runs to the end of *text* when none is found. A ``)``
     in a heredoc body that :func:`read_commands` finds there does not end it. The
-    text that a bare ``cat`` prints from a quoted-tag heredoc is cut out of each
-    body (:func:`_without_quoted_heredoc_text`).
+    text that a ``cat`` only prints from a quoted-tag heredoc is cut out of each
+    body (:func:`_without_quoted_heredoc_text`); only with *messages* True, the ssh
+    floor's opt-in, as on a message-flag line where the line is one.
     """
     spans = _double_quoted_substitution_spans(text)
-    return [_without_quoted_heredoc_text(text[a + 2 : e - (1 if p else 0)]) for a, e, p in spans]
+    message = messages and _is_message_line(text, [(a, e) for a, e, _p in spans])
+    return [
+        _without_quoted_heredoc_text(text[a + 2 : e - (1 if p else 0)], message)
+        for a, e, p in spans
+    ]
 
 
-def _without_quoted_heredoc_text(body: str) -> str:
-    """*body* with the text of each quoted-tag heredoc that a bare ``cat`` prints cut out.
+def _is_message_line(text: str, spans: "list[tuple[int, int]]") -> bool:
+    """True when *text*, with each ``(start, end)`` substitution span in *spans* read
+    as one word, is one message-flag command
+    (``shell_normalizer_walk._message_flag_command_shape``) and holds no other ``$``,
+    backtick, ``#`` or ``<<``, the text that helper reads by bash's quoting alone."""
+    parts, at = [], 0
+    for start, end in sorted(spans):
+        if start >= at:  # a span inside one already read is part of that word
+            parts += [text[at:start], "_"]
+            at = end
+    flat = "".join(parts) + text[at:]
+    return (
+        not any(c in flat for c in "$`#")
+        and "<<" not in flat
+        and (_walk._message_flag_command_shape(flat) is not None)
+    )
+
+
+def _without_quoted_heredoc_text(body: str, message: bool = False) -> str:
+    """*body* with the text of each quoted-tag heredoc that a ``cat`` only prints cut out.
 
     Bash expands nothing in such a text, and a ``cat`` that writes to no file and
     pipes to nothing only prints it. Every other heredoc keeps its text, so a shell
     fed one (``bash <<'EOF'``, ``cat <<'EOF' | sh``) is read as before.
+    That ``cat`` is a bare one, or ``cat -``, ``cat --`` or ``cat -n`` when it is the
+    only command in *body*, *body* holds no backslash (bash may un-escape it first),
+    each of its tags is one ``'…'`` or ``"…"`` pair around a word with no quote, ``$``
+    or backtick (so its text ends where bash ends it), each heredoc of that ``cat``
+    closes inside *body* and no line of its text starts with its tag, and *message*
+    says the line holding *body* is one message-flag command
+    (:func:`_is_message_line`): the program stores the printed text as a message.
     """
     if "<<" not in body:
         return body
+    cmds = read_commands(body, heredocs=True)
+    heads = [cmd for cmd in cmds if cmd.argv]
+    run = [[word.raw for word in cmd.argv] for cmd in heads]
+    printers = [["cat"]]
+    if (
+        message
+        and "\\" not in body
+        and len(run) == 1
+        and run[0] in (["cat", "-"], ["cat", "--"], ["cat", "-n"])
+        and all(cmd.separator in ("", "\n") for cmd in cmds)
+        and all(doc.tail > doc.end for doc in heads[0].heredocs)
+        and not any(
+            line.lstrip("\t").startswith(body[doc.end : doc.tail].lstrip("\t"))
+            for doc in heads[0].heredocs
+            for line in doc.body.split("\n")
+        )
+        and all(
+            len(tag) > 1 and tag[0] == tag[-1] in "'\"" and not set(tag[1:-1]) & set("'\"$`")
+            for tag in (t.raw if t else w.raw[2:].removeprefix("-") for w, t in heads[0].redirects)
+        )
+    ):
+        printers.append(run[0])
     docs = [
         doc
-        for cmd in read_commands(body, heredocs=True)
-        if [word.raw for word in cmd.argv] == ["cat"]
+        for cmd in cmds
+        if [word.raw for word in cmd.argv] in printers
         and all(word.raw.startswith("<<") for word, _target in cmd.redirects)
         and not cmd.separator.startswith("|")
         for doc in cmd.heredocs

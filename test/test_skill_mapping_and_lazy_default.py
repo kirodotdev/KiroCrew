@@ -106,6 +106,46 @@ class TestLazyLoadDefault:
         assert "## Available Skills" not in text
 
 
+class TestShortEntryStatesItsCount:
+    def test_short_entry_says_how_many_of_how_many(self, tmp_path, opened):
+        """Eight names of twelve: the entry says so, and points at skill_search.
+
+        Without the count the eight-name entry reads as the whole catalog, so a
+        skill it hides is never looked for.
+        """
+        skills_dir = tmp_path / "skills"
+        for n in range(12):
+            _skill(skills_dir, f"web-{n}")
+        loader = _loader(tmp_path, opened=opened)
+        text = loader.get_context(budget=4000, discovery_only=True)
+        assert "8 of 12 skills listed here; skill_search reaches the rest." in text
+        counts: dict[str, int] = {}
+        loader.get_context(budget=4000, discovery_only=True, index_counts_out=counts)
+        assert counts == {"listed": 8, "total": 12}
+
+    def test_short_entry_that_names_everything_states_no_count(self, tmp_path, opened):
+        skills_dir = tmp_path / "skills"
+        for n in range(3):
+            _skill(skills_dir, f"web-{n}")
+        loader = _loader(tmp_path, opened=opened)
+        counts: dict[str, int] = {}
+        text = loader.get_context(budget=4000, discovery_only=True, index_counts_out=counts)
+        assert "skills listed here" not in text
+        assert counts == {"listed": 3, "total": 3}
+
+    def test_count_outranks_the_family_hint_under_pressure(self, tmp_path, opened):
+        """A budget with room for one of the two keeps the count."""
+        skills_dir = tmp_path / "skills"
+        for n in range(12):
+            _skill(skills_dir, f"web-{n}")
+        loader = _loader(tmp_path, opened=opened)
+        full = loader.get_context(budget=4000, discovery_only=True)
+        assert "More families" in full
+        tight = loader.get_context(budget=len(full) - 10, discovery_only=True)
+        assert "More families" not in tight
+        assert "8 of 12 skills listed here" in tight
+
+
 class TestFamiliesInTheIndex:
     def test_truncated_index_names_the_families_it_drops(self, tmp_path, opened):
         """A count says how much is missing; a family says what it is about.

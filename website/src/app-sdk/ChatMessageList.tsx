@@ -25,7 +25,7 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import CollapsibleToolGroup from '../pages/chat/CollapsibleToolGroup'
 import TurnBlock from '../pages/chat/TurnBlock'
 import { createDisplayItemReconciler, hasToolStep, isSynthesisInjection, opensDisplayTurn, REASONING_ROLES } from '../pages/chat/groupDisplayItems'
-import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
+import { isSubagentCompletionMessage } from '../lib/subagentCompletion'
 import { isHiddenSupersededSteer } from '../pages/chat/groupDisplayItems'
 import { isJumpTarget, useJumpReveal } from '../hooks/JumpRevealContext'
 import { MessageSearchScope } from '../hooks/SearchHighlightContext'
@@ -107,6 +107,8 @@ export interface ChatMessageListProps {
   /** Quote a whole row into the host's next send. Host capability; absent
    *  hides the action on every row (see `MessageRenderContext.onQuoteMessage`). */
   onQuoteMessage?: MessageRenderContext['onQuoteMessage']
+  /** Fork from an assistant reply by its id (see `MessageRenderContext.onForkMessage`). */
+  onForkMessage?: MessageRenderContext['onForkMessage']
   /** Jump to the message a sent quote card quotes, in this host's transcript.
    *  Host capability; absent, no sent quote card is a control (see
    *  `MessageRenderContext.onJumpToQuote`). */
@@ -205,6 +207,9 @@ export interface TranscriptMount {
   followOutput?: boolean
   /** Where the list opens with no saved anchor. Default 'bottom'. */
   initialPlacement?: 'top' | 'bottom'
+  /** Text for the transcript's one live region (`useTranscriptAnnouncement`).
+   *  Absent: the region stays silent. */
+  announcement?: string
 }
 
 export type { TranscriptEarlierPaging, VirtualTranscriptHandle }
@@ -252,6 +257,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   onQuote,
   onAsk,
   onQuoteMessage,
+  onForkMessage,
   onJumpToQuote,
   threads,
   renderTool,
@@ -389,7 +395,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     const wrapper = (children: React.ReactNode, isUser = false) => (
       <div key={key} className="px-4 mx-auto w-full py-1" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }} data-chat-scope="">
         <div data-jump-target={jumpTarget} className={`group flex flex-col min-w-0 ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}${ring}`}>
-          <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}`}>
+          <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full pb-1 -mb-1 ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}`}>
             {children}
           </div>
         </div>
@@ -427,6 +433,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       onQuote,
       onAsk,
       onQuoteMessage,
+      onForkMessage,
       onJumpToQuote,
       threads,
       hideCardOwnedOAuth,
@@ -441,7 +448,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     return searchRows && node != null
       ? <MessageSearchScope key={key} messageIdx={i}>{node}</MessageSearchScope>
       : node
-  }, [versioned, queued, running, contentWidth, onFileOpen, onFolderOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, onJumpToQuote, revealTs, revealMid, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun, searchRows])
+  }, [versioned, queued, running, contentWidth, onFileOpen, onFolderOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, onForkMessage, onJumpToQuote, revealTs, revealMid, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun, searchRows])
 
 
   // Render a TurnItem (single or group)
@@ -592,6 +599,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
         earlier={transcript.earlier}
         onTopReached={transcript.onTopReached}
         prefetchStartIndex={transcript.prefetchStartIndex}
+        announcement={transcript.announcement}
         isRowHidden={hiddenRow != null ? isRowHidden : undefined}
         hiddenRowStripUncovered={hiddenRow?.stripUncovered === true}
       />

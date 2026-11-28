@@ -179,6 +179,16 @@ class TestKasNeverDefer:
             "kirocrew-core::skill_search",
         ]
 
+    def test_the_wait_tool_stays_direct_with_no_probe_for_its_server(self):
+        """An app agent's ``@kirocrew-core`` with no probed list still keeps the
+        wait its still-starting note tells it to call, and nothing else."""
+        from kiro_crew.agent_sdk.tool_search import loaderless_never_defer_ids
+
+        spec = {"tools": ["@kirocrew-core", "@pet:pet"]}
+        assert loaderless_never_defer_ids(spec, lambda server: None) == [
+            "kirocrew-core::mcp_server_wait"
+        ]
+
     def test_a_server_with_no_known_list_contributes_nothing(self):
         assert self._ids({"tools": ["@unprobed", "@unprobed/x*"]}) == []
 
@@ -298,6 +308,7 @@ class TestHandshakeNeverDefer:
         wire = self._caps(monkeypatch, {"tools": ["@kirocrew-core", "@srv/one"]})
         assert wire["enabled"] is False
         assert wire["neverDefer"] == [
+            "kirocrew-core::mcp_server_wait",
             "kirocrew-core::memory_recall",
             "kirocrew-core::skill_search",
             "srv::one",
@@ -404,7 +415,11 @@ class TestHandshakeNeverDefer:
         wire = self._caps(
             monkeypatch, {"tools": ["@kirocrew-core"]}, agent="mine", backend=ACP_BACKEND_KIRO
         )
-        assert wire["neverDefer"] == ["kirocrew-core::memory_recall", "kirocrew-core::skill_search"]
+        assert wire["neverDefer"] == [
+            "kirocrew-core::mcp_server_wait",
+            "kirocrew-core::memory_recall",
+            "kirocrew-core::skill_search",
+        ]
 
     def test_a_spec_with_the_loader_and_no_declared_job_tools_still_defers(self, monkeypatch):
         """An operator's own agent, an app's agent, a crew member's template: no
@@ -445,6 +460,7 @@ class TestHandshakeNeverDefer:
         wire = self._caps(monkeypatch, spec, agent="kirocrew", enabled=False)
         assert wire["enabled"] is False
         assert wire["neverDefer"] == [
+            "kirocrew-core::mcp_server_wait",
             "kirocrew-core::memory_recall",
             "kirocrew-core::skill_search",
             "srv::one",

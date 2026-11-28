@@ -27,7 +27,7 @@
  * text in `input`, seeded from its per-slot `drafts`), and the property under test
  * is that the composer keeps no competing copy of it.
  */
-import { describe, expect, it, beforeEach, vi } from 'vitest'
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { useState } from 'react'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 
@@ -43,6 +43,7 @@ vi.mock('../utils/isTouchDevice', () => ({ isTouchDevice: () => flags.touch }))
 import ChatInput from '../components/ChatInput'
 import { requestComposerExpand, queryComposerOrExpand } from '../pages/chat/composerFocus'
 import { renderWithProviders } from './helpers'
+import { registerComposerUpload, unregisterComposerUpload } from '../utils/composerSendHolds'
 
 const COLLAPSED_KEY = 'mc-composer-collapsed'
 // `collapsible` is opt-in, and ChatPage's single main composer is the only caller.
@@ -312,17 +313,16 @@ describe('composer collapse', () => {
   })
 
   /**
-   * #5744's cancel control, judged by this file's own rule.
+   * An upload in flight, judged by this file's own rule.
    *
-   * A third peer in this row is what the two findings above already removed, so
-   * the control REPLACES the attach control for the duration of the upload
-   * instead of joining it. That slot holds no action to displace while
-   * `uploading`: the touch branch drops its `htmlFor` and the pointer branch is
-   * `disabled`. Both pointer classes are asserted, because the row has a
+   * Each upload is a chip of its own above the composer, with its own cancel,
+   * so the bottom icon row neither grows nor swaps a member while one runs:
+   * "+" (or the bare file label on a collapsible touch host) stays itself and
+   * stays usable. Both pointer classes are asserted, because the row has a
    * different third member in each (Sketch on a plain surface, the overflow
    * trigger on the collapsible one) and only one of them is visible per layout.
    */
-  describe('upload cancel control', () => {
+  describe('upload in flight', () => {
     /** Every action control the bottom icon row's left group renders, by name.
      *  The cap counts controls in the visual group, so this counts them all
      *  rather than only direct children -- the attach control sits in its own
@@ -334,15 +334,19 @@ describe('composer collapse', () => {
         .map(el => el.getAttribute('aria-label') || el.getAttribute('title'))
         .filter((n): n is string => !!n)
     }
+    const slot = 'collapse-upload'
+    const live: AbortController[] = []
+    afterEach(() => { act(() => { live.splice(0).forEach(c => unregisterComposerUpload(slot, c)) }) })
+    const startUpload = (name: string) => {
+      const c = new AbortController()
+      live.push(c)
+      act(() => registerComposerUpload(slot, c, name))
+    }
 
-    /* Both `collapsible` values, because the row's THIRD member differs between
-     * them -- the overflow trigger on the opted-in composer, the Sketch pencil on
-     * a split pane or side chat -- so a test fixed at one value could pass while
-     * the other branch grew. */
     describe.each([true, false])('collapsible=%s', (collapsible) => {
-      const props = { ...base, collapsible }
+      const props = { ...base, collapsible, uploadSlot: slot }
 
-      it('replaces the attach control on touch rather than growing the row', () => {
+      it('keeps the attach control on touch and the row the same size', () => {
         // Touch keeps the bare file label only on a collapsible host; every
         // other host keeps the "+" menu on touch as well.
         const attach = collapsible ? 'Attach files' : 'Add files & options'
@@ -350,45 +354,36 @@ describe('composer collapse', () => {
         const { container, unmount } = renderWithProviders(<ChatInput {...props} />)
         const idle = rowControls(container)
         expect(idle).toContain(attach)
-        expect(idle).not.toContain('Cancel upload')
         unmount()
 
         flags.touch = true
-        const uploading = renderWithProviders(<ChatInput {...props} uploading onCancelUpload={vi.fn()} />)
+        startUpload('clip.mov')
+        const uploading = renderWithProviders(<ChatInput {...props} uploading />)
         const busy = rowControls(uploading.container)
-        // The cap is the assertion: same number of controls, one of them swapped.
-        expect(busy).toHaveLength(idle.length)
-        expect(busy).toContain('Cancel upload')
-        expect(busy).not.toContain(attach)
+        // The cap is the assertion: the same controls, none swapped.
+        expect(busy).toEqual(idle)
+        expect(screen.getByRole('button', { name: 'Cancel uploading clip.mov' })).toBeInTheDocument()
       })
 
-      it('replaces the plus control on a pointer device rather than growing the row', () => {
+      it('keeps the plus control on a pointer device and the row the same size', () => {
         const { container, unmount } = renderWithProviders(<ChatInput {...props} />)
         const idle = rowControls(container)
         expect(idle).toContain('Add files & options')
         unmount()
 
-        const uploading = renderWithProviders(<ChatInput {...props} uploading onCancelUpload={vi.fn()} />)
+        startUpload('clip.mov')
+        const uploading = renderWithProviders(<ChatInput {...props} uploading />)
         const busy = rowControls(uploading.container)
-        expect(busy).toHaveLength(idle.length)
-        expect(busy).toContain('Cancel upload')
-        expect(busy).not.toContain('Add files & options')
+        expect(busy).toEqual(idle)
+        expect(screen.getByTitle('Add files & options')).toBeEnabled()
       })
     })
 
-    it('keeps the spinner inside the control, so the wait still reads as live', () => {
-      renderWithProviders(<ChatInput {...base} uploading onCancelUpload={vi.fn()} />)
-      const control = screen.getByRole('button', { name: 'Cancel upload' })
-      // A bare X would trade the way out for the only in-progress signal the
-      // composer has; both have to be in the one control that is left.
-      expect(control.querySelector('.animate-spin')).not.toBeNull()
-    })
-
-    it('leaves the row exactly as it was when the host passes no onCancelUpload', () => {
-      const { container } = renderWithProviders(<ChatInput {...base} uploading />)
-      const busy = rowControls(container)
-      expect(busy).toContain('Add files & options')
-      expect(busy).not.toContain('Cancel upload')
+    it('puts the upload\'s spinner on its chip, so the wait still reads as live', () => {
+      startUpload('clip.mov')
+      renderWithProviders(<ChatInput {...base} uploadSlot={slot} uploading />)
+      const chip = screen.getByRole('group', { name: 'clip.mov' })
+      expect(chip.querySelector('.animate-spin')).not.toBeNull()
     })
   })
 

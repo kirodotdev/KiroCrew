@@ -604,6 +604,7 @@ def _persist_channel_config(
     channel_id: str,
     activation: str | None = None,
     agent: str | None = None,
+    bot: str | None = None,
 ) -> None:
     """Update a single channel's config in config.json (merge, not overwrite)."""
     path = config_path()
@@ -632,6 +633,11 @@ def _persist_channel_config(
             ch["activation"] = activation
         if agent is not None:
             ch["agent"] = agent
+            # This writer is the owner's: the agent stops being one a shared user
+            # set (``slack/shared_channel_agent.py``).
+            ch.pop("shared_agent", None)
+        if bot is not None:
+            ch["bot"] = bot
         return data
 
     try:
@@ -781,6 +787,61 @@ async def route_linked_thread(
     admit: Callable[[], Awaitable[bool]] | None = None,
     had_voice_input: bool | None = None,
 ) -> LinkedRoute:
+    """:func:`_route_linked_thread`, after a channel's Bot or Conductor claims the thread.
+
+    In a channel with a Channel Bot or Channel Conductor
+    (:mod:`kiro_crew.slack.channel_handler`), the handler chat is first pointed at
+    this thread, under the channel's lock so a second thread cannot move it before
+    this message's turn has started. Interaction answers are claimed too, including
+    routes pinned to the handler chat. Commands and routes pinned to any other slot
+    (or no slot) keep their own routing.
+    """
+    from kiro_crew.slack import channel_handler
+
+    kwargs: dict[str, Any] = {
+        "target_slot": target_slot,
+        "route_pinned": route_pinned,
+        "user_meta": user_meta,
+        "turn_context": turn_context,
+        "interpret_commands": interpret_commands,
+        "admit": admit,
+        "had_voice_input": had_voice_input,
+    }
+    args = (text, session_key, user_id, channel, slack, reply_ts)
+    if route_pinned and (
+        target_slot is None
+        or target_slot is not channel_handler.handler_slot(_dashboard_state, channel)
+    ):
+        return await _route_linked_thread(*args, **kwargs)
+    if not await channel_handler.may_claim(
+        channel, text, commands=interpret_commands, session_key=session_key, reply_ts=reply_ts
+    ):
+        if interpret_commands and await channel_handler.refuse_modifier(
+            user_id, channel, text, slack, reply_ts
+        ):
+            return LinkedRoute.REFUSED
+        return await _route_linked_thread(*args, **kwargs)
+    async with channel_handler.lock(channel):
+        if await channel_handler.claim(user_id, channel, slack, reply_ts):
+            return LinkedRoute.REFUSED
+        return await _route_linked_thread(*args, **kwargs)
+
+
+async def _route_linked_thread(
+    text: str,
+    session_key: str,
+    user_id: str,
+    channel: str,
+    slack: SlackClientOps,
+    reply_ts: str,
+    target_slot: Any | None = None,
+    route_pinned: bool = False,
+    user_meta: dict[str, Any] | None = None,
+    turn_context: str | None = None,
+    interpret_commands: bool = True,
+    admit: Callable[[], Awaitable[bool]] | None = None,
+    had_voice_input: bool | None = None,
+) -> LinkedRoute:
     """Route a Slack message to a linked dashboard slot, if one is linked.
 
     Shared by the native ``handle_message`` path and the messaging-transport
@@ -810,7 +871,9 @@ async def route_linked_thread(
     echo show only *text*; appended to the queued entry's text otherwise, where
     a pending entry would be taken by whichever turn starts first.
     *interpret_commands* off (an OPTIONS answer) hands *text* over with commands
-    off, so the slot reads it as content, never as a ``/`` command.
+    off AND expansions off, so the slot reads it as content, never as a ``/``
+    command, and leaves its ``@prompt``, ``$skill`` and leading quick-prompt
+    tokens as written -- the label is the model's, not a person's typing.
     *admit* (the caller's live gate: a code channel's fences) is asked last,
     after every await here and right before the row is appended or the turn
     starts; False holds the message (:attr:`LinkedRoute.HELD`).
@@ -960,7 +1023,7 @@ async def route_linked_thread(
                 interpret_commands=interpret_commands,
             ):
                 return LinkedRoute.REFUSED
-            return await route_linked_thread(
+            return await _route_linked_thread(
                 text,
                 session_key,
                 user_id,
@@ -1053,7 +1116,7 @@ async def route_linked_thread(
             ):
                 return LinkedRoute.REFUSED
             return LinkedRoute.UNROUTED
-        return await route_linked_thread(
+        return await _route_linked_thread(
             text,
             session_key,
             user_id,
@@ -1069,6 +1132,7 @@ async def route_linked_thread(
             had_voice_input=had_voice_input,
         )
     text = _stored
+
     if admit is not None:
         # The caller's own live gate, asked after every await above (the agent
         # read, the window load, the image copy) and right before anything is
@@ -1124,6 +1188,42 @@ async def route_linked_thread(
     )
 
     note_channel_sender(_linked_slot, user_id)
+    # A typed message into an available running slot steers by default.
+    # The hand-off owns its queue fallback; only a synchronous early decline
+    # reaches Slack's queue below, so a gated route never awaits a steer.
+    from kiro_crew import crew_pause
+    from kiro_crew.slack import midturn
+    from kiro_crew.slack.handler_runtime.access import slack_cfg
+
+    _inbound = midturn.take_inbound()
+    if turn_context is None and interpret_commands and not crew_pause.holds_slot(_linked_slot):
+        _steered = await midturn.steer_linked(
+            _dashboard_state,
+            _linked_slot,
+            text,
+            channel=channel,
+            slack=slack,
+            reply_ts=reply_ts,
+            cfg=slack_cfg(),
+            inbound=_inbound,
+            gated=admit is not None,
+            user_meta=user_meta,
+        )
+        if _steered == midturn.LINKED_REFUSED:
+            return LinkedRoute.REFUSED
+        if _steered == midturn.LINKED_DONE:
+            _dashboard_state.push_slots_update()  # type: ignore[attr-defined]
+            sel().log_tool_invocation(
+                session_key=session_key,
+                agent="kirocrew",
+                source="slack",
+                tool_name="linked_thread_intercept",
+                tool_kind="permission",
+                outcome="allowed",
+                metadata={"user_id": user_id, "slot": _linked_slot_key},
+            )
+            logger.info("Steered linked Slack message into dashboard slot %s", _linked_slot_key)
+            return LinkedRoute.ROUTED
     # Redact for UI display only — LLM receives original text so it can process
     # user intent fully (redaction strips URLs/creds that may be relevant
     # context). The LLM's own output is redacted before display.
@@ -1151,8 +1251,6 @@ async def route_linked_thread(
     _queued_text = text
     # Conductor mode "Pause all" holds this session: the message queues as it does
     # behind a running turn, and Resume all (or its own Continue) runs it.
-    from kiro_crew import crew_pause
-
     _starts = not _linked_slot.running and not crew_pause.holds_slot(_linked_slot)
     if turn_context:
         from kiro_crew.context import _neutralize_structural_markers
@@ -1194,8 +1292,10 @@ async def route_linked_thread(
                 # Admission judges the turn by this channel even if the thread
                 # is unlinked or relinked before the turn starts.
                 _directive_source_channels=(channel,),
-                # An OPTIONS answer is the slot's answer, never a ``/`` command.
+                # An OPTIONS answer is the slot's answer, never a ``/`` command,
+                # and its ``@prompt`` / ``$skill`` mentions stay text.
                 _commands_off=not interpret_commands,
+                _expansions_off=not interpret_commands,
                 _slack_voice=(
                     None if had_voice_input is None else (session_key, user_id, had_voice_input)
                 ),
@@ -1225,29 +1325,34 @@ async def route_linked_thread(
             _chat_task.add_done_callback(_drop_untaken)
     else:
         # circular import: both pull in dashboard modules at module level.
-        from kiro_crew.dashboard.chat_delivery import COMMANDS_OFF_META_KEY
+        from kiro_crew.dashboard.chat_delivery import (
+            COMMANDS_OFF_META_KEY,
+            EXPANSIONS_OFF_META_KEY,
+        )
         from kiro_crew.dashboard.session_control import containment_meta
 
         # Stamp the admission-time containment. A linked slot records
         # linked=True here, so its own channel's queued messages keep draining;
         # only a constraint that appears AFTER this enqueue drops the entry.
-        from kiro_crew.dashboard.slot_queue_repository import stamp_source_channels
-
         # *user_meta* rides on the entry too: the drain writes the turn's own
         # user row from the entry's meta.
-        _queue_id = _linked_slot.queue_append(
+        _linked_slot.queue_append(
             _queued_text,
             meta={
                 **{k: dict(v) if isinstance(v, dict) else v for k, v in (user_meta or {}).items()},
                 **containment_meta(_dashboard_state, _linked_slot),  # type: ignore[arg-type]
-                **({} if interpret_commands else {COMMANDS_OFF_META_KEY: True}),
+                **(
+                    {}
+                    if interpret_commands
+                    else {COMMANDS_OFF_META_KEY: True, EXPANSIONS_OFF_META_KEY: True}
+                ),
             },
             directive_user_origin=True,
             directive_channel_origin=True,
+            # The channel the words were typed in, which admission judges the
+            # drained turn by. On the entry when it joins the queue.
+            source_channels=(channel,),
         )
-        # The channel the words were typed in, which admission judges the
-        # drained turn by. Stamped with nothing suspending since the append.
-        stamp_source_channels(_linked_slot, _queue_id, (channel,))
     _dashboard_state.push_slots_update()  # type: ignore[attr-defined]
     sel().log_tool_invocation(
         session_key=session_key,

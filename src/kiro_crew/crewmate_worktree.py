@@ -56,6 +56,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import PurePath
 
+from kiro_crew.platform_compat_links import strip_extended_length_prefix
 from kiro_crew.subprocess_utf8 import utf8_path_stdout
 
 logger = logging.getLogger(__name__)
@@ -259,7 +260,13 @@ def repo_root(path: str) -> str | None:
 
 
 def _contains(parent: str, child: str) -> bool:
-    """Whether *child* is *parent* or inside it; paths on different drives are not."""
+    r"""Whether *child* is *parent* or inside it; paths on different drives are not.
+
+    Both lose Windows' extended-length prefix first, lexically, so ``\\?\C:\w\t``
+    and ``C:\w\t`` are one folder.
+    """
+    parent = strip_extended_length_prefix(parent)
+    child = strip_extended_length_prefix(child)
     try:
         return os.path.commonpath([parent, child]) == parent
     except ValueError:
@@ -413,8 +420,8 @@ def ensure(
             if os.path.lexists(dest):
                 raise WorktreeRefused(f"{dest} exists and is not a worktree of {repo}")
             if registered is not None:
-                # Its folder was deleted by hand: drop the stale registration.
-                wt._run_git(["worktree", "prune"], repo)
+                # Its folder was deleted by hand: drop this one stale registration.
+                wt._deregister_missing(repo, dest)
             registered = branch_for(slug, repo, prefix)
             _create(wt, repo, dest, registered, workspace_dir, slug)
     return CrewmateWorktree(
@@ -534,7 +541,7 @@ def _unwind_add(
     The folder goes by descriptor, and only when it is still the one made (its
     ``(dev, ino)``), so a parent swapped for a link in between leads to nothing
     being removed; never by a by-name ``rmtree``. Then ``_cleanup_partial`` with
-    ``created=False`` prunes the registration and drops the branch this lookup cut.
+    ``created=False`` deregisters that one path and drops the branch this lookup cut.
 
     A platform that cannot pin a tree (``supports_pinned_tree_walk`` is false, so
     Windows) makes ``remove_tree_pinned`` refuse before touching anything. Left
@@ -666,8 +673,8 @@ def make_run_worktree(cwd: str, run_id: str, allowed_roots: list[str]) -> RunWor
         if os.path.lexists(dest):
             raise WorktreeRefused(f"isolate: {dest} already exists and is not this run's worktree")
         if registered:
-            # Its folder was deleted by hand: drop the stale registration.
-            wt._run_git(["worktree", "prune"], repo)
+            # Its folder was deleted by hand: drop this one stale registration.
+            wt._deregister_missing(repo, dest)
         checkout = _nearest_dir(os.path.realpath(os.path.expanduser(cwd)))
         base = wt._resolve_commit(checkout, "HEAD")
         if not base:

@@ -621,6 +621,8 @@ class KnowledgeStore:
     delete_item = _item_rows.delete_item
     delete_items_batch = _item_rows.delete_items_batch
     delete_items_batch_in_txn = _item_rows.delete_items_batch_in_txn
+    items_updated_at = _item_rows.items_updated_at
+    delete_group_unless_edited = _item_rows.delete_group_unless_edited
     delete_source_cascade = _item_rows.delete_source_cascade
 
     # Schema and migrations: ``kiro_crew.knowledge.store_parts.schema_migrations``.

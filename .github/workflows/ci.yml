@@ -91,10 +91,13 @@ jobs:
     # with local git instead of the REST API and needs no pull-requests:read.
     # Job-level permissions REPLACE the top-level grant, so contents:read is
     # restated. issues:read is for the one read of the open main-red issue
-    # ("Read the open main-red issue" below).
+    # ("Read the open main-red issue" below). actions:read is for the shadow
+    # test-selection step's read of the nightly bundle, an artifact of another
+    # run ("Score the diff for test selection" below).
     permissions:
       contents: read
       issues: read
+      actions: read
     outputs:
       only_backend: ${{ steps.decide.outputs.only_backend }}
       only_frontend: ${{ steps.decide.outputs.only_frontend }}
@@ -651,6 +654,35 @@ jobs:
             echo "windows_runner=windows-latest" >> "$GITHUB_OUTPUT"
           fi
 
+      # SHADOW ONLY: nothing reads this verdict to skip a test. The scorer says
+      # what diff-based selection WOULD run for this pull request, and the miss
+      # ledger (scripts/ci_test_selection_ledger.py) joins that with what failed.
+      # These two steps come last, set no output and carry no `id`, so no other
+      # job can read them, and `continue-on-error` keeps a step that crashes or
+      # runs out of time from failing the job every other job waits for. The
+      # script answers every failure it can see with verdict `full` and exits 0
+      # inside its own 60 s; the step's timeout only ends a hung interpreter.
+      # Which bundle it trusts, and the three API reads it makes:
+      # scripts/ci_test_selection_step.py.
+      - name: Score the diff for test selection (shadow)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci_test_selection_step.py
+
+      - name: Upload the test-selection verdict (shadow)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-selection-verdict
+          path: ${{ runner.temp }}/test-selection-verdict/verdict.json
+          if-no-files-found: ignore
+          retention-days: 7
+          overwrite: true
+
   # Build the Linux desktop packages and install them for real, but ONLY when the
   # diff could change what a package installs. The check is expensive (a PBS
   # interpreter, a full pip closure, then electron-builder three times), and it
@@ -724,6 +756,7 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -1094,6 +1127,9 @@ jobs:
             fi
           fi
 
+      - uses: ./.github/actions/seed-python-tool-cache
+        with:
+          python-version: ${{ matrix.python-version }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
@@ -1327,6 +1363,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
 
+      - uses: ./.github/actions/seed-python-tool-cache
       # No uv and no dependency install: every gate below is stdlib-only, so
       # setup-python is the whole toolchain this job needs. The one backend step
       # that DOES need the installed dev group -- the pip-audit dependency
@@ -1436,6 +1473,7 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -1545,6 +1583,8 @@ jobs:
           echo "backend=$([ -s "$BACKEND_FILE" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "frontend=$([ -s "$FRONTEND_FILE" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
+      - if: steps.scope.outputs.backend == 'true'
+        uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         if: steps.scope.outputs.backend == 'true'
         with:
@@ -1669,10 +1709,13 @@ jobs:
     # to 'kirocrew-linux-4-core' and runs four shards in parallel instead of
     # eight; a single shard there takes about three times as long and needs 70
     # to clear its pytest run plus setup while still bounding a hung job. The
+    # fleet arm carries 5 more for shard 1's measure step (its own cap), which
+    # runs on the fleet only; an expression has no arithmetic, so every fleet
+    # shard gets them. The
     # predicate mirrors max-parallel below: startsWith(..., 'codebuild-') is
     # true only on CodeBuild-routed runs, so every non-fleet value keeps the
     # longer budget.
-    timeout-minutes: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 60 || 70 }}
+    timeout-minutes: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 65 || 70 }}
     strategy:
       # 4 protects the shared hosted pool and the larger-runner group's own
       # `maximum_runners` cap; the CodeBuild label has its own account quota.
@@ -1706,6 +1749,9 @@ jobs:
           # compare a change with its base. At depth 1 it compares nothing.
           fetch-depth: 2
 
+      - uses: ./.github/actions/seed-python-tool-cache
+        with:
+          python-version: ${{ matrix.python-version }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
@@ -1975,6 +2021,27 @@ jobs:
         # sandbox, so on this runner (`unshare(CLONE_NEWNS)` -> EPERM) those skip with a
         # named reason and the other ~523 run. See the note above the `jobs:` key.
 
+      # The step above deselects the tests red on main, so a file only they
+      # reach would read low in the coverage Coverage Gate judges. Shard 1 runs
+      # them once more here, serially, with the same coverage targets; what they
+      # cover counts only when that run exits 0 (scripts/ci_main_red_skip.py
+      # `measure`). Same shell as the tests. Fleet runs only: their job budget
+      # carries the step's 5 minutes, the hosted one has none to spare.
+      - name: Measure the tests skipped as red on main (coverage only)
+        if: matrix.group == 1 && steps.scope.outputs.reduced == 'false' && needs.changes.outputs.main_red_skip != '' && startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-')
+        shell: /usr/local/bin/ci-shell {0}
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+        run: |
+          python3 scripts/ci_main_red_skip.py measure -q -n0 --dist no --timeout=120 -m "not ipv6_required and not real_venv" \
+            --cov=kiro_crew --cov=sage_lib \
+            --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
+            --cov=src/kiro_crew/apps/builtins/code_review_sage/tests \
+            --cov-report=
+
       - name: Report peak memory
         if: ${{ always() }}
         run: |
@@ -1995,9 +2062,11 @@ jobs:
         if: steps.scope.outputs.reduced != 'true'
         # Fold any xdist parallel data files into a single .coverage (no-op if
         # pytest-cov already combined this shard), then name it per-shard so the
-        # combine job can merge all shards with `coverage combine`.
+        # combine job can merge all shards with `coverage combine`. `--append`
+        # adds the measure step's file to the .coverage the tests' run left,
+        # instead of replacing it.
         run: |
-          coverage combine 2>/dev/null || true
+          coverage combine --append 2>/dev/null || true
           test -f .coverage || { echo "::error::shard ${{ matrix.group }} produced no coverage data"; exit 1; }
           mv .coverage ".coverage.${{ matrix.group }}"
 
@@ -2065,6 +2134,7 @@ jobs:
 
       - uses: ./.github/actions/setup-windows-tests
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -2835,6 +2905,7 @@ jobs:
 
       - uses: ./.github/actions/setup-windows-tests
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -3106,6 +3177,13 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system -e ".[voice,desktop]" --group dev
 
+      - name: Install connected-computer confinement runtime
+        # Use the Ubuntu bubblewrap package, as the review sandbox bootstrap does.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          bwrap --version
+
       - name: Enable unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
@@ -3152,6 +3230,8 @@ jobs:
             test/test_seal_parent_pin_real_sandbox.py \
             test/test_stand_in_stage_real_sandbox.py \
             test/test_sandbox_readonly_layer_real_sandbox.py \
+            test/test_connected_computers_real_sandbox.py \
+            test/test_sandbox_git_control_real_sandbox.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py \
@@ -3297,6 +3377,7 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -3423,6 +3504,7 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -3485,7 +3567,12 @@ jobs:
           url="$(python3 -c 'import json; print(json.load(open("goose.json"))["url"])')"
           sha="$(python3 -c 'import json; print(json.load(open("goose.json"))["sha256"])')"
           mkdir -p .harness-bin
-          curl -fsSL --retry 3 -o .harness-bin/goose.tar.bz2 "$url"
+          # --retry-all-errors is required in addition to --retry: a bare
+          # --retry covers transient HTTP statuses and timeouts but not a
+          # connection reset (curl exit 35), which is how the Releases CDN
+          # fails here. The sha256sum check below still gates the download.
+          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
+            -o .harness-bin/goose.tar.bz2 "$url"
           echo "$sha  .harness-bin/goose.tar.bz2" | sha256sum -c -
           tar -xjf .harness-bin/goose.tar.bz2 -C .harness-bin
           rm .harness-bin/goose.tar.bz2
@@ -3701,7 +3788,8 @@ jobs:
       # maps every spelling onto it. A measured file outside this list stops
       # `coverage xml` and `coverage report` with "No source for code", so a
       # list that falls behind turns this job red and can never shrink what
-      # is measured. test/test_ci_coverage_sparse_checkout.py holds the list
+      # is measured. The seed action is listed because the job runs it from
+      # the tree. test/test_ci_coverage_sparse_checkout.py holds the list
       # against the `--cov` targets and setup.cfg.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3711,8 +3799,10 @@ jobs:
             /setup.cfg
             /pyproject.toml
             /scripts/ci/coverage_chunked_report.py
+            /.github/actions/seed-python-tool-cache/
           sparse-checkout-cone-mode: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -4016,7 +4106,8 @@ jobs:
       # and pyproject.toml is here for setup-uv, which hashes it for its cache
       # key and warns when its glob matches nothing. A missing script exits 2,
       # and a missing baseline reads as an empty one, which holds every
-      # baselined file to the floor it is recorded as being under.
+      # baselined file to the floor it is recorded as being under. The seed
+      # action is listed because the job runs it from the tree.
       # test/test_ci_coverage_sparse_checkout.py holds the list against the
       # paths this job runs and the script's imports.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4026,8 +4117,10 @@ jobs:
             /scripts/check_per_file_coverage.py
             /.github/coverage-baselines/
             /pyproject.toml
+            /.github/actions/seed-python-tool-cache/
           sparse-checkout-cone-mode: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       # The gate parses the Cobertura reports through defusedxml rather than the
       # stdlib parser, which resolves external entities -- and on a fork PR the
       # report is produced by contributor-controlled code. Installed here because
@@ -4362,6 +4455,7 @@ jobs:
           export I18N_BASE_REF
           npm run i18n:check
 
+      - uses: ./.github/actions/seed-python-tool-cache
       # The Python goldens that run the REAL generator (test_find_ui_auto.py's
       # `built` fixture: `gen-ui-index.mjs --out --auto-out` into a scratch dir)
       # skip wherever node or website/node_modules is missing, which is every
@@ -4551,6 +4645,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -4584,6 +4679,7 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -5320,6 +5416,7 @@ jobs:
       # against the same remote, through the shared diff-base resolver script.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -5731,6 +5828,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -5875,6 +5973,7 @@ jobs:
       - uses: ./.github/actions/setup-windows-tests
         if: runner.os == 'Windows'
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -5979,11 +6078,37 @@ jobs:
             exit 1
           }
 
+      - name: Check the Crew API contract on a real gateway
+        # Linux only: the contract does not differ by OS, and the step above is
+        # what proves each OS boots. One gateway serves every case, so this adds
+        # one boot. See test/e2e/crew_api_contract_spec.py.
+        if: runner.os == 'Linux'
+        env:
+          KIROCREW_E2E: "1"
+          KIROCREW_E2E_REQUIRE: "1"
+          KIROCREW_HARNESS_READY_TIMEOUT: "60"
+        run: |
+          set -o pipefail
+          echo "::remove-matcher owner=python::"
+          pytest -v -n0 --no-cov -p no:cacheprovider --timeout=420 \
+            test/e2e/test_crew_api_contract.py \
+            | tee crew-api-contract.log
+          # `pytest` exits 0 on a fully skipped module. The case count grows with
+          # every operation, so the canary is "some passed and none skipped"
+          # rather than an exact number.
+          grep -qE '(^|[^0-9])[1-9][0-9]* passed' crew-api-contract.log \
+            && ! grep -qE '(^|[^0-9])[1-9][0-9]* skipped' crew-api-contract.log || {
+            echo "::error::the Crew API contract cases did not all run (none passed, or some were skipped)"
+            exit 1
+          }
+
       - name: Upload the boot-matrix log
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-boot-matrix-${{ matrix.os }}
-          path: boot-matrix.log
+          path: |
+            boot-matrix.log
+            crew-api-contract.log
           if-no-files-found: ignore
           retention-days: 7

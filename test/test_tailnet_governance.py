@@ -581,10 +581,12 @@ class TestRevokingAPublishedOriginWhenTheCeilingTightens:
         monkeypatch.setattr(
             tailnet_serve,
             "serve_state",
-            lambda port: tailnet_serve.ServeState(published=published, configured=True, detail=""),
+            lambda port, **_k: tailnet_serve.ServeState(
+                published=published, configured=True, detail=""
+            ),
         )
 
-        def fake_unpublish(port, *, audit_tool=""):
+        def fake_unpublish(port, *, https_port=443, audit_tool=""):
             calls.append(port)
             return tailnet_serve.ServeResult(unpublish_ok, "ok" if unpublish_ok else "cli", "")
 
@@ -625,12 +627,14 @@ class TestRevokingAPublishedOriginWhenTheCeilingTightens:
         monkeypatch.setattr(
             tailnet_serve,
             "serve_state",
-            lambda port: tailnet_serve.ServeState(published=True, configured=True, detail=""),
+            lambda port, **_k: tailnet_serve.ServeState(published=True, configured=True, detail=""),
         )
         monkeypatch.setattr(
             tailnet_serve,
             "unpublish",
-            lambda port, *, audit_tool="": tailnet_serve.ServeResult(True, "ok", ""),
+            lambda port, *, https_port=443, audit_tool="": tailnet_serve.ServeResult(
+                True, "ok", ""
+            ),
         )
         tailnet_serve.revoke_if_governance_now_pins_off(8765)
 
@@ -652,7 +656,9 @@ class TestRevokingAPublishedOriginWhenTheCeilingTightens:
         monkeypatch.setattr(
             tailnet_serve,
             "serve_state",
-            lambda port: tailnet_serve.ServeState(published=False, configured=True, detail=""),
+            lambda port, **_k: tailnet_serve.ServeState(
+                published=False, configured=True, detail=""
+            ),
         )
         tailnet_serve.revoke_if_governance_now_pins_off(8765)
 
@@ -681,3 +687,40 @@ class TestRevokingAPublishedOriginWhenTheCeilingTightens:
                 8765
             ]
         assert any("still served" in r.getMessage() for r in caplog.records)
+
+    @staticmethod
+    def _two_ports(monkeypatch, *, configured: int, ours: set[int], startup: int):
+        """Configured *configured*, startup *startup*; serve reports *ours* as this dashboard."""
+        from kiro_crew.dashboard import tailnet_serve
+
+        reads: list[int] = []
+        withdrawn: list[int] = []
+
+        def fake_state(port, *, https_port=443):
+            reads.append(https_port)
+            return tailnet_serve.ServeState(
+                published=https_port in ours, configured=True, detail=""
+            )
+
+        def fake_unpublish(port, *, https_port=443, audit_tool=""):
+            withdrawn.append(https_port)
+            return tailnet_serve.ServeResult(True, "ok", "")
+
+        monkeypatch.setattr(tailnet_serve, "is_governance_pinned_off", lambda **kw: True)
+        monkeypatch.setattr(
+            tailnet_serve, "configured_https_port", lambda: configured, raising=False
+        )
+        monkeypatch.setattr(tailnet_serve, "serve_state", fake_state)
+        monkeypatch.setattr(tailnet_serve, "unpublish", fake_unpublish)
+        tailnet_serve.revoke_if_governance_now_pins_off(8765, startup_https_port=startup)
+        return reads, withdrawn
+
+    def test_the_configured_port_is_withdrawn_and_a_foreign_startup_port_is_not(self, monkeypatch):
+        """Port changed to 5479 after a start on 443, whose handler is someone else's."""
+        reads, withdrawn = self._two_ports(monkeypatch, configured=5479, ours={5479}, startup=443)
+        assert sorted(reads) == [443, 5479]
+        assert withdrawn == [5479]
+
+    def test_equal_ports_are_read_once(self, monkeypatch):
+        reads, withdrawn = self._two_ports(monkeypatch, configured=5479, ours={5479}, startup=5479)
+        assert (reads, withdrawn) == ([5479], [5479])

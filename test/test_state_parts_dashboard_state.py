@@ -350,7 +350,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "card_id: 'str | None' = None, reason: 'str | None' = None) -> "
         "'bool'",
     ),
-    "clear_update_progress": ("function", False, False, "(self) -> 'None'"),
+    "clear_update_progress": (
+        "function",
+        False,
+        False,
+        "(self, *, announce: 'bool' = False) -> 'None'",
+    ),
     "close_all_ws": ("function", True, False, "(self) -> 'None'"),
     "context_snapshot_for": ("function", False, False, "(self, slot_key: 'str') -> 'dict | None'"),
     "create_cron_folder": (

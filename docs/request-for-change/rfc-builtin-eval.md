@@ -196,7 +196,8 @@ the runner refuses to start when neither holds.
 <eval root>/<run id>/
   home/           HOME for every process of the run
   crew/           KIROCREW_HOME (Crew arms)
-  kiro/           KIRO_HOME (Crew and kiro-cli arms)
+    kiro/         KIRO_HOME (Crew and kiro-cli arms): the one agents dir a
+                  gateway running from a linked git worktree may write into
   codex/          CODEX_HOME (Codex arm)
   repo/           the built task repo with a local origin
   out/            transcripts, ledger, counters copied out
@@ -524,7 +525,7 @@ without it, `kirocrew chat` is unchanged.
 | flag | meaning |
 |---|---|
 | `-m TEXT` / `--message-file PATH` | the seed (existing `-m`; a file for long seeds, read through the sensitive-path gate). A seed that opens with `/` or `@` is refused (exit 2; the gateway answers 400 `unattended_command_seed`): the marker opens the turn, so a command or saved prompt would not run |
-| `--headless` | never read the terminal. A pending tool approval, an `ask_question` card or a turn ending in `[OPTIONS:` is an ask: the run stops (exit 3) |
+| `--headless` | never read the terminal. A pending tool approval, an `ask_question` card, a turn ending in `[OPTIONS:` or a work-ledger item waiting on the person (`needs_human`) is an ask: the run stops (exit 3) |
 | `--on-ask stop\|continue` | later; today every ask stops the run |
 | `--mode chat\|conductor` | default `chat`. `conductor` turns conductor mode on for the session the way the dashboard does: the agent is `crew_mode.crew_mode_agent(cfg)` (from `agent.crew_mode_agent`, `config/sections_agent.py`; unset means `DEFAULT_CREW_MODE_AGENT` in `crew_mode.py`, today `kirocrew-team-lead`; a configured name the migration found unusable reads as the conductor last applied, `set_unusable`), and the session is stamped with `stamp_for_switch` so `runs_crew_mode` holds. No agent name is hard-coded anywhere; `--agent` is refused with `--mode conductor` so a conductor template cannot be passed off as one |
 | `--agent NAME` | chat mode only (existing) |
@@ -533,7 +534,7 @@ without it, `kirocrew chat` is unchanged.
 | `--until-done` | keep the session through ledger patrol, autonudge and monitor wakes until done (§12.3) or a cap |
 | `--idle-grace SECS` | with `--until-done`, the quiet window that counts as done (default 900) |
 | `--cwd DIR` | the session's project directory: set on the run's chat (`POST /api/chat/slots/{slot}/project`; absolute, existing), so no folder is left behind |
-| `--timeout SECS` | wall cap; the run's chats are stopped (exit 4) |
+| `--timeout SECS` | wall cap; the run's chats are stopped (exit 4). Default 6 hours, so a run that waits on an ask the CLI does not recognise still ends; `0` turns the cap off |
 | `--budget CREDITS` | spend cap over settled usage: the credits of the run's chats' turns from the per-turn usage store (`usage/tokens`, which also holds a turn that ended with no reply and so carries no `turn_stats` footer) plus the credits of finished background agents they started (`GET /api/spawn`); a turn or agent counts when it ends, so a run can pass the cap by what is still running; the run's chats are stopped (exit 5) |
 | `--resume SESSION` | later |
 | `--json` | one JSON object on stdout at exit (§12.4); human text goes to stderr |
@@ -557,8 +558,8 @@ without it, `kirocrew chat` is unchanged.
   `[work-ledger wake]`), so a conductor dispatches round 1 instead of waiting
   at its plan gate (§5). Boundaries: an app, an internal caller or a non-owner
   asking for it gets 403 `unattended_not_owner`; a malformed `run_id` gets 400;
-  and every caller's own text, the owner's included, has a marker-shaped
-  opener defanged to `[quoted: headless run` (the rule a forged
+  and every caller's own text, the owner's included, has each marker-shaped
+  opener, anywhere in the text, defanged to `[quoted: headless run` (the rule a forged
   `[sent by session` already gets), so typing the prefix skips nothing. A
   person's ordinary turn is unchanged and still waits at the gate.
 - **Done**: without `--until-done`, when the first turn ends. With it,
@@ -576,19 +577,24 @@ without it, `kirocrew chat` is unchanged.
 {
   "status": "done | asked | timeout | budget | not_signed_in | sandbox_refused | no_gateway | incomplete | interrupted | error",
   "exit_code": 0, "completed": true,
-  "asks": 0, "ask_events": [{"kind": "approval | question | options", "slot": "...", "text": "...", "t_s": "..."}],
+  "asks": 0, "ask_events": [{"kind": "approval | question | options | needs_human", "slot": "...", "text": "...", "t_s": "..."}],
   "wall_s": 0, "credits": 0.0,
   "mode": "chat | conductor",
   "agent": {"name": "...", "source": "default | config | fallback | flag", "configured": "..."},
   "approval_mode": "trust | none", "slot": "...", "transcript": "<path to the session jsonl>",
   "items": {"total": 0, "terminal": 0, "open": 0}, "cwd": "...", "error": "",
-  "unclosed": []
+  "unclosed": [], "started": true
 }
 ```
 
+`started` is true once the agent answered: a reply in the root chat, or any
+spend. A run that ends without one never started (the chat was refused, the
+agent was missing).
+
 `unclosed` names any run chat the gateway refused to close at exit (for example a
 history write still pending); its automation, turn and background agents
-(`POST /api/spawn/stop-all`) were stopped first.
+(`POST /api/spawn/stop-all`) were stopped first. After `--approval-mode trust` such a
+chat is still in Trust, so `error` says it was left in Trust.
 
 `agent.source` is `default` when `agent.crew_mode_agent` is unset, `config`
 when the configured name was used, `fallback` when `set_unusable` replaced it
@@ -602,7 +608,7 @@ when the configured name was used, `fallback` when `set_unusable` replaced it
 | 1 | other error (gateway or runtime failure, unreadable result) |
 | 2 | usage error |
 | 3 | asked a person; the run stopped at the first ask |
-| 4 | `--timeout` reached |
+| 4 | `--timeout` reached (default 6 hours) |
 | 5 | `--budget` reached |
 | 6 | not signed in |
 | 7 | sandbox unavailable or refused (no backend and unsandboxed exec not allowed) |
@@ -612,7 +618,7 @@ when the configured name was used, `fallback` when `set_unusable` replaced it
 
 A run refuses to start (exit 1, no chat opened) while `work_ledger.remote_dispatch` is on: a worker placed on a remote crew can only be reached through the conductor's own session tools, so the CLI could not stop it on a timeout or budget exit.
 
-The eval runner maps 0 to "check next", 3/4/5/9 to FAILED, 6/7/8 to VOID.
+The eval runner maps 0 to "check next", 3/4/5/9 to FAILED, 6/7/8 to VOID, and 1 to VOID when `started` is false, else FAILED.
 
 ## 13. Case collection: merged PRs become standing cases
 

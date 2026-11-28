@@ -17,7 +17,7 @@ describe('resolveLinkPreviews', () => {
     const [p] = resolveLinkPreviews([app()])
     expect(p.key).toBe('cards-app:cards')
     expect([...p.exact]).toEqual(['phone.example.com'])
-    expect(p.suffixes).toEqual(['.example.dev'])
+    expect([...p.suffixes]).toEqual(['.example.dev'])
     expect(p.routeBase).toBe('/api/apps/cards-app')
   })
 
@@ -67,7 +67,7 @@ describe('host normalization and public suffixes', () => {
     for (const h of ['example.co.uk', 'example.com', 'me.github.io', 'example.dev']) expect(isPublicSuffix(h)).toBe(false)
     const [p] = resolveLinkPreviews([app({}, { hosts: ['.co.uk', '.github.io', 'Example.COM.'] })])
     expect([...p.exact]).toEqual(['example.com'])
-    expect(p.suffixes).toEqual([])
+    expect([...p.suffixes]).toEqual([])
   })
 
   it('matches a hovered URL whose host ends in a dot', () => {
@@ -85,7 +85,7 @@ describe('the owner\u2019s grant', () => {
     }
     const [p] = resolveLinkPreviews([row])
     expect([...p.exact]).toEqual(['phone.example.com'])
-    expect(p.suffixes).toEqual([]) // `.example.dev` is declared but not approved
+    expect([...p.suffixes]).toEqual([]) // `.example.dev` is declared but not approved
     expect(p.textPatterns.map((t) => t.id)).toEqual(['a'])
   })
 

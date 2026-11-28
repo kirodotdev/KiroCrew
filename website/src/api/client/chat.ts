@@ -5,7 +5,7 @@
  * links, the send wire, and the composer autocomplete read.
  */
 
-import type { ChatSlot, ChatSlotDetailResponse, CrewPause, CrewTimeline, CrewWorker, CrewWorkerRecap, SideSnapshot } from '../../types'
+import type { ChatMessage, ChatSlot, ChatSlotDetailResponse, CrewPause, CrewTimeline, CrewWorker, CrewWorkerRecap, SideSnapshot } from '../../types'
 import type { SessionSummary } from '../../types/sessionSummary'
 import type { DynamicDashboardCard } from '../../types/dynamicDashboard'
 import { getStoredConsent } from '../../utils/themeConsent'
@@ -20,6 +20,80 @@ import { activeLocale } from '../../i18n/format'
 import { ApiError } from '../apiError'
 import { isEmbedCursor, mergeEmbedRead } from '../../app-sdk/embedIncrementalRead'
 import type { ClientTransport } from './transport'
+
+/** `GET /api/chat/slots/{slot}/history/search`: `files` keeps messages with an
+ *  attached file, `images` those showing an image, `links` those with a web link. */
+export type ChatHistoryKind = '' | 'files' | 'images' | 'links' | 'videos' | 'pdfs' | 'html' | 'widgets' | 'pinned'
+
+export interface ChatHistorySearchParams {
+  q?: string
+  kind?: ChatHistoryKind
+  /** Epoch seconds; `until` is exclusive. */
+  since?: number
+  until?: number
+  /** Resume below this row index: a previous reply's `next_before`. */
+  before?: number
+}
+
+export interface ChatHistoryHit {
+  /** The row's place in the transcript, which `chatHistoryAround` reads by. */
+  index: number
+  /** `file`: a sent file's card (`file_send`), found in a session chat only. */
+  role: 'user' | 'assistant' | 'file'
+  ts?: string
+  mid?: string
+  /** A user row's sender stamps (`author`, `turnActor`, `appLabel`), so the hit
+   *  names an app or a teammate the way the transcript does. */
+  meta?: Record<string, unknown>
+  snippet: string
+  /** Attached files that are not pictures. */
+  file_count?: number
+  link_count?: number
+  /** Pictures: attached image files and images the message shows. */
+  image_count?: number
+  /** Local paths of the first few pictures, for thumbnails. */
+  images?: string[]
+  /** Videos, PDFs and HTML files, each with the first few file names. */
+  video_count?: number
+  video_names?: string[]
+  pdf_count?: number
+  pdf_names?: string[]
+  html_count?: number
+  html_names?: string[]
+  /** Widgets in a reply, with the first few titles. */
+  widget_count?: number
+  widget_titles?: string[]
+}
+
+export interface ChatHistorySearchResponse {
+  hits: ChatHistoryHit[]
+  /** Where the next step resumes; null when nothing older is left. */
+  next_before: number | null
+  total: number
+  /** Per `kind` (`''` for all): the rows this step scanned that match the
+   *  query and day with that kind. Absent on a reply that scanned nothing. */
+  counts?: Partial<Record<ChatHistoryKind, number>>
+}
+
+/** `history/counts`: every tab's count over the chat's whole history. */
+export interface ChatHistoryCountsResponse {
+  counts: Partial<Record<ChatHistoryKind, number>>
+  total: number
+  /** False when the server stopped at its row budget before the first row. */
+  complete: boolean
+  /** True while the chat's search cache is being built: these counts came
+   *  from a row walk, and a read once the build is done can differ. */
+  indexing?: boolean
+}
+
+export interface ChatHistoryAroundResponse {
+  messages: ChatMessage[]
+  start: number
+  end: number
+  total: number
+  /** False at the first row or at the chat's display floor. */
+  has_earlier: boolean
+}
 
 /** Shared Crew first-submit-wins fields of one send (see `api/sendRace.ts`). */
 export interface SendRaceFields {
@@ -51,7 +125,9 @@ function themeConsentSha(colorTheme?: string): string | null {
   return stored
 }
 
-type CrewWorkersAnswer = { root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string; root_kind?: 'mate'; paused?: CrewPause }
+/** `closed_omitted`: the root's closed workers the answer left out, older than every
+ *  closed one it lists (it lists the newest `closed_limit`, 200 unless asked). */
+type CrewWorkersAnswer = { root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string; root_kind?: 'mate'; paused?: CrewPause; closed_omitted?: number }
 /** The last answer and ETag of each root's worker list, for If-None-Match. */
 const crewWorkersEtags = new Map<string, { etag: string; data: CrewWorkersAnswer }>()
 
@@ -137,6 +213,32 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
       fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/summary', {
         method: 'POST',
       }).then(j) as Promise<SessionSummary>,
+    /** One step of the chat's history search window: hits newest first from
+     *  `before` down. Never touches the chat's loaded window. */
+    chatHistorySearch: (slot: string, params: ChatHistorySearchParams, signal?: AbortSignal) => {
+      const qs = new URLSearchParams()
+      if (params.q) qs.set('q', params.q)
+      if (params.kind) qs.set('kind', params.kind)
+      if (params.since !== undefined) qs.set('since', String(params.since))
+      if (params.until !== undefined) qs.set('until', String(params.until))
+      if (params.before !== undefined) qs.set('before', String(params.before))
+      return fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/history/search?' + qs, signal ? { signal } : undefined)
+        .then(j) as Promise<ChatHistorySearchResponse>
+    },
+    /** Every tab's count for a query and day, over the whole chat: one read
+     *  shared by every tab, so a tab switch never changes a count. */
+    chatHistoryCounts: (slot: string, params: Pick<ChatHistorySearchParams, 'q' | 'since' | 'until'>, signal?: AbortSignal) => {
+      const qs = new URLSearchParams()
+      if (params.q) qs.set('q', params.q)
+      if (params.since !== undefined) qs.set('since', String(params.since))
+      if (params.until !== undefined) qs.set('until', String(params.until))
+      return fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/history/counts?' + qs, signal ? { signal } : undefined)
+        .then(j) as Promise<ChatHistoryCountsResponse>
+    },
+    /** Rows `[start, end)`, or a range centred on `mid` at its current position. */
+    chatHistoryAround: (slot: string, start: number, end: number, signal?: AbortSignal, mid?: string) =>
+      fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/history/around?start=' + start + '&end=' + end + (mid ? '&mid=' + encodeURIComponent(mid) : ''), signal ? { signal } : undefined)
+        .then(j) as Promise<ChatHistoryAroundResponse>,
   }
 
   const slotList = {
@@ -150,11 +252,13 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
      *  through another worker (`GET /api/chat/slots/{root}/crew-workers`). */
     /** A closed root (its tab gone) still answers, from saved data:
      *  `root_closed: true` and its saved `root_title`. */
-    crewWorkers: async (root: string): Promise<CrewWorkersAnswer> => {
+    crewWorkers: async (root: string, closedLimit?: number): Promise<CrewWorkersAnswer> => {
       // Revalidate with the last ETag (sent as received, weak `W/` prefix included:
       // If-None-Match compares weakly). A 304 means unchanged: keep the cached list.
+      // The tag is a digest of the body, so another `closed_limit` matches only an identical list.
       const hit = crewWorkersEtags.get(root)
-      const r = await fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers', hit ? { headers: { 'If-None-Match': hit.etag } } : undefined)
+      const query = closedLimit === undefined ? '' : '?closed_limit=' + closedLimit
+      const r = await fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers' + query, hit ? { headers: { 'If-None-Match': hit.etag } } : undefined)
       if (r.status === 304 && hit) return hit.data
       const data: CrewWorkersAnswer = await j(r)
       const etag = r.headers?.get('etag')
@@ -274,7 +378,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     },
     /** Create a chat slot on this machine. A session on a connected crew is
      *  created on that crew and opened through its window, never here. */
-    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, agent_kind?: 'member' | 'template', no_session_folder?: boolean, app_agent_owner?: string, default_folder?: boolean, project_from_slot?: string) => {
+    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, agent_kind?: 'member' | 'template', no_session_folder?: boolean, app_agent_owner?: string, default_folder?: boolean, project_from_slot?: string, start_mode_default?: boolean, project?: string) => {
       const resolvedMemoryMode = memory_mode ?? await resolveDefaultMemoryMode(
         () => fetch('/api/dashboard/config').then(j),
       )
@@ -302,6 +406,13 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
         // The chat this one replaces: the server resolves the agent in that
         // chat's project, where a project-folder agent lives.
         ...(project_from_slot ? { project_from_slot } : {}),
+        // The person's own New chat: the server starts it on their stored
+        // approval mode (`dashboard.default_approval_mode`). Never sent for an
+        // app page's or a hand-off's create, which keep how they start.
+        ...(start_mode_default ? { start_mode_default: true } : {}),
+        // The new chat's project, judged and applied by the server before the chat
+        // is first published; a refused directory makes no chat at all.
+        ...(project ? { project } : {}),
       }).then(j).then(takeSessionFolderNotice) as Promise<ChatSlot>
     },
     /** Create, or reopen, the person's chat a built-in app's page launches inside
@@ -351,7 +462,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     endWait: (slot: string, waitId: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/end-wait', { wait_id: waitId }).then(j),
     approveChatSlot: (slot: string, action: string, extra?: Record<string, string | number>) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/approve', { action, ...extra }).then(j),
     resumeChatSlot: (key: string, title?: string) => post('/api/chat/slots/' + encodeURIComponent(key) + '/resume', { name: key, key, title: title || key }).then(j),
-    forkChatSlot: (slot: string, atIndex?: number, prompt?: string, mode?: string, direction?: string, messageId?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/fork', { ...(atIndex !== undefined ? { at_message_index: atIndex } : {}), ...(messageId ? { at_message_id: messageId } : {}), ...(prompt ? { prompt } : {}), ...(mode ? { mode } : {}), ...(direction ? { direction } : {}) }).then(j),
+    forkChatSlot: (slot: string, atIndex?: number, prompt?: string, mode?: string, direction?: string, messageId?: string, memoryMode?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/fork', { ...(atIndex !== undefined ? { at_message_index: atIndex } : {}), ...(messageId ? { at_message_id: messageId } : {}), ...(prompt ? { prompt } : {}), ...(mode ? { mode } : {}), ...(direction ? { direction } : {}), ...(memoryMode ? { memory_mode: memoryMode } : {}) }).then(j),
     sideTools: () => fetch('/api/chat/side/tools').then(j) as Promise<{ read_only_tools: boolean; claude_adapter_outdated: boolean; claude_adapter_min_version: string; claude_adapter_update_command: string; config_unavailable: boolean }>,
     sideState: (slot: string) => fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/side').then(j) as Promise<SideSnapshot>,
     // No body: promotion always copies the WHOLE transcript with no prompt/mode
@@ -367,6 +478,10 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     sideClose: closeSide,
     sideStop: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/stop', {}).then(j) as Promise<{ ok: boolean }>,
     chatMode: (mode: string, slot?: string) => post('/api/chat/mode', { mode, slot: slot || '' }).then(j),
+    /** The machine owner's acknowledgement of the YOLO confirmation, kept on the gateway. Owner only (403 for anyone else). */
+    yoloAck: () => fetch('/api/chat/yolo-ack').then(j) as Promise<{ acknowledged: boolean }>,
+    /** Record (or, with `false`, clear) the owner's YOLO confirmation acknowledgement; a browser's own `mc-yolo-ack` is untouched. */
+    setYoloAck: (acknowledged: boolean) => put('/api/chat/yolo-ack', { acknowledged }).then(j) as Promise<{ acknowledged: boolean }>,
     generateTitle: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/generate-title').then(j),
     resolveNavLinks: (links: { url: string; context: string }[]) => post('/api/chat/nav/resolve-links', { links }).then(j) as Promise<{ summaries: string[] }>,
     renameSlot: (slot: string, title: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/title', { title }).then(j),

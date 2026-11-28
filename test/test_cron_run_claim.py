@@ -136,6 +136,7 @@ class TestReleaseClearsEveryField:
             "generation",
             "started_monotonic",
             "jitter",
+            "waiting_until",
             "job",
             "task",
             "taken",

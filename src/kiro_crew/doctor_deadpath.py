@@ -10,13 +10,18 @@ data home and surfaces ``internal_auth_mismatch``. Nothing names the dead path.
 This module walks every agent spec JSON in :func:`kiro_agents_dir_path` and
 stats every absolute ``command`` path, absolute path-like arg, and absolute
 path-like env value. Values that only LOOK like paths are screened out first —
-separator-joined lists, and the operands of flags that take an opaque identifier
-(see :data:`_IDENTIFIER_FLAGS`) — because a false "dead path" on a healthy
-install turns the whole check red and teaches operators to ignore it:
+separator-joined lists, the operands of flags that take an opaque identifier
+(see :data:`_IDENTIFIER_FLAGS`), and every arg of the WSL launcher, whose paths
+live inside a Linux distro (see :func:`_runs_in_wsl`) — because a false
+"dead path" on a healthy install turns the whole check red and teaches
+operators to ignore it:
 
 * **Managed specs** (the ones ``install_agent`` / ``rebuild_agent_config`` own,
   i.e. :data:`~kiro_crew.agent_files.OWNED_KIRO_AGENT_FILES`) with dead paths are
-  repaired automatically via the existing rebuild path, then re-verified.
+  repaired automatically via the existing rebuild path, then re-verified. A
+  path that survives because the user's own MCP file sets it (the rebuild copies
+  it as written, ``--clean`` included) is reported against that file, with the
+  edit that clears it, rather than as a rebuild that failed.
 * **Foreign specs** (other tools' agents sharing the directory) are report-only,
   naming the spec file, the server name, and the dead path. Kiro Crew never
   rewrites what it does not own.
@@ -32,13 +37,16 @@ sibling change wiring another sweep into doctor rebases trivially.
 from __future__ import annotations
 
 import logging
+import ntpath
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from kiro_crew import user_json
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
 from kiro_crew.agent_spec_format import is_markdown_spec, iter_agent_spec_files
 from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.terminal_safe import _TERMINAL_CTRL_RE
 
 logger = logging.getLogger(__name__)
@@ -74,6 +82,9 @@ class DeadPath:
     server: str  # mcpServers entry name, or "" when outside mcpServers
     where: str  # location within the entry (command / args[i] / env[KEY])
     path: str  # the dead absolute path
+    # The user's MCP file that sets this value, for a managed spec's dead path
+    # that survived the rebuild because the rebuild copies it from that file.
+    source: Path | None = None
 
 
 @dataclass
@@ -282,6 +293,23 @@ def _is_identifier_operand(args: list, i: int) -> bool:
     return isinstance(prev, str) and prev in _IDENTIFIER_FLAGS
 
 
+def _runs_in_wsl(command: object) -> bool:
+    """Whether *command* is the WSL launcher (``wsl``, ``wsl.EXE``, ``...\\wsl.exe``).
+
+    ``wsl.exe -d <distro> -- /home/me/bin/server`` hands everything after its own
+    options to the Linux distro: each arg is a ``wsl`` option or the distro's
+    command line, and its paths resolve inside the distro, never on this host, so
+    none of the args is stat-ed. Looking inside the distro would mean starting
+    ``wsl.exe``, which is slow and can boot the WSL VM, so the check does not.
+    The launcher's own ``command`` path and its ``env`` values are Windows-side
+    and are still checked. ``ntpath.basename`` splits on both separators, so the
+    test reads the same on every platform.
+    """
+    if not isinstance(command, str):
+        return False
+    return ntpath.basename(command).casefold().removesuffix(".exe") == "wsl"
+
+
 def _walk_server_paths(server: str, entry: dict) -> list[DeadPath]:
     """Collect dead absolute paths from one ``mcpServers`` entry."""
     dead: list[DeadPath] = []
@@ -291,7 +319,7 @@ def _walk_server_paths(server: str, entry: dict) -> list[DeadPath]:
         dead.append(DeadPath(spec="", server=server, where="command", path=command))
 
     args = entry.get("args")
-    if isinstance(args, list):
+    if isinstance(args, list) and not _runs_in_wsl(command):
         for i, arg in enumerate(args):
             if (
                 isinstance(arg, str)
@@ -387,6 +415,49 @@ def _report_only() -> None:
     """No-op repair: the pass records findings without rewriting anything."""
 
 
+def _as_rebuilt(entry: dict) -> dict:
+    """*entry* with ``args`` and ``env`` expanded the way the rebuild writes them."""
+    from kiro_crew.env import expand_spec_args
+
+    view = dict(entry)
+    if isinstance(view.get("args"), list):
+        view["args"] = expand_spec_args(view["args"])
+    env = view.get("env")
+    if isinstance(env, dict):
+        view["env"] = dict(zip(env, expand_spec_args(list(env.values()))))
+    return view
+
+
+def _file_sets(servers: dict, dp: DeadPath) -> bool:
+    """Whether a user MCP file's *servers* hold *dp*'s dead value at the same place.
+
+    The server is matched by name, or by the slash-free alias the spec stores it
+    under.
+    """
+    for name, entry in servers.items():
+        if isinstance(entry, dict) and mcp_server_alias(str(name)) == dp.server:
+            hits = _walk_server_paths(dp.server, _as_rebuilt(entry))
+            if any((hit.where, hit.path) == (dp.where, dp.path) for hit in hits):
+                return True
+    return False
+
+
+def _attribute_to_user_files(dead: list[DeadPath]) -> None:
+    """Set ``source`` on each dead path the user's own MCP file sets.
+
+    A rebuild copies a server's ``args`` and ``env`` from the user's MCP file as
+    written, so a dead path there comes back on every rebuild and only an edit to
+    that file clears it. The source is the first file, in the rebuild's order,
+    that holds the same dead value at the same place.
+    """
+    # Deferred like _default_repair, for the same import graph and cycle.
+    from kiro_crew.agent import user_mcp_files
+
+    files = [(path, user_json.load_mcp_servers(path)) for path in user_mcp_files()]
+    for dp in dead:
+        dp.source = next((path for path, servers in files if _file_sets(servers, dp)), None)
+
+
 def check_dead_paths(*, agents_dir: Path | None = None, repair=_default_repair) -> DeadPathReport:
     """Walk every agent spec and report (and repair managed) dead paths.
 
@@ -467,17 +538,36 @@ def check_dead_paths(*, agents_dir: Path | None = None, repair=_default_repair) 
             result.dead = dead_after
             result.unreadable = unreadable_after
 
+    survived = [dp for r in report.repair_failed for dp in r.dead]
+    if survived:
+        _attribute_to_user_files(survived)
     return report
+
+
+def _dead_path_row(dp: DeadPath) -> str:
+    """``server.where: path``, sanitized for the terminal."""
+    loc = f"{dp.server}.{dp.where}" if dp.server else dp.where
+    return f"{_sanitize_for_terminal(loc)}: {_sanitize_for_terminal(dp.path)}"
+
+
+def _home_relative(path: Path) -> str:
+    """*path* as ``~/...`` when it sits under the home directory, else as is."""
+    try:
+        return "~/" + path.relative_to(Path.home()).as_posix()
+    except (RuntimeError, ValueError):
+        return str(path)
 
 
 def doctor_dead_paths(issues: list[str], *, agents_dir: Path | None = None) -> None:
     """Render the ``Agent Spec Paths`` section of ``kirocrew doctor``.
 
     Managed specs with dead paths are repaired in place; a repaired-and-clean
-    spec is reported as auto-fixed and is NOT counted as an issue. Foreign specs
-    are report-only (naming the spec, server, and dead path). Malformed /
-    unreadable specs are reported. Anything that is a real, unresolved finding —
-    a foreign dead path, an unreadable spec, or a repair that did not take — is
+    spec is reported as auto-fixed and is NOT counted as an issue. A dead path
+    the user's own MCP file sets is listed once under that file, with the edit
+    and rebuild that clear it. Foreign specs are report-only (naming the spec,
+    server, and dead path). Malformed / unreadable specs are reported. Anything
+    that is a real, unresolved finding — a foreign dead path, an unreadable
+    spec, a dead path a user file sets, or a repair that did not take — is
     appended to *issues* so ``kirocrew doctor`` exits nonzero and the failure
     class is diagnosable in one step.
 
@@ -503,25 +593,44 @@ def doctor_dead_paths(issues: list[str], *, agents_dir: Path | None = None) -> N
         print("  paths:       ⏹ no agent specs found")
         return
 
+    # Every managed spec carries the user files' servers, so a row a user file
+    # sets is listed once under that file rather than once per spec.
+    by_user_file: dict[Path, dict[str, None]] = {}
     for result in report.managed_dead:
         spec = _sanitize_for_terminal(result.spec)
         if result.repaired:
             print(f"  {spec}: ✅ dead paths repaired from the current install")
-        else:
-            print(f"  {spec}: ❌ managed spec has dead paths the rebuild did not clear")
-            for dp in result.dead:
-                loc = f"{dp.server}.{dp.where}" if dp.server else dp.where
-                print(f"      {_sanitize_for_terminal(loc)}: {_sanitize_for_terminal(dp.path)}")
-            if result.unreadable:
-                print(f"      (re-read failed: {_sanitize_for_terminal(result.unreadable)})")
-            issues.append(f"agent spec dead paths: {spec}")
+            continue
+        for dp in result.dead:
+            if dp.source is not None:
+                by_user_file.setdefault(dp.source, {})[_dead_path_row(dp)] = None
+        stuck = [dp for dp in result.dead if dp.source is None]
+        if not (stuck or result.unreadable):
+            continue
+        print(f"  {spec}: ❌ managed spec has dead paths the rebuild did not clear")
+        for dp in stuck:
+            print(f"      {_dead_path_row(dp)}")
+        if result.unreadable:
+            print(f"      (re-read failed: {_sanitize_for_terminal(result.unreadable)})")
+        issues.append(f"agent spec dead paths: {spec}")
+
+    for path, rows in by_user_file.items():
+        shown = _sanitize_for_terminal(_home_relative(path))
+        what = "a path that no longer exists" if len(rows) == 1 else "paths that no longer exist"
+        print(f"  {shown}: ❌ sets {what}")
+        for row in rows:
+            print(f"      {row}")
+        issues.append(f"missing MCP server path in {shown}")
+    if by_user_file:
+        print("  Fix: correct each path in its file, then run `kirocrew setup --agent-only`.")
+        print("       If you no longer use a server, delete it from its file, then run")
+        print("       `kirocrew setup --agent-only --clean`.")
 
     for result in report.foreign_dead:
         spec = _sanitize_for_terminal(result.spec)
         print(f"  {spec}: ⚠️  foreign spec has dead paths (not repaired — not ours)")
         for dp in result.dead:
-            loc = f"{dp.server}.{dp.where}" if dp.server else dp.where
-            print(f"      {_sanitize_for_terminal(loc)}: {_sanitize_for_terminal(dp.path)}")
+            print(f"      {_dead_path_row(dp)}")
         issues.append(f"foreign agent spec dead paths: {spec}")
 
     for result in report.unreadable:

@@ -1,17 +1,17 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { Copy, Check, Circle, Smartphone, X, ArrowRight } from 'lucide-react'
+import { Copy, Check, Circle, ArrowRight } from 'lucide-react'
 import { api } from '../api/client'
 import { Btn } from './ui'
 import { settingsPath } from './settingsPath'
 import { useAppSelector } from '../store'
-import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { copyToClipboard } from '../utils/clipboard'
 import { findReport, parseErrorCode } from '../utils/errorReport'
 import ErrorBoundary from './ErrorBoundary'
 import ErrorNotice from './ErrorNotice'
+import { MobileConnectFrame } from './mobileConnect'
 import { getMobileConnectRenderers } from './mobileConnectRenderers'
 import { TailnetDirectLink, tailnetDirectActive } from './TailnetDirectLink'
 import { useSharedCrewCapabilities } from '../hooks/sharedCrew/useSharedCrew'
@@ -73,38 +73,23 @@ const QR_ERROR_KEYS = {
  *
  * Credentials are minted on demand and never on mount: the QR/link responses
  * carry live tokens, so nothing here fetches one until the user asks.
+ *
+ * The whole dialog: `MobileConnectFrame` (`mobileConnect.tsx`) around
+ * `MobileConnectBody`. The shell draws the frame from its own bundle and loads
+ * only the body from this chunk, so a body that fails to load leaves the frame
+ * on screen with the failure inside it.
  */
-export default function MobileConnectModal({
-  kinds,
-  onClose,
-}: {
-  kinds: string[]
-  onClose: () => void
-}) {
-  const { t } = useTranslation()
-  const dialogRef = useRef<HTMLDivElement>(null)
-  // The repo's modal keyboard contract: focus-in on mount, focus-restore on
-  // close, Tab trapped inside the dialog, Escape dismisses.
-  useDialogFocusTrap(dialogRef, onClose)
-  // Dismiss on any pointer-down OUTSIDE the dialog. The dialog layer is
-  // pointer-events-none, so a click anywhere outside the panel falls through to
-  // whatever paints underneath — the backdrop, the main content, or the nav
-  // rail, which renders ABOVE the backdrop so a click on empty sidebar space
-  // never reaches the backdrop (the dead zone this closes). A nav row's own
-  // click still fires, so clicking a tab both dismisses and navigates. Attached
-  // from an effect (after mount) so the very click that opened the dialog —
-  // already dispatched before this runs — cannot immediately close it; capture
-  // phase so a child that stops propagation can't hide the outside click from
-  // us.
-  useEffect(() => {
-    const onPointerDown = (e: PointerEvent) => {
-      const dialog = dialogRef.current
-      if (dialog && !dialog.contains(e.target as Node)) onClose()
-    }
-    document.addEventListener('pointerdown', onPointerDown, true)
-    return () => document.removeEventListener('pointerdown', onPointerDown, true)
-  }, [onClose])
+export default function MobileConnectModal({ kinds, onClose }: { kinds: string[]; onClose: () => void }) {
+  return (
+    <MobileConnectFrame onClose={onClose}>
+      <MobileConnectBody kinds={kinds} onClose={onClose} />
+    </MobileConnectFrame>
+  )
+}
 
+/** The dialog's sections, under the frame's title. */
+export function MobileConnectBody({ kinds, onClose }: { kinds: string[]; onClose: () => void }) {
+  const { t } = useTranslation()
   const hasQr = kinds.includes('tailnet_qr')
   // Only renderers whose kind this deployment actually offers: the endpoint has
   // already filtered every id through `capabilities.mobile_connect`, so a
@@ -145,74 +130,30 @@ export default function MobileConnectModal({
     </>
   )
 
-  // Two sibling layers, the same split Modal.tsx uses for its backdrop and
-  // dialog wrapper. The BACKDROP stays on the chat-pane ceiling (z-50): the
-  // desktop nav rail (navRail.tsx, `focus-chrome-rail`) is a DOM-later z-50 sibling
-  // in the shell's stacking context, so it wins the tie and stays clickable —
-  // a nav-row click both dismisses (the outside-pointerdown handler above) and
-  // navigates. The DIALOG LAYER sits at z-[65]: ABOVE every piece of chat
-  // chrome the panel must cover — the sessions flyout (z-[59]), its drawer
-  // morph (z-[60]), the rail toggle and focus-peek layers (z-[61]), the
-  // focus-mode rail (inline zIndex 62) and its mac drag strips (inline
-  // zIndex 63) — and BELOW the shell's z-[70] toast/menu band and its z-[100]
-  // full-screen takeovers (the "Installing update…" surface, the update-error
-  // and changelog dialogs), which must always paint over an open panel.
-  // Modal.tsx's z-[100] is NOT the reference here: Modal portals to
-  // document.body, a different stacking context, while this component renders
-  // inside the App shell's `relative z-[1]` root, where z-[100] only ties
-  // with the shell's own DOM-earlier takeovers and wins on document order.
-  // The layer is pointer-events-none (only the panel is pointer-events-auto)
-  // so every click outside the panel passes through to what is underneath.
   return (
     <>
-      <div
-        className="fixed inset-0 z-50 bg-bg/80 backdrop-blur-xs animate-rise"
-        role="presentation"
-      />
-      <div className="fixed inset-0 z-[65] flex items-center justify-center p-safe pointer-events-none animate-rise">
-        <div
-          ref={dialogRef}
-          tabIndex={-1}
-          role="dialog"
-          aria-modal="true"
-          aria-label={t('components.mobileConnect.use_kiro_crew_on_your_phone')}
-          className="bg-card border border-border rounded-xl shadow-xl w-[440px] max-w-[90vw] max-h-[85vh] overflow-y-auto outline-hidden p-6 relative pointer-events-auto"
-        >
-          <button
-            onClick={onClose}
-            aria-label={t('components.mobileConnect.close')}
-            className="absolute top-3 right-3 text-muted hover:text-text bg-transparent border-none cursor-pointer p-1"
-          >
-            <X size={16} />
-          </button>
-          <div className="flex items-center gap-2 text-[15px] font-semibold text-text-strong mb-1.5">
-            <Smartphone size={16} className="shrink-0" />
-            {t('components.mobileConnect.use_kiro_crew_on_your_phone')}
-          </div>
-          {caps.isError && (
-            <div className="mb-4">
-              <ErrorNotice
-                message={caps.error instanceof Error ? caps.error.message : t('sharedCrew.session_state_failed')}
-                askAgent
-                onHandoff={onClose}
-                testId="mobile-connect-capabilities-error"
-              />
-              <Btn onClick={() => { void caps.refetch() }}>{t('components.mobileConnect.try_again')}</Btn>
-            </div>
-          )}
-          {directActive && (
-            <div className="mb-4">
-              <TailnetDirectLink direct={direct} />
-            </div>
-          )}
-          {directActive ? (
-            <details className="border-t border-border pt-3" data-testid="mobile-connect-advanced">
-              <summary className="cursor-pointer text-[12.5px] text-muted mb-2">{t('sharedCrew.direct_link_advanced')}</summary>
-              {tokenSections}
-            </details>
-          ) : tokenSections}
-        </div>
+    {caps.isError && (
+      <div className="mb-4">
+        <ErrorNotice
+          message={caps.error instanceof Error ? caps.error.message : t('sharedCrew.session_state_failed')}
+          askAgent
+          onHandoff={onClose}
+          testId="mobile-connect-capabilities-error"
+        />
+        <Btn onClick={() => { void caps.refetch() }}>{t('components.mobileConnect.try_again')}</Btn>
       </div>
+    )}
+    {directActive && (
+      <div className="mb-4">
+        <TailnetDirectLink direct={direct} />
+      </div>
+    )}
+    {directActive ? (
+      <details className="border-t border-border pt-3" data-testid="mobile-connect-advanced">
+        <summary className="cursor-pointer text-[12.5px] text-muted mb-2">{t('sharedCrew.direct_link_advanced')}</summary>
+        {tokenSections}
+      </details>
+    ) : tokenSections}
     </>
   )
 }

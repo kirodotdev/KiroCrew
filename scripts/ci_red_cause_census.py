@@ -7,7 +7,7 @@ read-only report says how often it means something else:
     python3 scripts/ci_red_cause_census.py --since 2026-11-20T09:00Z \\
         --until 2026-11-20T12:00Z --repo kirodotdev/KiroCrew --out-dir census
 
-It reads every workflow's runs created in the window and writes three files to
+It reads every workflow's runs created in the window and writes these files to
 ``--out-dir``. A bound is a UTC day (``2026-11-20``; as ``--until`` the whole day
 is included) or a UTC minute (``2026-11-20T09:00Z``). ``--last-days 1`` is
 yesterday, the whole UTC day, in place of both bounds.
@@ -21,6 +21,8 @@ yesterday, the whole UTC day, in place of both bounds.
                    push twice (`scripts/ci_red_census_week.py`)
     summary.md     the three goal numbers with their n, and the cause counts
     summary.json   the same numbers as data, with the window they cover
+    workflows.csv  one row per workflow: its name and whether it was read in
+                   full (`yes` or `no`)
 
 The summary, the GraphQL and REST call counts and the run time are printed too.
 
@@ -79,9 +81,19 @@ workflows) cost 1,828 calls and 2,786 points. So:
 
 - every query reads ``rateLimit { cost remaining resetAt }``, and the census
   stops before a call that would start with fewer than ``--reserve-points``
-  left (2,000 by default);
+  left (2,000 by default), unless ``--wait-for-reset-seconds`` lets it wait
+  for the bucket's reset instead (0 by default: it does not wait);
 - it stops after spending ``--max-points`` (1,500 by default, about half a
   day of runs here and under a third of one hour's bucket).
+
+`CI` is read first: its runs are listed before any other workflow's, and the
+check suites of its runs are asked for before the rest, in the same calls a
+census in any other order would make. Each of those two reads finishes before
+the workers start on the other workflows, so with any ``--workers`` no other
+workflow's call spends the budget while `CI` is still being read. So when the
+budget ends a census early, what it did read is `CI`, the workflow two of the
+three goal numbers are counted from. The summary of a partial census says whether `CI` was read in
+full and how many workflows were; `workflows.csv` names them.
 
 A census stopped either way spends nothing more. A check suite is counted whole
 or not at all: one the stop left part read, and any other run of the same
@@ -137,6 +149,8 @@ CANCELLED_SUITE_BATCH = 50
 DEFAULT_WORKERS = 4
 DEFAULT_RESERVE_POINTS = 2000
 DEFAULT_MAX_POINTS = 1500
+# Past the reset by GitHub's clock, not only by this one's.
+RESET_MARGIN_SECONDS = 5
 PARTIAL_EXIT = 3
 MAX_WORKERS = 8
 EVIDENCE_CHARS = 80
@@ -152,6 +166,7 @@ LOG_MODES = ("undecided", "never")
 CI_WORKFLOW = "CI"
 MAIN_RED_LABEL = "main-red"
 PUSH_COLUMNS = ("event", "head_sha")
+WORKFLOW_COLUMNS = ("workflow", "read_in_full")
 PUSH_EVENTS = ("pull_request", "push")
 CSV_COLUMNS = (
     "run_id",
@@ -235,6 +250,17 @@ SKIP = _load("ci_main_red_skip_for_census", ROOT / "scripts" / "ci_main_red_skip
 
 def evidence_text(text: str) -> str:
     return str(WATCH.clean(text, EVIDENCE_CHARS))
+
+
+def reset_time(value: object) -> dt.datetime | None:
+    """A ``resetAt`` as an aware time, or ``None`` when it is not one."""
+    if not isinstance(value, str):
+        return None
+    try:
+        at = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return at if at.utcoffset() is not None else None
 
 
 # -- the window ---------------------------------------------------------------
@@ -349,6 +375,10 @@ class Census:
         self.log_unread = 0
         self.suites_unread = 0
         self.logs_read = 0
+        # Every workflow's name, and the ones a stop left part read. `None`
+        # for a census that did not list workflows itself.
+        self.workflow_names: list[str] | None = None
+        self.workflows_part_read: set[str] = set()
 
 
 # -- reading one job ----------------------------------------------------------
@@ -485,10 +515,12 @@ class Api:
     """`gh api` with a count of every call made, by kind. Safe to share between threads.
 
     It also keeps the GraphQL budget: ``reserve`` points are left in the
-    bucket and at most ``max_points`` are spent. Once either would be crossed,
-    every further GraphQL read raises ``BudgetStop`` and ``stopped`` says why.
-    Reads already in flight on other threads finish, so the overshoot is at
-    most one call a worker.
+    bucket and at most ``max_points`` are spent. Under the reserve it sleeps
+    out the bucket's reset when that fits in what is left of ``max_wait``
+    seconds, and every worker waits with it. Once either line would otherwise
+    be crossed, every further GraphQL read raises ``BudgetStop`` and
+    ``stopped`` says why. Reads already in flight on other threads finish, so
+    the overshoot is at most one call a worker.
     """
 
     def __init__(
@@ -498,6 +530,7 @@ class Api:
         reserve: int = DEFAULT_RESERVE_POINTS,
         max_points: int = DEFAULT_MAX_POINTS,
         now: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.timezone.utc),
+        max_wait: float = 0,
     ) -> None:
         self._run = run
         self._sleep = sleep
@@ -505,7 +538,11 @@ class Api:
         self._lock = threading.Lock()
         self.reserve = reserve
         self.max_points = max_points
+        self.max_wait = max_wait
+        self.waited = 0.0
         self.remaining: int | None = None
+        self.reset: dt.datetime | None = None
+        self.waited_out: dt.datetime | None = None
         self.reset_at = ""
         self.stopped: str | None = None
         self.graphql_calls = 0
@@ -523,6 +560,7 @@ class Api:
                 self.stopped is None
                 and self.remaining is not None
                 and self.remaining < self.reserve
+                and not self._waited_for_reset()
             ):
                 self.stopped = (
                     f"{self.remaining} GraphQL points left, under the --reserve-points "
@@ -531,16 +569,37 @@ class Api:
             if self.stopped is not None:
                 raise BudgetStop(self.stopped)
 
+    def _waited_for_reset(self) -> bool:
+        """Sleep out the bucket's reset, under the lock, if ``max_wait`` still holds it.
+
+        The bucket is not assumed full afterwards: the next reply says what is left.
+        """
+        if self.reset is None:
+            return False
+        wait = max((self.reset - self.now()).total_seconds(), 0.0) + RESET_MARGIN_SECONDS
+        if self.waited + wait > self.max_wait:
+            return False
+        self.waited += wait
+        self.waited_out = self.reset
+        self._sleep(wait)
+        self.remaining = None
+        return True
+
     def _read_budget(self, rate: Any) -> None:
         if not isinstance(rate, dict):
             return
         cost, remaining, reset_at = rate.get("cost"), rate.get("remaining"), rate.get("resetAt")
+        reset = reset_time(reset_at)
         with self._lock:
             self.graphql_points += cost if isinstance(cost, int) else 0
+            if reset is not None and self.waited_out is not None and reset <= self.waited_out:
+                # Sent before the reset the census waited out: what it left is stale.
+                return
             if isinstance(remaining, int) and not isinstance(remaining, bool):
                 self.remaining = remaining
             if isinstance(reset_at, str):
                 self.reset_at = evidence_text(reset_at)
+                self.reset = reset or self.reset
 
     def check_budget(self) -> None:
         """Read the bucket (one point) and stop here if it is already under the reserve."""
@@ -772,14 +831,26 @@ def list_workflows(api: Api, repo: str) -> list[tuple[str, str]]:
         page += 1
 
 
-def read_runs(api: Api, workflow_id: str, workflow: str, start: str, end: str) -> list[Run]:
-    """One workflow's runs created in ``[start, end)``, newest first, a page of 100 at a time."""
+def read_runs(
+    api: Api,
+    workflow_id: str,
+    workflow: str,
+    start: str,
+    end: str,
+    part_read: set[str] | None = None,
+) -> list[Run]:
+    """One workflow's runs created in ``[start, end)``, newest first, a page of 100 at a time.
+
+    A workflow whose listing the budget cut short is added to ``part_read``.
+    """
     runs: list[Run] = []
     cursor: str | None = None
     while True:
         try:
             data = api.graphql(RUNS_QUERY, {"workflow": workflow_id, **_after(cursor)})
         except BudgetStop:
+            if part_read is not None:
+                part_read.add(workflow)
             return runs
         nodes, cursor = _connection((data.get("node") or {}).get("runs"), "workflow runs")
         older = False
@@ -858,10 +929,56 @@ def _merge(passed: Passed, more: Passed) -> None:
         passed.setdefault(key, []).extend(stamps)
 
 
+# A suite a batch answered whose further pages wait: its run, its answer, the red jobs asked for.
+_Waiting = tuple[Run, dict[str, Any], int]
+
+
+def _pages_left(suite: dict[str, Any], first: int) -> bool:
+    """Whether a suite a batch answered needs a further call to be whole."""
+    if not first:
+        return False
+    red, cursor = _connection(suite.get("red"), "red check runs")
+    if cursor is not None:
+        return True
+    return bool(red) and _connection(suite.get("passed"), "passed check runs")[1] is not None
+
+
+def _whole_suite(api: Api, run: Run, suite: dict[str, Any], first: int) -> tuple[list[Job], Passed]:
+    """``(jobs, passes)`` of one suite a batch answered, each read to its last page."""
+    red = _all_pages(api, run.suite_id, "red", suite.get("red")) if first else []
+    green = _all_pages(api, run.suite_id, "passed", suite.get("passed")) if red else []
+    jobs = [_job(run, node) for node in red]
+    cancelled = suite.get("cancelled") or {}
+    if int(cancelled.get("totalCount") or 0) <= CANCELLED_READ_MAX:
+        jobs += [_job(run, node) for node in cancelled.get("nodes") or []]
+    passed: Passed = {}
+    for node in green:
+        stamp = (str(node.get("completedAt") or ""), int(node.get("databaseId") or 0))
+        passed.setdefault(passed_key(run, str(node.get("name") or "")), []).append(stamp)
+    return jobs, passed
+
+
+def _finish_suite(api: Api, waiting: _Waiting) -> tuple[list[Job], Passed, list[str]]:
+    """``(jobs, passes, suites left unread)`` of one suite whose further pages waited."""
+    try:
+        jobs, passed = _whole_suite(api, *waiting)
+    except BudgetStop:
+        return [], {}, [waiting[0].suite_id]
+    return jobs, passed, []
+
+
 def _read_suites(
-    api: Api, by_suite: dict[str, Run], ids: list[str], first: int
+    api: Api,
+    by_suite: dict[str, Run],
+    ids: list[str],
+    first: int,
+    waiting: list[_Waiting] | None = None,
 ) -> tuple[list[Job], Passed, list[str]]:
     """``(jobs, passes, suites left unread)`` from one call for ``ids``.
+
+    With ``waiting``, a suite of another workflow than `CI` that needs a
+    further call is put there, neither read on nor counted unread:
+    ``_finish_suite`` reads it once every `CI` suite is whole.
 
     ``first`` is the red jobs to ask each suite for; 0 asks for its cancelled
     jobs only. A batch GitHub cannot answer in time is read as two halves.
@@ -884,7 +1001,7 @@ def _read_suites(
         if len(ids) < 2:
             raise
         for half in (ids[: len(ids) // 2], ids[len(ids) // 2 :]):
-            found, passes, missed = _read_suites(api, by_suite, half, first)
+            found, passes, missed = _read_suites(api, by_suite, half, first, waiting)
             jobs += found
             _merge(passed, passes)
             unread += missed
@@ -899,23 +1016,26 @@ def _read_suites(
         number = pulls[0].get("number") if pulls and isinstance(pulls[0], dict) else None
         if run.event == "pull_request" and isinstance(number, int):
             run = run._replace(pr=number)
+        if waiting is not None and not _is_ci(run) and _pages_left(suite, first):
+            waiting.append((run, suite, first))
+            continue
         try:
-            red = _all_pages(api, run.suite_id, "red", suite.get("red")) if first else []
-            green = _all_pages(api, run.suite_id, "passed", suite.get("passed")) if red else []
+            found, passes = _whole_suite(api, run, suite, first)
         except BudgetStop:
             unread.append(run.suite_id)
             continue
-        jobs += [_job(run, node) for node in red]
-        cancelled = suite.get("cancelled") or {}
-        if int(cancelled.get("totalCount") or 0) <= CANCELLED_READ_MAX:
-            jobs += [_job(run, node) for node in cancelled.get("nodes") or []]
-        for node in green:
-            stamp = (str(node.get("completedAt") or ""), int(node.get("databaseId") or 0))
-            passed.setdefault(passed_key(run, str(node.get("name") or "")), []).append(stamp)
+        jobs += found
+        _merge(passed, passes)
     return jobs, passed, unread + [suite for suite in ids if suite not in answered]
 
 
-def read_jobs(api: Api, runs: list[Run], workers: int = 1) -> tuple[list[Job], Passed, int]:
+def _is_ci(run: Run) -> bool:
+    return run.workflow == CI_WORKFLOW
+
+
+def read_jobs(
+    api: Api, runs: list[Run], workers: int = 1, part_read: set[str] | None = None
+) -> tuple[list[Job], Passed, int]:
     """``(jobs, passes, check suites left unread)`` for the runs that may have a red job.
 
     A run is read when a job of it, in any attempt, ended red, or when the run
@@ -929,10 +1049,21 @@ def read_jobs(api: Api, runs: list[Run], workers: int = 1) -> tuple[list[Job], P
     SHA. So when a suite with red jobs is left unread, every suite of that
     workflow and SHA is left out with it: none of their jobs is reported with a
     cause a complete read could have changed.
+
+    The suites of `CI` runs are asked for first, tier by tier, and the other
+    workflows' after them. The batches are the same size and number in any
+    order, so the order costs nothing; it decides what a stop leaves unread.
+    The batches that hold a `CI` suite are all answered before the workers
+    are handed the rest: side by side, a batch of another workflow could
+    spend the points a `CI` batch was about to. A batch can hold suites of
+    both; a suite of another workflow in it that needs a further page waits
+    for that page until every `CI` batch is answered, so the call is made
+    later and no call is added.
+    Every workflow with a suite left unread is added to ``part_read``.
     """
-    by_suite = {
-        run.suite_id: run for run in runs if (run.red_jobs or run.cancelled) and run.suite_id
-    }
+    wanted = [run for run in runs if (run.red_jobs or run.cancelled) and run.suite_id]
+    # `sorted` is stable: within `CI`, and within the rest, the runs keep their order.
+    by_suite = {run.suite_id: run for run in sorted(wanted, key=lambda run: not _is_ci(run))}
     batches: list[tuple[int, list[str]]] = []
     below = -1
     for tier, size in ((0, CANCELLED_SUITE_BATCH), *((tier, SUITE_BATCH) for tier in RED_TIERS)):
@@ -944,15 +1075,25 @@ def read_jobs(api: Api, runs: list[Run], workers: int = 1) -> tuple[list[Job], P
         ]
         batches += [(tier, ids[at : at + size]) for at in range(0, len(ids), size)]
         below = tier
+    ci_first: tuple[list[tuple[int, list[str]]], list[tuple[int, list[str]]]] = ([], [])
+    for batch in batches:
+        ci_first[not any(_is_ci(by_suite[suite]) for suite in batch[1])].append(batch)
     jobs: list[Job] = []
     passed: Passed = {}
     unread: set[str] = set()
-    for found, passes, missed in _each(
-        workers, lambda batch: _read_suites(api, by_suite, batch[1], batch[0]), batches
-    ):
-        jobs += found
-        _merge(passed, passes)
-        unread.update(missed)
+    waiting: list[_Waiting] = []
+    for part, held in ((ci_first[0], waiting), (ci_first[1], None)):
+        answers = _each(
+            workers,
+            lambda batch, held=held: _read_suites(api, by_suite, batch[1], batch[0], held),
+            part,
+        )
+        if held:
+            answers += _each(workers, lambda suite: _finish_suite(api, suite), waiting)
+        for found, passes, missed in answers:
+            jobs += found
+            _merge(passed, passes)
+            unread.update(missed)
     open_pushes = {
         (by_suite[suite].workflow, by_suite[suite].head_sha)
         for suite in unread
@@ -964,6 +1105,8 @@ def read_jobs(api: Api, runs: list[Run], workers: int = 1) -> tuple[list[Job], P
             unread.add(job.run.suite_id)
         else:
             kept.append(job)
+    if part_read is not None:
+        part_read.update(by_suite[suite].workflow for suite in unread)
     return kept, passed, len(unread)
 
 
@@ -1024,10 +1167,19 @@ def take_census(api: Api, repo: str, start: str, end: str, logs: str, workers: i
         return census
     workflows = list_workflows(api, repo)
     census.workflows = len(workflows)
-    for runs in _each(workers, lambda row: read_runs(api, row[0], row[1], start, end), workflows):
+    census.workflow_names = [name for _, name in workflows]
+    part_read = census.workflows_part_read
+    # `CI` is listed to its end before the workers list the others side by side.
+    for workflow_id, name in workflows:
+        if name == CI_WORKFLOW:
+            census.runs += read_runs(api, workflow_id, name, start, end, part_read)
+    others = [row for row in workflows if row[1] != CI_WORKFLOW]
+    for runs in _each(
+        workers, lambda row: read_runs(api, row[0], row[1], start, end, part_read), others
+    ):
         census.runs += runs
     _progress(f"{len(census.runs)} run(s) of {len(workflows)} workflow(s) read")
-    jobs, passed, census.suites_unread = read_jobs(api, census.runs, workers)
+    jobs, passed, census.suites_unread = read_jobs(api, census.runs, workers, part_read)
     _progress(f"{len(jobs)} red or cancelled job(s) and {len(main_red)} main-red issue(s) read")
     census.partial = api.stopped
     for job in jobs:
@@ -1086,9 +1238,13 @@ def summarize(census: Census, days: float) -> dict[str, Any]:
     flaky = sum(row["cause"] == "flaky" for row in shards)
     infra = sum(row["cause"] == "infrastructure" for row in shards)
     ci_pushes = stats.ci_pushes
+    names = census.workflow_names
+    in_full = None if names is None else [n for n in names if n not in census.workflows_part_read]
     return {
         "days": round(days, 4),
         "partial": census.partial,
+        "ci_read_in_full": None if in_full is None else CI_WORKFLOW in in_full,
+        "workflows_read_in_full": None if in_full is None else len(in_full),
         "runs_read_from": stats.read_from,
         "runs_read_to": stats.read_to,
         "suites_unread": census.suites_unread,
@@ -1141,6 +1297,14 @@ def render_markdown(summary: dict[str, Any], repo: str, since: str, until: str) 
             "what was read; they are not a census of the window.**",
             "",
         ]
+        if summary.get("workflows_read_in_full") is not None:
+            ci = "was" if summary["ci_read_in_full"] else "was not"
+            lines += [
+                f"`{CI_WORKFLOW}` {ci} read in full. Workflows read in full: "
+                f"{summary['workflows_read_in_full']} of {summary['workflows']} "
+                "(`workflows.csv` names them).",
+                "",
+            ]
     lines += [
         "| Goal number | Value | n |",
         "|---|---|---|",
@@ -1188,6 +1352,13 @@ def write_outputs(out_dir: Path, census: Census, summary: dict[str, Any], markdo
         writer = csv.writer(handle, lineterminator="\n")
         writer.writerow(PUSH_COLUMNS)
         writer.writerows(sorted(stats.ci_pushes))
+    if census.workflow_names is not None:
+        with open(out_dir / "workflows.csv", "w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle, lineterminator="\n")
+            writer.writerow(WORKFLOW_COLUMNS)
+            for name in census.workflow_names:
+                whole = "no" if name in census.workflows_part_read else "yes"
+                writer.writerow([_cell(name), whole])
     (out_dir / "summary.md").write_text(markdown, encoding="utf-8", newline="\n")
     text = json.dumps(summary, indent=2, sort_keys=True) + "\n"
     (out_dir / "summary.json").write_text(text, encoding="utf-8", newline="\n")
@@ -1262,6 +1433,13 @@ def build_parser() -> argparse.ArgumentParser:
         "about half a day of runs; a full day is about 2,800)",
     )
     parser.add_argument(
+        "--wait-for-reset-seconds",
+        type=int,
+        default=0,
+        help="under the reserve, wait for the bucket's reset when it comes within what is "
+        "left of this many seconds, in all, in place of stopping (default 0: never wait)",
+    )
+    parser.add_argument(
         "--gh-timeout-seconds",
         type=_positive,
         default=GH_TIMEOUT_SECONDS,
@@ -1286,6 +1464,7 @@ def main(
     elif args.last_days is not None or args.since is None or args.until is None:
         parser.error("give --since and --until, or --last-days alone")
     api.reserve, api.max_points = args.reserve_points, args.max_points
+    api.max_wait = args.wait_for_reset_seconds
     began = clock()
     try:
         if _REPO.fullmatch(args.repo) is None:
@@ -1304,6 +1483,8 @@ def main(
     print(f"GraphQL calls: {api.graphql_calls} ({api.graphql_points} points)")
     if api.remaining is not None:
         print(f"GraphQL points left: {api.remaining} (the bucket resets at {api.reset_at})")
+    if api.waited:
+        print(f"Reset wait: {api.waited:.0f}s")
     print(f"REST calls: {api.rest_calls}")
     print(f"Run time: {clock() - began:.1f}s")
     return status

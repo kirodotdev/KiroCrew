@@ -196,7 +196,7 @@ def test_summary_does_not_label_an_unserializable_result_as_json() -> None:
 
 def test_summary_header_format_is_pinned_for_frontend() -> None:
     """The dashboard's WorkflowCompletionCard detects/parses completions by
-    matching this exact header shape (regex in website/.../WorkflowCompletionCard.tsx):
+    matching this exact header shape (the frontend's ``WF_COMPLETION_RE``):
 
         [Workflow completion event]\\nWorkflow `<name>` (<run_id>) -> **<status>**
 

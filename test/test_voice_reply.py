@@ -26,6 +26,7 @@ from kiro_crew.voice_reply import (
     DEFAULT_PITCH,
     DEFAULT_PROVIDER,
     DEFAULT_RATE,
+    MAX_CHARS,
     PROVIDER_POLLY,
     PROVIDER_SYSTEM,
     SYSTEM_ENGINE_ESPEAK,
@@ -299,6 +300,13 @@ class TestTextToSsml:
         # Should end with a period (sentence boundary truncation)
         assert result.endswith("</prosody></speak>")
 
+    def test_truncates_long_text_after_the_last_sentence_end_of_any_script(self) -> None:
+        for sentence, last_word in (("नमस्ते दुनिया। ", "दुनिया।"), ("Is it? ", "it?")):
+            result = text_to_ssml(sentence * 1000, engine="neural")
+            body = result.removeprefix("<speak>").removesuffix("</speak>")
+            assert body.endswith(last_word)
+            assert len(body) <= MAX_CHARS
+
     def test_adds_paragraph_breaks(self) -> None:
         result = text_to_ssml("para one\n\npara two")
         assert 'break time="600ms"' in result
@@ -354,6 +362,25 @@ class TestSplitSentences:
         assert split_sentences("**Bold sentence.** Another one.") == [
             "Bold sentence.",
             "Another one.",
+        ]
+
+    def test_splits_at_devanagari_danda_and_double_danda(self) -> None:
+        assert split_sentences("नमस्ते। आप कैसे हैं? मैं ठीक हूँ॥ धन्यवाद।") == [
+            "नमस्ते।",
+            "आप कैसे हैं?",
+            "मैं ठीक हूँ॥",
+            "धन्यवाद।",
+        ]
+
+    def test_splits_at_danda_with_no_following_space(self) -> None:
+        assert split_sentences("প্রথম।দ্বিতীয়।") == ["প্রথম।", "দ্বিতীয়।"]
+
+    def test_splits_at_arabic_question_mark_and_urdu_full_stop(self) -> None:
+        assert split_sentences("كيف حالك؟ أنا بخير. یہ پہلا ہے۔ یہ دوسرا ہے۔") == [
+            "كيف حالك؟",
+            "أنا بخير.",
+            "یہ پہلا ہے۔",
+            "یہ دوسرا ہے۔",
         ]
 
 
@@ -555,6 +582,13 @@ class TestSapiEncodedCommand:
     def test_quotes_in_paths_are_escaped(self) -> None:
         script = self._decode(_sapi_encoded_command("o'ut.wav", "in.txt", "", 0))
         assert "'o''ut.wav'" in script
+
+    @pytest.mark.parametrize("quote", ["\u2018", "\u2019", "\u201a", "\u201b"])
+    def test_a_typographic_quote_in_a_path_is_doubled(self, quote: str) -> None:
+        """PowerShell also ends a single-quoted string on U+2018..U+201B, so a temp
+        folder named O\u2019Brien must not cut the script short."""
+        script = self._decode(_sapi_encoded_command(f"O{quote}Brien.wav", "in.txt", "", 0))
+        assert f"'O{quote * 2}Brien.wav'" in script
 
     def test_the_voice_name_is_read_from_a_file_never_the_script(self) -> None:
         """The configured voice must not reach argv, only its temp path.

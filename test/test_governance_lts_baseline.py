@@ -67,8 +67,10 @@ _BASELINE_TABLE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "channels": ((), ("slack",)),
     "approval_mode": (("interactive",), ()),
     "sandbox.min_level": (("strict",), ()),
+    "command_chains": (("each",), ()),
     "yolo_duration": ((), ("permanent", "until_shutdown", "1h")),
     "agent_backend": (("kas",), ("claude", "kiro")),
+    "memory.embedding_sources": (("bundled",), ("custom", "ollama")),
     "webhooks": ((), ("agent", "ops-mission-control")),
     "capabilities.publish": (
         (),

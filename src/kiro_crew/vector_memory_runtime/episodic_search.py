@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_v2
 from kiro_crew.embeddings import PRIORITY_INTERACTIVE
+from kiro_crew.vector_memory_runtime import embedding as _embedding
 from kiro_crew.vector_memory_runtime import text_scoring as _text_scoring
 from kiro_crew.vector_memory_runtime.embedding import _RecallQuery
 
@@ -47,6 +48,12 @@ logger = logging.getLogger("kiro_crew.vector_memory")
 _EPISODIC_RELEVANCE_THRESHOLD = 0.55
 _EPISODIC_LONG_TEXT_CHARS = 300  # texts longer than this get a relaxed threshold
 _EPISODIC_LONG_TEXT_THRESHOLD = 0.42  # relaxed threshold for long entries
+# The same gate for a query embedded with the model's query instruction
+# (Qwen3-Embedding), which lands on a lower cosine scale. Each keeps the plain
+# gate's recall on the memory recall dev set (short 0.44, long 0.80); the
+# numbers are in docs/system-specs/modules/memory-skills-hooks.md.
+_EPISODIC_INSTRUCTED_RELEVANCE_THRESHOLD = 0.515
+_EPISODIC_INSTRUCTED_LONG_TEXT_THRESHOLD = 0.375
 
 
 @dataclass(frozen=True)
@@ -93,22 +100,30 @@ class _EpisodicScoringSet:
 EPISODIC_BLOCK_TEXT_CHARS = 1500
 
 
-def episodic_relevance_threshold(store: VectorMemoryStore, text: str) -> float:
+def episodic_relevance_threshold(
+    store: VectorMemoryStore, text: str, *, instructed: bool = False
+) -> float:
     """Minimum RAW cosine for a memory to be admitted as relevant context.
 
     Long texts dilute cosine similarity, so the gate relaxes above the
-    long-text cutoff.
+    long-text cutoff. *instructed* selects the floors for a query embedded
+    with the model's query instruction.
     """
     if store.algorithm_version == "v2":
-        return memory_v2.cosine_floor(text)
-    return (
-        _EPISODIC_LONG_TEXT_THRESHOLD
-        if len(text) > _EPISODIC_LONG_TEXT_CHARS
-        else _EPISODIC_RELEVANCE_THRESHOLD
-    )
+        return memory_v2.cosine_floor(text, instructed=instructed)
+    long_text = len(text) > _EPISODIC_LONG_TEXT_CHARS
+    if instructed:
+        return (
+            _EPISODIC_INSTRUCTED_LONG_TEXT_THRESHOLD
+            if long_text
+            else _EPISODIC_INSTRUCTED_RELEVANCE_THRESHOLD
+        )
+    return _EPISODIC_LONG_TEXT_THRESHOLD if long_text else _EPISODIC_RELEVANCE_THRESHOLD
 
 
-def filter_by_relevance(store: VectorMemoryStore, candidates: list[dict]) -> list[dict]:
+def filter_by_relevance(
+    store: VectorMemoryStore, candidates: list[dict], *, instructed: bool = False
+) -> list[dict]:
     """Drop candidates below the length-aware raw-cosine relevance gate.
 
     Admission reads the raw ``cosine_sim``, never the decay-adjusted
@@ -122,7 +137,8 @@ def filter_by_relevance(store: VectorMemoryStore, candidates: list[dict]) -> lis
         c
         for c in candidates
         if "cosine_sim" not in c
-        or c["cosine_sim"] >= store._episodic_relevance_threshold(c.get("text", ""))
+        or c["cosine_sim"]
+        >= store._episodic_relevance_threshold(c.get("text", ""), instructed=instructed)
     ]
 
 
@@ -276,18 +292,20 @@ def search_episodic(
                     continue
                 if tag_filter and not store._matches_tags(mem, tag_filter):
                     continue
-                created = vm.datetime.fromisoformat(mem["created_at"])
-                days_old = max(0, (now - created).days)
-                decay_rate = store._decay_rate_for(mem.get("tags"))
-                score = (
-                    cosine_sim * (0.7 + 0.3 * mem["importance"]) * math.exp(-decay_rate * days_old)
+                score = recall_score(
+                    cosine_sim,
+                    mem["importance"],
+                    store._decay_rate_for(mem.get("tags")),
+                    episode_age_days(mem["created_at"], now),
                 )
                 candidates.append(
                     {**mem, "score": round(score, 4), "cosine_sim": round(cosine_sim, 4)}
                 )
 
         if relevance_filter:
-            candidates = store._filter_by_relevance(candidates)
+            candidates = store._filter_by_relevance(
+                candidates, instructed=_embedding.query_is_instructed(query_embedding)
+            )
         expected = min(limit, k)
         if len(candidates) < expected:
             return store._sqlite_vector_search(
@@ -371,6 +389,7 @@ def search_episodic_v2(
     )
     query_terms = memory_v2.terms(query_text)
     similarity = store._stored_similarity_scorer(query_embedding)
+    instructed = _embedding.query_is_instructed(query_embedding)
     now = vm.datetime.now(tz=timezone.utc)
     candidates = []
     for raw in store._eligible_rows(rows, "episode"):
@@ -380,7 +399,9 @@ def search_episodic_v2(
         blob = row.get("embedding")
         has_vector = query_embedding is not None and blob and len(blob) == len(query_embedding) * 4
         cosine = round(similarity(row), 4) if has_vector else None
-        evidence = memory_v2.relevance_evidence(query_terms, row["text"], cosine)
+        evidence = memory_v2.relevance_evidence(
+            query_terms, row["text"], cosine, instructed=instructed
+        )
         if relevance_filter and not evidence["admitted"]:
             continue
         # Even an unfiltered search needs evidence: an absent query vector
@@ -445,6 +466,7 @@ def sqlite_vector_search(
     """
     from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
 
+    instructed = _embedding.query_is_instructed(query_embedding)
     # Normalize query
     norm = math.sqrt(sum(x * x for x in query_embedding))
     q = [x / norm for x in query_embedding] if norm > 0 else query_embedding
@@ -465,6 +487,7 @@ def sqlite_vector_search(
                 tag_filter,
                 relevance_filter,
                 vm.datetime.now(tz=timezone.utc),
+                instructed=instructed,
             )
 
     # Serialized via the locked helper — two threads running a statement at
@@ -525,7 +548,7 @@ def sqlite_vector_search(
             candidates.append(store._episodic_candidate(r, cosine_sim, now))
 
     if relevance_filter:
-        candidates = store._filter_by_relevance(candidates)
+        candidates = store._filter_by_relevance(candidates, instructed=instructed)
     candidates.sort(key=lambda x: x["score"], reverse=True)
     result = _text_scoring._mmr_rerank(candidates, limit=limit) if mmr else candidates[:limit]
     # Same lock discipline as the FAISS path in search_episodic. This UPDATE
@@ -666,6 +689,8 @@ def rank_from_scoring_set(
     tag_filter: list[str] | None,
     relevance_filter: bool,
     now: datetime,
+    *,
+    instructed: bool = False,
 ) -> list[dict]:
     """Score, filter and rank from the resident set; resolve winner bodies.
 
@@ -700,8 +725,16 @@ def rank_from_scoring_set(
     if relevance_filter:
         thresholds = vm.np.where(
             scoring.text_lens > _EPISODIC_LONG_TEXT_CHARS,
-            _EPISODIC_LONG_TEXT_THRESHOLD,
-            _EPISODIC_RELEVANCE_THRESHOLD,
+            (
+                _EPISODIC_INSTRUCTED_LONG_TEXT_THRESHOLD
+                if instructed
+                else _EPISODIC_LONG_TEXT_THRESHOLD
+            ),
+            (
+                _EPISODIC_INSTRUCTED_RELEVANCE_THRESHOLD
+                if instructed
+                else _EPISODIC_RELEVANCE_THRESHOLD
+            ),
         )
         keep &= sims_rounded >= thresholds
 
@@ -731,7 +764,7 @@ def rank_from_scoring_set(
     # stamped in the future.
     days_old = vm.np.maximum(0.0, vm.np.floor((now.timestamp() - scoring.created_ts) / 86400.0))
     scores = vm.np.round(
-        sims * (0.7 + 0.3 * scoring.importance) * vm.np.exp(-scoring.decay_rates * days_old),
+        recall_score(sims, scoring.importance, scoring.decay_rates, days_old, exp=vm.np.exp),
         4,
     )
 
@@ -764,12 +797,12 @@ def episodic_candidate(
     candidate shape cannot silently diverge between numpy-installed and
     stdlib-only installs.
     """
-    from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
-
-    created = vm.datetime.fromisoformat(r["created_at"])
-    days_old = max(0, (now - created).days)
-    decay_rate = store._decay_rate_for(r["tags"])
-    score = cosine_sim * (0.7 + 0.3 * r["importance"]) * math.exp(-decay_rate * days_old)
+    score = recall_score(
+        cosine_sim,
+        r["importance"],
+        store._decay_rate_for(r["tags"]),
+        episode_age_days(r["created_at"], now),
+    )
     return {
         "id": r["id"],
         "conversation_id": r["conversation_id"],
@@ -796,7 +829,7 @@ def get_episodic_context(
     relevant-but-old memory is admitted rather than ordered out by recency.
     """
     if query_embedding is None and query_text and store.embed_fn is not None:
-        query_embedding = store._try_embed(query_text, PRIORITY_INTERACTIVE)
+        query_embedding = store._try_embed(query_text, PRIORITY_INTERACTIVE, query=True)
     results = store.search_episodic(
         query_embedding=query_embedding,
         query_text=query_text,
@@ -854,7 +887,14 @@ def matches_tags(mem: dict, tag_filter: list[str]) -> bool:
 
 
 def decay_rate_for(store: VectorMemoryStore, raw_tags: str | list[str] | None) -> float:
-    """Resolve the per-day recency decay rate for an episodic row.
+    """Resolve the per-day recency decay rate for an episodic row (see :func:`decay_rule_for`)."""
+    return decay_rule_for(store, raw_tags)[0]
+
+
+def decay_rule_for(
+    store: VectorMemoryStore, raw_tags: str | list[str] | None
+) -> tuple[float, str | None]:
+    """The per-day recency decay rate for an episodic row, and the tag that set it.
 
     Rates come from the ``memory.decay_rates`` config mapping, keyed by tag
     (case-insensitive, same as :meth:`_matches_tags`); the reserved
@@ -862,17 +902,68 @@ def decay_rate_for(store: VectorMemoryStore, raw_tags: str | list[str] | None) -
     matching no configured tag. A row carrying several configured tags uses
     the SLOWEST decay — the smallest rate, i.e. maximum retention — so a
     memory tagged both a long-retention tag (rate 0.0) and a general tag
-    (rate 0.03) never ages out because of the broader tag.
+    (rate 0.03) never ages out because of the broader tag. The tag is ``None``
+    when the default rate applies.
     """
     if not store._decay_by_tag:
-        return store._decay_default
+        return store._decay_default, None
     entry_tags = json.loads(raw_tags) if isinstance(raw_tags, str) else (raw_tags or [])
     matched = [
-        store._decay_by_tag[t.lower()]
+        (store._decay_by_tag[t.lower()], t)
         for t in entry_tags
         if isinstance(t, str) and t.lower() in store._decay_by_tag
     ]
-    return min(matched) if matched else store._decay_default
+    return min(matched, key=lambda pair: pair[0]) if matched else (store._decay_default, None)
+
+
+def recall_score(cosine, importance, decay_rate, days_old, *, exp=math.exp):
+    """An experience's recall score: its *cosine* to the query, raised by its
+    importance and faded by its age at the row's decay rate.
+
+    The one place the formula lives; every scoring branch calls it. Works on
+    floats, or on numpy arrays with ``exp=np.exp``.
+    """
+    return cosine * (0.7 + 0.3 * importance) * exp(-decay_rate * days_old)
+
+
+def episode_age_days(created_at: str, now: datetime) -> int:
+    """Whole days since *created_at*, never negative for a row stamped in the future."""
+    from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
+
+    return max(0, (now - vm.datetime.fromisoformat(created_at)).days)
+
+
+def row_age_days(row, now: datetime) -> int:
+    """Whole days since the experience *row* was written, as :func:`recall_weight`
+    reads it: a stamp with no zone is UTC, and an unreadable one is today."""
+    from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
+
+    try:
+        # Recall's own reader, so every row recall can score has the same age here.
+        return episode_age_days(row["created_at"], now)
+    except (TypeError, ValueError):
+        pass
+    # A stamp recall cannot read (it would raise there): no zone is UTC, unreadable is today.
+    try:
+        created = vm.datetime.fromisoformat(row["created_at"]).replace(tzinfo=timezone.utc)
+        return max(0, (now - created).days)
+    except (TypeError, ValueError):
+        return 0
+
+
+def row_importance(row) -> float:
+    """The experience *row*'s importance; a missing one counts as 0.5."""
+    return row["importance"] if row["importance"] is not None else 0.5
+
+
+def recall_weight(store: VectorMemoryStore, row, now: datetime) -> float:
+    """What recall would score the experience *row* at a perfect match: the
+    part of its score the query does not decide. The memory page shows it as
+    the row's strength.
+    """
+    return recall_score(
+        1.0, row_importance(row), store._decay_rate_for(row["tags"]), row_age_days(row, now)
+    )
 
 
 def get_episodic_batch(store: VectorMemoryStore, mem_ids: list[str]) -> dict[str, dict]:

@@ -814,10 +814,13 @@ async def test_git_proxy_runs_in_the_guest_and_answers_through_the_gateway(tmp_p
             http_session=upstream,
         )
         port_file = tmp_path / "guest" / ".kirocrew-worker" / launch.git_proxy_port_file
-        await async_wait_until(
-            port_file.exists, off_loop=True, describe=lambda: "guest proxy port is unpublished"
+        text = await async_wait_until(
+            port_file.read_text,
+            off_loop=True,
+            ignoring=(FileNotFoundError, PermissionError),
+            describe=lambda: "guest proxy port is unpublished",
         )
-        port = int(port_file.read_text().strip())
+        port = int(text.strip())
 
         def fetch() -> int:
             # A loopback connection to the guest proxy: only the port varies.

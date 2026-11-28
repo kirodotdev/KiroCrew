@@ -446,6 +446,30 @@ async def test_spawn_guard_for_a_missing_default_agent_names_the_setting(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_spawn_guard_names_the_spec_in_the_agents_folder_outside_the_home(
+    tmp_path, monkeypatch
+):
+    """``KIRO_HOME`` can put the agents folder kiro-cli is spawned against outside
+    the home, as a pod gateway does: Guard (B) names the spec in that folder."""
+    agents = tmp_path / "pod" / "kiro" / "agents"
+    agents.mkdir(parents=True)
+    monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", agents)
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path / "home"))
+    rt, _, _ = _make_runtime()
+    rt._agent = "ops"
+    rt.terminate_session = AsyncMock()  # type: ignore[method-assign]
+    with pytest.raises(AcpRuntimeError, match="spawned with --agent") as exc:
+        await rt._verify_spawn_agent_active(
+            "s1",
+            _new_resp(
+                {"currentModeId": "kiro_default", "availableModes": [{"id": "kiro_default"}]}
+            ),
+            override=None,
+        )
+    assert f"Its {agents}/ops.json is missing, or the backend refused to load it." in str(exc.value)
+
+
+@pytest.mark.asyncio
 async def test_create_session_fails_closed_when_available_modes_empty():
     """An explicitly-empty `availableModes: []` is
     ADVERTISED (not absent), so it must fail closed — not be treated as

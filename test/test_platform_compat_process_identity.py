@@ -3,9 +3,10 @@
 ``get_ppid`` and ``process_matches`` against a real child, the whole-argv check
 behind reclaiming a recorded child (``process_argv_matches_exact``), the start
 time every PID-reuse guard compares, this process's own cached start identity,
-the three-way ``pid_liveness`` probe, and the thread-group-leader reads that
-narrow liveness on Linux. A topic of the ``test_platform_compat`` family; see
-``test_platform_compat.py``.
+the three-way ``pid_liveness`` probe, the thread-group-leader reads that
+narrow liveness on Linux, and the ``supervision_shape_failure`` rule over
+stood-in readings of this process. A topic of the ``test_platform_compat``
+family; see ``test_platform_compat.py``.
 """
 
 from __future__ import annotations
@@ -922,6 +923,15 @@ class TestPidLivenessPosix:
         assert pc.pid_liveness(10**100) == pc.PID_UNSIGNALABLE
         assert pc.pid_exists(10**100) is True
 
+    @pytest.mark.parametrize(
+        "pid", [2**32, 2**32 + 1, 10**100], ids=["2**32", "2**32+1", "10**100"]
+    )
+    def test_a_pid_wider_than_a_windows_dword_is_unknown(self, monkeypatch, pid):
+        """OpenProcess takes a DWORD: a wider stamp must not be truncated into another pid."""
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        assert pc.pid_liveness(pid) == pc.PID_UNSIGNALABLE
+        assert pc.pid_exists(pid) is True
+
     def test_pid_exists_true_on_permission_error(self, monkeypatch):
         # pid_exists EPERM branch: a PID we exist-but-cannot-signal must still
         # count as existing. Force os.kill to raise PermissionError; pid_exists
@@ -1053,3 +1063,95 @@ class TestIsThreadGroupLeader:
             "builtins.open", lambda *_a, **_k: io.StringIO("Name:\tx\nTgid:\tnotanumber\n")
         )
         assert pc.is_thread_group_leader(4242) is None
+
+
+class TestSupervisionShapeOffPosix:
+    def test_off_posix_the_shape_is_never_supervised(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+
+        assert pc.supervision_shape_failure() == pc.SUPERVISION_NOT_POSIX
+
+
+class _ShapeReadings:
+    """``os`` with this process's shape readings stood in; every other name is the real one.
+
+    *stdin_error* is the errno ``tcgetpgrp(0)`` raises, or ``None`` when stdin is this
+    process's controlling terminal and it answers the terminal's foreground group.
+    """
+
+    def __init__(self, *, stdin_error: int | None, pid: int, group: int, parent: int) -> None:
+        self._stdin_error = stdin_error
+        self.getpid = lambda: pid
+        self.getpgrp = lambda: group
+        self.getppid = lambda: parent
+
+    def tcgetpgrp(self, fd: int) -> int:
+        assert fd == 0
+        if self._stdin_error is None:
+            return self.getpgrp()
+        raise OSError(self._stdin_error, os.strerror(self._stdin_error))
+
+    def __getattr__(self, name: str):
+        return getattr(os, name)
+
+
+@pytest.mark.skipif(not pc.IS_POSIX, reason="process groups and terminals are POSIX")
+class TestSupervisionShapeReadings:
+    """The rule over stood-in readings of this process, one shape per case.
+
+    A process in a new session or a new group (``setsid``, ``start_new_session``, a
+    job-control job, a service manager's main process) leads its group; an orphan's
+    parent is its reaper, in another group.
+    """
+
+    @staticmethod
+    def _readings(monkeypatch, *, stdin_error=errno.ENOTTY, pid, group, parent, parent_group):
+        readings = _ShapeReadings(stdin_error=stdin_error, pid=pid, group=group, parent=parent)
+        monkeypatch.setattr(pc, "os", readings)
+        monkeypatch.setattr(pc, "pgroup_of", lambda p: parent_group if p == parent else None)
+
+    def test_a_child_in_its_parents_group_with_no_terminal_passes(self, monkeypatch):
+        self._readings(monkeypatch, pid=101, group=100, parent=100, parent_group=100)
+
+        assert pc.supervision_shape_failure() is None
+
+    def test_a_controlling_terminal_on_stdin_fails(self, monkeypatch):
+        self._readings(
+            monkeypatch, stdin_error=None, pid=101, group=100, parent=100, parent_group=100
+        )
+
+        assert pc.supervision_shape_failure() == pc.SUPERVISION_TERMINAL
+
+    def test_a_closed_stdin_is_no_terminal(self, monkeypatch):
+        self._readings(
+            monkeypatch, stdin_error=errno.EBADF, pid=101, group=100, parent=7, parent_group=100
+        )
+
+        assert pc.supervision_shape_failure() is None
+
+    def test_a_process_that_leads_its_group_fails(self, monkeypatch):
+        self._readings(monkeypatch, pid=100, group=100, parent=7, parent_group=7)
+
+        assert pc.supervision_shape_failure() == pc.SUPERVISION_OWN_GROUP
+
+    def test_a_group_leader_fails_even_when_its_parent_reads_as_in_its_group(self, monkeypatch):
+        self._readings(monkeypatch, pid=100, group=100, parent=7, parent_group=100)
+
+        assert pc.supervision_shape_failure() == pc.SUPERVISION_OWN_GROUP
+
+    def test_an_orphan_whose_reaper_is_in_another_group_fails(self, monkeypatch):
+        self._readings(monkeypatch, pid=101, group=100, parent=1, parent_group=1)
+
+        assert pc.supervision_shape_failure() == pc.SUPERVISION_OWN_GROUP
+
+    def test_a_parent_whose_group_cannot_be_read_fails(self, monkeypatch):
+        self._readings(monkeypatch, pid=101, group=100, parent=7, parent_group=None)
+
+        assert pc.supervision_shape_failure() == pc.SUPERVISION_OWN_GROUP
+
+    def test_a_parent_outside_the_pid_namespace_is_never_read(self, monkeypatch):
+        # The kernel names such a parent 0, and getpgid(0) would answer this
+        # process's own group, which the stand-in mirrors.
+        self._readings(monkeypatch, pid=1, group=5, parent=0, parent_group=5)
+
+        assert pc.supervision_shape_failure() == pc.SUPERVISION_OWN_GROUP

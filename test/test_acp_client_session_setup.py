@@ -13,6 +13,7 @@ import kiro_crew.acp.client as acp_client
 from kiro_crew.acp.client import _DRAIN_DURATION, _DRAIN_IDLE_EXIT, AcpClient, AcpError
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 # ── Coverage push: session lifecycle ──
 
@@ -242,6 +243,22 @@ class TestWaitForResponse:
             await client._wait_for_response(5, timeout=5.0)
 
     @pytest.mark.asyncio
+    async def test_unknown_session_error_is_a_lost_session(self, tmp_path):
+        """A request answered with the ACP SDK's unknown-session frame (claude-agent-acp
+        0.107.0, e.g. a ``session/set_mode`` after the session closed) takes the
+        lost-session recovery that a "Session not found" text takes."""
+        from kiro_crew.acp.types import JsonRpcMessage
+        from kiro_crew.llm_helpers import acp_error_is_session_not_found
+
+        error = {"code": -32002, "message": "Resource not found", "data": {"sessionId": "s1"}}
+        client = AcpClient(work_dir=tmp_path)
+        client._read_message = AsyncMock(return_value=JsonRpcMessage(id=5, error=error))
+
+        with pytest.raises(AcpError) as ei:
+            await client._wait_for_response(5, timeout=FALLBACK_TIMEOUT_SECS)
+        assert acp_error_is_session_not_found(ei.value) is True
+
+    @pytest.mark.asyncio
     async def test_notification_buffered(self, tmp_path):
         client = AcpClient(work_dir=tmp_path)
         from kiro_crew.acp.types import JsonRpcMessage
@@ -320,7 +337,11 @@ class TestDrainNotifications:
         assert len(client._mcp_notifications) == 0
 
     @pytest.mark.asyncio
-    async def test_drains_live_messages(self, tmp_path):
+    async def test_drains_live_messages(self, tmp_path, monkeypatch):
+        # The drain reads the virtual clock, so a slow runner cannot spend the window
+        # before the first read, and a quiet poll costs exactly the time it was asked for.
+        clock = ManualClock(monotonic_start=0.0)
+        clock.install(monkeypatch, acp_client)
         client = AcpClient(work_dir=tmp_path)
         from kiro_crew.acp.types import JsonRpcMessage
 
@@ -332,6 +353,7 @@ class TestDrainNotifications:
             call_count[0] += 1
             if call_count[0] == 1:
                 return live_msg
+            clock.sleep(timeout)
             return None
 
         client._read_message = fake_read
@@ -344,7 +366,9 @@ class TestDrainNotifications:
         # Should have processed the live message without error
 
     @pytest.mark.asyncio
-    async def test_handles_acp_error_during_drain(self, tmp_path):
+    async def test_handles_acp_error_during_drain(self, tmp_path, monkeypatch):
+        # A frozen virtual clock: a slow runner cannot spend the window before the read.
+        ManualClock(monotonic_start=0.0).install(monkeypatch, acp_client)
         client = AcpClient(work_dir=tmp_path)
         client._mcp_notifications = []
         client._read_message = AsyncMock(side_effect=AcpError("process died"))
@@ -380,8 +404,12 @@ class TestDrainNotifications:
         assert client.pop_pending_oauth_requests() == []
 
     @pytest.mark.asyncio
-    async def test_captures_live_mcp_oauth_request(self, tmp_path):
+    async def test_captures_live_mcp_oauth_request(self, tmp_path, monkeypatch):
         """OAuth notifications arriving live during drain are also captured."""
+        # The drain reads the virtual clock, so a slow runner cannot spend the window
+        # before the first read, and a quiet poll costs exactly the time it was asked for.
+        clock = ManualClock(monotonic_start=0.0)
+        clock.install(monkeypatch, acp_client)
         client = AcpClient(work_dir=tmp_path)
         from kiro_crew.acp.types import METHOD_MCP_OAUTH_REQUEST, JsonRpcMessage
 
@@ -397,6 +425,7 @@ class TestDrainNotifications:
             call_count[0] += 1
             if call_count[0] == 1:
                 return oauth_msg
+            clock.sleep(timeout)
             return None
 
         client._read_message = fake_read

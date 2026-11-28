@@ -16,6 +16,7 @@ import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import InfoTip from '../../components/InfoTip'
 import {
   argvLine,
   commandSetUnchanged,
@@ -25,6 +26,7 @@ import {
   type LaunchRefusal,
   launchIsApprovable,
   type McpRowState,
+  offersRootsAnswer,
 } from './mcpManagementModel'
 import {
   type DrawnLaunch,
@@ -145,13 +147,15 @@ function LaunchBlock({
   const preClass =
     'm-0 whitespace-pre-wrap [overflow-wrap:anywhere] rounded bg-[var(--bg)] px-2 py-1.5 font-mono text-[12px] text-[var(--text)]'
   if (perLaunch) {
-    // Each distinct launch once, its own env keys under it, so a key that
-    // moved from one launch to another shows under a different command.
+    // Each launch as drawn once, its own env keys under it, so a key that
+    // moved from one launch to another shows under a different command. Kept
+    // by what is drawn (command, key names, marks), not by the values: launches
+    // that differ only in a value (one PATH per agent) draw the same lines.
     const seen = new Set<string>()
     const launches = (commands ?? [])
       .map((command, i) => ({ command, env: envs?.[i] ?? [], gained: gained?.[i] }))
       .filter(l => {
-        const k = JSON.stringify([l.command, [...l.env].sort()])
+        const k = JSON.stringify([l.command, envKeyNames([l.env]).sort(), [...(l.gained ?? [])].sort()])
         if (seen.has(k)) return false
         seen.add(k)
         return true
@@ -256,9 +260,12 @@ export function ServerDetailsBody({
 }) {
   return (
     <div className="min-w-0 space-y-2 rounded-lg bg-[var(--hover)] px-3 py-2 text-[12px] leading-relaxed text-[var(--muted)]">
-      <p id={detailsWhyId(server.name)} className="m-0 break-words text-[12.5px] [overflow-wrap:anywhere]">
-        {i18nT(detailsWhyKey(server, state, refusal))}
-      </p>
+      {/* A roots row that offers its answer already says why on the row. */}
+      {!offersRootsAnswer(server) && (
+        <p id={detailsWhyId(server.name)} className="m-0 break-words text-[12.5px] [overflow-wrap:anywhere]">
+          {i18nT(detailsWhyKey(server, state, refusal))}
+        </p>
+      )}
       {refusal ? (
         <RefusalLaunch refusal={refusal} />
       ) : server.transport === 'stdio' ? (
@@ -318,8 +325,20 @@ export function RefusalLaunch({ refusal }: { refusal: LaunchRefusal }) {
     // it keeps the two full columns and their "too long to show" line.
     const perLaunch = refusal.complete !== false && commandSetUnchanged(refusal) ? launchChanges(refusal) : []
     if (perLaunch.length > 0) {
+      // A key the gateway found changed (`changed_env_keys`) belongs to the
+      // server, not to one launch: one that no launch's lines name is said once above them.
+      const unnamed = (refusal.changed_env_keys ?? [])
+        .filter(name => !perLaunch.some(c => [...c.envAdded, ...c.envRemoved, ...c.values.map(v => v.name)].includes(name)))
+        .map(name => ({ name, added: [], removed: [] }))
       return (
         <div className="min-w-0 space-y-2">
+          {unnamed.length > 0 && (
+            <ul className={SUMMARY_CLASS}>
+              {envLines([], [], unnamed).map(l => (
+                <li key={l}>{l}</li>
+              ))}
+            </ul>
+          )}
           {distinctChanges(perLaunch).map((change, i) => (
             <div key={i} className="min-w-0 space-y-0.5">
               {/* An added or removed launch names its command in its first line. */}
@@ -625,5 +644,54 @@ export function ShareAction({
         </span>
       )}
     </div>
+  )
+}
+
+/**
+ * A shared row's "Always trust changes to this server", drawn under the server
+ * name while the row's launch is approved. It is checked when the server is
+ * trusted; the owner can take it off and tick it again here, or set it in the
+ * Review dialog. A row waiting for approval draws nothing: Review asks there.
+ */
+export function TrustChangesChoice({
+  server,
+  approved,
+  busy,
+  onTrustChange,
+}: {
+  server: McpManagedServer
+  approved: boolean
+  busy: boolean
+  onTrustChange: (trusted: boolean) => void
+}) {
+  if (!server.stub || !approved) return null
+  return (
+    <div className="mt-1 flex min-w-0 items-start gap-1.5">
+      <label className="flex min-w-0 items-start gap-1.5 text-[12px] text-[var(--muted)]">
+        <input
+          type="checkbox"
+          aria-label={i18nT('pages.mcpManagement.trust_changes_label')}
+          className="mt-[2px] h-3.5 w-3.5 shrink-0 accent-[var(--accent)]"
+          checked={server.trust_changes === true}
+          disabled={busy}
+          onChange={e => onTrustChange(e.target.checked)}
+        />
+        <span className="min-w-0">{i18nT('pages.mcpManagement.trust_changes_label')}</span>
+      </label>
+      <InfoTip text={i18nT('pages.mcpManagement.trust_changes_tip')} />
+    </div>
+  )
+}
+
+/**
+ * A server name: one line whenever it fits beside the switch. A longer name
+ * wraps only between its words (after a hyphen), never inside one; a single
+ * word wider than the cell is the one case split inside it.
+ */
+export function ServerName({ name, id }: { name: string; id: string }) {
+  return (
+    <span id={id} className="block break-normal font-mono text-[13px] text-[var(--text)] [overflow-wrap:break-word]">
+      {name}
+    </span>
   )
 }

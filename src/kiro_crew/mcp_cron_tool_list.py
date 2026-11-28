@@ -110,7 +110,10 @@ def _list_tools() -> list[dict[str, Any]]:
                 "'schedule'. Requires name + message, plus one of: every "
                 "(seconds), cron_expr, at (unix timestamp), delay (seconds "
                 "from now), or at_time (human string like '5pm', "
-                "'tomorrow 9am', 'in 2 hours'). A Bot's scheduled agent turn "
+                "'tomorrow 9am', 'in 2 hours'). For 'remind me to X', set "
+                "notify_only=true: the message reaches the user as written and "
+                "no agent turn or tool runs. Without it, message is a prompt an "
+                "agent acts on at each run. A Bot's scheduled agent turn "
                 "runs on its worker, cannot message other sessions, and comes "
                 "back to the Bot's chat as a worker report; to hand work to "
                 "another session at a time, have the turn report back and send "
@@ -121,6 +124,13 @@ def _list_tools() -> list[dict[str, Any]]:
                 "properties": {
                     "name": {"type": "string", "description": "Job name"},
                     "message": {"type": "string", "description": "Message to send to agent"},
+                    "notify_only": {
+                        "type": "boolean",
+                        "description": "A reminder: each run delivers message to the user "
+                        "as written (dashboard bell, plus the job's channel) and starts no "
+                        "agent turn, so no tool runs (default false). Not with command or "
+                        "script.",
+                    },
                     "every": {
                         "type": "integer",
                         "description": "Interval in seconds (min 60)",
@@ -149,7 +159,9 @@ def _list_tools() -> list[dict[str, Any]]:
                         "Examples: '5pm', '17:00', 'tomorrow 9:30am', 'in 2 hours', "
                         "'in 3 days', '2026-03-28 14:00'. A clock time, and a relative "
                         "day or week count, is read in 'timezone' when given, "
-                        "else the global config timezone, then 'local'. "
+                        "else the global config timezone, then 'local'. An ISO 8601 "
+                        "time with its own zone ('2026-03-28T14:00:00Z', "
+                        "'2026-03-28T14:00+02:00') names an instant and ignores 'timezone'. "
                         "Prefer this over 'at' for absolute times.",
                     },
                     "channel": {
@@ -284,16 +296,22 @@ def _list_tools() -> list[dict[str, Any]]:
                         "ctx.set_session_mode() to open, seed and set the approval "
                         "mode (trust or trust_reads) of a dashboard session (never "
                         "shell out to 'kirocrew token'; the sandboxed child is "
-                        "refused). "
+                        "refused). ctx.send_to_session() and ctx.set_session_mode() "
+                        "reach only sessions this cron created: a session another "
+                        "creator made, the chat that armed the job included, is "
+                        "refused with not_creator, and ctx.set_session_mode() "
+                        "refuses a closed session as unknown slot. "
+                        "ctx.send_to_session() on a name no session uses yet "
+                        "opens a new session for this cron. "
                         "When set, 'message' is passed to the script as ctx.message "
                         "(used for arguments) rather than being sent to an LLM.",
                     },
                     "command": {
                         "type": "string",
-                        "description": "Shell command for code-based cron execution "
-                        "(bypasses LLM entirely). Mutually exclusive with 'script'. "
-                        "When set, 'message' is neither sent to an LLM nor passed "
-                        "to the command: put any arguments in the command itself.",
+                        "description": "Shell command, no LLM; exclusive with 'script'. "
+                        "'message' is neither sent to an LLM nor passed to the command. "
+                        "Clean stdout: bell + launch channel_type/target_id, not a chat; "
+                        "Slack --channel: bell only; silent: none.",
                     },
                     "timeout": {
                         "type": "integer",
@@ -534,6 +552,18 @@ def _list_tools() -> list[dict[str, Any]]:
     return with_titles("kirocrew-cron", tools)
 
 
+def _redeem_pickup() -> None:
+    """Redeem an enforced harness's one-time pickup, when this process carries one.
+
+    As ``kirocrew-core`` does (``mcp_core_tool_list._redeem_pickup``): such a harness
+    withholds the gateway secret, so without it every cron tool is refused, and the
+    listing already reads this session's tool policy from the gateway.
+    """
+    from kiro_crew.agent_ipc_client import redeem_server_pickup
+
+    redeem_server_pickup()
+
+
 #: The server as ``initialize`` describes it. ``kiro_crew.mcp_cron.run_mcp_server``
 #: passes the loop these same values, so the answers written before the handlers load
 #: and the ones the loop writes after cannot differ.
@@ -544,4 +574,5 @@ SERVER = StdioServer(
     advertise_caller_identity=True,
     error_prefix_is_error=True,
     instructions=_INSTRUCTIONS,
+    before_first_request=_redeem_pickup,
 )

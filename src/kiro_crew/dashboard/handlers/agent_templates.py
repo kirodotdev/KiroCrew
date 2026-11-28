@@ -416,7 +416,7 @@ def _name_holder(name: str) -> dict[str, Any]:
     )
     held = next((e for e in entries if e["stem"].lower() == key), None)
     if held is not None:
-        return {"error": unlisted_refusal_text(name, held), "unlisted": held}
+        return {"error": unlisted_refusal_text(name, held, agents_dir), "unlisted": held}
     held = next(
         (
             e
@@ -426,7 +426,7 @@ def _name_holder(name: str) -> dict[str, Any]:
         None,
     )
     if held is not None:
-        return {"error": unlisted_refusal_text(name, held), "unlisted": held}
+        return {"error": unlisted_refusal_text(name, held, agents_dir), "unlisted": held}
     row = next(
         (
             info
@@ -439,7 +439,7 @@ def _name_holder(name: str) -> dict[str, Any]:
     if row is None:
         return {}
     listed = {"filename": row.filename, "name": row.name}
-    return {"error": listed_refusal_text(name, listed), "listed": listed}
+    return {"error": listed_refusal_text(name, listed, agents_dir), "listed": listed}
 
 
 async def _name_taken_response(name: str) -> web.Response:
@@ -879,7 +879,7 @@ class _AmbiguousOnDisk(Exception):
 
     def refusal_text(self) -> str:
         """The ``409 ambiguous_template_name`` sentence, worded and bounded by
-        ``_AmbiguousTemplateName.refusal_text`` (file names only, masked)."""
+        ``_AmbiguousTemplateName.refusal_text`` (folder and masked file name)."""
         # circular import: see api_agent_template_create.
         from kiro_crew.dashboard.handlers.agents import _AmbiguousTemplateName
 
@@ -887,10 +887,11 @@ class _AmbiguousOnDisk(Exception):
 
 
 def _claimant_paths(infos: list[AgentInfo]) -> tuple[Path, ...]:
-    """The spec files *infos* name, for a refusal -- empty unless two or more."""
+    """The spec files *infos* name in the agents directory they were scanned
+    from, for a refusal -- empty unless two or more."""
     if len(infos) < 2:
         return ()
-    return tuple(Path(info.filename) for info in infos)
+    return tuple(kiro_agents_dir_path() / info.filename for info in infos)
 
 
 class _ReadOnlyOnDisk(Exception):

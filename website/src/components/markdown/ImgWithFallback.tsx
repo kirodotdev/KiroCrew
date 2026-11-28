@@ -9,7 +9,7 @@ import { mediaKindOf } from '../../utils/mediaExts'
 import { WINDOWS_ABS_PATH_RE, decodeLocalPath } from '../../utils/urlTransform'
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../ErrorNotice'
-import { BasePathCtx, CompactImagesCtx, ImageVersionCtx, MdBlockStartCtx, MdSourceCtx } from './contexts'
+import { BasePathCtx, CompactImagesCtx, ImageVersionCtx, MdBlockStartCtx, MdSourceCtx, QuotedContentCtx } from './contexts'
 import { useTitleCuedCopy } from './copyFeedback'
 import { basenameOf } from './pathReferences'
 import {
@@ -398,6 +398,7 @@ export function ImgWithFallback({
   // Present only where the host collects box comments on images (the file
   // viewer); everywhere else the image renders with no overlay.
   const commentHost = useContext(ImageCommentCtx)
+  const quoted = useContext(QuotedContentCtx)
   const commentImgRef = useRef<HTMLImageElement | null>(null)
   // Tell the host where this image sits, loaded or not, so it can count every
   // use of the same file (an offscreen lazy image included) when a saved box
@@ -411,6 +412,8 @@ export function ImgWithFallback({
   const srcColumn = node?.position?.start?.column
   useEffect(() => (registerImage && src ? registerImage(src, srcLine, srcColumn) : undefined), [registerImage, src, srcLine, srcColumn])
   if (!src) return null
+  // A quoted copy never requests the image: its alt text stands in (QuotedContentCtx).
+  if (quoted) return alt ? <span>{alt}</span> : null
   // A Windows drive/UNC path (`C:/…` — urlTransform passes it through for
   // image src) is as local as a POSIX `/…` path and must route to
   // /api/file-raw the same way; it must NOT take the basePath-relative branch

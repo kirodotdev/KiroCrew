@@ -81,6 +81,18 @@ def test_a_second_user_level_spec_with_the_same_name_is_refused(tmp_path, monkey
     assert "pr-bulk-ops--deploy.json" not in refusal
 
 
+def test_the_ambiguous_refusal_names_the_agents_folder_outside_the_home(tmp_path, monkeypatch):
+    """``KIRO_HOME`` can put the agents folder outside the home, as a pod gateway
+    does: the refusal names the folder the registration was read from."""
+    agents_dir = _agents(tmp_path, monkeypatch)
+    (agents_dir / "alpha-deploy.json").write_text('{"name": "deploy"}')
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy")
+    assert refusal and f'another agent in {agents_dir} is also named "deploy"' in refusal
+    assert f"Rename or remove alpha-deploy.json in {agents_dir}, then" in refusal
+    assert "~/.kiro/agents" not in refusal
+
+
 def test_a_user_level_spec_claiming_the_name_by_filename_is_refused(tmp_path, monkeypatch):
     agents_dir = _agents(tmp_path, monkeypatch)
     # The resolver also matches a spec by its filename stem, so ``deploy.json``

@@ -185,6 +185,8 @@ export type InstalledApp = {
   browserSitesGrant?: { approved: string[]; staged: string[] }
   /** `permissions.kiroOperations` the owner approved, and the ones waiting; absent when undeclared. */
   kiroOperationsGrant?: { approved: string[]; staged: string[] }
+  /** `permissions.browserRecipes` the owner approved, the ones waiting, the watch ones split by the separate run-by-itself yes, and whether the `app_browser_sdk` preview is on; grant entries, absent when undeclared. */
+  browserRecipesGrant?: { approved: string[]; staged: string[]; watchOn?: string[]; watchOff?: string[]; preview?: boolean }
   /** `permissions.browser` verbs the owner approved, the ones waiting, and whether the `app_browser_sdk` preview is on; absent when undeclared. */
   browserGrant?: { approved: string[]; staged: string[]; preview: boolean }
   installedAt: string
@@ -220,6 +222,12 @@ export type InstalledApp = {
   backend_status?: BackendStatus
   /** Present for a former built-in the gateway moves to its registry copy. */
   adoption?: AppAdoptionRow
+  /**
+   * The app's `ui.startup` module and whether this dashboard may mount it, from
+   * `apps/startup_modules.py`. Absent when the app declares none. Only `admitted`
+   * mounts; the gateway recomputes it on every read.
+   */
+  startup?: { entry: string; state: 'admitted' | 'needs-approval' | 'denied'; reason: string; digest?: string }
   manifest: {
     name: string
     version: string

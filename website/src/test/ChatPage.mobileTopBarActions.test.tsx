@@ -7,7 +7,8 @@
  * props the bar hands them, so each assertion is about what the BAR does:
  *
  *  - Reveal clears the sidebar's auto-hide memory, opens the drawer and asks
- *    the store to reveal the row; Rename opens the shared title editor;
+ *    the store to reveal the row, and is offered only for a session the
+ *    Sessions list draws; Rename opens the shared title editor;
  *  - Auto-title runs one generation at a time, writes the server's title
  *    through the store, and narrates a failure (titled) through the page;
  *  - the editor's open/close and attempt callbacks drive the page's state;
@@ -22,7 +23,7 @@ import type { ComponentProps, ReactNode } from 'react'
 
 vi.mock('../pages/chat/ChatHeaderMenu', () => ({
   ChatHeaderMenu: (p: {
-    onReveal: () => void
+    onReveal?: () => void
     onRename: () => void
     onAutoTitle: () => void
     triggerLabel: ReactNode
@@ -31,7 +32,7 @@ vi.mock('../pages/chat/ChatHeaderMenu', () => ({
   }) => (
     <div data-testid="header-menu">
       <span data-testid="trigger-label">{p.triggerLabel}</span>
-      <button type="button" onClick={p.onReveal}>reveal</button>
+      {p.onReveal && <button type="button" onClick={p.onReveal}>reveal</button>}
       <button type="button" onClick={p.onRename}>rename</button>
       <button type="button" onClick={p.onAutoTitle}>auto-title</button>
       {(p.memoryMode === 'incognito' || p.memoryMode === 'temporary') && p.onPromote && (
@@ -73,6 +74,7 @@ vi.mock('../components/milestones/useMilestones', async (importOriginal) => ({
 import MobileTopBar from '../pages/chat/page/MobileTopBar'
 import { i18nT } from '../i18n/t'
 import { requestSlotReveal } from '../store/chatSlice'
+import { crewModeView, mateThreadsHidingSessions } from '../lib/crewMode'
 import { sseSlotTitle } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
 
@@ -116,6 +118,8 @@ function props(over: Partial<Props> = {}): Props {
     enterSplit: vi.fn(),
     mobileNewSessionItem: undefined,
     dispatch: vi.fn() as never,
+    onOpenSearch: vi.fn(),
+    personSlots: [{ key: 'slot-a', title: 'Release notes' } as ChatSlot],
     ...over,
   }
 }
@@ -184,6 +188,22 @@ describe('session menu actions', () => {
     render(<MobileTopBar {...p} />)
     fireEvent.click(screen.getByText('reveal'))
     expect(p.sidebarAutoHidden.current).toBeNull()
+    expect(p.openSidebar).toHaveBeenCalledTimes(1)
+    expect(p.dispatch).toHaveBeenCalledWith(requestSlotReveal('slot-a'))
+  })
+
+  it("offers no reveal for a Bot's session the Sessions list leaves out, and reveals it once listed", () => {
+    // The list's own filter (`crewModeView`, which `personChatPageSlots` applies).
+    const bot = { key: 'bot-1', mode: 'member' } as ChatSlot
+    const session = { key: 'slot-a', title: 'Release notes', mate_root: 'bot-1' } as ChatSlot
+    const rows = (store: ChatSlot[]) => crewModeView([session], false, mateThreadsHidingSessions(store), 'slot-a')
+    const { rerender } = render(<MobileTopBar {...props({ currentSlot: session, personSlots: rows([bot, session]) })} />)
+    expect(screen.getByTestId('header-menu')).toBeInTheDocument()
+    expect(screen.queryByText('reveal')).toBeNull()
+    // Show Bot sessions in Sessions on: the session has its row, so reveal lands on it.
+    const p = props({ currentSlot: session, personSlots: rows([{ ...bot, bot_sessions_listed: true }, session]) })
+    rerender(<MobileTopBar {...p} />)
+    fireEvent.click(screen.getByText('reveal'))
     expect(p.openSidebar).toHaveBeenCalledTimes(1)
     expect(p.dispatch).toHaveBeenCalledWith(requestSlotReveal('slot-a'))
   })
@@ -268,6 +288,14 @@ describe('trailing ⋯ menu', () => {
     await openMore()
     fireEvent.click(await screen.findByRole('menuitem', { name: i18nT('pages.chatPage.enter_split_view') }))
     expect(p.enterSplit).toHaveBeenCalledWith('slot-a')
+  })
+
+  it("opens the chat's history search from a Search row", async () => {
+    const p = props()
+    render(<MobileTopBar {...p} />)
+    await openMore()
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Search' }))
+    expect(p.onOpenSearch).toHaveBeenCalledTimes(1)
   })
 
   it('enters split view with the new pane below', async () => {

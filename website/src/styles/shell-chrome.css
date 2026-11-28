@@ -248,7 +248,7 @@
    button + gap + a `Local` chip + gap + dropdown = 139px, so the rung fires just
    above that. Dropping the chip NAMES buys ~43px each and keeps every chip, its
    state icon and its unread badge on screen; each chip carries the crew name in
-   `aria-label`/`title`, so nothing becomes unreachable.
+   `aria-label` and its hover hint, so nothing becomes unreachable.
    Scoped to `.tb-left` because the chip markup is shared with the full-width
    strip bar, which is not in this group and has room for its labels.
    Deliberately NOT `display:none` on the chip row: the dropdown's aggregate
@@ -446,6 +446,13 @@
 .win-electron header.topbar-glass input,
 .win-electron header.topbar-glass [role="button"],
 .win-electron .win-titlebar-menu{
+  -webkit-app-region:no-drag;
+}
+/* A relay Crew pane's own header (#42922) sits one row below the desktop app's
+   tab strip, inside that app's window, so it is never a window drag region,
+   whatever shell class the page carries. After the rule above on purpose. */
+header.topbar-glass[data-relay-pane-header],
+header.topbar-glass[data-relay-pane-header] *{
   -webkit-app-region:no-drag;
 }
 .win-titlebar-menu-item{

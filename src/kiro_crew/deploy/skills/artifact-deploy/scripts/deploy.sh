@@ -242,6 +242,13 @@ read -r BUCKET DIST_ID DOMAIN < <(
   | python3 -c 'import sys,json; o={x["OutputKey"]:x["OutputValue"] for x in json.load(sys.stdin)}; print(o["BucketName"], o["DistributionId"], o["DistributionDomainName"])'
 )
 
+# The template denies CloudFront the code-archive prefixes, but an edge copy
+# cached before that deny was applied would still be served. Purge both
+# prefixes now and wait for the purge before reporting success (below).
+echo ">> invalidating /_backends/* and /_reaper/* ..."
+ARCHIVE_INVALIDATION_ID="$("${AWS[@]}" cloudfront create-invalidation --distribution-id "$DIST_ID" \
+  --paths '/_backends/*' '/_reaper/*' --query 'Invalidation.Id' --output text)"
+
 # ── Reaper stack check BEFORE upload (only when TTL is finite) ──
 # Abort BEFORE any s3 cp/sync to avoid publishing content that cannot be
 # automatically reaped — the user must install the reaper first.
@@ -292,6 +299,9 @@ rm -f "$MANIFEST"
 
 echo ">> invalidating /$SLUG/* ..."
 "${AWS[@]}" cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/$SLUG/*" >/dev/null
+
+echo ">> waiting for the /_backends/* and /_reaper/* invalidation to complete ..."
+"${AWS[@]}" cloudfront wait invalidation-completed --distribution-id "$DIST_ID" --id "$ARCHIVE_INVALIDATION_ID"
 
 echo ""
 echo "✅ deployed: https://$DOMAIN/$SLUG/"

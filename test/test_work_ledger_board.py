@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew import work_ledger as wl
+from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.dashboard.handlers import work_ledger as wlh
 from kiro_crew.dashboard.handlers import work_ledger_board as board
 from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
@@ -902,6 +904,37 @@ async def test_a_key_that_cannot_name_a_directory_is_refused_400():
     body, response = await _call(_state(), "chat-1/../etc")
     assert response.status == 400
     assert body["code"] == "invalid_conductor"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fault", "status", "code"),
+    [
+        (OSError(5, "Input/output error"), 503, "ledger_unreadable"),
+        (CrewLogError("the fold was refused", code="unit_unknown"), 409, "crew_log_unreadable"),
+        (wl.WorkLedgerError("closed", code=wl.CODE_ITEM_CLOSED), 409, wl.CODE_ITEM_CLOSED),
+        (RuntimeError("a defect in the build"), 500, "read_failed"),
+    ],
+)
+async def test_a_failed_read_answers_with_a_code_and_logs_it_with_the_key(
+    monkeypatch, caplog, fault, status, code
+):
+    """A fault in the board's read is a coded answer, never aiohttp's bare 500, and its
+    traceback is logged with the conductor key."""
+    _item()
+
+    def failing(*_args, **_kwargs):
+        raise fault
+
+    monkeypatch.setattr(wl, "read_events", failing)
+    with caplog.at_level(logging.WARNING, logger=board.logger.name):
+        try:
+            body, response = await _call(_state(), CONDUCTOR)
+        except type(fault):
+            pytest.fail(f"the read raised {fault!r} instead of answering {status} {code}")
+    assert (response.status, body["code"]) == (status, code)
+    logged = [r for r in caplog.records if r.exc_info and r.exc_info[1] is fault]
+    assert logged and CONDUCTOR in logged[0].getMessage()
 
 
 @pytest.mark.asyncio

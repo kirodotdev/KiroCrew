@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
+import wheel_copy_limit_sources as limits
 from builtin_adoption_helpers import NAME, REPOSITORY, install_pins, pin_row, requires_git
 
 import kiro_crew
@@ -65,6 +66,13 @@ def test_a_valid_row_loads_with_a_derived_archive_url():
         {"legacyNav": {"route": "/x", "icon": "lowercase"}},
         {"legacyNav": {"route": "/x"}},
         {"archiveUrl": "https://evil.example/archive.tar.gz"},
+        {"deletedCopy": {"permissions": {}}},
+        {"deletedCopy": {"permissions": {}, "grants": {}, "version": "1.0.0"}},
+        {"deletedCopy": {"permissions": [], "grants": {}}},
+        {"deletedCopy": {"permissions": {}, "grants": {"api": "/api/x"}}},
+        {"deletedCopy": {"permissions": {}, "grants": {"api": [""]}}},
+        {"deletedCopy": {"permissions": {}, "grants": {"": ["/api/x"]}}},
+        {"deletedCopy": None},
     ],
 )
 def test_a_malformed_row_is_dropped(overrides):
@@ -121,6 +129,13 @@ def test_the_harness_table_replaces_the_shipped_one(tmp_path, monkeypatch):
     assert load_adoption_pins()[NAME].harness_archive == ""
 
 
+def test_a_deleted_copy_loads_as_immutable_canonical_text():
+    frozen = {"grants": {"api": ["/api/x"]}, "permissions": {"api": ["/api/x"]}}
+    pin = _parse([_row(deletedCopy=frozen)])[NAME]
+    assert pin.deleted_copy == json.dumps(frozen, sort_keys=True)
+    assert _parse([_row()])[NAME].deleted_copy == ""
+
+
 def test_only_a_harness_table_row_may_name_a_local_archive(tmp_path, monkeypatch):
     archive = str(tmp_path / "fixture.tar.gz")
     assert _parse([_row(harnessArchive=archive)]) == {}
@@ -149,6 +164,16 @@ _SHIPPED_PINS = [
         "archiveSha256": "aaa144450e1cf6b4b3f882717aabfb1b7de6ce717d9de9636f5bc57a62884498",
         "minAppSdkLevel": 1,
         "legacyNav": {"route": "/personal-shopper", "icon": "ShoppingBag"},
+        # ``adoption_pin.py freeze personal-shopper``: the copy at the parent of
+        # fb1031b31ff79067cf80c029d0500fcd3fc53597, the commit that deleted it.
+        "deletedCopy": {
+            "permissions": {
+                "api": ["/api/apps/personal-shopper", "/api/apps/personal-shopper/*"],
+                "storage": True,
+                "network": True,
+            },
+            "grants": {"api": ["/api/apps/personal-shopper", "/api/apps/personal-shopper/*"]},
+        },
     },
     {
         "name": "papyrus",
@@ -183,11 +208,11 @@ _SHIPPED_PINS = [
     {
         "name": "pptx-maker",
         "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-pptx-maker",
-        "commit": "f189ef631db6fea2c8331d6080f24d340963f2e6",
-        "version": "0.3.4",
-        "treeSha256": "409e75595ee8e75f3a3cb8dba664f5a568771f177a0865de067975e4eca78bc3",
-        "archiveSha256": "0605507264ba24052bdcec135f4f141e3d9681dab3d645b78c8181548e97fbd1",
-        "minAppSdkLevel": 1,
+        "commit": "b5b54b0a0574af13f208df8a6424a3dc4d114485",
+        "version": "0.3.5",
+        "treeSha256": "d279ec97d4350d6c5ec92afa82859a99b53a12c232ad226dee4c731a65af1aca",
+        "archiveSha256": "d30a4ed14f1ab2e65c08bd1b62a288093b1aae24ed98103e4e1a1851a653a378",
+        "minAppSdkLevel": 14,
         "legacyNav": {"route": "/pptx-maker", "icon": "Presentation"},
     },
     {
@@ -263,11 +288,11 @@ _SHIPPED_PINS = [
     {
         "name": "meetings",
         "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-meetings",
-        "commit": "a1e710690930abc025f051a97e20fe9db502d7f7",
-        "version": "0.1.3",
-        "treeSha256": "3bb25cb8eb58fbc0373c5c5a61df768cdf43c0ebfef0c6f6444b181003b202e4",
-        "archiveSha256": "7514bb05c9924e2610cba97ac8b12bf46a7d85ec9b5534a15bc9421482fce30c",
-        "minAppSdkLevel": 7,
+        "commit": "8de3b7b631ce9221aa6b2e745029513425f818dd",
+        "version": "0.1.4",
+        "treeSha256": "8a0ed67bccc9624e874569c90f545189afc1ca83a9e6e9f7792c2ef766af5a9e",
+        "archiveSha256": "5082d2fcab5db742973aad3e8c5ecf27db8c69ac74a8e75f50048601a3246ab6",
+        "minAppSdkLevel": 14,
         "legacyNav": {"route": "/meetings", "icon": "CalendarClock"},
     },
     {
@@ -279,6 +304,26 @@ _SHIPPED_PINS = [
         "archiveSha256": "57b4ca60d07e073389b50b55d698091c0a3ea53d906e3c3870e0b18bc99d0f43",
         "minAppSdkLevel": 7,
         "legacyNav": {"route": "/project-scaffolder", "icon": "FolderPlus"},
+        # ``adoption_pin.py freeze project-scaffolder``: the copy at the parent of
+        # the commit that deleted it.
+        "deletedCopy": {
+            "permissions": {
+                "api": [
+                    "/api/project-scaffold",
+                    "/api/browse-dirs",
+                    "/api/recent-projects",
+                    "/api/favorite-projects",
+                ],
+            },
+            "grants": {
+                "api": [
+                    "/api/project-scaffold",
+                    "/api/browse-dirs",
+                    "/api/recent-projects",
+                    "/api/favorite-projects",
+                ],
+            },
+        },
     },
     {
         "name": "md-notebook",
@@ -351,16 +396,167 @@ def test_the_shipped_pin_file_validates_and_pins_exactly_the_shipped_table():
 
 
 def test_every_shipped_pin_matches_its_wheel_built_in_version():
-    """D12: a first-adoption pin carries the wheel built-in's version (downgrade-safe)."""
+    """D12: a first-adoption pin carries the wheel built-in's version (downgrade-safe).
+
+    A pin row can outlive its wheel copy (the copy is deleted, the row kept); such a
+    row has no wheel version to match, as the gateway's own check has none to ask.
+    Which copies may go is held by
+    ``test_no_wheel_copy_a_security_limit_reads_is_deleted``.
+    """
     from kiro_crew.apps.execution import _shipped_builtin_apps
 
     shipped = {}
     for root, name in _shipped_builtin_apps():
         shipped[name] = json.loads((root / "app.json").read_text(encoding="utf-8"))["version"]
     document = json.loads((_SRC / "apps" / "adoption-pins.json").read_text(encoding="utf-8"))
-    for pin in parse_adoption_pins(document).values():
-        assert pin.name in shipped
-        assert pin.version == shipped[pin.name]
+    mismatched = {
+        pin.name: (pin.version, shipped[pin.name])
+        for pin in parse_adoption_pins(document).values()
+        if pin.name in shipped and pin.version != shipped[pin.name]
+    }
+    assert mismatched == {}
+
+
+def test_a_shipped_row_carries_a_deleted_copy_exactly_when_its_wheel_copy_is_gone():
+    """One source of truth for E9's baseline: the shipped copy, else the row's frozen one.
+
+    While a copy ships, ``register_builtin_apps`` rewrites the record from it and a
+    frozen copy beside it would be a second, unread record. Once it is gone, a row
+    without one vouches for nothing and every never-adopted host is held back. What
+    the frozen copy must equal is ``adoption_pin.py verify``'s, which reads the git
+    history this suite does not have.
+    """
+    from kiro_crew.apps.execution import _shipped_builtin_apps
+    from kiro_crew.apps.point_grants import point_grant_families
+
+    shipped = {name for _root, name in _shipped_builtin_apps()}
+    families = {"api", "events", *point_grant_families()}
+    document = json.loads((_SRC / "apps" / "adoption-pins.json").read_text(encoding="utf-8"))
+    wrong = {}
+    for row in document["pins"]:
+        frozen = row.get(pins_mod.DELETED_COPY_KEY)
+        if (frozen is None) != (row["name"] in shipped):
+            wrong[row["name"]] = "has a wheel copy" if frozen else "has neither"
+        elif frozen is not None and not (
+            set(frozen["grants"]) <= families and all(frozen["grants"].values())
+        ):
+            wrong[row["name"]] = "names an unknown or empty grant family"
+    assert wrong == {}
+
+
+#: The pinned apps that supply the input of each core security limit only a wheel copy
+#: reads (app-kit-platform.md § 33, the table under "A pin row with no wheel copy"), one
+#: app per line. For a limit in ``limits.FROZEN`` an app keeps its line when its copy is
+#: deleted, because its pin row then carries the input (``adoption_pin.py freeze``). For
+#: any other limit, remove an app's line only in the PR that gives that limit a non-wheel
+#: source for the app whose copy it deletes. Add one when a copy starts supplying a limit.
+_LIMIT_INPUT_APPS = {
+    limits.MCP_SERVERS: {
+        "auto-improvement",
+        "mochi",
+    },
+    limits.AGENT_TOOLS: {
+        "design-tweak",
+        "dev-fleet",
+        "issue-radar",
+        "ops-mission-control",
+    },
+    limits.SEAMS: {
+        "aws-control",
+        "design-critique",
+    },
+    limits.HOST_GRANTS: {
+        "dev-fleet",
+    },
+    limits.DECLARED_DIRS: {
+        "md-notebook",
+        "meetings",
+        "spec-builder",
+    },
+}
+
+
+def test_no_wheel_copy_a_security_limit_reads_is_deleted():
+    """A pinned app may lose its wheel copy only if every limit reading it there keeps a source.
+
+    The tests above skip a pinned app with no wheel copy, so this is what stops a
+    deletion that drops a limit: the relay credential refusal (§ 33 row 6) fails open.
+    A limit in ``limits.FROZEN`` keeps the app when its row carries the frozen input, so
+    such a deletion passes only with ``adoption_pin.py freeze``'s ``deletedCopy`` in the
+    row. The apps are pinned by name, so deleting one copy while another starts
+    supplying the same limit still fails.
+    """
+    sources = limits.limit_sources()
+    assert set(sources) == set(_LIMIT_INPUT_APPS)
+    assert limits.FROZEN < set(sources)
+    changed = [
+        f"{limit}: dropped {sorted(pinned - sources[limit])},"
+        f" added {sorted(sources[limit] - pinned)}"
+        for limit, pinned in _LIMIT_INPUT_APPS.items()
+        if sources[limit] != pinned
+    ]
+    assert changed == [], (
+        "the pinned apps that supply the input of a core security limit only a wheel copy"
+        " reads changed. A dropped app lost that limit with its copy: for a limit a pin row"
+        " can carry, add the deletedCopy `adoption_pin.py freeze` prints to its row; for any"
+        " other, give the limit a non-wheel source for it first, then remove its line. An"
+        " added app supplies the limit from its copy: add its line. See"
+        " app-kit-platform.md § 33, 'A pin row with no wheel copy'"
+    )
+
+
+def test_the_seam_scan_holds_every_seam_but_the_tombstone(tmp_path):
+    tombstone = tmp_path / "tombstone.py"
+    tombstone.write_text(
+        "seams.register(seams.SEAM_STOPPED_LOOP_TOMBSTONE, APP, _P())\n", encoding="utf-8"
+    )
+    assert not limits._registers_a_limit(tombstone)
+    for body in (
+        "seams.register(seams.SEAM_AWS_ACCOUNT_POLICY, APP, _P())\n",
+        "seams.register_worker_slot_mode(APP)\n",
+        "seams.register(SEAM, APP, _P())\n",
+    ):
+        tombstone.write_text(body, encoding="utf-8")
+        assert limits._registers_a_limit(tombstone), body
+
+
+def test_a_deleted_copy_keeps_its_limits_only_through_its_frozen_row(tmp_path, monkeypatch):
+    """The derivation behind the list above, on a fixture wheel and table.
+
+    A copy that supplies every frozen limit's input counts for each; deleted, it counts
+    for none until its row carries what ``adoption_pin.py freeze`` printed from it, and
+    then for each again. A limit outside ``limits.FROZEN`` is never satisfied by a row.
+    """
+    import shutil
+
+    from builtin_adoption_helpers import PACKAGE, shipped_manifest, write_tree
+
+    from kiro_crew.apps.builtin_adoption_baseline import freeze_deleted_copy
+
+    builtins = tmp_path / "builtins"
+    copy = write_tree(
+        builtins / PACKAGE,
+        shipped_manifest(
+            mcpServers={"srv": {"command": "python3", "args": ["backend/srv.py"]}},
+            agentTools={"route": "agent-tools", "tools": [{"name": "fixture_former_x"}]},
+            credentialMasks=["secrets.json"],
+        ),
+    )
+    table = tmp_path / "adoption-pins.json"
+    monkeypatch.setattr(limits, "_BUILTINS", builtins)
+    monkeypatch.setattr(limits, "_PINS", table)
+
+    def supplied(row):
+        table.write_text(json.dumps({"schemaVersion": 1, "pins": [row]}), encoding="utf-8")
+        return {limit for limit, apps in limits.limit_sources().items() if NAME in apps}
+
+    assert supplied(_row()) == limits.FROZEN
+    frozen = freeze_deleted_copy(copy)
+    shutil.rmtree(copy)
+    assert supplied(_row()) == set()
+    assert supplied(_row(deletedCopy=frozen)) == limits.FROZEN
+    partial = {key: frozen[key] for key in ("permissions", "grants", "agentTools")}
+    assert supplied(_row(deletedCopy=partial)) == {limits.AGENT_TOOLS}
 
 
 def test_the_package_ships_the_pin_file():
@@ -371,6 +567,7 @@ def test_the_package_ships_the_pin_file():
 _ADOPTION_MODULES = (
     "apps/builtin_adoption.py",
     "apps/builtin_adoption_apply.py",
+    "apps/builtin_adoption_baseline.py",
     "apps/builtin_adoption_checks.py",
     "apps/builtin_adoption_fetch.py",
     "apps/builtin_adoption_markers.py",
@@ -394,12 +591,19 @@ _STATED_NAME_EXCEPTIONS: dict[str, frozenset[str]] = {
 
 
 def _builtin_identifiers() -> set[str]:
+    """Every built-in name and package dir, and every pinned name with its package spelling.
+
+    The pinned names keep the census whole once a wheel copy is deleted and its pin row kept.
+    """
     from kiro_crew.apps.builtins import BUILTIN_NAMES
     from kiro_crew.apps.execution import _shipped_builtin_apps
 
     names = set(BUILTIN_NAMES)
     for root, name in _shipped_builtin_apps():
         names |= {name, root.name}
+    document = json.loads((_SRC / "apps" / "adoption-pins.json").read_text(encoding="utf-8"))
+    for name in parse_adoption_pins(document):
+        names |= {name, name.replace("-", "_")}
     return names
 
 
@@ -430,6 +634,109 @@ def test_the_legacy_state_move_rows_are_the_stated_exception():
 def test_the_literal_scan_finds_a_planted_name():
     some = sorted(_builtin_identifiers())[0]
     assert some in _string_literals(f"X = {some!r}\n")
+
+
+# --------------------------------------------------------------------------- #
+# The frozen copy: E9's whole input, derived by E9's own readers
+# --------------------------------------------------------------------------- #
+
+#: A copy declaring host paths, events, a permission family, an explicit-only family and
+#: the direct-check flags.
+_COPY_PERMISSIONS = {
+    "api": [f"/api/apps/{NAME}", "/api/browse-dirs"],
+    "events": ["chat.message"],
+    "workerAutoApprove": True,
+    "bots": ["read"],
+    "chatSlots": True,
+    "sessionApproval": True,
+    "storage": True,
+}
+
+
+def _copy(**permissions):
+    from builtin_adoption_helpers import shipped_manifest
+
+    return shipped_manifest(permissions={**_COPY_PERMISSIONS, **permissions})
+
+
+def test_a_frozen_copy_is_every_family_grant_source_reads_and_its_own_permissions():
+    from kiro_crew.apps.builtin_adoption_baseline import freeze_grant_inputs
+    from kiro_crew.apps.point_grants import grant_source
+
+    copy = _copy()
+    frozen = freeze_grant_inputs(copy)
+    assert frozen["permissions"] == copy["permissions"]
+    assert frozen["grants"] == {f: e for f, e in grant_source(copy).items() if e}
+    assert {"api", "events", "workerAutoApprove", "bots"} <= set(frozen["grants"])
+
+
+def test_a_grant_family_registered_later_is_frozen_with_no_change(monkeypatch):
+    from kiro_crew.apps import point_grants
+    from kiro_crew.apps.builtin_adoption_baseline import freeze_grant_inputs
+
+    def entries(permissions):
+        raw = permissions.get("laterGrant") if isinstance(permissions, dict) else None
+        return {"laterGrant": list(raw) if isinstance(raw, list) else []}
+
+    monkeypatch.setattr(
+        point_grants,
+        "_PERMISSION_REGISTRY",
+        [*point_grants._PERMISSION_REGISTRY, (("laterGrant",), entries)],
+    )
+    assert freeze_grant_inputs(_copy(laterGrant=["x"]))["grants"]["laterGrant"] == ["x"]
+
+
+def test_a_frozen_copy_stands_for_the_record_registering_that_copy_writes(tmp_path, monkeypatch):
+    """The baseline E9 reads is the record ``register_builtin_apps`` leaves for the copy."""
+    from kiro_crew.apps import manager
+    from kiro_crew.apps.builtin_adoption_baseline import deleted_copy_baseline, freeze_grant_inputs
+    from kiro_crew.apps.manifest import AppManifest
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    copy = _copy()
+    monkeypatch.setattr(manager, "_BUILTIN_APPS", [])
+    monkeypatch.setattr(manager, "discover_builtin_apps", lambda *a, **k: [copy])
+    monkeypatch.setattr(manager, "_edition_builtin_apps", lambda: [])
+    manager.register_builtin_apps()
+
+    document = {"schemaVersion": 1, "pins": [_row(deletedCopy=freeze_grant_inputs(copy))]}
+    baseline = deleted_copy_baseline(json.loads(parse_adoption_pins(document)[NAME].deleted_copy))
+    assert baseline.approved == manager._read_approved_grants(NAME)
+    assert baseline.permissions == AppManifest.from_dict(copy).permissions
+    assert baseline.permissions == manager.get_app_manifest(NAME).permissions
+
+
+def test_e9_against_a_frozen_copy_holds_back_what_the_copy_did_not_declare():
+    from builtin_adoption_helpers import repository_manifest
+
+    from kiro_crew.apps.builtin_adoption_baseline import deleted_copy_baseline, freeze_grant_inputs
+    from kiro_crew.apps.builtin_adoption_checks import widening_refusal
+    from kiro_crew.apps.manifest import AppManifest
+
+    baseline = deleted_copy_baseline(freeze_grant_inputs(_copy()))
+
+    def refusal(**permissions):
+        pinned = repository_manifest(permissions={**_COPY_PERMISSIONS, **permissions})
+        return widening_refusal(AppManifest.from_dict(pinned), baseline)
+
+    assert refusal() is None
+    assert refusal(bots=[]) is None, "declaring less is no widening"
+    for wider in (
+        {"api": [*_COPY_PERMISSIONS["api"], "/api/recent-projects"]},
+        {"bots": ["read", "wake"]},
+        {"desktopCapabilities": ["screenCapture"]},
+        {"chatLaunch": {"keyPrefix": "fixture-launch-", "agents": ["kirocrew"]}},
+    ):
+        assert refusal(**wider) == "permission_widening", wider
+    narrower = deleted_copy_baseline(freeze_grant_inputs(_copy(chatSlots=False)))
+    assert (
+        widening_refusal(
+            AppManifest.from_dict(repository_manifest(permissions=_COPY_PERMISSIONS)), narrower
+        )
+        == "permission_widening"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -593,6 +900,11 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
             {"backend/_host.py": "def f(ctx):\n    return ctx.webhook_source.refusal()\n"},
             {"ctx.webhook_source": 7},
         ),
+        (
+            {},
+            {"backend/engine.py": "def f(ctx):\n    return ctx.verified_download\n"},
+            {"ctx.verified_download": 20},
+        ),
         ({}, {"backend/routes.py": "def f(ctx):\n    return ctx.turns.run\n"}, {"ctx.turns": 2}),
         ({}, {"backend/_host.py": "x = _bound_ctx().lifecycle\n"}, {"ctx.lifecycle": 2}),
         (
@@ -652,6 +964,59 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
         ),
         ({}, {"backend/_host.py": "import kiro_crew\nfrom . import my_backend_sdk\n"}, {}),
         ({}, {"tests/fakehost.py": "import kiro_crew.apps.backend_sdk\n"}, {}),
+        (
+            {},
+            {"backend/_host.py": "from kiro_crew.apps.backend_sdk import canonical_file_path\n"},
+            {
+                "kiro_crew.apps.backend_sdk": 7,
+                "kiro_crew.apps.backend_sdk.canonical_file_path": 14,
+            },
+        ),
+        (
+            {},
+            {
+                "backend/_host.py": "sdk = _host_module('kiro_crew.apps.backend_sdk')\n",
+                "backend/routes.py": "gate = getattr(sdk, 'canonical_file_path', None)\n",
+            },
+            {
+                "kiro_crew.apps.backend_sdk": 7,
+                "kiro_crew.apps.backend_sdk.canonical_file_path": 14,
+            },
+        ),
+        ({}, {"backend/routes.py": "def canonical_file_path(p):\n    return p\n"}, {}),
+        (
+            {},
+            {
+                "backend/_host.py": "from kiro_crew.apps import backend_sdk as sdk\n",
+                "backend/run.py": "out = await sdk.run_sandboxed_async(argv, max_output_bytes=9)\n",
+            },
+            {
+                "kiro_crew.apps.backend_sdk": 7,
+                "kiro_crew.apps.backend_sdk.max_output_bytes": 17,
+            },
+        ),
+        ({}, {"backend/runtime.py": "def run(cmd, max_output_bytes=None):\n    pass\n"}, {}),
+        (
+            {},
+            {
+                "backend/_host.py": (
+                    "def audit_or_refuse(ctx):\n"
+                    "    return getattr(ctx.audit, 'record_or_raise', None)\n"
+                )
+            },
+            {"ctx.audit.record_or_raise": 17},
+        ),
+        (
+            {},
+            {"backend/hooks.py": "def f(ctx):\n    ctx.audit.record_or_raise('git', 'invoked')\n"},
+            {"ctx.audit.record_or_raise": 17},
+        ),
+        ({}, {"tests/fakehost.py": "ctx.audit.record_or_raise('git', 'invoked')\n"}, {}),
+        (
+            {},
+            {"tests/fakehost.py": "from kiro_crew.apps.backend_sdk import canonical_file_path\n"},
+            {},
+        ),
         ({}, {"backend/manifest.py": "def f(manifest):\n    return manifest.lifecycle\n"}, {}),
         ({}, {"tests/fakehost.py": "ctx.turns = None\n"}, {}),
         ({}, {"backend/test_seams.py": "ctx.turns = None\n"}, {}),
@@ -680,8 +1045,61 @@ def test_the_pin_tool_never_lets_a_level_fall_below_what_the_tree_uses(monkeypat
     assert "ctx.turns" not in tool._sdk_level_refusal(NAME, 2, uses)
 
 
-def _measure_tree(monkeypatch, tmp_path, tool, files, level):
-    """``_measure`` end to end on a local tree, with the network and the E-checks stubbed."""
+def test_the_pin_tool_holds_a_later_backend_sdk_name_at_its_own_level(monkeypatch, tmp_path):
+    from builtin_adoption_helpers import repository_manifest, write_tree
+
+    from kiro_crew.apps import backend_sdk
+
+    tool = _pin_tool(monkeypatch)
+    for name, level in sorted(backend_sdk._EXPORT_LEVELS.items()):
+        source = f"from kiro_crew.apps.backend_sdk import {name}\n"
+        tree = write_tree(tmp_path / name, repository_manifest(), {"backend/_host.py": source})
+        uses = tool._seam_level_uses(tree)
+        seam = f"{backend_sdk.__name__}.{name}"
+        assert uses[seam] == level > backend_sdk.BACKEND_SDK_LEVEL
+        refusal = tool._sdk_level_refusal(NAME, level - 1, uses)
+        assert refusal is not None
+        assert f"--min-sdk-level {level}" in refusal and seam in refusal
+        assert tool._sdk_level_refusal(NAME, level, uses) is None
+
+
+def test_the_pin_tool_holds_a_later_keyword_and_audit_method_at_their_level(monkeypatch, tmp_path):
+    from builtin_adoption_helpers import repository_manifest, write_tree
+
+    from kiro_crew.apps import audit_sdk, backend_sdk
+
+    tool = _pin_tool(monkeypatch)
+    cases = [
+        (
+            f"kw-{keyword}",
+            "from kiro_crew.apps import backend_sdk\n"
+            f"backend_sdk.run_sandboxed_async(['x'], {keyword}=1)\n",
+            f"{backend_sdk.__name__}.{keyword}",
+            level,
+        )
+        for keyword, level in sorted(backend_sdk._KEYWORD_LEVELS.items())
+    ] + [
+        (
+            f"method-{method}",
+            f"def f(ctx):\n    ctx.audit.{method}('op', 'ok')\n",
+            f"ctx.audit.{method}",
+            level,
+        )
+        for method, level in sorted(audit_sdk.METHOD_LEVELS.items())
+    ]
+    assert cases
+    for label, source, seam, level in cases:
+        tree = write_tree(tmp_path / label, repository_manifest(), {"backend/_host.py": source})
+        uses = tool._seam_level_uses(tree)
+        assert uses[seam] == level > backend_sdk.BACKEND_SDK_LEVEL, label
+        assert level <= backend_sdk.SDK_LEVEL, label
+        refusal = tool._sdk_level_refusal(NAME, level - 1, uses)
+        assert refusal is not None and f"--min-sdk-level {level}" in refusal and seam in refusal
+        assert tool._sdk_level_refusal(NAME, level, uses) is None
+
+
+def _serve_tree(monkeypatch, tmp_path, tool, files=None):
+    """Stub the pin tool's network with a local tree; ``(tree, archive)``."""
     import hashlib
     import shutil
 
@@ -696,12 +1114,213 @@ def _measure_tree(monkeypatch, tmp_path, tool, files, level):
 
     monkeypatch.setattr(tool, "_clone", lambda _r, _c, dest: shutil.copytree(tree, dest))
     monkeypatch.setattr(tool, "_download", fake_download)
-    monkeypatch.setattr(tool, "_shipped", lambda _name: (tree, repository_manifest()))
-    monkeypatch.setattr(tool, "pinned_tree_refusal", lambda *_args, **_kwargs: None)
+    return tree, archive
+
+
+def _work(tmp_path):
     work = tmp_path / "work"
     work.mkdir()
+    return work
+
+
+def _measure_tree(monkeypatch, tmp_path, tool, files, level):
+    """``_measure`` end to end on a local tree, with the network and the E-checks stubbed."""
+    from builtin_adoption_helpers import repository_manifest
+
+    tree, _archive = _serve_tree(monkeypatch, tmp_path, tool, files)
+    monkeypatch.setattr(tool, "_shipped", lambda _name: (tree, repository_manifest()))
+    monkeypatch.setattr(tool, "pinned_tree_refusal", lambda *_args, **_kwargs: None)
     pin = _parse([_row(minAppSdkLevel=level)])[NAME]
-    return tool._measure(pin, work)
+    return tool._measure(pin, _work(tmp_path))
+
+
+def _copy_dir(base, manifest, files=None):
+    """A wheel copy's package directory under *base*, holding *manifest* and *files*."""
+    from builtin_adoption_helpers import PACKAGE, write_tree
+
+    return write_tree(base / PACKAGE, manifest, files)
+
+
+def _gone_copy_table(monkeypatch, tmp_path, tool, *, frozen_from=None, deleted=None, **row):
+    """A table of one fixture row whose wheel copy is gone, served from a local tree.
+
+    The row freezes *frozen_from* (the repository copy by default) and the commit that
+    deleted the copy held *deleted* (the same copy by default). ``(table, row)``.
+    """
+    import hashlib
+
+    from builtin_adoption_helpers import repository_manifest
+
+    from kiro_crew.apps.builtin_adoption_baseline import freeze_deleted_copy
+    from kiro_crew.apps.builtin_adoption_fetch import adoption_tree_digest
+
+    tree, archive = _serve_tree(monkeypatch, tmp_path, tool)
+    copy = repository_manifest()
+    deleted_root = _copy_dir(tmp_path / "deleted", deleted or copy)
+    monkeypatch.setattr(tool, "_shipped", lambda _name: None)
+    monkeypatch.setattr(tool, "_deleted_copy_root", lambda _name, _dest: deleted_root)
+    fields = {
+        "treeSha256": adoption_tree_digest(tree),
+        "archiveSha256": hashlib.sha256(archive).hexdigest(),
+        "deletedCopy": freeze_deleted_copy(_copy_dir(tmp_path / "frozen", frozen_from or copy)),
+        **row,
+    }
+    pin = _row(**fields)
+    table = tmp_path / "adoption-pins.json"
+    table.write_text(json.dumps({"schemaVersion": 1, "pins": [pin]}), encoding="utf-8")
+    monkeypatch.setattr(tool, "_PINS_PATH", table)
+    return table, pin
+
+
+def test_the_pin_tool_verifies_a_pin_whose_wheel_copy_is_gone(monkeypatch, tmp_path, capsys):
+    """The row is the one record left: the checks run with no wheel copy, as STAGE runs them."""
+    tool = _pin_tool(monkeypatch)
+    asked = []
+    real_refusal = tool.pinned_tree_refusal
+
+    def refusal(*args, **kwargs):
+        asked.append(kwargs["shipped_manifest"])
+        return real_refusal(*args, **kwargs)
+
+    monkeypatch.setattr(tool, "pinned_tree_refusal", refusal)
+    _table, row = _gone_copy_table(monkeypatch, tmp_path, tool)
+
+    assert tool._verify() == 0, capsys.readouterr().err
+    assert asked == [None]
+    # ``compute`` measures a draft whose nav is a placeholder; the row's nav and its
+    # frozen copy are carried.
+    draft = _parse([_row(legacyNav={"route": "/x", "icon": "X"})])[NAME]
+    measured = tool._measure(draft, _work(tmp_path))
+    assert measured["legacyNav"] == row["legacyNav"]
+    assert measured["deletedCopy"] == row["deletedCopy"]
+
+
+def test_the_pin_tool_refuses_a_frozen_copy_that_is_not_the_deleted_one(
+    monkeypatch, tmp_path, capsys
+):
+    """``verify`` re-derives the frozen copy from the commit that deleted the copy."""
+    from builtin_adoption_helpers import repository_manifest
+
+    tool = _pin_tool(monkeypatch)
+    permissions = repository_manifest()["permissions"]
+    wider = repository_manifest(permissions={**permissions, "api": [*permissions["api"], "/api/x"]})
+    _gone_copy_table(monkeypatch, tmp_path, tool, frozen_from=wider)
+    assert tool._verify() == 1
+    assert "deletedCopy" in capsys.readouterr().err
+
+
+def test_the_pin_tool_refuses_a_gone_copy_without_a_frozen_one(monkeypatch, tmp_path):
+    tool = _pin_tool(monkeypatch)
+    _gone_copy_table(monkeypatch, tmp_path, tool)
+    table = json.loads(tool._PINS_PATH.read_text(encoding="utf-8"))
+    del table["pins"][0]["deletedCopy"]
+    tool._PINS_PATH.write_text(json.dumps(table), encoding="utf-8")
+    with pytest.raises(SystemExit, match="carries no deletedCopy"):
+        tool._measure(_parse([_row()])[NAME], _work(tmp_path))
+
+
+def test_the_pin_tool_refuses_a_frozen_copy_beside_a_shipped_copy(monkeypatch, tmp_path, capsys):
+    from builtin_adoption_helpers import repository_manifest
+
+    tool = _pin_tool(monkeypatch)
+    _gone_copy_table(monkeypatch, tmp_path, tool)
+    tree = tmp_path / "tree"
+    monkeypatch.setattr(tool, "_shipped", lambda _name: (tree, repository_manifest()))
+    assert tool._verify() == 1
+    assert "deletedCopy" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("copy", ["shipped", "deleted"])
+def test_the_pin_tool_refuses_a_pinned_tree_wider_than_the_copy(monkeypatch, tmp_path, copy):
+    """E9 before the row ships: what every never-adopted host would refuse at each pass."""
+    from builtin_adoption_helpers import repository_manifest
+
+    tool = _pin_tool(monkeypatch)
+    narrower = repository_manifest(permissions={"api": [f"/api/apps/{NAME}"]})
+    _gone_copy_table(monkeypatch, tmp_path, tool, frozen_from=narrower)
+    if copy == "shipped":
+        monkeypatch.setattr(tool, "_shipped", lambda _name: (tmp_path / "tree", narrower))
+        monkeypatch.setattr(tool, "pinned_tree_refusal", lambda *_args, **_kwargs: None)
+    with pytest.raises(SystemExit, match=f"declares more than the {copy} copy"):
+        tool._measure(_parse([_row()])[NAME], _work(tmp_path))
+
+
+def test_the_pin_tool_freezes_the_copy_a_deletion_is_about_to_remove(monkeypatch, tmp_path, capsys):
+    from builtin_adoption_helpers import repository_manifest
+
+    from kiro_crew.apps.builtin_adoption_baseline import freeze_deleted_copy
+
+    tool = _pin_tool(monkeypatch)
+    table = tmp_path / "adoption-pins.json"
+    table.write_text(json.dumps({"schemaVersion": 1, "pins": [_row()]}), encoding="utf-8")
+    monkeypatch.setattr(tool, "_PINS_PATH", table)
+    copy = repository_manifest()
+    root = _copy_dir(tmp_path, copy)
+    monkeypatch.setattr(tool, "_shipped", lambda _name: (root, copy))
+    monkeypatch.setattr(tool, "_deleted_copy", lambda _name: pytest.fail("history read"))
+    assert tool.main(["freeze", NAME]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        **_row(),
+        "deletedCopy": freeze_deleted_copy(root),
+    }
+
+
+@requires_git
+def test_the_pin_tool_reads_a_deleted_copy_from_the_commit_that_removed_it(monkeypatch, tmp_path):
+    """Found by its manifest name, newest deletion first; nothing spells a package directory."""
+    import shutil
+
+    from builtin_adoption_helpers import git, shipped_manifest
+
+    tool = _pin_tool(monkeypatch)
+    repo = tmp_path / "checkout"
+    builtins = repo / tool._BUILTINS_REL
+    git("init", "-q", "-b", "main", str(repo), cwd=tmp_path)
+
+    def commit(message, files):
+        for rel, manifest in files.items():
+            path = builtins / rel / "app.json"
+            if manifest is None:
+                shutil.rmtree(path.parent)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(manifest), encoding="utf-8")
+                agent = path.parent / "agents" / "helper.json"
+                agent.parent.mkdir(exist_ok=True)
+                agent.write_text(json.dumps({"name": f"{message}-agent"}), encoding="utf-8")
+        git("add", "-A", cwd=repo)
+        git("commit", "-q", "-m", message, cwd=repo)
+        return git("rev-parse", "HEAD", cwd=repo)
+
+    older = shipped_manifest(permissions={"api": [f"/api/apps/{NAME}"]})
+    newest = shipped_manifest(agents=["agents/helper.json"])
+    commit("ship", {"pkg_a": older, "pkg_b": shipped_manifest(name="other-app")})
+    commit("widen", {"pkg_a": newest})
+    deletion = commit("delete", {"pkg_a": None})
+    commit("delete the other", {"pkg_b": None})
+    monkeypatch.setattr(tool, "_ROOT", repo)
+
+    assert tool._deleted_copy(NAME) == (f"{deletion}^", f"{tool._BUILTINS_REL}/pkg_a")
+    with pytest.raises(SystemExit, match="no commit that deletes"):
+        tool._deleted_copy("never-shipped")
+    # The whole package as that parent held it, under its own directory name: the agent
+    # files the freezer reads beside the manifest come with it.
+    root = tool._deleted_copy_root(NAME, tmp_path / "out")
+    assert root.name == "pkg_a"
+    assert json.loads((root / "app.json").read_text(encoding="utf-8")) == newest
+    helper = json.loads((root / "agents" / "helper.json").read_text(encoding="utf-8"))
+    assert helper == {"name": "widen-agent"}
+
+
+def test_the_pin_tool_refuses_a_name_neither_shipped_nor_pinned(monkeypatch, tmp_path):
+    tool = _pin_tool(monkeypatch)
+    _serve_tree(monkeypatch, tmp_path, tool)
+    monkeypatch.setattr(tool, "_shipped", lambda _name: None)
+    table = tmp_path / "adoption-pins.json"
+    table.write_text(json.dumps({"schemaVersion": 1, "pins": []}), encoding="utf-8")
+    monkeypatch.setattr(tool, "_PINS_PATH", table)
+    with pytest.raises(SystemExit, match="no shipped built-in and no pin row"):
+        tool._measure(_parse([_row()])[NAME], _work(tmp_path))
 
 
 def test_the_pin_tool_refuses_level_one_for_a_tree_that_uses_level_two(monkeypatch, tmp_path):

@@ -12,6 +12,7 @@ import contextlib
 import gc
 import io
 import logging
+import sys
 import threading
 import time
 import weakref
@@ -1420,14 +1421,106 @@ class TestBgSessionDashboardBranch:
             await await_until(task, what="the cancelled warm task")
         assert task not in orch._background_tasks
 
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "tty", [pytest.param(False, id="service_log"), pytest.param(True, id="terminal")]
+        ("bound", "entry_lines"),
+        [
+            pytest.param(
+                8443,
+                "   Entry port: 127.0.0.1:8443\n"
+                "   On the entry port the proxy must send a Host that names 127.0.0.1, [::1] or"
+                " localhost\n",
+                id="bound",
+            ),
+            pytest.param(None, "   Entry port: off\n", id="off"),
+        ],
+    )
+    async def test_a_headless_start_prints_the_bound_entry_port(self, capsys, bound, entry_lines):
+        """The headless start names the port the gateway bound, whatever the config says."""
+        from aiohttp import web
+
+        from kiro_crew.dashboard import entry_gate
+
+        orch = _make_orchestrator(no_dashboard=False, no_open=True)
+        orch._headless = True
+        # Another value than the bound one: the line must not come from here.
+        orch._cfg.dashboard.entry_port = 9000
+        for name in (
+            "_init_services",
+            "_start_embeddings",
+            "_auto_migrate_memory",
+            "_init_cron",
+            "_init_heartbeat",
+            "_init_autonudge",
+            "_check_for_updates",
+            "_shutdown",
+        ):
+            setattr(orch, name, AsyncMock())
+        for name in ("_init_mcp_discovery", "_init_subagents", "_init_task_runner"):
+            setattr(orch, name, MagicMock())
+        orch.sessions = MagicMock()
+        orch.sessions.start_pool = AsyncMock()
+
+        app = web.Application()
+        ref = app[entry_gate.ENTRY_GATE_APP_KEY] = entry_gate.GateRef()
+        if bound is not None:
+            ref.gate = entry_gate.EntryGate(port=bound)
+
+        async def _init_dash():
+            orch._local_only = True
+            orch._configured_host = None
+            orch._dashboard_port = 6779
+            orch._dashboard_runner = SimpleNamespace(app=app)
+
+        orch._init_dashboard = _init_dash
+
+        fresh_event = asyncio.Event()
+        fresh_event.set()
+        loop = asyncio.get_running_loop()
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(loop, "add_signal_handler"))
+            stack.enter_context(patch("kiro_crew.shutdown_event", fresh_event))
+            stack.enter_context(patch("kiro_crew.slack.gateway.shutdown_event", fresh_event))
+            stack.enter_context(patch("kiro_crew.slack.events.init_socket_mode"))
+            stack.enter_context(patch("kiro_crew.slack.interactions.init"))
+            stack.enter_context(patch("kiro_crew.slack.events.SeenCache"))
+            stack.enter_context(patch("kiro_crew.session.cleanup_orphaned_sessions"))
+            stack.enter_context(
+                patch("kiro_crew.dashboard.handlers._bg_mcp_probe", new_callable=AsyncMock)
+            )
+            stack.enter_context(patch("os._exit"))
+            stack.enter_context(
+                patch("kiro_crew.slack.gateway.platform_compat.raise_nofile_soft_limit")
+            )
+            await finished(orch.run(), "the gateway boot")
+
+        assert (
+            "👻 Headless: API on http://127.0.0.1:6779/v1\n"
+            f"{entry_lines}"
+            "   Credential for a Crew API client: kirocrew token --bearer --port 6779\n"
+        ) in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        ("tty", "ssm"),
+        [
+            pytest.param(False, False, id="service_log"),
+            pytest.param(True, False, id="terminal"),
+            pytest.param(True, True, id="ssm_headless_skips_auto_open"),
+        ],
     )
     @pytest.mark.asyncio
-    async def test_the_login_link_is_printed_to_a_terminal_only(self, tty, monkeypatch):
+    async def test_the_login_link_is_printed_to_a_terminal_only(self, tty, ssm, monkeypatch):
         """A stdout that is not a terminal is a log a service manager keeps (the
         journal, the launchd file), where a reader could redeem a login link.
+
+        The ``ssm`` case pins the headless remote skip: a Session Manager shell
+        with no display prints the skip line and never calls ``webbrowser.open``.
         """
+        if ssm:
+            if sys.platform == "darwin":
+                pytest.skip("auto-open is never skipped on macOS")
+            monkeypatch.delenv("DISPLAY", raising=False)
+            monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
         orch = _make_orchestrator(no_dashboard=False, no_open=False)
         for name in (
             "_init_services",
@@ -1472,10 +1565,15 @@ class TestBgSessionDashboardBranch:
             stack.enter_context(
                 patch("kiro_crew.slack.gateway.resolve_dashboard_host", return_value="127.0.0.1")
             )
-            # The real formatter, kept off the host's own name and proxy.
+            # The real formatter, kept off the host's own name and proxy. The
+            # SSM pin keeps the boot path host independent: both the formatter
+            # and the auto-open skip read is_ssm_session from this module at
+            # call time, so one patch covers both and the test does not read the
+            # runner's real /proc ancestry.
             stack.enter_context(
                 patch("kiro_crew.dashboard.urls.machine_hostname", return_value="localhost")
             )
+            stack.enter_context(patch("kiro_crew.dashboard.urls.is_ssm_session", return_value=ssm))
             stack.enter_context(
                 patch("kiro_crew.dashboard.urls.devspaces_proxy_url", return_value=None)
             )
@@ -1501,9 +1599,15 @@ class TestBgSessionDashboardBranch:
                 patch("kiro_crew.slack.gateway.subprocess_executor", return_value=None)
             )
             await finished(orch.run(), "the gateway boot")
-            await await_until(opened, what="the browser auto-open")
+            if not ssm:
+                await await_until(opened, what="the browser auto-open")
 
         printed = stdout.getvalue()
+        if ssm:
+            assert "Headless remote session" in printed
+            assert not opened.is_set()
+            browser.assert_not_called()
+            return
         assert "Dashboard:\n" in printed
         assert "?token=" in browser.call_args.args[0]
         if tty:

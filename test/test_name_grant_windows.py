@@ -576,6 +576,14 @@ class TestFileAssociations:
         assert refusal is not None
         assert refusal.code == name_grant.AMBIGUOUS_ENV
 
+    def test_the_extended_spelling_of_the_system_cmd_is_the_system_cmd(self, win):
+        system_dir, user_dir, _ = win
+        real = os.path.realpath(system_dir / "cmd.exe")
+        assert name_grant._is_trusted_system_file("cmd", "\\\\?\\" + real)
+        assert not name_grant._is_trusted_system_file("cmd", "\\\\?\\" + str(user_dir / "cmd.exe"))
+        # A name only the extended spelling reaches is never the system file.
+        assert not name_grant._is_trusted_system_file("cmd", "\\\\?\\" + real + ".")
+
     def test_a_ps1_shebang_is_not_followed(self, win):
         # PowerShell runs a `.ps1` itself and reads `#!` as a comment. `npm.ps1`
         # ships with `#!/usr/bin/env pwsh`; following it would refuse a program

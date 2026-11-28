@@ -28,6 +28,10 @@ from kiro_crew.dashboard.chat_slack import (
 )
 from kiro_crew.dashboard.state import SlotOrigin
 
+#: Dashboard uploads, named ``<32 hex>_<name>`` the way the upload handler stores them.
+_UPLOAD = "/home/u/.kiro/crew/uploads/67ec3421ee184a8db0c1d2e3f4a5b6c7_pasted-image-20261124-110538064.png"
+_UPLOAD2 = "/home/u/.kiro/crew/uploads/7c350a389ab747a0b0c1d2e3f4a5b6c7_pasted-image-2.png"
+
 
 def _slack_state(tmp_path, monkeypatch, *, owner: str | None = "U123"):
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -38,6 +42,28 @@ def _slack_state(tmp_path, monkeypatch, *, owner: str | None = "U123"):
     state.owner_id = owner
     state.push_slots_update = MagicMock()
     return state
+
+
+def _owner_app(state):
+    """The chat test app, signed in as the configured owner.
+
+    The harness signs a request in as the local subject, which is the owner only
+    while no owner is configured; these states configure one, and the per-slot
+    owner gate admits the owner's own session.
+    """
+    from aiohttp import web
+    from chat_test_helpers import _make_app
+
+    app = _make_app(state)
+
+    @web.middleware
+    async def _as_owner(request, handler):
+        if state.owner_id and "user" not in request:
+            request["user"] = state.owner_id
+        return await handler(request)
+
+    app.middlewares.insert(0, _as_owner)
+    return app
 
 
 def _user_slot(state, name: str = "s1", **kwargs):
@@ -476,6 +502,58 @@ class TestSharedHelper:
         anchor = state.slack_client.post_message.await_args.args[1]
         assert "<!channel>" not in anchor
         assert "&lt;!channel&gt;" in anchor
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("prompt", "files", "expected"),
+        [
+            # A pasted screenshot ahead of the words, as the composer sends it:
+            # the title is the words.
+            (f"![image]({_UPLOAD})\n\nwhy does this fail?", None, "why does this fail?"),
+            # A picture written inside a sentence is named where it stands.
+            (
+                f"look at ![image]({_UPLOAD}) here",
+                None,
+                "look at Image: pasted-image-20261124-110538064.png here",
+            ),
+            # Two pictures and a dropped file around the words.
+            (
+                f"![image]({_UPLOAD})\n![image]({_UPLOAD2})\n"
+                "[attached_file 1] /home/u/.kiro/crew/uploads/report.pdf compare these",
+                ["/home/u/.kiro/crew/uploads/report.pdf"],
+                "compare these",
+            ),
+            # A picture alone is named the way a later one is echoed.
+            (f"![image]({_UPLOAD})", None, "Image: pasted-image-20261124-110538064.png"),
+            # A link to a local file reads as its label.
+            ("see [the notes](/home/u/notes.md) first", None, "see the notes first"),
+        ],
+        ids=[
+            "image-then-words",
+            "inline-image",
+            "two-images-and-a-file",
+            "image-only",
+            "local-link",
+        ],
+    )
+    async def test_anchor_names_attachments_instead_of_their_paths(
+        self, tmp_path, monkeypatch, prompt, files, expected
+    ):
+        """The parent of an auto-opened thread shows the prompt's words, never
+        image markdown or a path on this host (Adam's ``![image](/home/...``)."""
+        state = _slack_state(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1", origin=SlotOrigin.USER)
+        slot.append("user", prompt, meta={"files": files} if files else None)
+        slot.drain()
+        _settings(monkeypatch, enabled=True)
+
+        assert await maybe_auto_link_slack(state, slot) is True
+
+        anchor = state.slack_client.post_message.await_args.args[1]
+        assert anchor.startswith(f"\U0001f9f5 *{expected}*\n")
+        assert "](" not in anchor
+        assert "/home/" not in anchor
+        assert "uploads" not in anchor
 
     @pytest.mark.asyncio
     async def test_manual_path_skips_governance(self, tmp_path, monkeypatch):
@@ -960,7 +1038,6 @@ class TestSendHandlerHook:
     @pytest.mark.asyncio
     async def test_link_exists_when_the_turn_starts(self, tmp_path, monkeypatch):
         from aiohttp.test_utils import TestClient, TestServer
-        from chat_test_helpers import _make_app
 
         state = _slack_state(tmp_path, monkeypatch)
         state.get_or_create_slot("s1", origin=SlotOrigin.USER)
@@ -978,7 +1055,7 @@ class TestSendHandlerHook:
             sl.append("done", "", "done", broadcast=False)
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(_owner_app(state))) as client:
             resp = await client.post("/api/chat", json={"message": "hello", "slot": "s1"})
             await resp.text()
         assert seen["link"] == ("ts_anchor", "D_OWNER")
@@ -987,7 +1064,6 @@ class TestSendHandlerHook:
     @pytest.mark.asyncio
     async def test_concurrent_first_send_queues_behind_link_admission(self, tmp_path, monkeypatch):
         from aiohttp.test_utils import TestClient, TestServer
-        from chat_test_helpers import _make_app
 
         state = _slack_state(tmp_path, monkeypatch)
         state.get_or_create_slot("s1", origin=SlotOrigin.USER)
@@ -1013,7 +1089,7 @@ class TestSendHandlerHook:
 
         state.slack_client.post_message = AsyncMock(side_effect=_blocked_post)
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", _run)
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(_owner_app(state))) as client:
             first_request = asyncio.create_task(
                 client.post("/api/chat", json={"message": "first", "slot": "s1"})
             )
@@ -1035,7 +1111,6 @@ class TestSendHandlerHook:
     @pytest.mark.asyncio
     async def test_slot_closed_during_link_is_not_dispatched(self, tmp_path, monkeypatch):
         from aiohttp.test_utils import TestClient, TestServer
-        from chat_test_helpers import _make_app
 
         state = _slack_state(tmp_path, monkeypatch)
         state.get_or_create_slot("s1", origin=SlotOrigin.USER)
@@ -1048,7 +1123,7 @@ class TestSendHandlerHook:
             return False
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.maybe_auto_link_slack", _close_slot)
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(_owner_app(state))) as client:
             resp = await client.post("/api/chat", json={"message": "hello", "slot": "s1"})
             body = await resp.json()
 
@@ -1061,7 +1136,6 @@ class TestSendHandlerHook:
         """A Stop pressed while the send waits for the link finds no task to
         cancel; the send sees it after the hold and does not dispatch."""
         from aiohttp.test_utils import TestClient, TestServer
-        from chat_test_helpers import _make_app
 
         state = _slack_state(tmp_path, monkeypatch)
         state.get_or_create_slot("s1", origin=SlotOrigin.USER)
@@ -1078,7 +1152,7 @@ class TestSendHandlerHook:
             return False
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.maybe_auto_link_slack", _hold)
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(_owner_app(state))) as client:
             send = asyncio.create_task(
                 client.post("/api/chat?ws=1", json={"message": "hello", "slot": "s1"})
             )
@@ -1104,7 +1178,6 @@ class TestSendHandlerHook:
         """Pause all lands while the first send waits for the link: the prompt is
         owed to Resume all; a pause lifted before that is recorded lets it run."""
         from aiohttp.test_utils import TestClient, TestServer
-        from chat_test_helpers import _make_app
 
         from kiro_crew import crew_pause
 
@@ -1132,7 +1205,7 @@ class TestSendHandlerHook:
             return False
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.maybe_auto_link_slack", _hold)
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(_owner_app(state))) as client:
             resp = await client.post("/api/chat?ws=1", json={"message": "hello", "slot": "s1"})
             body = await resp.json()
 
@@ -1151,7 +1224,6 @@ class TestSendHandlerHook:
     ):
         """As at the end of a stopped turn, a follow-up queued during the hold runs."""
         from aiohttp.test_utils import TestClient, TestServer
-        from chat_test_helpers import _make_app
 
         state = _slack_state(tmp_path, monkeypatch)
         state.get_or_create_slot("s1", origin=SlotOrigin.USER)
@@ -1180,7 +1252,7 @@ class TestSendHandlerHook:
             return False
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.maybe_auto_link_slack", _hold)
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(_owner_app(state))) as client:
             send = asyncio.create_task(
                 client.post("/api/chat?ws=1", json={"message": "first", "slot": "s1"})
             )

@@ -251,12 +251,12 @@ class TestKiroCliV2PromptHook:
         )
         assert (
             "The first message after a compaction carries part of it again (the agent "
-            "prompt, the memory index, skills and lessons), and later messages carry Kiro "
-            "Crew's per-turn context instead." in para
+            "prompt, the critical rules, the memory index, skills and lessons), and later "
+            "messages carry Kiro Crew's per-turn context instead." in para
         )
         assert "the first after a compaction, carries the full" not in para, (
             "a compaction re-sends only part of the session-start context, never the "
-            "critical rules (context_assembly/turn.post_compaction_parts)"
+            "rest of build_session_context (context_assembly/turn.post_compaction_parts)"
         )
         assert "A room or guest conversation gets less at both points" in para
         assert "In every case that hook's stdin `prompt` is not the message you typed" in para

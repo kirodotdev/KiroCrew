@@ -311,7 +311,7 @@ def _opts(caps=None, **kw):
     return o
 
 
-def _run(opts, gw, monkeypatch, *, items=None, credits=0.0, cfg=None):
+def _run(opts, gw, monkeypatch, *, items=None, credits=0.0, cfg=None, poll_secs=1.0):
     monkeypatch.setattr(
         h, "ledger_items", lambda client, slot: items() if callable(items) else (items or [])
     )
@@ -322,7 +322,7 @@ def _run(opts, gw, monkeypatch, *, items=None, credits=0.0, cfg=None):
         h, "transcript_path", lambda slot: __import__("pathlib").Path(f"/x/dashboard_{slot}.jsonl")
     )
     clock = Clock()
-    return h.run(opts, gw, cfg or _cfg(""), clock=clock, sleep=clock.sleep, poll_secs=1.0)
+    return h.run(opts, gw, cfg or _cfg(""), clock=clock, sleep=clock.sleep, poll_secs=poll_secs)
 
 
 BUSY = {"row": {"running": True}}
@@ -510,6 +510,34 @@ def test_a_worker_approval_is_an_ask(monkeypatch):
     assert stops == {f"/api/chat/slots/{ROOT}/stop", f"/api/chat/slots/{WORKER}/stop"}
 
 
+def test_a_root_chat_approval_is_an_ask(monkeypatch):
+    gw = FakeGateway(
+        [
+            {
+                "row": {
+                    "running": True,
+                    "pending_approval": True,
+                    "pending_approval_info": {"tool": "x"},
+                }
+            }
+        ]
+    )
+    r = _run(_opts(), gw, monkeypatch)
+    assert (r.status, r.ask_events[0]["kind"], r.ask_events[0]["slot"]) == (
+        "asked",
+        "approval",
+        ROOT,
+    )
+
+
+def test_a_run_without_timeout_ends_at_the_default_cap(monkeypatch):
+    assert h.options_from_args(_parse(["--headless", "-m", "x"])).timeout == 6 * 3600
+    assert h.options_from_args(_parse(["--headless", "-m", "x", "--timeout", "0"])).timeout == 0
+    # A run that never ends on its own (a busy turn, no ask) stops at the cap.
+    r = _run(_opts(), FakeGateway([BUSY]), monkeypatch, poll_secs=600.0)
+    assert r.status == "timeout" and r.wall_s >= h.DEFAULT_TIMEOUT_SECS
+
+
 def test_ask_by_options_list_ends_the_run(monkeypatch):
     gw = FakeGateway([{"row": {}, "text": "Pick one [OPTIONS: A | B]"}])
     r = _run(_opts(), gw, monkeypatch)
@@ -541,6 +569,36 @@ def test_an_error_row_is_a_failure_not_done(monkeypatch):
     gw = FakeGateway([{"row": {}, "role": "error", "text": "model unavailable"}])
     r = _run(_opts(), gw, monkeypatch)
     assert (r.status, r.completed, r.to_json()["exit_code"]) == ("error", False, h.EXIT_ERROR)
+
+
+def test_a_run_says_whether_the_agent_ever_answered(monkeypatch):
+    # An error before any reply or spend: the agent never started.
+    gw = FakeGateway([{"row": {}, "role": "error", "text": "agent not found"}])
+    r = _run(_opts(), gw, monkeypatch)
+    assert (r.status, r.started, r.to_json()["started"]) == ("error", False, False)
+    # A conductor chat that did not open in conductor mode never ran a turn either.
+    assert _run(_opts(mode="conductor"), FakeGateway([REPLY]), monkeypatch).started is False
+    # A reply, or spend with no reply, is an agent that ran.
+    assert _run(_opts(), FakeGateway([REPLY]), monkeypatch).started is True
+    # Spend counted only once the stopped turn is saved, after the last poll, still counts.
+    spend = iter([0.0, 0.4])
+    gw = FakeGateway([{"row": {}, "role": "error", "text": "tool crashed"}])
+    assert _run(_opts(), gw, monkeypatch, credits=lambda: next(spend)).started is True
+
+
+def test_a_refused_chat_reports_the_agent_never_started(monkeypatch, capsys):
+    class Refusing(FakeGateway):
+        def call(self, method, path, body=None, timeout=60):
+            if path == "/api/chat/slots" and method == "POST":
+                raise RuntimeError("POST /api/chat/slots: HTTP 409 agent_choice_unavailable")
+            return super().call(method, path, body, timeout)
+
+    monkeypatch.setattr("kiro_crew.port_resolution.resolve_client_port", lambda port=None: 1)
+    monkeypatch.setattr(h, "GatewayClient", lambda port: Refusing([REPLY]))
+    monkeypatch.setattr(h, "run_spend", lambda *a, **k: 0.0)
+    assert h.main(_parse(["--headless", "-m", "go", "--json"])) == h.EXIT_ERROR
+    out = json.loads(capsys.readouterr().out)
+    assert (out["status"], out["started"]) == ("error", False) and "409" in out["error"]
 
 
 def test_not_signed_in_only_from_an_error_row(monkeypatch):
@@ -775,6 +833,27 @@ def test_a_run_longer_than_the_sign_in_token_keeps_polling(monkeypatch):
     for _ in range(10):  # past three lapses
         assert c.call("GET", "/api/chat/slots?crew=all") == {"slots": []}
     assert state["minted"] == 4
+
+
+def test_sign_in_waits_as_long_as_kirocrew_token(monkeypatch):
+    """A busy gateway can take 12-14 s to answer; a shorter wait reads it as down."""
+    from kiro_crew.cli_server_requests import _TOKEN_REQUEST_TIMEOUT
+
+    monkeypatch.setattr(
+        "kiro_crew.config.loader.read_local_secret", lambda port, dial_host=None: "s3cret"
+    )
+    c = h.GatewayClient(4321)
+    answers = [_Resp(b'{"token":"tok"}'), _Resp(cookies=["mc_token_4321=sess; Path=/"])]
+    waits = {}
+
+    def fake_open(req, timeout, operation):
+        waits[operation] = timeout
+        return answers.pop(0)
+
+    c._open = fake_open
+    c.sign_in()
+    assert set(waits) == {"cli_headless_token", "cli_headless_session"}
+    assert min(waits.values()) >= _TOKEN_REQUEST_TIMEOUT
 
 
 def test_client_errors(monkeypatch):
@@ -1059,6 +1138,18 @@ def test_a_refused_close_still_cancels_agents_and_is_reported(monkeypatch):
     cancel_at = gw.calls.index(("POST", "/api/spawn/stop-all", {"slot": ROOT}))
     assert cancel_at < gw.calls.index(("DELETE", f"/api/chat/slots/{ROOT}", None))
     assert r.to_json()["unclosed"] == [ROOT]
+
+
+def test_a_trust_chat_left_open_is_reported_as_left_in_trust():
+    class Refusing:
+        def call(self, method, path, body=None, timeout=60):
+            if method == "DELETE":
+                raise RuntimeError(f"DELETE {path}: HTTP 500 history_write_running")
+            return {}
+
+    res = h.Result(slot=ROOT, approval_mode="trust")
+    h._stop(Refusing(), {ROOT}, res, "done")
+    assert res.unclosed == [ROOT] and res.error == f"not closed, left in Trust: {ROOT}"
 
 
 def test_an_already_closed_chat_is_not_reported():

@@ -10,7 +10,8 @@ import '../i18n/all'
 import type { MemoryChange } from '../api/sharedCrew'
 import { applySharedCrewFrame, MEMORY_CHANGES_KEPT, sharedCrewKeys } from '../hooks/sharedCrew/sharedCrewSocket'
 import { isSystemNoticeKind } from '../lib/systemNotice'
-import { SystemNoticeRow, isSystemNoticeRow, memoryChangeNoticeText } from '../pages/chat/CompactionCard'
+import { SystemNoticeRow, memoryChangeNoticeText } from '../pages/chat/CompactionCard'
+import { isSystemNoticeRow } from '../lib/systemNotice'
 import type { ChatMessage } from '../types'
 
 const change: MemoryChange = {

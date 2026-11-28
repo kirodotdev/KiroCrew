@@ -162,6 +162,25 @@ def _doctor_reads_current_tz_data(_floor_monkeypatch):
     _floor_monkeypatch.setattr(install, "_tz_data_from_system", lambda: True)
 
 
+@pytest.fixture(autouse=True)
+def _doctor_reads_no_installed_service(_floor_monkeypatch):
+    """The doctor sees no installed gateway service, whatever the host runs.
+
+    ``installed_unit_path`` reads the fixed ``/etc/systemd/system/kirocrew.service``
+    (or the user unit, or the launchd plist), and the unit notes ask the host's
+    ``systemctl``. A host that runs the gateway as a service from an older build
+    adds "managed service definition is outdated" to the issues, so every
+    whole-report doctor test exits 1 there and 0 on CI, which has no unit. The
+    service rows themselves are covered by ``test_cli_doctor.py`` and
+    ``test_service.py``.
+    """
+    from kiro_crew.service import controller
+
+    _floor_monkeypatch.setattr(controller, "installed_unit_path", lambda: None)
+    _floor_monkeypatch.setattr(controller, "stale_unit_notes", lambda: [])
+    _floor_monkeypatch.setattr(controller, "restart_policy_notes", lambda: [])
+
+
 class _TestChatPermissionRequestHarness:
     """The members both permission-request classes read.
 

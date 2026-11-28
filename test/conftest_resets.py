@@ -40,14 +40,20 @@ def _boot_pacer_reads_an_ample_host(_floor_monkeypatch):
     ``boot_pacer.BootPacer``, which reads the live host posture and holds the queue
     while it is critical. A runner short of memory would then stall every test that
     starts a service with an overdue loop. Pinned to ``ample`` here; a test about the
-    pacing passes its own reader to ``BootPacer``.
+    pacing passes its own reader to ``BootPacer``. Every tick also asks
+    ``memory_hold.read_admission`` and is held while memory is critical, so that
+    reader admits here too; a test about the hold sets its own.
     """
-    from kiro_crew.autonudge_service import boot_pacer
+    from kiro_crew.autonudge_service import boot_pacer, memory_hold
 
     async def _ample() -> str:
         return "ample"
 
+    async def _admitted() -> tuple[bool, str]:
+        return True, ""
+
     _floor_monkeypatch.setattr(boot_pacer, "read_host_posture", _ample)
+    _floor_monkeypatch.setattr(memory_hold, "read_admission", _admitted)
 
 
 @per_test_guard
@@ -132,6 +138,41 @@ def _fresh_released_sessions_warning(_floor_monkeypatch):
     from kiro_crew import released_sessions
 
     _floor_monkeypatch.setattr(released_sessions, "_stranded_warned", False)
+
+
+@per_test_guard
+def _fresh_orphan_scan_skip_warning(_floor_monkeypatch):
+    """Start every test with the skipped-orphan-scan line not yet given.
+
+    ``_our_orphan_pids`` says once per process that the Windows orphan scan does not
+    run, so a test that reaches it with ``IS_WINDOWS`` set would otherwise silence it
+    for every later test on the same worker. Set through the facade, which writes the
+    value into the owner that reads it.
+    """
+    session_pid = sys.modules.get("kiro_crew.session_pid")
+    if session_pid is not None:
+        _floor_monkeypatch.setattr(session_pid, "_orphan_scan_skip_logged", False)
+
+
+@per_test_guard
+def _fresh_harness_floor_warnings():
+    """Clear the bad ``agent.harness_sandbox`` warn-once set before and after each test.
+
+    ``agent_sdk.tool_gate._FLOOR_WARNED`` holds the (harness, value) pairs this
+    process logged once, so one test's entry would silence a later test's WARNING.
+    """
+
+    def clear():
+        tool_gate = sys.modules.get("kiro_crew.agent_sdk.tool_gate")
+        warned = getattr(tool_gate, "_FLOOR_WARNED", None)
+        if warned is not None:
+            warned.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
 
 
 @per_test_guard
@@ -329,6 +370,20 @@ def _forget_observed_people():
     people = sys.modules.get("kiro_crew.shared_crew.people")
     if people is not None:
         people.reset_for_tests()
+    yield
+
+
+@per_test_guard
+def _forget_usage_account():
+    """Forget the signed-in account ``/api/sessions/usage`` tags its answer with.
+
+    Production never clears these module globals, so a test whose fake service
+    reports an identity left an ``account`` key in a later test's answer.
+    """
+    sessions = sys.modules.get("kiro_crew.dashboard.handlers.sessions")
+    if sessions is not None:
+        sessions._usage_account_fp = ""
+        sessions._usage_account_tag = ""
     yield
 
 
@@ -1200,37 +1255,6 @@ def _disarm_agent_slice_memory_high():
 
 
 @per_test_guard
-def _reset_crewmate_worker_slots():
-    """A test that registers a session key as a crewmate worker must not leak it.
-
-    ``_CREWMATE_WORKER_SLOTS``, ``_CREWMATE_WORKER_MEMBERS`` and
-    ``_CREWMATE_WORKER_PROMPT_IN_CONTEXT`` are process-wide in
-    ``kiro_crew.members_parts.member_sessions``.
-    ``note_crewmate_worker_session`` mutates them directly (not through a
-    monkeypatch), so a test that calls ``resolve_session_agent_bindings`` or
-    ``note_worker_session`` with a worker execution silently contaminates every
-    later test on the same xdist worker that calls ``get_or_create`` on the same
-    key: the allocation's crewmate-worker gate fires and raises
-    ``CapabilityStartupError("capability_harness_unsupported")`` against a plain
-    mock provider that never set ``mate_worker_kit_supported = True``.
-    """
-
-    def clear():
-        module = sys.modules.get("kiro_crew.members_parts.member_sessions")
-        if module is not None:
-            module._CREWMATE_WORKER_SLOTS.clear()
-            module._CREWMATE_WORKER_MEMBERS.clear()
-            module._CREWMATE_WORKER_PROMPT_IN_CONTEXT.clear()
-            module._SESSION_BACKEND_PICKS.clear()
-
-    clear()
-    try:
-        yield
-    finally:
-        clear()
-
-
-@per_test_guard
 def _reset_live_execution_records():
     """A reused temporary home must not inherit another test's live records."""
 
@@ -1239,6 +1263,7 @@ def _reset_live_execution_records():
             ("kiro_crew.execution_context", "_LIVE_EXECUTIONS"),
             ("kiro_crew.execution_context", "_VOUCHED_EXECUTIONS"),
             ("kiro_crew.subagent_persistence", "_LIVE_RUN_STATES"),
+            ("kiro_crew.dashboard.running_bot_turns", "_RUNNING"),
         ):
             module = sys.modules.get(name)
             if module is not None:
@@ -1391,6 +1416,30 @@ def _reset_persisted_truncation_reports():
 
 
 @per_test_guard
+def _reset_kas_parent_notes():
+    """Start each test with no noted sub-agent run parents.
+
+    Every manager run notes the session that started it, keyed by run key. Tests
+    reuse run keys, so a parent one test noted would join the next test's run and
+    hold it to an unrelated agent's denies. The directory noted for a parent goes
+    with it: it would anchor the next test's limits in a folder of this one.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.acp.kas_parent_limits")
+        if module is not None:
+            module._NOTED.clear()
+            module._NOTED_DIRS.clear()
+            module._INCOMPLETE.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_chromium_opt_in_record():
     """Start each test with no browser pid already opted in to page content.
 
@@ -1420,6 +1469,8 @@ def _reset_code_channel_owner_only_notices():
     clock, and tests reuse both ids, so a notice one test sent could silence the
     next test's. ``routing._opening`` lets a channel's unmentioned messages through
     while it is opened, so one a test left would admit the next test's.
+    ``publishing._pr_status_held`` holds a channel whose ``pr_status`` Slack
+    refused, for the process, so a refusal one test planted would mute the next.
     """
 
     def clear():
@@ -1429,6 +1480,9 @@ def _reset_code_channel_owner_only_notices():
         routing = sys.modules.get("kiro_crew.slack.code_channels.routing")
         if routing is not None:
             routing._opening.clear()
+        publishing = sys.modules.get("kiro_crew.slack.code_channels.workspace.publishing")
+        if publishing is not None:
+            publishing._pr_status_held.clear()
 
     clear()
     try:

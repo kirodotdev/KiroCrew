@@ -5,8 +5,10 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import {
   __createComposerSyncForTests,
   __resetComposerSendHoldsForTests,
+  cancelComposerUpload,
   cancelComposerUploads,
   finishComposerAttachment,
+  handOverComposerUploads,
   holdComposerSend,
   isComposerSendHeld,
   registerComposerUpload,
@@ -16,9 +18,18 @@ import {
   UPLOAD_STALL_MS,
   useComposerArrivals,
   useComposerSendHeld,
-  useComposerUploadCount,
-  useComposerUploadProgress,
+  useComposerUploads,
+  useUploadStalled,
 } from '../utils/composerSendHolds'
+
+/** How many uploads the slot shows a chip for. */
+const useUploadCount = (slot: string | null) => useComposerUploads(slot).length
+
+/** The first upload's stall state, the way its chip reads it. */
+function useFirstStalled(slot: string) {
+  const upload = useComposerUploads(slot)[0]
+  return useUploadStalled(upload?.controller, !!upload?.sending, upload?.loaded ?? 0)
+}
 
 describe('composerSendHolds', () => {
   it('counts holds and never drops below zero', () => {
@@ -150,7 +161,7 @@ describe('composerSendHolds: live upload controllers', () => {
   it('is cancellable while at least one controller is registered', () => {
     const a = new AbortController()
     const b = new AbortController()
-    const { result } = renderHook(() => useComposerUploadCount('live') > 0)
+    const { result } = renderHook(() => useUploadCount('live') > 0)
     expect(result.current).toBe(false)
     act(() => {
       registerComposerUpload('live', a)
@@ -171,7 +182,7 @@ describe('composerSendHolds: live upload controllers', () => {
     const a = new AbortController()
     const b = new AbortController()
     const other = new AbortController()
-    const { result } = renderHook(() => useComposerUploadCount('cancel-me') > 0)
+    const { result } = renderHook(() => useUploadCount('cancel-me') > 0)
     act(() => {
       registerComposerUpload('cancel-me', a)
       registerComposerUpload('cancel-me', b)
@@ -193,7 +204,7 @@ describe('composerSendHolds: live upload controllers', () => {
 
   it('treats null and empty slots as no-ops', () => {
     const c = new AbortController()
-    const { result } = renderHook(() => useComposerUploadCount(null) > 0)
+    const { result } = renderHook(() => useUploadCount(null) > 0)
     registerComposerUpload(null, c)
     registerComposerUpload('', c)
     cancelComposerUploads(undefined)
@@ -207,7 +218,7 @@ describe('composerSendHolds: live upload controllers', () => {
     const render = vi.fn()
     const { result } = renderHook(() => {
       render()
-      return useComposerUploadCount('hooked') > 0
+      return useUploadCount('hooked') > 0
     })
     expect(result.current).toBe(false)
 
@@ -221,13 +232,13 @@ describe('composerSendHolds: live upload controllers', () => {
     expect(render).toHaveBeenCalledTimes(3)
   })
 
-  // #13071: the cancel label names how many uploads one press stops, so the
-  // count is state that re-renders as a second upload starts and each settles.
+  // One chip per upload: the count is state that re-renders as a second
+  // upload starts and each settles.
   it('reports the live controller count for its slot only', () => {
     const a = new AbortController()
     const b = new AbortController()
     const other = new AbortController()
-    const { result } = renderHook(() => useComposerUploadCount('counted-live'))
+    const { result } = renderHook(() => useUploadCount('counted-live'))
     expect(result.current).toBe(0)
     act(() => registerComposerUpload('counted-live', a))
     expect(result.current).toBe(1)
@@ -246,14 +257,14 @@ describe('composerSendHolds: live upload controllers', () => {
   })
 
   it('counts zero for a null slot', () => {
-    const { result } = renderHook(() => useComposerUploadCount(null))
+    const { result } = renderHook(() => useUploadCount(null))
     registerComposerUpload(null, new AbortController())
     expect(result.current).toBe(0)
   })
 
   it('keeps the hold count independent of the controllers', () => {
     const c = new AbortController()
-    const { result } = renderHook(() => useComposerUploadCount('split') > 0)
+    const { result } = renderHook(() => useUploadCount('split') > 0)
     holdComposerSend('split')
     expect(isComposerSendHeld('split')).toBe(true)
     expect(result.current).toBe(false)
@@ -269,6 +280,73 @@ describe('composerSendHolds: live upload controllers', () => {
 })
 
 
+describe('composerSendHolds: one entry per upload', () => {
+  it('lists each upload with its name and share sent, in start order', () => {
+    const a = new AbortController()
+    const b = new AbortController()
+    onTestFinished(() => act(() => {
+      unregisterComposerUpload('named', a)
+      unregisterComposerUpload('named', b)
+    }))
+    const { result } = renderHook(() => useComposerUploads('named'))
+    act(() => {
+      registerComposerUpload('named', a, 'first.png')
+      registerComposerUpload('named', b, 'second.pdf')
+      reportComposerUploadProgress(b, 50, 200)
+    })
+    expect(result.current.map(u => [u.name, u.ratio, u.sending])).toEqual([
+      ['first.png', null, false],
+      ['second.pdf', 0.25, true],
+    ])
+  })
+
+  it('returns the same snapshot until something about the uploads changes', () => {
+    const a = new AbortController()
+    onTestFinished(() => act(() => unregisterComposerUpload('stable', a)))
+    const render = vi.fn()
+    const { result } = renderHook(() => { render(); return useComposerUploads('stable') })
+    act(() => registerComposerUpload('stable', a, 'a.txt'))
+    const first = result.current
+    const renders = render.mock.calls.length
+    // A hold elsewhere notifies, but leaves this slot's uploads as they were.
+    act(() => { holdComposerSend('stable-other'); releaseComposerSend('stable-other') })
+    expect(result.current).toBe(first)
+    expect(render).toHaveBeenCalledTimes(renders)
+    act(() => reportComposerUploadProgress(a, 1, 2))
+    expect(result.current).not.toBe(first)
+    expect(result.current[0].ratio).toBe(0.5)
+  })
+
+  it('cancels one upload and leaves its siblings running', () => {
+    const a = new AbortController()
+    const b = new AbortController()
+    const unknown = new AbortController()
+    registerComposerUpload('one-of-two', a, 'a.txt')
+    registerComposerUpload('one-of-two', b, 'b.txt')
+    onTestFinished(() => {
+      unregisterComposerUpload('one-of-two', a)
+      unregisterComposerUpload('one-of-two', b)
+    })
+    cancelComposerUpload(a)
+    cancelComposerUpload(unknown)
+    expect([a.signal.aborted, b.signal.aborted, unknown.signal.aborted]).toEqual([true, false, false])
+  })
+
+  it('carries each upload\'s name across a hand-over', () => {
+    const a = new AbortController()
+    onTestFinished(() => act(() => unregisterComposerUpload('handed-to', a)))
+    const { result } = renderHook(() => useComposerUploads('handed-to'))
+    act(() => {
+      holdComposerSend('handed-from')
+      registerComposerUpload('handed-from', a, 'moved.png')
+      handOverComposerUploads('handed-from', 'handed-to')
+    })
+    expect(result.current.map(u => u.name)).toEqual(['moved.png'])
+    expect(isComposerSendHeld('handed-to')).toBe(true)
+    act(() => releaseComposerSend('handed-to'))
+  })
+})
+
 describe('composerSendHolds: upload progress', () => {
   it('restarts the stall timer when switching slots with identical progress', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
@@ -282,7 +360,7 @@ describe('composerSendHolds: upload progress', () => {
       vi.useRealTimers()
     })
     const { result, rerender } = renderHook(
-      ({ slot }) => useComposerUploadProgress(slot),
+      ({ slot }) => useFirstStalled(slot),
       { initialProps: { slot: 'progress-a' } },
     )
     act(() => {
@@ -291,16 +369,16 @@ describe('composerSendHolds: upload progress', () => {
       reportComposerUploadProgress(a, 0, 0)
       reportComposerUploadProgress(b, 0, 0)
     })
-    expect(result.current.stalled).toBe(false)
+    expect(result.current).toBe(false)
     act(() => { vi.advanceTimersByTime(UPLOAD_STALL_MS) })
-    expect(result.current.stalled).toBe(true)
+    expect(result.current).toBe(true)
 
     rerender({ slot: 'progress-b' })
-    expect(result.current.stalled).toBe(false)
+    expect(result.current).toBe(false)
     act(() => { vi.advanceTimersByTime(UPLOAD_STALL_MS - 1) })
-    expect(result.current.stalled).toBe(false)
+    expect(result.current).toBe(false)
     act(() => { vi.advanceTimersByTime(1) })
-    expect(result.current.stalled).toBe(true)
+    expect(result.current).toBe(true)
   })
 })
 

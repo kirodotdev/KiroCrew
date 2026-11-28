@@ -3,12 +3,14 @@
  * nothing else: no view switch, no crew-log panel.
  */
 import { describe, it, expect, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import { renderWithProviders as render } from "./helpers";
 
 vi.mock("../pages/members/CrewDynamicDashboard", () => ({
-  default: (p: { target: { slug: string }; displayName: string }) => (
-    <div data-testid="frame-stub">{`${p.target.slug}/${p.displayName}`}</div>
+  default: (p: { target: { slug: string }; displayName: string; onOpenLink?: (url: string) => boolean }) => (
+    <button type="button" data-testid="frame-stub" onClick={() => p.onOpenLink?.("https://dash.example/artifacts/x")}>
+      {`${p.target.slug}/${p.displayName}`}
+    </button>
   ),
 }));
 
@@ -36,5 +38,12 @@ describe("CrewDashboardTab", () => {
     expect(
       (await screen.findByTestId("frame-stub", undefined, LAZY_IMPORT_READY)).textContent,
     ).toBe("ada/Ada");
+  });
+
+  it("hands the host's link opener to the page", async () => {
+    const onOpenLink = vi.fn(() => true);
+    render(<CrewDashboardTab slug="ada" member="Ada" displayName="Ada" onOpenLink={onOpenLink} />);
+    fireEvent.click(await screen.findByTestId("frame-stub", undefined, LAZY_IMPORT_READY));
+    expect(onOpenLink).toHaveBeenCalledWith("https://dash.example/artifacts/x");
   });
 });

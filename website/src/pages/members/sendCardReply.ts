@@ -1,6 +1,7 @@
 import { api } from '../../api/client'
 import { indeterminate, sendTurn, type SendWire } from '../../chat-core/transport/sendTurn'
 import { mintSendId } from '../../utils/sendDelivery'
+import { announceSentIn } from '../../hooks/useTranscriptAnnouncement'
 
 /** The fetch seam for a Dashboard card's reply: the usual `POST /api/chat?ws=1`, plus
  *  `origin: 'dashboard_card'`, which the gateway checks again and which tags the turn. */
@@ -38,6 +39,8 @@ const cardSendWire: SendWire = async (payload, signal) => {
 export type CardSendOutcome = 'sent' | 'off' | 'refused' | 'failed' | 'unknown'
 
 export async function sendCardReply(slot: string, text: string): Promise<CardSendOutcome> {
+  // Spoken at the send, as the composer's own send is.
+  announceSentIn(slot, text)
   const receipt = await sendTurn({
     message: text,
     slot,

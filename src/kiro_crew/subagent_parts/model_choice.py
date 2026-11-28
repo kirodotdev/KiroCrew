@@ -43,6 +43,44 @@ def _resolved_model_of(client: object) -> str:
     return "" if model == DEFAULT_MODEL else model
 
 
+def _refused_spawn_pin(info: SubagentInfo, client: object) -> str:
+    """The model this spawn named when its session refused to serve it, else ``""``.
+
+    A session withholds a startup pin the account is not served and stays on the
+    backend default without raising (``model_pin_refused``). For a run the caller
+    pinned that default would answer as if it were the named model, so a review
+    "on model X" would really be a second review by the default. Only the spawn's
+    own pin (``info.model``) counts: a configured role pin or a routed tier is
+    the operator's default choice, and a session that stays on the backend
+    default in its place keeps working as before. A refusal of another model
+    (the default a foreign pin fell back to) is not this pin's either. Never raises.
+    """
+    pinned = str(info.model or "").strip()
+    if not pinned or pinned == DEFAULT_MODEL:
+        return ""
+    try:
+        refused = getattr(client, "model_pin_refused", "")
+    except Exception:
+        return ""
+    if not isinstance(refused, str) or not _names_one_model(refused, pinned):
+        return ""
+    return refused
+
+
+def _names_one_model(a: str, b: str) -> bool:
+    """Whether *a* and *b* spell one model: equal past case and a ``<namespace>::``
+    qualifier, or one registered model in two harnesses' spellings."""
+    from kiro_crew import model_registry
+
+    left, right = (x.strip().lower().rpartition("::")[2] for x in (a, b))
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    key = model_registry.registered_model_key(left)
+    return key is not None and key == model_registry.registered_model_key(right)
+
+
 def _subagent_default_model(cfg: Any = None) -> str:
     """Explicit sub-agent model pin (``agent.role_models['subagent']``), or ``""``.
 
@@ -78,6 +116,82 @@ def _subagent_default_effort(cfg: Any = None) -> str:
         return val if isinstance(val, str) else ""
     except Exception:
         return ""
+
+
+def _pinned_model_shares(sessions: Any, info: "SubagentInfo", cfg: Any = None) -> bool:
+    """Whether a run started on a model of its own can take a session on its parent's runtime.
+
+    True only when both hold. Anything else, an answer that cannot be read
+    included, is the dedicated process, where the provider factory applies the
+    model as it always has:
+
+    - the parent's backend runs each session of one process on its own model
+      (``SessionCapabilities.takes_model_per_session``, asked of the parent's
+      live provider and never inferred from which harness it is);
+    - the start takes no reasoning effort from config (``resolve_session_effort``,
+      the level the factory gives a start that names none): a level is applied
+      when a process starts and never to a session that joins one, so a model
+      that is to run at a configured level needs the process started with it.
+
+    Never raises. *cfg* as for :func:`_subagent_default_model`.
+    """
+    try:
+        from kiro_crew.agent_sdk.capabilities import capabilities_of
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        parent = sessions.get_provider(info.parent_session_key)
+        if not capabilities_of(parent).takes_model_per_session:
+            return False
+        cfg = cfg if cfg is not None else KiroCrewConfig.load()
+        template = info.agent or getattr(info.execution_context, "template_id", "")
+        return cfg.resolve_session_effort(template or None, "") == ""
+    except Exception:
+        return False
+
+
+async def _apply_shared_start_model(info: "SubagentInfo", handle: Any, runtime: Any) -> None:
+    """Put a run's session on its parent's runtime on the model the run started on.
+
+    ``info.requested_model`` is that model: the per-call model, else the
+    sub-agent role model, else a routed tier, the same value a dedicated start
+    hands the provider factory. It goes through the factory's own selection
+    (``acp_effective_model``: pin scope, then the id spelling of the backend
+    *runtime* serves) and then through the one function that applies a start's
+    model (``apply_configured_model``), so a pin is judged the same on either
+    arm. An unpinned run sends nothing and keeps the model the harness picked.
+
+    Never raises: the session is live and owned by now, so a model that cannot
+    be resolved or sent leaves it on the model it has, as a failed write does on
+    a dedicated start.
+    """
+    pin = info.requested_model
+    if not pin or pin == DEFAULT_MODEL:
+        return
+
+    def _resolve() -> str:
+        from kiro_crew.agent_sdk.capabilities import capabilities_for
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        template = info.agent or getattr(info.execution_context, "template_id", "")
+        return KiroCrewConfig.load().acp_effective_model(
+            template or None,
+            pin,
+            namespace=capabilities_for(runtime.acp_backend).model_id_namespace,
+        )
+
+    from kiro_crew.agent_sdk.drivers.acp import apply_configured_model
+
+    try:
+        # Off the loop: the selection reads the named agent's file.
+        model = await asyncio.to_thread(_resolve)
+        await apply_configured_model(handle, model, backend=runtime.acp_backend)
+    except Exception:
+        logger.warning(
+            "Subagent %s: could not apply model %s to its shared session",
+            info.id,
+            pin,
+            exc_info=True,
+        )
 
 
 async def _route_unpinned_start(info: "SubagentInfo", kind: str, sessions: Any) -> None:

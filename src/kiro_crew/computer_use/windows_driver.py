@@ -506,14 +506,18 @@ class WindowsBackend(ComputerUseBackend):
                         ),
                     )
                 return self._press_element(app, rec)
+            if req.method == CLICK_METHOD_AUTO or (
+                req.requested_method == CLICK_METHOD_AUTO and req.method == CLICK_METHOD_APP_POST
+            ):
+                # Only reachable with coordinates: ``resolve_click_method`` turns
+                # ``auto`` + element_index into ``accessibility``, served above.
+                # Tested before ``app_post`` because that is what the dispatcher
+                # resolves ``auto`` + coordinates onto, and the model never named it.
+                return DriverResult(ok=False, text=_REFUSE_AUTO_POINT)
             if req.method == CLICK_METHOD_APP_POST:
                 return DriverResult(ok=False, text=_REFUSE_APP_POST)
             if req.method == CLICK_METHOD_SKY_CLICK:
                 return DriverResult(ok=False, text=_REFUSE_SKY_CLICK)
-            if req.method == CLICK_METHOD_AUTO:
-                # Only reachable with coordinates: ``resolve_click_method`` turns
-                # ``auto`` + element_index into ``accessibility`` upstream.
-                return DriverResult(ok=False, text=_REFUSE_AUTO_POINT)
             if req.method == CLICK_METHOD_GLOBAL:
                 if req.point is None:
                     return DriverResult(ok=False, text=ERR_POINT_REQUIRED.format(method=req.method))

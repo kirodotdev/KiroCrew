@@ -24,6 +24,25 @@ Two watching surfaces show a live run:
 A run streams to the panel while it executes and injects its result into the
 chat on completion, so you do not have to poll it yourself.
 
+## Where each step runs
+
+On the KAS backend, with `agent.session_sharing` on (the default), each agent
+step of a run you started from a chat runs as a session on that chat's own KAS
+process, as the chat's sub-agents do, instead of starting a process of its own.
+The steps reuse the chat's MCP servers and start only their own Kiro Crew
+servers, so even an empty step starts in seconds.
+
+- **Where it works**: a step given no `cwd` works in the chat's folder, so steps
+  running at the same time share that folder.
+- **Who still gets a process of its own**: a step with an `effort`, a `backend` or
+  a `session=` name, a step whose agent is a crew or has a configured reasoning effort, a step
+  with a `cwd` other than the chat's folder, a crew member's run, a run that is
+  not persistent, every step past 8 on one chat's process, and every step of a
+  run whose chat is not on KAS or whose process cannot host sub-agents (see
+  [Sub-agents on a KAS chat's process](subagents.md#sub-agents-on-a-kas-chats-process)).
+- **Off switch**: `agent.session_sharing: false` gives every step a process of its
+  own.
+
 ## Watching and steering a run
 
 | Ask for | What you get |
@@ -60,6 +79,15 @@ its input. The run starts at once and its result appears in the chat when it
 finishes. Typing `/workflow ` in the chat box also opens a menu of the saved
 workflows; picking one fills in `/workflow <name> ` for you to add the input
 and send.
+
+Kiro Crew also ships built-in workflows, listed with the saved ones. They are
+read-only: you can run one by name but not change or remove it, and no saved
+workflow can take its name. To change one, save a copy under a new name.
+`/workflow ci-red-triage <pr> [repo folder] [base branch]` is the first: it
+reads a pull request's red CI checks, sorts each into PR, main, flake, infra
+or timeout, and names the next step for each. Its steps are told only to
+read, never to edit, push, rerun or comment; they still run with the normal
+agent tools, sandbox and approval rules.
 
 ## What comes back
 

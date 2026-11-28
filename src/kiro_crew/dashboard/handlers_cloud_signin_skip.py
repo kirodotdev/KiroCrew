@@ -12,7 +12,13 @@ from aiohttp import web
 
 from kiro_crew.cloud import launch_job as lj
 from kiro_crew.dashboard.cloud_launch_controls import request_skip
-from kiro_crew.dashboard.handlers_cloud import _astore, _audit, _guard, _in_executor
+from kiro_crew.dashboard.handlers_cloud import (
+    _astore,
+    _audit,
+    _guard,
+    _in_executor,
+    _lane_owner_refusal,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
@@ -34,6 +40,8 @@ async def api_cloud_launch_signin_skip(request: web.Request) -> web.Response:
     job = await _in_executor(store.get, request.match_info["id"])
     if job is None:
         return web.json_response({"error": "not found", "code": "launch_job_not_found"}, status=404)
+    if (refused := _lane_owner_refusal(request, job.provider_id, "launch_signin_skip")) is not None:
+        return refused
     connected = job.step(lj.STEP_CONNECT).state == lj.STEP_DONE
     if job.terminal or connected or not request_skip(state, job.id):
         _audit("launch_signin_skip", "denied", request_id=job.id, error="not skippable")

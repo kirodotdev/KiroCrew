@@ -927,3 +927,36 @@ def test_a_link_to_a_switched_off_file_reads_switched_off_too(home, tmp_path):
         plan.REACHES_NO,
         plan.REASON_SWITCHED_OFF,
     )
+
+
+@pytest.mark.parametrize("honours", [False, True])
+def test_the_switch_follows_the_capability_not_the_label(home, monkeypatch, honours):
+    """A codex chat is offered the switch only once its record says it honours it."""
+    import dataclasses
+
+    import kiro_crew.agent_sdk.capabilities as caps_mod
+
+    real = caps_mod.capabilities_for
+
+    def _codex(backend):
+        record = real(backend)
+        if backend == "codex":
+            return dataclasses.replace(record, honors_chat_steering_off=honours)
+        return record
+
+    monkeypatch.setattr(caps_mod, "capabilities_for", _codex)
+    listed = list_steering_blocking(None)["files"]
+    entry = next(e for e in listed if e["name"] == "always.md")
+    target = (home / ".kiro" / "steering" / "always.md").resolve()
+    rows = plan.chat_steering_plan(
+        listed=listed,
+        folder_documents=(),
+        provider_type="codex",
+        native_steering=False,
+        project=None,
+        agent="kirocrew",
+        is_member=False,
+        loader_documents=[(entry["path"], target, True)],
+    )
+    row = next(r for r in rows if r["name"] == "always.md")
+    assert row["switch"] == (plan.SWITCH_ON if honours else plan.SWITCH_NONE)

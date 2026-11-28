@@ -20,8 +20,8 @@ The manager fields this module uses. Writes: none. Reads: ``_admission``, ``_age
 ``_bind_shared_handle``, ``_claim_prices``, ``_dedicated_topup_lock``, ``_fire_event``,
 ``_gate_exit_reset``, ``_gate_wait_mark``, ``_get_parent_runtime``, ``_learned_settled_gb``,
 ``_memory_pressure_hold``, ``_note_startup_progress``, ``_provider_label_of``,
-``_running_count``, ``_sessions``, ``_should_use_session_sharing``, ``_shutting_down``,
-``_write_state_off_loop``.
+``_running_count``, ``_sessions``, ``_shared_claims``, ``_should_use_session_sharing``,
+``_shutting_down``, ``_write_state_off_loop``.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from ..subagent import (
         _DEDICATED_TOPUP_POLL_SECS,
         _DEDICATED_TOPUP_WAIT_SECS,
+        DEFAULT_MODEL,
         MEMORY_CAUSE_READ_UNANSWERED,
         AcpRuntime,
         AcpSessionProvider,
@@ -45,9 +46,11 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         LLMProvider,
         SubagentInfo,
+        _apply_shared_start_model,
         _cost_bucket,
         _dedicated_start_price_gb,
         _host_memory_reading_off_loop,
+        _pinned_model_shares,
         _selection_kind,
         _SharingPlan,
         _spawn_memory_floor_and_cost,
@@ -62,33 +65,45 @@ if TYPE_CHECKING:
 
 
 def _should_use_session_sharing_impl(self: RunEventCoordinator, info: SubagentInfo) -> bool:
-    """Decide whether a subagent should use the shared-runtime path.
+    """Decide whether a subagent should use the shared-runtime path, its pins aside.
 
     All must hold: session_sharing config True; parent session exists and
-    is ACP/kiro-backed (not CC); not a CC-specific spawn (model/allowed_tools/bare);
+    is ACP/kiro-backed (not CC); not a CC-specific spawn (allowed_tools/bare);
     no per-spawn backend; the host is not a codex process a subagent has left.
+    A model or effort the run was started on is the sharing plan's question
+    (:meth:`_sharing_plan_impl`), not this one's. The reason for a no is left
+    on ``info._placement_reason`` for the run's placement log line.
     """
+    info._placement_reason = ""
     # Member capability and native prompt documents are prepared at launch.
     if info._force_dedicated:
+        info._placement_reason = "a retry asked for a dedicated process"
         return False
     if info.execution_context is not None and info.execution_context.member_id is not None:
+        info._placement_reason = "a member run"
         return False
     try:
         cfg = KiroCrewConfig.load()
         if not cfg.agent.session_sharing:
+            info._placement_reason = "agent.session_sharing is off"
             return False
     except Exception:
+        info._placement_reason = "config unreadable"
         return False
-    if info.model or info.routed_model or info.allowed_tools or info.bare:
+    if info.allowed_tools or info.bare:
+        info._placement_reason = "allowed_tools or bare spawn"
         return False
     # The shared runtime is the parent's own process, on the parent's backend:
     # a run asked onto a backend of its own needs a process of its own.
     if info.backend is not None:
+        info._placement_reason = "a per-spawn backend"
         return False
     if not info.parent_session_key:
+        info._placement_reason = "no parent session"
         return False
     eligible = self._manager._sessions.is_session_sharing_eligible(info.parent_session_key)
     if eligible is not True:
+        info._placement_reason = "the parent session cannot share its runtime"
         return eligible
     # Imported here: a rebound ``_impl`` resolves globals in ``kiro_crew.subagent``.
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX
@@ -104,8 +119,82 @@ def _should_use_session_sharing_impl(self: RunEventCoordinator, info: SubagentIn
         getattr(host, "acp_backend", None) == ACP_BACKEND_CODEX
         and getattr(host, "subagent_departed", False) is True
     ):
+        info._placement_reason = "a codex parent process a sub-agent has left"
         return False
     return eligible
+
+
+#: Most sub-agents of one parent placed on its KAS process at once; the next one
+#: takes a process of its own. Bounds what one runaway fan-out can load onto the
+#: one process that also serves the parent chat.
+KAS_SHARED_CHILDREN_PER_PARENT = 8
+
+
+def _kas_shared_slot_taken(self: RunEventCoordinator, info: SubagentInfo) -> bool:
+    """Reserve *info* a place on its KAS parent's process, or answer that none is left.
+
+    One KAS process also serves the parent chat, so a fan-out past
+    ``KAS_SHARED_CHILDREN_PER_PARENT`` takes processes of its own rather than
+    loading every child onto it. Counted and reserved with no await in between,
+    so starts racing on one event loop cannot both take the last place: a child
+    counts from this reservation (``_shared_slot_reserved``), before its session
+    exists, until it is done or falls back to a dedicated process. Returns True
+    when the cap is reached, False after reserving (or on a parent that is not KAS).
+    """
+    left = self._kas_shared_places_left(info, admitted=False)
+    if left is None:
+        return False
+    if left <= 0:
+        return True
+    info._shared_slot_reserved = True
+    return False
+
+
+def _kas_shared_places_left(
+    self: RunEventCoordinator, info: SubagentInfo, *, admitted: bool
+) -> int | None:
+    """How many places on *info*'s KAS parent's process its live siblings leave free.
+
+    None when the parent's runtime is not KAS, which has no per-parent bound. A
+    sibling holds a place while it shares the runtime or has reserved a place on
+    it (``_kas_shared_slot_taken``); with *admitted*, also while admission has
+    let it in as a shared start that has not yet placed itself
+    (``_admitted_shared``, or a pending claim in ``_shared_claims``), so a burst
+    admitted in one pass is counted before any of its runs reserves.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+
+    host = self._manager._get_parent_runtime(info.parent_session_key) or getattr(
+        self._manager._sessions, "_subagent_runtimes", {}
+    ).get(info.parent_session_key)
+    if getattr(host, "acp_backend", None) == ACP_BACKEND_KAS:
+        # A claim admitted shared and not yet registered has no row to flag.
+        pending = (
+            sum(
+                1
+                for run_id, parent in self._manager._shared_claims.items()
+                if run_id != info.id and parent == info.parent_session_key
+            )
+            if admitted
+            else 0
+        )
+        return (
+            KAS_SHARED_CHILDREN_PER_PARENT
+            - pending
+            - sum(
+                1
+                for other in list(self._manager._agents.values())
+                if other.id != info.id
+                and other.parent_session_key == info.parent_session_key
+                and (
+                    other._session_sharing
+                    or getattr(other, "_shared_slot_reserved", False)
+                    or (admitted and getattr(other, "_admitted_shared", False))
+                )
+                and not other.done
+            )
+        )
+    return None
 
 
 def _sharing_plan_impl(
@@ -122,11 +211,14 @@ def _sharing_plan_impl(
     the price can never follow a copy of the rule that drifted. Shared needs
     template execution, no ``keep`` (a kept or continued run owns its
     process), :meth:`_should_use_session_sharing_impl`, and no per-spawn or
-    per-role model / reasoning-effort pin: a pin cannot be applied to the
+    per-role reasoning-effort pin: an effort cannot be applied to the
     parent's already-started runtime, so it forces the dedicated process
-    where the override reaches the provider factory. Eligibility is the
-    backend's opt-in membership (``is_session_sharing_eligible``); nothing
-    here names a harness. *cfg* is a config the caller already loaded.
+    where the override reaches the provider factory. A model (per-spawn,
+    per-role or routed) shares only where :func:`_pinned_model_shares` says
+    the parent's runtime can put one session on it; the shared session is
+    then put on it by ``_bind_shared_handle_impl``. An unpinned KAS start
+    also needs no configured session effort: only its dedicated factory can
+    apply that effort. *cfg* is a config the caller already loaded.
 
     A run whose ``cwd`` binds another AWS profile (``aws.project_profiles``)
     than the binding set on the parent also takes the dedicated arm, where
@@ -148,20 +240,69 @@ def _sharing_plan_impl(
     shared = (
         kind == "template"
         and not info.keep
-        and not (eff_model or eff_effort)
+        and not eff_effort
         and self._manager._should_use_session_sharing(info)
     )
-    if shared and self._aws_profile_split_possible(info):
-        if child_aws_profile is None:
+    if kind != "template":
+        reason = f"a {kind} run"
+    elif info.keep:
+        reason = "a kept or continued run"
+    elif eff_effort:
+        reason = "a reasoning-effort pin"
+    elif not shared:
+        reason = getattr(info, "_placement_reason", "") or "not eligible"
+    else:
+        reason = ""
+    if shared and eff_model:
+        shared = _pinned_model_shares(self._manager._sessions, info, cfg)
+        reason = "" if shared else "a model pin the parent's runtime cannot take"
+    if shared and self._aws_profile_rules_out_sharing(info, child_aws_profile):
+        shared = False
+        reason = "another AWS profile than the parent's"
+    if shared and not eff_model:
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        try:
+            host = self._manager._get_parent_runtime(info.parent_session_key) or getattr(
+                self._manager._sessions, "_subagent_runtimes", {}
+            ).get(info.parent_session_key)
+            if getattr(host, "acp_backend", None) == ACP_BACKEND_KAS:
+                cfg = cfg if cfg is not None else KiroCrewConfig.load()
+                template = info.agent or getattr(info.execution_context, "template_id", "")
+                shared = cfg.resolve_session_effort(template or None, "") == ""
+                reason = "" if shared else "a configured session effort on KAS"
+        except Exception:
             shared = False
-        else:
-            differs = getattr(self._manager._sessions, "aws_profile_differs_from_parent", None)
-            if (
-                differs is not None
-                and differs(info.parent_session_key, child_aws_profile.name) is True
-            ):
-                shared = False
-    return _SharingPlan(eff_model, eff_effort, shared)
+            reason = "the parent's runtime unreadable"
+    if shared:
+        # Admission reads this plan before any run of a burst reserves its place,
+        # so the siblings it already let in count: past the bound the start is
+        # dedicated, priced and spaced as one.
+        left = self._kas_shared_places_left(info, admitted=True)
+        if left is not None and left <= 0:
+            shared = False
+            reason = "the KAS parent's process is full"
+    return _SharingPlan(eff_model, eff_effort, shared, reason)
+
+
+def _aws_profile_rules_out_sharing(
+    self: RunEventCoordinator,
+    info: SubagentInfo,
+    child_aws_profile: ResolvedAwsProfile | None,
+) -> bool:
+    """Whether *info*'s AWS profile binding alone keeps it off the shared arm.
+
+    The plan's AWS term (:func:`_sharing_plan_impl`): a split must be possible,
+    and then an unresolved binding, or one the session manager says differs
+    from the parent's, rules sharing out.
+    """
+    if not self._aws_profile_split_possible(info):
+        return False
+    if child_aws_profile is None:
+        return True
+    differs = getattr(self._manager._sessions, "aws_profile_differs_from_parent", None)
+    return differs is not None and differs(info.parent_session_key, child_aws_profile.name) is True
 
 
 def _aws_profile_split_possible(self: RunEventCoordinator, info: SubagentInfo) -> bool:
@@ -460,14 +601,39 @@ async def _create_shared_session_impl(
 
     async def _serve_cli_default(handle: Any) -> None:
         # After the bind, which publishes ownership before any cancellable await.
-        # A shared sub-agent carries no model pin (``_sharing_plan_impl``), so on
-        # KAS it starts on kiro-cli's chat.defaultModel unless Crew pins its agent one.
+        # A run's own pin was applied in the bind and is not overwritten.
+        # KAS's agent projection carries no model, so apply Crew's agent/global
+        # pin before falling back to kiro-cli's chat.defaultModel.
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+        from kiro_crew.agent_sdk.capabilities import capabilities_for
+        from kiro_crew.agent_sdk.drivers.acp import apply_configured_model
+
         start_agent = agent or getattr(shared_runtime, "_agent", "") or None
+        pin = info.requested_model if info.requested_model != DEFAULT_MODEL else ""
+        if not pin and shared_runtime.acp_backend == ACP_BACKEND_KAS:
+            try:
+                pin = await asyncio.to_thread(
+                    self._manager._sessions._cfg.acp_effective_model,
+                    start_agent,
+                    None,
+                    namespace=capabilities_for(shared_runtime.acp_backend).model_id_namespace,
+                )
+                if pin and pin != DEFAULT_MODEL:
+                    await apply_configured_model(handle, pin, backend=shared_runtime.acp_backend)
+                    return
+            except Exception:
+                logger.warning(
+                    "Subagent %s: could not apply model %s to its shared session",
+                    info.id,
+                    pin,
+                    exc_info=True,
+                )
+                return
         await serve_kiro_cli_default_model(
             shared_runtime,
             handle,
             cwd,
-            lambda: self._manager._sessions._cfg.acp_effective_model(start_agent, None),
+            lambda: pin,
         )
 
     async def _late_adopter(handle: Any) -> bool:
@@ -668,6 +834,9 @@ async def _bind_shared_handle_impl(
                 info.id,
                 exc_info=True,
             )
+    # After ownership is published, so a run cancelled inside the model write
+    # is still found and its handle destroyed.
+    await _apply_shared_start_model(info, handle, runtime)
     logger.info(
         "Subagent %s using session sharing on runtime PID %s (session %s, key %s)",
         info.id,

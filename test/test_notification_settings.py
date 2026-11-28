@@ -168,6 +168,20 @@ class TestSinkIntegration:
         # Still in history (mute silences, it does not destroy)
         assert len(state._notification_log) == 2
 
+    def test_muting_update_silences_update_notices_but_not_agent_notes(self, monkeypatch, tmp_path):
+        # Kind "update" (the gateway's own update notices) has its own channel, so
+        # it can be muted without muting the notes agents send.
+        state = _make_state(monkeypatch, tmp_path)
+        state.notification_channel_settings.update("system.update", muted=True)
+        state.notify("update", "Kiro Crew 9.9.9 needs the installer to finish", "Run it.")
+        state.notify("agent", "PR #1 parked: needs your call", "Decide the design question.")
+        [update_note] = [n for n in state._notification_log if n["kind"] == "update"]
+        [agent_note] = [n for n in state._notification_log if n["kind"] == "agent"]
+        assert update_note["channel"] == "system.update"
+        assert update_note["silenced"] is True
+        assert "silenced" not in agent_note
+        assert unread_count(state._notification_log) == 1  # only the agent note counts
+
     def test_passive_priority_never_counts_toward_badge(self, monkeypatch, tmp_path):
         state = _make_state(monkeypatch, tmp_path)
         state._deliver_note(
@@ -331,6 +345,7 @@ class TestChannelSettingsApi:
             "channel_settings": {
                 "a.b": {"muted": True},
                 MONITOR_CHANNEL: {},
+                "system.update": {},
             }
         }
 
@@ -442,6 +457,7 @@ class TestSeedMonitorFromAgent:
             "channel_settings": {
                 "system.agent": {"muted": True},
                 MONITOR_CHANNEL: {"muted": True},
+                "system.update": {"muted": True},
                 "a.b": {"muted": True},
             }
         }
@@ -496,10 +512,12 @@ class TestSeedMonitorFromAgent:
         assert data["channel_settings"] == {
             "system.agent": {"muted": True},
             MONITOR_CHANNEL: {},
+            "system.update": {},
         }
 
         reloaded = ChannelSettings()
         assert reloaded.get(MONITOR_CHANNEL) == {}
+        assert reloaded.get("system.update") == {}
         assert MONITOR_CHANNEL not in reloaded.all_settings()
         assert reloaded.get("system.agent") == {"muted": True}
 
@@ -524,6 +542,23 @@ class TestSeedMonitorFromAgent:
         settings = ChannelSettings()
         assert settings.get(MONITOR_CHANNEL) == {}
         assert MONITOR_CHANNEL not in settings.all_settings()
+
+    def test_agent_entry_seeds_update_beside_an_existing_monitor_key(self, tmp_path):
+        # Every file an earlier build wrote already has a system.monitor key, so
+        # the system.update seed must not wait on it. The whole entry is copied,
+        # the chat route included.
+        agent = {"muted": True, "priority": "passive", "deliver_to": ["slack"]}
+        _write_settings(tmp_path, {"system.agent": agent, MONITOR_CHANNEL: {}})
+        settings = ChannelSettings()
+        assert settings.get("system.update") == agent
+        assert settings.get(MONITOR_CHANNEL) == {}
+
+    def test_empty_update_entry_blocks_seed(self, tmp_path):
+        _write_settings(
+            tmp_path,
+            {"system.agent": {"muted": True}, MONITOR_CHANNEL: {}, "system.update": {}},
+        )
+        assert ChannelSettings().get("system.update") == {}
 
     def test_corrupt_file_still_falls_back_and_seeds_nothing(self, tmp_path):
         path = tmp_path / "notification_settings.json"

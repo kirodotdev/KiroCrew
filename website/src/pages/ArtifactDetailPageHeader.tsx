@@ -8,8 +8,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  ArrowLeft, Camera, Check, Copy, ExternalLink, Download, Eye, FoldHorizontal, MoreHorizontal, Pencil,
-  UnfoldHorizontal, RefreshCw, X, RotateCcw, Plus, Sparkles, MessageSquare, Monitor, Undo2, Upload, Star,
+  ArrowLeft, Camera, Check, Copy, Download, Eye, FileText, FoldHorizontal, MoreHorizontal, Pencil,
+  UnfoldHorizontal, RefreshCw, X, RotateCcw, Sparkles, MessageSquare, Upload, Star,
   Folder as FolderIcon,
 } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
@@ -20,6 +20,7 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import { platformShortcut } from '../utils/platform'
 import HoverTip from '../components/HoverTip'
+import { ArtifactTagChips } from '../components/ArtifactTagChips'
 import { ArtifactSendToSessionSubmenu, useArtifactSendToSession } from '../components/ArtifactSendToSession'
 import { useArtifactFolders, useMoveArtifactToFolder } from '../hooks/useArtifactFolders'
 import { FolderPickerItems } from '../components/FolderMoveSubmenu'
@@ -28,8 +29,9 @@ import { folderBreadcrumb } from '../utils/artifactFolderTree'
 import { artifactAssetUrl } from '../components/ArtifactBody'
 import { canvasDocument, discardCanvas, flushCanvas } from '../components/canvas/canvasPending'
 import { api } from '../api/client'
-import { downloadUrl, isAndroidWebView } from '../utils/download'
-import { useArtifactPopouts } from '../hooks/useArtifactPopouts'
+import { artifactDocxUrl } from '../api/client/artifacts'
+import { downloadBlob, downloadUrl, isAndroidWebView } from '../utils/download'
+import { ArtifactPopoutMenuItems } from '../components/ArtifactPopoutMenuItems'
 import { USER_SELECTABLE_KINDS } from '../lib/artifactKinds'
 import { COMPARE_NONE, compareChoices, isComparableKind, stateLabel } from '../lib/artifactCompare'
 import type { Artifact } from '../types'
@@ -108,42 +110,6 @@ function FolderChip({ artifact }: { artifact: Artifact }) {
   )
 }
 
-/**
- * The pop-out control in the artifact detail toolbar. Opens the artifact in its
- * own browser window and, once it's out, swaps to Focus + Bring-back (mirrors
- * the chat session popout menu). Kept as a child so the `useArtifactPopouts`
- * subscription only runs on the main dashboard — never inside the popout window
- * itself (where this control isn't rendered).
- */
-/**
- * Pop-out entries of the toolbar's overflow menu: "Pop out to window" while the
- * artifact is here, or Focus + Bring back once it lives in its own window. Not
- * rendered inside the popout window itself (the frame's Return button closes it).
- */
-function ArtifactPopoutMenuItems({ slug, name }: { slug: string; name: string }) {
-  const { isPoppedOut, open, focus, bringBack } = useArtifactPopouts()
-  if (isPoppedOut(slug)) {
-    return (
-      <>
-        <DropdownMenuItem onSelect={() => focus(slug)}>
-          <Monitor size={13} className="shrink-0 text-accent" aria-hidden="true" />
-          <span>{i18nT('pages.artifactDetailPage.focus_popped_out_window')}</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => bringBack(slug)}>
-          <Undo2 size={13} className="shrink-0 text-muted" aria-hidden="true" />
-          <span>{i18nT('pages.artifactDetailPage.bring_artifact_back_to_this_window')}</span>
-        </DropdownMenuItem>
-      </>
-    )
-  }
-  return (
-    <DropdownMenuItem onSelect={() => open(slug, name)}>
-      <ExternalLink size={13} className="shrink-0 text-muted" aria-hidden="true" />
-      <span>{i18nT('pages.artifactDetailPage.pop_out_to_window')}</span>
-    </DropdownMenuItem>
-  )
-}
-
 /** The More menu's state: copy, open, send to a session and download. */
 export function useArtifactDetailPageMenu({
   stateRead, documentRead, composerRead, companionRead,
@@ -153,7 +119,7 @@ export function useArtifactDetailPageMenu({
   composerRead: ArtifactDetailPageComposerRead
   companionRead: ArtifactDetailPageCompanionRead
 }) {
-  const { slug, editing, setSendToSessionError } = stateRead
+  const { slug, editing, selectedVersion, setSendToSessionError } = stateRead
   const { effectiveVersion, artifact, exportSrcdoc } = documentRead
   const { guardSendToSession } = composerRead
   const { sendNav } = companionRead
@@ -279,9 +245,22 @@ export function useArtifactDetailPageMenu({
     saveBlob()
   }
 
+  // A markdown or text artifact as a Word file, built by the gateway from the version on screen.
+  const downloadAsDocx = () => {
+    if (!artifact) return
+    const filename = `${artifact.slug}-v${effectiveVersion}.docx`
+    setCopyError(null)
+    // An Android in-app browser drops a blob: download, so it fetches twice: once here to check, once to save the URL.
+    api.artifactDocx(artifact.slug, selectedVersion)
+      .then((blob) => isAndroidWebView()
+        ? downloadUrl(artifactDocxUrl(artifact.slug, selectedVersion), filename)
+        : downloadBlob(blob, filename))
+      .catch(() => setCopyError(i18nT('components.markdownPanel.download_failed')))
+  }
+
   return {
     copyStatus, copyError, setCopyError, handleCopyContent, copyLabel, moreOpen, setMoreOpen, sendToSession,
-    downloadAsHtml,
+    downloadAsHtml, downloadAsDocx,
   }
 }
 
@@ -308,8 +287,7 @@ export function ArtifactDetailPageHeader({
   const {
     slug, navigate, confirm, renaming, nameDraft, setNameDraft, selectedVersion,
     setSelectedVersion, compareWith, setCompareWith, editing, previewDuringEdit, setPreviewDuringEdit, readingWidth, toggleReadingWidth,
-    saving, saveConflict, showPublish, setShowPublish, addingTag, setAddingTag, newTag, setNewTag, ime,
-    refocusAddTagRef, addTagButtonRef,
+    saving, saveConflict, showPublish, setShowPublish, ime,
   } = stateRead
   const { versionsQuery, versions, isCurrent, editable, dirty, usesIframe } = documentRead
   const {
@@ -318,16 +296,8 @@ export function ArtifactDetailPageHeader({
   } = editorRead
   const { guardCommentDraft } = composerRead
   const {
-    copyStatus, handleCopyContent, copyLabel, moreOpen, setMoreOpen, sendToSession, downloadAsHtml,
+    copyStatus, handleCopyContent, copyLabel, moreOpen, setMoreOpen, sendToSession, downloadAsHtml, downloadAsDocx,
   } = menuRead
-  // A key that closes the tag input unmounts the focused field, so the + Tag
-  // button takes focus back as it mounts. Enter and Space would also activate
-  // that newly focused button, so their default is cancelled; Escape and comma
-  // activate nothing and keep theirs.
-  const closeTagInputByKey = (e: { key: string; preventDefault: () => void }) => {
-    if (e.key === 'Enter' || e.key === ' ') e.preventDefault()
-    refocusAddTagRef.current = true
-  }
   // Version-picker rows as two PARALLEL arrays, newest snapshot first, the order
   // the <option> list had. `live` leads as a static entry: Live is always-current
   // state, distinct from any numbered snapshot because in the explicit-snapshot
@@ -434,80 +404,7 @@ export function ArtifactDetailPageHeader({
             </button>
           </HoverTip>
         )}
-        {artifact.tags.map((t) => (
-          <span key={t} className={`${TOOLBAR_CHIP_CLASS} bg-bg-elevated border border-border text-muted group`}>
-            {/* Own element: the remove button's HoverTip keeps an sr-only copy of
-                its label in this chip, so the bare text node would no longer be
-                the chip's whole text. */}
-            <span>{t}</span>
-            <HoverTip label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}>
-              <button
-                type="button"
-                // The chip, and this focused button with it, leaves the page
-                // once the write lands, so focus moves to + Tag first.
-                onClick={() => { removeTag(t); addTagButtonRef.current?.focus() }}
-                className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-within:opacity-100 hover:text-danger transition-opacity bg-transparent border-none cursor-pointer p-0 inline-flex items-center"
-                aria-label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}
-              >
-                <X size={12} />
-              </button>
-            </HoverTip>
-          </span>
-        ))}
-        {addingTag ? (
-          <input
-            type="text"
-            value={newTag}
-            onChange={e => setNewTag(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter') {
-                // Rule 2 shape: this handler carries more than Enter (comma/space
-                // also commit), so only the Enter path is gated. Rule 1: single-line
-                // input, so the guard alone is enough.
-                if (ime.isComposing(e)) return
-                // addTag closes the input for any non-blank text, a duplicate included.
-                if (newTag.trim()) closeTagInputByKey(e)
-                addTag(newTag)
-              }
-              if (e.key === ',' || e.key === ' ') {
-                // Space cycles IME candidates mid-composition; committing here
-                // would post the composing buffer and kill candidate selection.
-                // The claim is key-agnostic: it consumes the separator only
-                // when the IME is not itself using the keypress.
-                if (ime.claimEnter(e) && newTag.trim()) { closeTagInputByKey(e); addTag(newTag) }
-              }
-              if (e.key === 'Escape') { ime.reset(); setNewTag(''); closeTagInputByKey(e); setAddingTag(false) }
-            }}
-            {...ime.bindComposition({
-              onBlur: () => {
-                if (newTag.trim()) addTag(newTag)
-                else setAddingTag(false)
-              },
-            })}
-            autoFocus
-            placeholder={i18nT('pages.artifactDetailPage.tag')}
-            className={`${TOOLBAR_CHIP_CLASS} bg-bg-elevated border border-accent text-text outline-hidden focus-ring`}
-            style={{ width: '90px' }}
-            aria-label={i18nT('pages.artifactDetailPage.add_a_tag')}
-          />
-        ) : (
-          <HoverTip label={i18nT('pages.artifactDetailPage.add_a_tag_comma_separated_tags_supported')}>
-            <button
-              ref={el => {
-                addTagButtonRef.current = el
-                if (!el || !refocusAddTagRef.current) return
-                refocusAddTagRef.current = false
-                el.focus()
-              }}
-              type="button"
-              onClick={() => setAddingTag(true)}
-              className={`${TOOLBAR_CHIP_CLASS} border border-dashed border-border text-muted hover:text-text hover:border-border-strong cursor-pointer bg-transparent transition-colors`}
-              aria-label={i18nT('pages.artifactDetailPage.add_a_tag')}
-            >
-              <Plus size={13} /> {i18nT('pages.artifactDetailPage.tag_2')}
-            </button>
-          </HoverTip>
-        )}
+        <ArtifactTagChips tags={artifact.tags} addTag={addTag} removeTag={removeTag} stateRead={stateRead} />
         {/* `flex-wrap`: the parent row wraps, but this group did not, so at a
             narrow window the trailing controls (Download last) ran past the
             viewport edge and became unreachable. Wrapping keeps every action
@@ -748,6 +645,12 @@ export function ArtifactDetailPageHeader({
                 <Download size={13} className="shrink-0 text-muted" aria-hidden="true" />
                 <span>{i18nT('pages.artifactDetailPage.download')}</span>
               </DropdownMenuItem>
+              {(artifact.kind === 'markdown' || artifact.kind === 'text') && (
+                <DropdownMenuItem onSelect={downloadAsDocx}>
+                  <FileText size={13} className="shrink-0 text-muted" aria-hidden="true" />
+                  <span>{i18nT('pages.artifactDetailPage.download_docx')}</span>
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </span>

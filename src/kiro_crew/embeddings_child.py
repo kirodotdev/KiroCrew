@@ -41,6 +41,7 @@ import time
 import weakref
 from typing import IO, Any
 
+from kiro_crew.embeddings_rest import drop_weight_pages, map_weight_pages_soon
 from kiro_crew.embeddings_settings import (
     _CHILD_CALL_BASE_SECS,
     _CHILD_CALL_SECS_PER_TEXT,
@@ -66,6 +67,8 @@ _PARENT_POLL_SECS = 1.0
 _MAX_RESPONSE_BYTES = 16 << 20
 # How long close() waits for the child to exit after asking it to.
 _CHILD_STOP_WAIT_SECS = 5.0
+# A stop that finished but took longer than this is logged at INFO.
+_CHILD_SLOW_STOP_SECS = 1.0
 
 
 class ChildEmbeddingError(RuntimeError):
@@ -376,10 +379,26 @@ class _ChildState:
             return
         conn.send({"op": "exit"})
         conn.outbox.put(None)
+        started = time.monotonic()
         try:
             conn.proc.wait(_CHILD_STOP_WAIT_SECS)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "embedding child did not exit within %.1fs of the stop request; "
+                "killing it (elapsed_s=%.1f)",
+                _CHILD_STOP_WAIT_SECS,
+                time.monotonic() - started,
+            )
         except Exception:  # noqa: BLE001 - fall through to kill
             pass
+        else:
+            elapsed = time.monotonic() - started
+            if elapsed > _CHILD_SLOW_STOP_SECS:
+                logger.info(
+                    "embedding child took %.1fs to exit after the stop request (budget %.1fs)",
+                    elapsed,
+                    _CHILD_STOP_WAIT_SECS,
+                )
         _kill(conn.proc)
 
     # ── requests ──
@@ -391,6 +410,15 @@ class _ChildState:
             conn = self.conn
         if conn is not None:
             conn.send({"op": "threads", "n": n_threads, "nb": n_threads_batch})
+
+    def send_op(self, op: str) -> bool:
+        """Send a request that has no answer; False when no child is running."""
+        with self.lock:
+            conn = self.conn
+        if conn is None:
+            return False
+        conn.send({"op": op})
+        return True
 
     def _wait_until_idle(self, conn: _Conn, work: "EmbeddingWork | None") -> None:
         """Wait until *conn* has no unanswered request, within the caller's deadline.
@@ -521,6 +549,14 @@ class ChildLlama:
     ) -> dict[str, Any]:
         """``create_embedding`` that stops waiting when *work* expires."""
         return self._state.embed(texts, work)
+
+    def rest(self) -> bool:
+        """Have the child give back its weight pages (``embeddings_rest``)."""
+        return self._state.send_op("rest")
+
+    def wake(self) -> None:
+        """Have the child map its weight pages back in."""
+        self._state.send_op("wake")
 
     @property
     def pid(self) -> int | None:
@@ -671,6 +707,14 @@ def _serve(stdin: IO[bytes], out: IO[bytes]) -> int:
             break
         if op == "threads":
             _set_threads(llm, int(msg.get("n", 1)), int(msg.get("nb", 1)))
+            continue
+        if op in ("rest", "wake"):
+            path = (request.get("kwargs") or {}).get("model_path")
+            if path:
+                if op == "rest":
+                    drop_weight_pages(str(path))
+                else:
+                    map_weight_pages_soon(str(path))
             continue
         if op != "embed":
             continue

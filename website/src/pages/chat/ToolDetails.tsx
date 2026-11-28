@@ -128,7 +128,10 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, input
   // a `purpose` that dedups against the pill label would render an empty
   // colored bar with no content (purpose is truthy → `empty` was false, but
   // `showPurpose` is false → meta row hidden, no I/O → blocks hidden).
-  const reallyEmpty = (empty && !showToolName) || (!showPurpose && !showToolName && !hasInput && !hasOutput && !auto && !pending && ts === 0)
+  // A call still waiting for approval is live, never historical: its
+  // "Waiting for approval" chip already fills the meta row, and the card's own
+  // title says what is asked, so no empty-state line is drawn for it.
+  const reallyEmpty = !pending && ((empty && !showToolName) || (!showPurpose && !showToolName && !hasInput && !hasOutput && !auto && ts === 0))
 
   return (
     <div className={`${flush ? '' : 'ml-3'} ${ROW_RAIL_CLASS} flex flex-col gap-2`} style={{ borderLeftColor: barColor }}>

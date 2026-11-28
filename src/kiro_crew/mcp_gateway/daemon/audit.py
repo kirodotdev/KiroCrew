@@ -382,6 +382,28 @@ def _audit_owner_port(peer_pid: int | None, port: object, outcome: str, reason: 
         logger.debug("SEL audit emit for owner-port failed", exc_info=True)
 
 
+def _audit_recycle_server(server: str, outcome: str, detail: str) -> None:
+    """Emit a SEL audit event for a ``recycle-server`` request.
+
+    A recycle kills one server's pooled backends (idle ones at once, in-use ones
+    at the drain deadline), so it is audited beside stand-down, the other frame
+    that takes running backends down on request. ``server`` is the operator's
+    name, bounded by the frame validation before it gets here. Wrapped
+    defensively -- an audit-log failure must never break the handler.
+    """
+    try:
+        facade.SecurityEventLog().log_api_access(
+            caller="kirocrew-cli",
+            operation="mcp-gateway.recycle_server",
+            outcome=outcome,
+            source="gateway",
+            resources=server or "(none)",
+            error=detail,
+        )
+    except Exception:  # pragma: no cover — audit must never break the handler
+        logger.debug("SEL audit emit for recycle-server failed", exc_info=True)
+
+
 def _audit_disconnect_cancel(stub_uuid: str, remaining: int, cancelled: int) -> None:
     """Emit a SEL audit event for in-flight calls cancelled on a stub disconnect.
 
@@ -424,3 +446,56 @@ def _audit_agent_socket_decision(server_name: str, outcome: str, reason: str = "
         )
     except Exception:  # pragma: no cover — audit must never break a launch
         logger.debug("SEL audit for the agent-socket decision failed", exc_info=True)
+
+
+def _audit_agent_binding(
+    peer_pid: int | None, outcome: str, agents: object, reason: str = ""
+) -> None:
+    """Emit a SEL audit event for an ``agent-binding`` frame.
+
+    The binding decides whose declared env a stub's private backend is started
+    with, so an accepted or refused one is a permission decision and belongs in
+    the HMAC-chained SEL beside owner-port and claim. The agent NAMES are
+    recorded; the bearer ``stub_session_token`` is NEVER logged. Wrapped
+    defensively -- an audit-log failure must never break connection handling.
+    """
+    try:
+        facade.SecurityEventLog().log_api_access(
+            caller=f"pid:{peer_pid}" if peer_pid is not None else "unknown",
+            operation="mcp-gateway.agent_binding",
+            outcome=outcome,
+            source="gateway",
+            # Agent names only; bounded, and the token is deliberately absent.
+            resources=f"agents={repr(agents)[:128]}",
+            error=reason,
+        )
+    except Exception:  # pragma: no cover — audit must never break the handler
+        logger.debug("SEL audit emit for agent-binding failed", exc_info=True)
+
+
+def _audit_declaring_agent_denied(
+    peer_pid: int | None, stub_uuid: str, frame_agent: str, reason: str
+) -> None:
+    """Emit a SEL ``denied`` event when a stub's framed declaring agent is refused.
+
+    A tokened Register naming an agent the owner did not bind to that token is
+    refused, and that refusal decides whether the stub's private backend is
+    started with that agent's rotating ``secret://`` credentials. It is the same
+    anti-forgery decision the register-time token refusal and the
+    ``agent-binding`` accept/deny are audited for, so it belongs in the
+    HMAC-chained SEL too. The stub uuid and the framed agent are recorded; the
+    bearer ``stub_session_token`` is NEVER logged. Wrapped defensively -- an
+    audit-log failure must never break connection handling.
+    """
+    try:
+        facade.SecurityEventLog().log_api_access(
+            caller=f"pid:{peer_pid}" if peer_pid is not None else "unknown",
+            operation="mcp-gateway.declaring_agent",
+            outcome="denied",
+            source="gateway",
+            # Stub uuid and the framed agent name only; the token is absent.
+            resources=f"stub={stub_uuid[:64]} agent={frame_agent[:64]!r}",
+            error=reason,
+        )
+    except Exception:  # pragma: no cover — audit must never break the handler
+        logger.debug("SEL audit emit for declaring-agent refusal failed", exc_info=True)

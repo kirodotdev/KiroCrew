@@ -39,15 +39,12 @@ from urllib.parse import quote
 from kiro_crew import dashboard_agentic, mcp_panel_snapshot
 from kiro_crew.dashboard_templates.instance import AUTHORED_PAGE_REFUSAL
 from kiro_crew.dashboard_templates.page_look import PAGE_LOOK
-from kiro_crew.mcp_core import (
-    _get,
-    _post,
-    _resolve_session_key,
-    require_strict_session_key,
-)
+from kiro_crew.mcp_core_parts.gateway import _get, _post
+from kiro_crew.mcp_core_parts.identity import _resolve_session_key, require_strict_session_key
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
-from kiro_crew.validation import MCP_PANEL_SCHEMAS, validate_tool_args
+from kiro_crew.validation_parts.field_engine import validate_tool_args
+from kiro_crew.validation_parts.opt_in_server_schemas import MCP_PANEL_SCHEMAS
 
 logger = logging.getLogger(__name__)
 
@@ -1272,6 +1269,12 @@ ADVERTISE_CALLER_IDENTITY = True
 
 def run_mcp_server() -> None:
     """Run the MCP stdio server — reads JSON-RPC from stdin, writes to stdout."""
+    # An enforced harness hands this server a one-time pickup in place of the secret
+    # it withholds (``agent_ipc_client``); redeem it before the first request, as
+    # ``kirocrew-dashboard`` does, since listing the tools already reads the tool policy.
+    from kiro_crew.agent_ipc_client import redeem_server_pickup
+
+    redeem_server_pickup()
     run_mcp_stdio_loop(
         SERVER_NAME,
         SERVER_VERSION,

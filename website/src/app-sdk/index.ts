@@ -98,6 +98,7 @@ const WS_SLOT_SCOPED_EVENTS = new Set([
   'approval', 'approval_resolved', 'question_card', 'elicitation_resolved',
   // Subagent lifecycle
   'subagent_spawn', 'subagent_done', 'subagent_tool', 'subagent_chunk',
+  'subagent_thinking',
   'subagent_snapshot', 'subagent_status', 'subagent_queued',
   'subagent_stalled', 'subagent_retrying', 'subagent_recovering',
   'subagent_waiting', 'subagent_resumed',
@@ -114,6 +115,7 @@ const WS_SLOT_SCOPED_EVENTS = new Set([
  */
 const WS_SUBAGENT_EVENTS = new Set([
   'subagent_spawn', 'subagent_done', 'subagent_tool', 'subagent_chunk',
+  'subagent_thinking',
   'subagent_snapshot', 'subagent_status', 'subagent_queued',
   'subagent_stalled', 'subagent_retrying', 'subagent_recovering',
   'subagent_waiting', 'subagent_resumed',
@@ -484,26 +486,31 @@ export function useChatLauncher(): {
    */
   createChat: (opts: ChatCreateOptions) => Promise<string>
 } {
-  const { navigate, launchChat } = useCtx()
+  const { navigate, launchChat, isActive } = useCtx()
 
   const openChat = useCallback((opts: ChatLaunchOptions = {}) => {
     // Session-shaping options describe a NEW session, so they are dropped for a
     // targeted launch rather than applied to a session the user already has.
     const memoryMode = opts.slotKey ? undefined : chatLaunchMemoryMode(opts.memoryMode)
     const sessionFolder = !opts.slotKey && opts.sessionFolder === false ? false : undefined
-    ;(window as Window & { __mc_chat_launch?: ChatLaunchIntent }).__mc_chat_launch = {
-      agent: opts.agent,
-      message: opts.message,
-      slotKey: opts.slotKey,
-      autoSend: opts.autoSend,
-      ...(memoryMode ? { memoryMode } : {}),
-      ...(sessionFolder === false ? { sessionFolder } : {}),
-      ts: Date.now(),
-    }
-    navigate(opts.slotKey
+    const target = opts.slotKey
       ? `/chat?sid=${encodeURIComponent(opts.slotKey)}`
-      : chatLaunchOpensDraft({ autoSend: opts.autoSend, memoryMode, sessionFolder }) ? '/chat?new=1' : '/chat')
-  }, [navigate])
+      : chatLaunchOpensDraft({ autoSend: opts.autoSend, memoryMode, sessionFolder }) ? '/chat?new=1' : '/chat'
+    // A hidden page leaves no launch intent behind, since the next /chat entry would
+    // claim it; `navigate` then refuses the move itself.
+    if (!isActive || isActive()) {
+      ;(window as Window & { __mc_chat_launch?: ChatLaunchIntent }).__mc_chat_launch = {
+        agent: opts.agent,
+        message: opts.message,
+        slotKey: opts.slotKey,
+        autoSend: opts.autoSend,
+        ...(memoryMode ? { memoryMode } : {}),
+        ...(sessionFolder === false ? { sessionFolder } : {}),
+        ts: Date.now(),
+      }
+    }
+    navigate(target)
+  }, [navigate, isActive])
 
   const createChat = useCallback((opts: ChatCreateOptions) => (
     launchChat
@@ -651,6 +658,10 @@ export { default as DiffView } from './DiffView'
 export type { AppDiffViewProps } from './DiffView'
 export { default as SessionChanges } from './SessionChanges'
 export type { AppSessionChangesProps } from './SessionChanges'
+// The dashboard's project file tree. An external app's tree reaches only the
+// project reads its `permissions.api` declares (see ./FileTree).
+export { default as FileTree } from './FileTree'
+export type { AppFileTreeProps } from './FileTree'
 // Issue lists from GitHub, GitLab, Jira and Linear behind the app's declared
 // `/api/source/issues` (see ./issues/useIssues).
 export { useIssues, IssueList, IssueCard } from './issues'
@@ -667,7 +678,7 @@ export type { HostSession, HostSessionApproval, HostSessions, HostSessionDecisio
 // Play, pause, seek and volume on the tab the app's own agent browses, behind the
 // app's declared `/api/browser/media` (level 10, see ./browserMedia).
 export { useBrowserMedia, BROWSER_MEDIA_PATH } from './browserMedia'
-export type { BrowserMedia, BrowserMediaState } from './browserMedia'
+export type { BrowserMedia, BrowserMediaState, BrowserRecipeResult } from './browserMedia'
 // The app's browsing list, and the owner's dialog before a site is added (level 13).
 export { useBrowserSites } from './browserSites'
 export type { BrowserSite, BrowserSiteResult, BrowserSites } from './browserSites'
@@ -704,3 +715,6 @@ export { appWebOrigin, appWebOriginStatus } from './webOrigin'
 export type { AppWebOriginReason, AppWebOriginStatus } from './webOrigin'
 // The App Kit seam level; an app feature-detects the seams above by it.
 export { APP_SDK_LEVEL } from './sdkLevel'
+// Keep the routed page running, hidden, while the app is busy (level 16).
+export { useKeepAlive } from './keepAlive'
+export type { KeepAliveStatus } from './keepAlive'

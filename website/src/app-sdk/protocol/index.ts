@@ -19,6 +19,7 @@ export { stripPartialOptionMarker } from './optionMarker'
 export { parseOptions, deriveFollowUpOptions } from './options'
 export type { ParsedOptions, FollowUpDerivation } from './options'
 export { extractSteeringAcks } from './steering'
+export { isStatusRow } from './statusRow'
 // `deriveFollowUpOptions` consumes these, so a caller can annotate its own transcript without
 // reaching into the dashboard's own type tree. Type-only: it adds no runtime dependency.
 export type { ChatMessage } from '../../types'

@@ -130,14 +130,28 @@ class TestStatsMigrateImport:
         assert _body(await mem_mod.api_memory_import(req)) == {"semantic": 2, "episodic": 1}
 
 
+_SESSION_START = {"parts": [{"family": "memory", "text": "[Memory tools]\n"}]}
+
+
 class TestContextPreviewAndObservability:
+    @pytest.fixture(autouse=True)
+    def _session_start(self):
+        # The session-start text comes from the real build; its own test is in
+        # test_member_memory_api.py. These pin the store-level fields beside it.
+        with patch(f"{_MOD}._session_start_preview", AsyncMock(return_value=_SESSION_START)):
+            yield
+
     @pytest.mark.asyncio
     async def test_preview_without_query_skips_episodic(self) -> None:
         store = _store()
         store.get_semantic_context.return_value = "line one"
         state = _make_state(vector_store=store)
         body = _body(await mem_mod.api_memory_context_preview(_make_request(state)))
-        assert body == {"semantic_context": "line one", "episodic_context": ""}
+        assert body == {
+            "semantic_context": "line one",
+            "episodic_context": "",
+            "session_start": _SESSION_START,
+        }
         store.get_episodic_context.assert_not_called()
 
     @pytest.mark.asyncio
@@ -151,6 +165,35 @@ class TestContextPreviewAndObservability:
         assert "prefers dark mode" in body["semantic_context"]
         assert "likes tea" not in body["semantic_context"]
         assert body["episodic_context"] == "episode"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("algorithm", ["v1", "v2"])
+    async def test_preview_matches_first_message_suffix_beyond_legacy_limit(
+        self, algorithm
+    ) -> None:
+        store = _store(algorithm_version=algorithm)
+        store.get_semantic_context.return_value = ""
+        store.get_episodic_context.return_value = ""
+        store.get_context_preview.return_value = {"semantic_context": "", "episodic_context": ""}
+        state = _make_state(vector_store=store)
+        message = "background " * 50 + "repair zebracache"
+        lesson = "Use the zebracache recovery guide"
+        assert "zebracache" not in message[:500]
+
+        async def preview(_state, _store_name, query):
+            return {
+                "parts": [{"family": "lessons", "text": lesson}] if "zebracache" in query else []
+            }
+
+        with patch(f"{_MOD}._session_start_preview", side_effect=preview) as start:
+            response = await mem_mod.api_memory_context_preview(
+                _make_request(state, query={"q": message})
+            )
+        assert response.status == 200
+        assert _body(response)["session_start"]["parts"] == [{"family": "lessons", "text": lesson}]
+        start.assert_awaited_once_with(state, "", message)
+        legacy = store.get_context_preview if algorithm == "v2" else store.get_episodic_context
+        legacy.assert_called_once_with(query_text=message[:500])
 
     @pytest.mark.asyncio
     async def test_preview_blanks_semantic_when_only_headers_match(self) -> None:
@@ -214,6 +257,7 @@ class TestContextPreviewAndObservability:
         assert _body(response) == {
             "semantic_context": "[Semantic]\nTeam tea preference",
             "episodic_context": "Team tea discussion",
+            "session_start": _SESSION_START,
         }
         acquire.assert_awaited_once_with(state, "crew")
         global_store.get_semantic_context.assert_not_called()

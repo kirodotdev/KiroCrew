@@ -599,21 +599,22 @@ async def test_owner_can_update_a_workflow_from_a_run() -> None:
 # ── reads stay open ──
 
 
-async def test_reads_stay_open_for_a_non_owner() -> None:
-    """The gate covers verbs, not modules: a non-owner keeps every read it had.
+async def test_the_saved_workflow_list_is_the_owners_read() -> None:
+    """The owner keeps the saved-workflow list; another dashboard session does not.
 
-    Read routes are how a non-owner allow-listed channel user sees the state the
-    dashboard link was sent for. Gating a module rather than its mutating verbs
-    would take that away, and nothing in the refusal tests would notice.
+    Every saved definition carries its full script source, so the list is the
+    owner's (and a teammate's) to read, like the writes beside it. The owner's own
+    read must still answer 200, which is the positive control.
     """
-    from kiro_crew.dashboard.handlers.workflows import api_workflow_definitions
-
     app, _service = _workflow_app()
-    claims = {"user": NON_OWNER, "app": ""}
-    async with _client(app, claims) as client:
+    async with _client(app, {"user": OWNER, "app": ""}) as client:
         response = await client.get("/api/workflows/definitions")
         status, body = response.status, await _body(response)
+    _assert_not_owner_refused(status, body, "GET /api/workflows/definitions (owner)")
+    assert status == 200, f"the owner lost the read: {status} {body}"
 
-    assert api_workflow_definitions is not None
-    _assert_not_owner_refused(status, body, "GET /api/workflows/definitions (non-owner)")
-    assert status == 200, f"a non-owner lost a read route: {status} {body}"
+    app, _service = _workflow_app()
+    async with _client(app, {"user": NON_OWNER, "app": ""}) as client:
+        response = await client.get("/api/workflows/definitions")
+        status, body = response.status, await _body(response)
+    assert status == 403 and body.get("code") == "owner_only", (status, body)

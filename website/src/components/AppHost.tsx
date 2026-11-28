@@ -10,11 +10,13 @@
  * The app is a normal React component in the same tree — no iframes,
  * no Web Components, no Shadow DOM.
  */
-import { Suspense, lazy, useMemo, useState, useCallback, useEffect } from 'react'
+import { Suspense, lazy, useMemo, useRef, useState, useCallback, useEffect } from 'react'
 import React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, RefreshCw, PowerOff, AlertTriangle, Package, Bot } from 'lucide-react'
 import { AppApiProvider, type AppUpdate } from '../app-sdk'
+import { KeepAliveContext, type KeepAliveControl } from '../app-sdk/keepAlive'
+import { useReloadHeldFor } from './keptAppReloadHold'
 import { Btn, PageHeader } from './ui'
 import AppLoadingFallback from './AppLoadingFallback'
 import { importAppBundle } from './appBundleImport'
@@ -79,9 +81,16 @@ export interface AppHostProps {
    *  entry through this host rather than the app's default page bundle. */
   entry?: string
   /** Whether this host is the visible surface. A body-owning host (a side-panel
-   *  tab) stays mounted while hidden, so it is handed `active` to pause polling
-   *  or release global keys; defaults to visible for the routed-page case. */
+   *  tab, or a routed page kept alive while hidden) stays mounted while hidden, so
+   *  it is handed `active` to pause polling or release global keys; defaults to
+   *  visible. */
   active?: boolean
+  /** Lets the app's `useKeepAlive` keep this page mounted, hidden, after the person
+   *  leaves it. Only the shell's routed pages pass one (`KeptAppPages`); without it
+   *  the hook answers `unsupported`. */
+  keepAlive?: KeepAliveControl
+  /** Called when the app throws, so the host that kept the page can release it. */
+  onCrash?: () => void
   /** The chat identity this host's requests act under, sent as `X-Session-Key` on
    *  every scoped call the app makes. Without it the backend's restricted-session
    *  guard fails open, so an app mounted inside an incognito chat would be allowed
@@ -96,6 +105,14 @@ export interface AppHostProps {
    *  shell hosts): a bundle that fails to load, or an app that throws, renders
    *  nothing and is reported here instead, and the load placeholder is empty. */
   onFailure?: (error: unknown) => void
+  /** Skip the full-page reload this host does when the app's files are replaced
+   *  (the `mc:app-reload` broadcast and the bundle-replaced-since-import check).
+   *  A startup mount (one per admitted app, present on every route via
+   *  `StartupModules`) sets this: a reload there would reload every open tab at
+   *  once on any app update/sync, and the new bytes are not admitted until the
+   *  owner re-approves anyway. The mount instead remounts or unmounts through
+   *  its key (name, version, entry, digest) and the next `/api/apps` refresh. */
+  suppressReload?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +123,7 @@ interface EBProps {
   appName: string
   onReset: () => void
   onFailure?: (error: unknown) => void
+  onCrash?: () => void
   children: React.ReactNode
 }
 interface EBState { error: Error | null }
@@ -119,8 +137,9 @@ class AppErrorBoundary extends React.Component<EBProps, EBState> {
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     // eslint-disable-next-line no-console -- surface app crashes for debugging
-    console.error(`[AppHost] ${this.props.appName} crashed:`, error, info.componentStack)
+    console.error('[AppHost] %s crashed:', this.props.appName, error, info.componentStack)
     this.props.onFailure?.(error)
+    this.props.onCrash?.()
   }
 
   render() {
@@ -273,9 +292,15 @@ function ReplacedBundleNotice() {
 // AppHost
 // ---------------------------------------------------------------------------
 
-function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, onFailure }: AppHostProps) {
+function AppHostInner({ app, entry: entryOverride, active = true, keepAlive, onCrash, sessionKey, onFailure, suppressReload = false }: AppHostProps) {
   const navigate = useNavigate()
   const [resetKey, setResetKey] = useState(0)
+  // Another app's page is kept running, hidden (`keptAppReloadHold.ts`): a window
+  // reload would end its work, so replaced files show the reload notice instead.
+  const holdReload = useReloadHeldFor(app.name)
+  const [replacedWhileHeld, setReplacedWhileHeld] = useState(false)
+  const holdReloadRef = useRef(holdReload)
+  holdReloadRef.current = holdReload
 
   // Live reload: the gateway broadcasts app_reload when an app's files are
   // replaced (an install, update or Sync, or a dev-flagged app's ui/ edit), and
@@ -287,13 +312,16 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
   // module (the app's assets are revalidated on each load, and served no-store
   // in dev mode), guaranteeing the latest bytes across the whole graph.
   useEffect(() => {
+    if (suppressReload) return
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as { app?: string } | undefined
-      if (detail?.app === app.name) window.location.reload()
+      if (detail?.app !== app.name) return
+      if (holdReloadRef.current) setReplacedWhileHeld(true)
+      else window.location.reload()
     }
     window.addEventListener('mc:app-reload', handler)
     return () => window.removeEventListener('mc:app-reload', handler)
-  }, [app.name])
+  }, [app.name, suppressReload])
 
   // The document's CSP is fixed at load. A declared frame origin the gateway
   // admitted later (the app was enabled, trusted or approved since) is refused here
@@ -327,21 +355,31 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
   // Read once per bundle this host loads, never per render: a host already
   // showing the app keeps showing it when an unsaved-changes prompt cancels the
   // handler's reload.
+  //
+  // A startup mount (`suppressReload`) never takes this path: its import URL is
+  // the approval-pinned `startup:<digest>/` prefix, so a replacement the owner
+  // re-approves arrives as a new digest -> a new key (StartupModules) -> a fresh
+  // host whose URL imports the new bytes, and the stale-module problem this
+  // guards against cannot arise. Treating it as replaced would strand the
+  // re-approved module behind ReplacedBundleNotice with no reload to clear it.
   const bundleReplaced = useMemo(
-    () => appBundleReplacedSinceImport(app.name),
+    () => !suppressReload && appBundleReplacedSinceImport(app.name),
     [bundlePath, resetKey] // eslint-disable-line react-hooks/exhaustive-deps
   )
   useEffect(() => {
+    if (suppressReload || holdReloadRef.current) return
     if (bundleReplaced) window.location.reload()
-  }, [bundleReplaced])
+  }, [bundleReplaced, suppressReload])
 
   // Dynamically import the app bundle. Keyed on resetKey so retry works.
   const LazyApp = useMemo(
     () => lazy(() => {
       noteAppBundleImport(app.name)
-      return importAppBundle(bundlePath).catch(err => {
+      // A startup mount never reloads the page, so a missing registry chunk must
+      // not either: it fails here instead and `onFailure` contains it.
+      return importAppBundle(bundlePath, { demanded: !suppressReload }).catch(err => {
         // eslint-disable-next-line no-console -- surface bundle load failures for debugging
-        console.error(`[AppHost] Failed to load ${app.name} from ${bundlePath}:`, err)
+        console.error('[AppHost] Failed to load %s from %s:', app.name, bundlePath, err)
         if (onFailure) {
           onFailure(err)
           return { default: () => null }
@@ -393,7 +431,7 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
   }, [])
 
   return (
-    <AppErrorBoundary appName={app.name} onReset={() => setResetKey(k => k + 1)} onFailure={onFailure}>
+    <AppErrorBoundary appName={app.name} onReset={() => setResetKey(k => k + 1)} onFailure={onFailure} onCrash={onCrash}>
       <AppApiProvider
         appName={app.name}
         appDisplayName={appDisplayName(app)}
@@ -439,14 +477,16 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
           {/* A replaced bundle is never imported again. The notice shows while the
               window reloads, and stays with a way to retry when a page's
               unsaved-changes prompt cancels that reload. */}
-          {bundleReplaced ? <ReplacedBundleNotice /> : <LazyApp />}
+          {bundleReplaced || replacedWhileHeld ? <ReplacedBundleNotice /> : (
+            <KeepAliveContext.Provider value={keepAlive ?? null}><LazyApp /></KeepAliveContext.Provider>
+          )}
         </Suspense>
       </AppApiProvider>
     </AppErrorBoundary>
   )
 }
 
-export default function AppHost({ app, entry, active, sessionKey, requestedName, onFailure }: AppHostProps) {
+export default function AppHost({ app, entry, active, keepAlive, onCrash, sessionKey, requestedName, onFailure, suppressReload }: AppHostProps) {
   // Guard: not installed
   if (!app) return <AppNotFound name={requestedName || 'unknown'} />
   // Guard: disabled
@@ -457,5 +497,5 @@ export default function AppHost({ app, entry, active, sessionKey, requestedName,
   // bundle, so it does not require the app to also declare a routed `ui.entry`.
   if (!entry && !app.manifest?.ui?.entry) return <AppNoUI app={app} />
 
-  return <AppHostInner app={app} entry={entry} active={active} sessionKey={sessionKey} onFailure={onFailure} />
+  return <AppHostInner app={app} entry={entry} active={active} keepAlive={keepAlive} onCrash={onCrash} sessionKey={sessionKey} onFailure={onFailure} suppressReload={suppressReload} />
 }

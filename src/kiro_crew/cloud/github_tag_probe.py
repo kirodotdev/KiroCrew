@@ -27,12 +27,13 @@ PUBLIC_TAG_API_URL = "https://api.github.com/repos/kirodotdev/KiroCrew/git/ref/t
 _USER_AGENT = "kirocrew-cloud-launch/1"
 
 
-def public_tag_exists(ref: str, timeout: float) -> bool:
+def public_tag_exists(ref: str, timeout: float) -> bool | None:
     """Whether the public repository carries the tag ``ref``, asked over HTTPS.
 
-    One unauthenticated GET; HTTP 200 is a definite "yes". Anything else (a 404,
-    a rate limit, no network, a timeout) logs a WARNING and answers ``False``,
-    never raises: the caller then keeps the template default.
+    One unauthenticated GET; HTTP 200 is a definite "yes" and HTTP 404 a definite
+    "no" (``False``). Anything else (a rate limit, no network, a certificate the
+    TLS check refuses, a timeout) logs a WARNING and answers ``None``, "could not
+    tell", never raises.
     """
     url = PUBLIC_TAG_API_URL + urllib.parse.quote(ref, safe="/")
     request = urllib.request.Request(
@@ -45,11 +46,11 @@ def public_tag_exists(ref: str, timeout: float) -> bool:
             status = response.status
     except urllib.error.HTTPError as exc:
         logger.warning("tag %s not confirmed at %s (HTTP %d)", ref, url, exc.code)
-        return False
+        return False if exc.code == 404 else None
     except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
         logger.warning("could not ask %s for tag %s: %s", url, ref, exc)
-        return False
+        return None
     if status != 200:
         logger.warning("tag %s not confirmed at %s (HTTP %d)", ref, url, status)
-        return False
+        return None
     return True

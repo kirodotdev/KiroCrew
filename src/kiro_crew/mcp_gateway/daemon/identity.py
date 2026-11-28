@@ -16,9 +16,11 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Collection, Optional
 
+from kiro_crew import platform_compat
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_caller import CallerContext, new_tenant_nonce
 from kiro_crew.mcp_gateway import socketsec
+from kiro_crew.mcp_gateway.claim import MAX_SESSION_BINDINGS
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.daemon.audit import (
     _audit_caller_rekey,
@@ -84,6 +86,8 @@ class _StubConn:
         "describe_refusal",
         "oversized_server",
         "resource_holder",
+        "bound_agents",
+        "attested_pids",
     )
 
     def __init__(
@@ -137,6 +141,15 @@ class _StubConn:
         #: the Register before an oversized one is dropped, so a holder is
         #: never taken for the session's own stub.
         self.resource_holder = False
+        #: The agents the owning gateway said this connection's session token
+        #: runs stubs for (:func:`_token_agents`). Empty when nothing the gateway
+        #: sent names the token, and then the Register's ``agent_name`` is not
+        #: taken unless the registrant is the gateway itself.
+        self.bound_agents: frozenset[str] = frozenset()
+        #: The kernel-attested host chain of the registering peer, the second
+        #: factor :func:`_token_agents` is asked with again when a binding
+        #: arrives after this connection registered (:func:`_refresh_bound_agents`).
+        self.attested_pids: tuple[int, ...] = ()
 
 
 #: Live stub connections indexed by every ancestor PID of the kiro-cli
@@ -171,7 +184,10 @@ def _conn_index_add(conn: _StubConn) -> None:
 #: a few hundred covers any real host; the oldest is dropped past the cap rather
 #: than letting a long-running daemon accumulate them without bound. Dropping a
 #: binding only costs a re-claim — the identity itself is never invented here.
-_MAX_TOKEN_BINDINGS = 512
+#: ONE named bound, shared with the gateway-side binding cache
+#: (``mcp_gateway.claim.MAX_SESSION_BINDINGS``), so the gateway never replays a
+#: binding this table has already evicted.
+_MAX_TOKEN_BINDINGS = MAX_SESSION_BINDINGS
 
 #: ``stub_session_token`` -> (caller, runtime pid the claim named, that pid's
 #: process start token — the recycle guard, since a pid is a reusable NUMBER).
@@ -288,6 +304,94 @@ def _token_caller(
 def _token_is_unbound(token: str) -> bool:
     """True when *token* is present and no claim has named it at all."""
     return bool(token) and token not in _TOKEN_BINDINGS
+
+
+#: ``stub_session_token`` -> (the agents whose stubs that session runs, runtime
+#: pid, that pid's start token). Written ONLY from an ``agent-binding`` frame the
+#: daemon's owner gateway sent (``control._apply_agent_binding``), which is what
+#: lets the declaring agent of a stub come from the gateway rather than from the
+#: Register frame the stub writes. Same cap and eviction as
+#: :data:`_TOKEN_BINDINGS`: dropping an entry costs the stub its declared env
+#: until the gateway sends the binding again, never a wrong agent.
+_AGENT_BINDINGS: "OrderedDict[str, tuple[frozenset[str], int, Optional[str]]]" = OrderedDict()
+
+
+def _bind_agents(
+    token: str, agents: frozenset[str], pid: int, pid_start_id: Optional[str] = None
+) -> None:
+    """Record ``token`` -> *agents* from an owner-sent binding (most recent last).
+
+    Over the cap, entries whose runtime pid is gone are dropped first, the rule
+    the gateway's own cache keeps (``claim._evict_dead_bindings_over_cap``): a
+    live session's binding outlives newer ones, because losing it leaves a
+    reconnecting stub's private backend with no declared env. Only when the
+    table is still over the cap is the oldest entry dropped, with a warning.
+    """
+    if not token:
+        return
+    _AGENT_BINDINGS.pop(token, None)
+    _AGENT_BINDINGS[token] = (agents, pid, pid_start_id)
+    if len(_AGENT_BINDINGS) <= _MAX_TOKEN_BINDINGS:
+        return
+    for old_token, (_agents, old_pid, _start) in list(_AGENT_BINDINGS.items()):
+        if len(_AGENT_BINDINGS) <= _MAX_TOKEN_BINDINGS:
+            return
+        if old_token != token and not platform_compat.pid_exists(old_pid):
+            _AGENT_BINDINGS.pop(old_token, None)
+    while len(_AGENT_BINDINGS) > _MAX_TOKEN_BINDINGS:
+        evicted, (_agents, evicted_pid, _start) = _AGENT_BINDINGS.popitem(last=False)
+        # The key is a bearer token: name it by its hash, never the token itself.
+        logger.warning(
+            "agent-binding table over its %d cap with every entry live; evicted the "
+            "oldest binding (token sha256 %s, pid %d)",
+            _MAX_TOKEN_BINDINGS,
+            _mount_key(evicted)[:16],
+            evicted_pid,
+        )
+
+
+def _refresh_bound_agents(token: str, pid: int) -> int:
+    """Re-ask :func:`_token_agents` for every live connection carrying *token* under *pid*.
+
+    A stub that registered before its binding arrived (it reconnected to a
+    restarted daemon before the gateway's next claim sent the binding again)
+    holds an empty answer; this is what lets the connection pick the agent up
+    (``connection._handle_connection``). Returns how many connections now hold
+    a non-empty answer.
+    """
+    refreshed = 0
+    for conn in list(_CONN_INDEX.get(pid, ())):
+        if not token or conn.stub_session_token != token:
+            continue
+        conn.bound_agents = _token_agents(token, conn.attested_pids, conn.pid_start_ids)
+        refreshed += bool(conn.bound_agents)
+    return refreshed
+
+
+def _token_agents(
+    token: str,
+    attested_pids: Collection[int] = (),
+    pid_start_ids: Optional[dict[int, Optional[str]]] = None,
+) -> frozenset[str]:
+    """The agents bound to *token*, for a connection the KERNEL places under it.
+
+    The same two factors as :func:`_token_caller`, for the same reason: the
+    token rides an ``env`` pair another process at this uid may read, so the
+    binding also has to name a runtime the peer's host chain is under, and a
+    definite pid start-token mismatch denies.
+    """
+    if not token:
+        return frozenset()
+    entry = _AGENT_BINDINGS.get(token)
+    if entry is None:
+        return frozenset()
+    agents, bound_pid, bound_start_id = entry
+    if bound_pid not in set(attested_pids):
+        return frozenset()
+    registered = (pid_start_ids or {}).get(bound_pid)
+    if bound_start_id is not None and registered is not None and registered != bound_start_id:
+        return frozenset()
+    return agents
 
 
 #: Cap on sessions the mount ledger remembers, and on server names per session.
@@ -441,6 +545,11 @@ def _caller_from_register(register: dict[str, Any]) -> Optional[CallerContext]:
 
     Missing fields default to the empty string. ``from_gateway=True`` is
     forced since this context came through the gateway register path.
+
+    This only PARSES a frame. A Register or ``recaller`` is written by the
+    connecting process, so the result names a caller only where the daemon
+    vouches for the sender (:func:`_resolve_register_identity`,
+    :func:`_apply_recaller`); a ``claim`` is gateway-sent.
     """
     nested = register.get("caller")
     src: dict[str, Any] = nested if isinstance(nested, dict) else register
@@ -529,12 +638,19 @@ async def _resolve_register_identity(
 
     The caller is, in order: the session a claim bound to this connection's token,
     when the kernel attests the peer under the runtime that claim named; nobody,
-    for any other token; else the Register frame's own caller, or for a key-less
-    one the session the kernel-attested peer walk resolves. The token is asked once,
-    after the last await, and the connection is indexed before anything can await
-    again.
+    for any other token; else the Register frame's own caller when the daemon's
+    owning gateway sent the frame; else the session the kernel-attested peer walk
+    resolves. The token is asked once, after the last await, and the connection is
+    indexed before anything can await again.
     """
-    caller = _caller_from_register(register)
+    # The Register is written by whatever process connected, and every process at
+    # this uid passes the peer gate, so the frame's session_key / principal_id /
+    # channel_id are a request, not an identity. They are taken only from the
+    # owning gateway itself (a resource-subscription holder registers from it),
+    # which the kernel peer pid proves. Any other connection is named by what the
+    # daemon can attest: a claim-bound token, the peer walk below, or a later claim.
+    frame_caller = _caller_from_register(register)
+    caller = frame_caller if frame_caller is not None and await _sent_by_owner(writer) else None
 
     # Per-session identity. The token on the stub's ACP entry names ONE of the
     # sessions this runtime hosts, so a binding for it outranks every
@@ -548,8 +664,8 @@ async def _resolve_register_identity(
     stub_session_token = str(register.pop("stub_session_token", "") or "")
     stub_pids = _register_pids(register)
 
-    # Server-side peer identity: when the stub self-reports an empty
-    # session_key, resolve it from the peer's REAL pid (SO_PEERCRED) via a
+    # Server-side peer identity: when no caller was taken above, resolve the
+    # session from the peer's REAL pid (SO_PEERCRED) via a
     # host-side /proc ancestry walk — and capture the host ancestor chain for
     # claim indexing below. Deny-by-default: never grant an identity (nor
     # index host pids) without the kernel positively attesting the peer uid.
@@ -570,7 +686,7 @@ async def _resolve_register_identity(
     needs_identity = caller is None or not caller.session_key
     if needs_identity or stub_session_token:
         if peer_pid is None or peer_uid_ok is not socketsec.PeerCredResult.MATCH:
-            if needs_identity:
+            if needs_identity and not stub_session_token:
                 # Only an unidentified stub is being REFUSED an identity here; a
                 # token-carrying stub that walked purely for its host chain has
                 # been granted nothing and denied nothing.
@@ -670,18 +786,11 @@ async def _resolve_register_identity(
             stub_uuid=stub_uuid,
         )
     elif needs_identity and resolved_session_key and peer_pid is not None:
+        # Only the key the walk resolved: the frame's principal_id and
+        # channel_id are the registrant's own words, so a claim fills them in.
         caller = CallerContext(
             session_key=resolved_session_key,
             session_type="peer-resolved",
-            principal_id=str(
-                # ``user_identity`` is the legacy spelling an older
-                # stub may still send; the field was deleted from
-                # PoolKey but stays honored here as a diagnostic.
-                register.get("principal_id")
-                or register.get("user_identity")
-                or ""
-            ),
-            channel_id=str(register.get("channel_id") or ""),
             from_gateway=True,
         )
         _audit_peer_identity_resolved(resolved_session_key, peer_pid, stub_uuid)
@@ -689,6 +798,20 @@ async def _resolve_register_identity(
             "peer-resolved session_key for stub %s via peer_pid=%d",
             stub_uuid,
             peer_pid,
+        )
+    if (
+        not stub_session_token
+        and frame_caller is not None
+        and (caller is None or caller.session_key != frame_caller.session_key)
+    ):
+        # The frame named a session the daemon did not attest for this peer.
+        _audit_peer_identity_denied(
+            reason=(
+                f"Register named session_key={frame_caller.session_key}, which the "
+                "owning gateway did not send and the peer walk does not resolve"
+            ),
+            peer_pid=peer_pid,
+            stub_uuid=stub_uuid,
         )
 
     conn = _StubConn(
@@ -700,16 +823,52 @@ async def _resolve_register_identity(
         new_tenant_nonce(),
         stub_session_token,
     )
+    # Asked beside the token's caller, after the last await, on the same two
+    # factors: the kernel-attested host chain, never ``indexed_pids``.
+    conn.attested_pids = tuple(peer_host_pids)
+    conn.bound_agents = facade._token_agents(stub_session_token, peer_host_pids, pid_start_ids)
     facade._conn_index_add(conn)
     return conn
 
 
-def _apply_recaller(msg: dict[str, Any], conn: _StubConn, pool_label: str) -> None:
+async def _sent_by_owner(writer: asyncio.StreamWriter) -> bool:
+    """Whether the kernel reports the sender as this daemon's owning gateway.
+
+    The owner pid or its exec successor, the same rule an ``owner-port`` announce
+    or an ``agent-binding`` is held to. An unowned daemon has no owner. One rule
+    for every owner-only decision: this asks ``control._owner_sender_refusal``.
+    """
+    _peer_pid, refusal = await facade._owner_sender_refusal(writer)
+    return not refusal
+
+
+async def _attested_session_key(writer: asyncio.StreamWriter, stub_uuid: str) -> str:
+    """The session gatewayd's own walk from the kernel-reported peer pid resolves, or ``""``."""
+    peer_pid = socketsec.get_peer_pid(writer)
+    if (
+        peer_pid is None
+        or socketsec.check_peer_is_self(writer) is not socketsec.PeerCredResult.MATCH
+    ):
+        return ""
+    try:
+        key, _chain = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), facade._resolve_peer_identity, peer_pid
+        )
+    except Exception:  # graceful degradation: nothing attested
+        logger.exception("peer identity resolution failed for stub %s", stub_uuid)
+        return ""
+    return key
+
+
+async def _apply_recaller(
+    msg: dict[str, Any], conn: _StubConn, pool_label: str, writer: asyncio.StreamWriter
+) -> None:
     """Apply a stub's ``recaller`` frame to ``conn``: deny by default, audited.
 
     Warm-pool caller repair: a stub that registered key-less (its kiro-cli was
     pool-spawned before the session was claimed) sends this once its session
-    key materializes. Never forwarded to the backend.
+    key materializes. The key is adopted only when the daemon's own peer walk
+    resolves the same session. Never forwarded to the backend.
     """
     caller = conn.caller
     stub_uuid = conn.stub_uuid
@@ -788,10 +947,34 @@ def _apply_recaller(msg: dict[str, Any], conn: _StubConn, pool_label: str) -> No
             "recaller frame with empty/malformed session_key",
         )
         return
-    # Positive confirmation: key-less connection + valid recaller
-    # key — the one allowed transition. Audit the identity change.
-    caller = updated
-    conn.caller = updated
+    # The frame's key is the stub's own word, like the Register's: adopt it only
+    # when the daemon's own walk from the kernel-reported peer pid resolves the
+    # same session, the warm-pool case where the mapping appeared after register.
+    attested_key = await _attested_session_key(writer, stub_uuid)
+    if attested_key != updated.session_key:
+        logger.warning(
+            "stub %s sent recaller naming session_key=%s, which the peer walk does "
+            "not resolve; ignoring",
+            stub_uuid,
+            updated.session_key,
+        )
+        _audit_recaller_rejected(
+            "",
+            pool_label,
+            f"recaller session_key={updated.session_key} not attested by the peer walk",
+        )
+        return
+    if conn.caller is not None or conn.identity_refused:
+        # A claim named (or refused) this connection while the walk ran: it wins.
+        return
+    # Positive confirmation: key-less connection + a key the daemon itself
+    # attests — the one allowed transition. Audit the identity change.
+    caller = CallerContext(
+        session_key=attested_key,
+        session_type="peer-resolved",
+        from_gateway=True,
+    )
+    conn.caller = caller
     _audit_caller_rekey(caller.session_key, pool_label)
     logger.info(
         "stub %s recaller → session_key=%s type=%s",

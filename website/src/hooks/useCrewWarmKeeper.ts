@@ -11,7 +11,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useAppDispatch, useAppSelector } from '../store'
 import { relayPaneOpened, removeWarm, type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
-import { relayPaneBridge, relayPaneRect } from '../lib/relayCrewPanes'
+import { PANE_OWN_HEADER, relayPaneBridge, relayPaneRect } from '../lib/relayCrewPanes'
 import { noteCrewOpened, recentCrews, relayCrewKey, sshCrewKey } from '../lib/crewWarmSet'
 import { isRelayCrewOnline, useRelayViewerCrews } from './useRelayViewerCrews'
 import { useCrewWarmSet } from './useCrewWarmSet'
@@ -69,7 +69,7 @@ export function useCrewWarmKeeper(prewarm: () => boolean) {
     noteCrewOpened(relayCrewKey(relayActive))
     if (!unseen.current.delete(relayActive)) return
     const bridge = relayPaneBridge()
-    if (bridge) void bridge.openPane(relayActive, ...paneAt()).catch(() => {})
+    if (bridge) void bridge.openPane(relayActive, ...paneAt(), PANE_OWN_HEADER).catch(() => {})
   }, [embedded, relayActive])
 
   // Fallen out of the set: the pane goes, the tunnel stays (an SSH Crew re-warms on its next
@@ -121,7 +121,7 @@ export function useCrewWarmKeeper(prewarm: () => boolean) {
           lastTry.current[c.endpointId] = Date.now()
           let ok = false
           try {
-            ok = (await prewarmPane(c.endpointId, ...paneAt())).ok
+            ok = (await prewarmPane(c.endpointId, ...paneAt(), PANE_OWN_HEADER)).ok
           } catch { /* tried again after RELAY_RETRY_MS */ }
           if (!ok) { failed = true; continue }
           unseen.current.add(c.endpointId)

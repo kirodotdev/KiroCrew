@@ -289,7 +289,11 @@ async def _spawn_scope_refusal(
         return refusal
     app_token = _app_token_caller(request)
     if request.get("internal_auth") is not True and not app_token:
-        return None  # the dashboard owner's own surface
+        # The dashboard surface is the owner's, or a teammate's: another dashboard
+        # session holds the same empty app claim and is refused here.
+        from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+        return await require_owner_for_dashboard_caller(request, "spawn.access")
     caller = request.headers.get("X-Session-Key", "")
     state = request.app["state"]
     run_id = request.match_info["agent_id"]
@@ -511,6 +515,11 @@ async def api_spawn_lost(request: web.Request) -> web.Response:
     close the wave early. The stuck-wave sweep safely handles truly lost
     transport submissions after its grace period.
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "spawn.lost")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"error": "subagents not available"}, status=503)
@@ -568,6 +577,11 @@ async def api_spawn_mark_collected(request: web.Request) -> web.Response:
     on a tab that shows the parent (``_settle_inline``, through
     :func:`_settle_collected_on_slot`).
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "spawn.mark_collected")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     try:
         body = await request.json()
@@ -1244,6 +1258,11 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
 
 async def api_spawn_stop_all(request: web.Request) -> web.Response:
     """POST /api/spawn/stop-all — stop one chat's running and queued subagents."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "spawn.stop_all")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     request_app = request.get("app", "")
     if "app" not in request or request_app:
@@ -1281,7 +1300,54 @@ async def api_spawn_stop_all(request: web.Request) -> web.Response:
     )
     if refusal is not None:
         return refusal
-    running, queued = await state.subagents.cancel_for_parent(effective_session_key(slot))
-    return web.json_response(
-        {"ok": True, "stopped": running + queued, "running": running, "queued": queued}
+    # Counted before the first await: the manager's stop below answers only once the
+    # runs it stopped have reported to the parent, which a running turn holds back,
+    # and by then the engine's sub-agents may have ended and their cards closed.
+    engine = _open_engine_subagents(slot)
+    # Both stops start together, the manager's first, so its queue is emptied
+    # before anything else runs and the turn's stop does not wait on its reports.
+    stops: list[Any] = [state.subagents.cancel_for_parent(effective_session_key(slot))]
+    if engine:
+        # The KAS engine has no request that stops its sub-agents while the turn
+        # goes on, so the turn's own stop is the one that reaches them; it ends
+        # the parent's answer too. A second press never escalates to a kill.
+        # circular import: chat_handlers loads most of the dashboard.
+        from kiro_crew.dashboard.chat_handlers import stop_slot_turn
+
+        stops.append(stop_slot_turn(state, slot, escalate=False))
+    running, queued = (await asyncio.gather(*stops))[0]
+    answer: dict[str, Any] = {
+        "ok": True,
+        "stopped": running + queued,
+        "running": running,
+        "queued": queued,
+    }
+    if engine:
+        answer["engine"] = engine
+    return web.json_response(answer)
+
+
+def _open_engine_subagents(slot: Any) -> int:
+    """How many engine-run sub-agents the slot's running KAS turn holds open.
+
+    They are the turn's open ``native:`` cards (``chat_turn/native_cards``) on a
+    KAS client that the engine path marked ``engine``
+    (``dashboard.engine_subagent_cards``), the mark the page's chip counts for its
+    "Stop all and the answer" label; a background card carried from an earlier turn
+    is not this turn's. Any other native card on KAS (a custom agent's own
+    sub-agent, a chat registered with the preview off) is not counted, so Stop all
+    leaves that chat's turn running.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+
+    client = getattr(slot, "_acp_client", None)
+    on_kas = getattr(client, "backend", "") == ACP_BACKEND_KAS
+    tracker = getattr(slot, "_native_subagent_tracker", None) or {}
+    return sum(
+        1
+        for record in (tracker.values() if on_kas and getattr(slot, "running", False) else ())
+        if isinstance(record, dict)
+        and record.get("engine") is True
+        and not record.get("done")
+        and not record.get("background")
     )

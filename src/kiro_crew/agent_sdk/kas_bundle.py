@@ -67,10 +67,13 @@ if TYPE_CHECKING:
     )
 
 KAS_PIN_VERSION = _pin.KAS_PIN_VERSION
+KAS_PIN_AL2_VERSION = _pin.KAS_PIN_AL2_VERSION
 KAS_PIN_MANIFEST_SHA256 = _pin.KAS_PIN_MANIFEST_SHA256
+KAS_PIN_MANIFESTS = _pin.KAS_PIN_MANIFESTS
 KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION = _pin.KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION
 KAS_VERSION_OVERRIDE_ENV = _pin.KAS_VERSION_OVERRIDE_ENV
 pinned_version = _pin.pinned_version
+host_pin_version = _pin.host_pin_version
 engine_spec_permissions_supported = _pin.engine_spec_permissions_supported
 
 #: Attribute -> the dotted name of the module that owns it. Names, not modules: the
@@ -100,7 +103,9 @@ _OWNED: dict[str, str] = {
 
 __all__ = [
     "KAS_BUNDLE_SIGN_IN_REMEDY",
+    "KAS_PIN_AL2_VERSION",
     "KAS_PIN_MANIFEST_SHA256",
+    "KAS_PIN_MANIFESTS",
     "KAS_PIN_VERSION",
     "KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION",
     "KAS_VERSION_OVERRIDE_ENV",
@@ -109,6 +114,7 @@ __all__ = [
     "engine_install_snapshot",
     "ensure_engine_at_startup",
     "engine_spec_permissions_supported",
+    "host_pin_version",
     "host_unsupported_reason",
     "install_pinned_engine",
     "installed_engine_label",
@@ -348,6 +354,38 @@ def relay_runs_on_kiro_cli_sign_in() -> bool:
     from kiro_crew.acp.kas_route import relay_runs_on_kiro_cli_sign_in as runs
 
     return runs(environ=os.environ, home=Path.home())
+
+
+def kiro_cli_api_key_set() -> bool:
+    """``acp.kas_route.kiro_cli_api_key_set`` on this process's environment, for the
+    dashboard. Blocking file IO; raises when the data home's ``.env`` cannot be read.
+    """
+    from kiro_crew.acp import kas_route
+
+    return kas_route.kiro_cli_api_key_set(os.environ)
+
+
+def kiro_cli_identity_store_is_relocated() -> bool:
+    """Whether kiro-cli's live store is outside the fixed home anchor.
+
+    Uses the launch check at call time without reading any redirected store.
+    """
+    from pathlib import Path
+
+    from kiro_crew.kiro_prerequisite import identity_store_is_relocated
+
+    return identity_store_is_relocated(sys.platform, Path.home(), dict(os.environ))
+
+
+def kiro_cli_signed_out() -> bool:
+    """``acp.kas_route.kiro_cli_signed_out`` on this process's environment, for the
+    dashboard: True only when kiro-cli's own sign-in is proven absent. Blocking file IO.
+    """
+    from pathlib import Path
+
+    from kiro_crew.acp import kas_route
+
+    return kas_route.kiro_cli_signed_out(environ=os.environ, home=Path.home())
 
 
 def last_relay_takes_crew_sign_in() -> bool | None:

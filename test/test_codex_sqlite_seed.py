@@ -10,12 +10,14 @@ falls back to a cold start whenever the copy cannot be trusted.
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.acp import codex_sqlite
 from kiro_crew.acp.codex_sqlite import SQLITE_HOME_ENV, seed_private_state
 
@@ -160,6 +162,134 @@ def test_a_copy_over_its_time_budget_leaves_nothing_behind(homes, monkeypatch):
     codex_home, scratch, env = homes
     _make_state(codex_home / STATE)
     monkeypatch.setattr(codex_sqlite, "_BACKUP_TIMEOUT_SECS", -1.0)
+
+    seed_private_state(env, scratch)
+
+    assert list(scratch.iterdir()) == []
+
+
+#: The immutable copy holds an SQLite reader lock, which only POSIX record locks give.
+_POSIX_LOCKS = pytest.mark.skipif(not platform_compat.IS_POSIX, reason="needs POSIX record locks")
+
+
+def _refuse_shm_creation(monkeypatch):
+    """A Codex home the gateway may read but not write: a plain read-only open of
+    a WAL database there fails as it does on such a host, needing a ``-shm``."""
+    real_connect = sqlite3.connect
+
+    def connect(target, *args, **kwargs):
+        text = str(target)
+        if kwargs.get("uri") and "mode=ro" in text and "immutable=1" not in text:
+            refused = sqlite3.OperationalError("unable to open database file")
+            refused.sqlite_errorcode = sqlite3.SQLITE_CANTOPEN
+            raise refused
+        return real_connect(target, *args, **kwargs)
+
+    monkeypatch.setattr(codex_sqlite.sqlite3, "connect", connect)
+
+
+@_POSIX_LOCKS
+def test_a_cleanly_closed_wal_index_is_copied_when_no_shm_can_be_made(homes, monkeypatch):
+    codex_home, scratch, env = homes
+    source = codex_home / STATE
+    _make_state(source, threads=4, wal=True)
+    assert not Path(f"{source}-wal").exists()
+    _refuse_shm_creation(monkeypatch)
+
+    seed_private_state(env, scratch)
+
+    assert (scratch / STATE).is_file(), "the seed fell back to a cold start"
+    assert _read(scratch / STATE) == ("complete", 4)
+    assert _leftovers(scratch) == []
+
+
+def test_a_wal_holding_pages_is_not_read_around_when_no_shm_can_be_made(homes, monkeypatch):
+    codex_home, scratch, env = homes
+    source = codex_home / STATE
+    _make_state(source, threads=2, wal=True)
+    with closing(sqlite3.connect(source)) as writer:
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("INSERT INTO threads VALUES ('late')")
+        writer.commit()
+        assert Path(f"{source}-wal").stat().st_size > 0
+        _refuse_shm_creation(monkeypatch)
+
+        seed_private_state(env, scratch)
+
+    # The main file alone would miss the WAL's row, so codex starts cold.
+    assert list(scratch.iterdir()) == []
+
+
+@_POSIX_LOCKS
+def test_a_source_changed_during_an_immutable_copy_is_discarded(homes, monkeypatch, caplog):
+    codex_home, scratch, env = homes
+    source = codex_home / STATE
+    _make_state(source, wal=True)
+    _refuse_shm_creation(monkeypatch)
+    real_staging = codex_sqlite.tempfile.NamedTemporaryFile
+
+    def staging_after_a_write(*args, **kwargs):
+        # The reader lock is held by now; a checkpoint into the main file moves
+        # its mtime, which the snapshot code's check after the copy must catch.
+        stamp = source.stat().st_mtime_ns + 1_000_000_000
+        os.utime(source, ns=(stamp, stamp))
+        return real_staging(*args, **kwargs)
+
+    monkeypatch.setattr(codex_sqlite.tempfile, "NamedTemporaryFile", staging_after_a_write)
+
+    with caplog.at_level(logging.WARNING, logger=codex_sqlite.__name__):
+        seed_private_state(env, scratch)
+
+    # The snapshot code's own refusal, not the refused plain open.
+    assert "changed while it was being copied" in caplog.text
+    assert list(scratch.iterdir()) == []
+
+
+def test_a_refusal_with_no_sqlite_result_code_gets_no_immutable_read(homes, monkeypatch):
+    codex_home, scratch, env = homes
+    _make_state(codex_home / STATE, wal=True)
+    real_connect = sqlite3.connect
+
+    def connect(target, *args, **kwargs):
+        text = str(target)
+        if kwargs.get("uri") and "mode=ro" in text and "immutable=1" not in text:
+            raise sqlite3.OperationalError("unable to open database file")
+        return real_connect(target, *args, **kwargs)
+
+    monkeypatch.setattr(codex_sqlite.sqlite3, "connect", connect)
+
+    seed_private_state(env, scratch)
+
+    # The stand-in rests on the refusal's own result code, which this one lacks.
+    assert list(scratch.iterdir()) == []
+
+
+@_POSIX_LOCKS
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0,
+    reason="directory permissions bind only a non-root POSIX user",
+)
+def test_a_wal_index_in_a_read_only_codex_home_is_copied(homes):
+    codex_home, scratch, env = homes
+    _make_state(codex_home / STATE, threads=3, wal=True)
+    codex_home.chmod(0o555)
+    try:
+        seed_private_state(env, scratch)
+    finally:
+        codex_home.chmod(0o755)
+
+    assert (scratch / STATE).is_file(), "the seed fell back to a cold start"
+    assert _read(scratch / STATE) == ("complete", 3)
+    assert sorted(p.name for p in codex_home.iterdir()) == [STATE]
+
+
+def test_a_hot_rollback_journal_is_not_read_around(homes, monkeypatch):
+    codex_home, scratch, env = homes
+    source = codex_home / STATE
+    _make_state(source)
+    # A writer killed mid-commit leaves its journal; only a real open rolls it back.
+    Path(f"{source}-journal").write_bytes(b"\0" * 512)
+    _refuse_shm_creation(monkeypatch)
 
     seed_private_state(env, scratch)
 

@@ -612,10 +612,10 @@ class TestDashboardUserGrantsAreAudited:
         state.tags_generation.return_value = 1
         return state
 
-    def _dashboard_request(self, state):
+    def _dashboard_request(self, state, user: str = "U_OWNER"):
         class Request(dict):
             def __init__(self) -> None:
-                super().__init__({"app": "", "user": "U_OWNER"})
+                super().__init__({"app": "", "user": user})
                 self["is_dashboard_user"] = True
                 self.app = {"state": state}
 
@@ -653,7 +653,7 @@ class TestDashboardUserGrantsAreAudited:
             tuple(c.args) for c in audit.call_args_list
         ]
 
-    def _drive_one_message(self, monkeypatch, state, payload: dict):
+    def _drive_one_message(self, monkeypatch, state, payload: dict, user: str = "U_OWNER"):
         """Run ``api_ws`` for a dashboard user whose socket yields ONE frame."""
         import asyncio as _aio
 
@@ -680,7 +680,7 @@ class TestDashboardUserGrantsAreAudited:
 
         fake_ws = LoopWs()
         self._wire(monkeypatch, fake_ws)
-        _aio.run(dashboard_ws.api_ws(self._dashboard_request(state)))  # type: ignore[arg-type]
+        _aio.run(dashboard_ws.api_ws(self._dashboard_request(state, user)))  # type: ignore[arg-type]
         return fake_ws
 
     def test_subscribe_logs_grant_to_the_dashboard_user_is_audited(self, monkeypatch):
@@ -706,6 +706,23 @@ class TestDashboardUserGrantsAreAudited:
             tuple(c.args) for c in audit.call_args_list
         ]
         assert (DASHBOARD_USER_AUDITEE, "subscribe_logs", "granted") in _wes._sel_last_audit
+
+    def test_subscribe_logs_refuses_a_dashboard_session_that_is_not_the_owners(self, monkeypatch):
+        """``GET /api/logs`` refuses this session, and ``/api/ws`` refuses it before
+        the upgrade, so it gets no ring replay and no live log frames, and the
+        refusal is audited.
+        """
+        state = self._dashboard_state()
+        with patch("kiro_crew.sel.sel") as sel_mock:
+            fake_ws = self._drive_one_message(
+                monkeypatch, state, {"type": "subscribe_logs"}, user="U_STRANGER"
+            )
+
+        state.register_ws.assert_not_called()
+        state.subscribe_logs.assert_not_called()
+        assert fake_ws.sent == []
+        audit = sel_mock.return_value.log_api_access.call_args.kwargs
+        assert (audit["operation"], audit["outcome"]) == ("ws.connect", "denied")
 
     def test_reconnect_replay_to_the_dashboard_user_takes_the_chokepoint(self, monkeypatch):
         """The subagent reconnect replay writes to the socket directly but

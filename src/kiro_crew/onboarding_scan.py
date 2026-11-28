@@ -59,6 +59,7 @@ from kiro_crew.security import (
     is_sensitive_path,
     redact_with_findings,
 )
+from kiro_crew.user_json import MAX_DOCUMENT_NESTING
 from kiro_crew.user_json import strip_json_comments as _strip_json5_comments
 from kiro_crew.user_json import strip_utf8_bom
 from kiro_crew.yaml_safe import NoAliasSafeLoader
@@ -71,7 +72,32 @@ class _NoAliasSafeLoader(NoAliasSafeLoader):
     an alias-expanded "billion-laughs" config would explode there; refusing the
     alias at compose time keeps that vector closed while preserving full
     indentation support.
+
+    PyYAML's composer recurses once per nested collection, flow or block. The
+    loader refuses a collection nested deeper than ``MAX_DOCUMENT_NESTING`` as it
+    starts, so the parse stays far from the recursion limit, where any finalizer
+    the garbage collector runs would fail for lack of stack.
     """
+
+    def __init__(self, stream: str) -> None:
+        super().__init__(stream)
+        self._collection_depth = 0
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        if not self.check_event(yaml.events.SequenceStartEvent, yaml.events.MappingStartEvent):
+            return super().compose_node(parent, index)
+        if self._collection_depth >= MAX_DOCUMENT_NESTING:
+            raise yaml.composer.ComposerError(
+                None,
+                None,
+                f"found a collection nested deeper than {MAX_DOCUMENT_NESTING} levels",
+                self.peek_event().start_mark,
+            )
+        self._collection_depth += 1
+        try:
+            return super().compose_node(parent, index)
+        finally:
+            self._collection_depth -= 1
 
 
 def _load_no_alias_yaml(text: str) -> Any:
@@ -615,8 +641,9 @@ def _read_simple_yaml(path: Path, anchor: Path, scan: _Scan) -> dict[str, Any]:
     # foreign config cannot amplify into an exponential downstream traversal.
     # Bound the input with an explicit YAML cap and catch every parser failure
     # mode — a malformed, alias-bearing, or pathologically nested config must
-    # degrade to a diagnostic, never raise out of the off-loop scan (deeply nested
-    # flow input raises RecursionError, which is neither YAMLError nor ValueError).
+    # degrade to a diagnostic, never raise out of the off-loop scan. The loader's
+    # nesting cap keeps the composer far from the interpreter's recursion limit;
+    # RecursionError stays caught as the floor's last line.
     text = _read_text(path, anchor, scan, "settings", max_bytes=_MAX_YAML_BYTES)
     if text is None:
         return {}

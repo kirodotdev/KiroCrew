@@ -28,6 +28,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Coroutine, Dict, Lis
 
 from kiro_crew.relay_client.ingress import (
     CrewIngress,
+    IngressForbidden,
     IngressRefused,
     IngressResponse,
     IngressUnavailable,
@@ -375,6 +376,7 @@ class HttpStream:
             user=head["user"],
             user_email=head.get("userEmail", ""),
             user_name=head.get("userName", ""),
+            access_token=head.get("accessToken"),
             credited_body=self._request_granted is not None,
         )
         body = self._iter_body() if self._has_body() else None
@@ -697,6 +699,7 @@ class WsStream:
             user=head["user"],
             user_email=head.get("userEmail", ""),
             user_name=head.get("userName", ""),
+            access_token=head.get("accessToken"),
         )
         try:
             return await self._ingress.open_websocket(request)
@@ -711,6 +714,10 @@ class WsStream:
         except IngressUnreachable:
             await self._send(
                 build_ws_close(self.id, WS_CLOSE_CREW_REFUSED, "Crew web server unreachable")
+            )
+        except IngressForbidden:
+            await self._send(
+                build_ws_close(self.id, WS_CLOSE_CREW_REFUSED, "Crew refused the access token")
             )
         except IngressUnavailable:
             await self._send(

@@ -463,6 +463,22 @@ describe('AllTabsMenu footer', () => {
     await waitFor(() => expect(document.activeElement).toBe(trigger()))
   })
 
+  it('returns focus to a trigger that a click alone opened (screen reader, Switch Control)', async () => {
+    let close: () => void = () => {}
+    const dialog = document.createElement('button')
+    renderMenu({ footer: { label: 'Close all', onSelect: () => {
+      document.body.append(dialog)
+      dialog.focus()
+      return new Promise<void>(resolve => { close = resolve })
+    } } })
+    // No pointer or key event: `detail: 0` is the click a screen reader sends.
+    act(() => { fireEvent.click(trigger(), { detail: 0 }) })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Close all' }))
+    await waitFor(() => expect(document.activeElement).toBe(dialog))
+    await act(async () => { dialog.remove(); close() })
+    await waitFor(() => expect(document.activeElement).toBe(trigger()))
+  })
+
   it('renders no action without a footer', () => {
     renderMenu()
     openMenu()

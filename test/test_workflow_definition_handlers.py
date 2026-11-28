@@ -546,6 +546,7 @@ async def test_run_update_maps_each_refusal_to_its_code() -> None:
         ({"source_not_original": True}, 409, "workflow_run_source_not_original"),
         ({"source_changed": True}, 409, "workflow_run_source_changed"),
         ({"conflict": True}, 409, "workflow_definition_conflict"),
+        ({"builtin": True}, 409, "workflow_definition_builtin"),
         ({"unchanged": True}, 400, "workflow_definition_unchanged"),
         ({"format_mismatch": True}, 400, "workflow_definition_format_mismatch"),
         ({"errors": ["bad script"]}, 400, "workflow_definition_invalid"),
@@ -680,3 +681,31 @@ async def test_definition_disk_operations_are_offloaded_from_the_gateway_loop(
         "_redact_and_serialize",
         "update_definition",
     ]
+
+
+async def test_definition_writes_to_a_builtin_answer_409_and_audit_nothing(monkeypatch) -> None:
+    service = FakeService()
+    audit_calls: list[dict[str, object]] = []
+    audit = SimpleNamespace(log_api_access=lambda **kwargs: audit_calls.append(kwargs))
+    monkeypatch.setattr(workflow_handlers, "_sel", lambda: audit)
+    refusal = {
+        "ok": False,
+        "error": "'ci-red-triage' is a built-in workflow; save a copy under a new name",
+        "builtin": True,
+    }
+    service.update_definition = lambda workflow_id, **kwargs: refusal
+    service.remove_definition = lambda workflow_ref, **kwargs: refusal
+
+    async with TestClient(TestServer(_app(service))) as client:
+        patched = await client.patch(
+            "/api/workflows/definitions/ci-red-triage",
+            json={"source": "changed", "expected_revision": 1},
+        )
+        deleted = await client.delete("/api/workflows/definitions/ci-red-triage")
+        bodies = [await patched.json(), await deleted.json()]
+
+    assert [patched.status, deleted.status] == [409, 409]
+    for body in bodies:
+        assert body["code"] == "workflow_definition_builtin"
+        assert "save a copy" in body["error"]
+    assert not [call for call in audit_calls if call["outcome"] == "completed"]

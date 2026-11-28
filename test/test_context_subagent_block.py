@@ -59,7 +59,6 @@ def _resolve(
         project=None,
         mode="",
         session_key=session_key,
-        is_cc=False,
         private_owner=False,
         session_start=True,
     )

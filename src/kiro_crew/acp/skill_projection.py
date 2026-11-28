@@ -211,7 +211,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _check_current_publication,
         _env_identity,
         _fingerprint,
-        _fingerprints_show_writes,
         _home_tag,
         _is_current_publication,
         _is_legacy_projected_view,

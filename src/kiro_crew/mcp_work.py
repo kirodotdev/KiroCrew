@@ -74,20 +74,20 @@ from types import ModuleType
 from typing import Any
 from urllib.parse import urlencode
 
-# Same cross-module reuse as ``mcp_dashboard``: the authenticated loopback client
-# to the gateway lives in ``mcp_core``, and its heavy dependencies are
-# function-local so importing it here is cheap.
+# The authenticated loopback client to the gateway lives in ``mcp_core_parts``.
+# Import it from there, not from the ``mcp_core`` facade: the facade loads the
+# whole core server, about 460 more modules and 23 MB in every chat.
 from kiro_crew import work_preview, work_verify
-from kiro_crew.mcp_core import _get, _post, _resolve_session_key, require_strict_session_key
+from kiro_crew.mcp_core_parts.gateway import _get, _post
+from kiro_crew.mcp_core_parts.identity import _resolve_session_key, require_strict_session_key
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
-from kiro_crew.validation import (
+from kiro_crew.validation_parts.field_engine import clamp_report, validate_tool_args
+from kiro_crew.validation_parts.opt_in_server_schemas import (
     MCP_WORK_SCHEMAS,
     WORK_REPORT_REMOTE_DISPATCH_SCHEMA,
-    clamp_report,
-    sanitize_string,
-    validate_tool_args,
 )
+from kiro_crew.validation_parts.text_sanitizer import sanitize_string
 from kiro_crew.work_vocab import (
     ACCEPTANCE_SHAPES,
     WORK_ASK_LABEL_CHARS,
@@ -1084,15 +1084,17 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # A code channel's conductor reads published fields only (a derived
             # state, no status and no bars), so its own read has nothing to
             # evaluate. The gateway evaluates the stored bars and answers verdicts.
-            # It runs each done item's checks in turn (up to two subprocesses, each
-            # bounded by the evaluator's own timeout), so the read waits for them all.
+            # It runs each done item's checks in turn (up to three subprocesses: a
+            # pr_checks bar reads the PR head around its check, and a pending draft
+            # adds a probe in place of the second read; each is bounded by the
+            # evaluator's own timeout), so the read waits for them all.
             # shortcut: capped at an hour; a board that needs longer is evaluated by
             # item_id, one item per call.
             rows = resp.get("items") or []
             done = sum(1 for row in rows if isinstance(row, dict) and row.get("state") == "done")
             if args.get("item_id") is not None:
                 done = 1
-            per_item = 2 * _skill_script("accept_eval").TIMEOUT_SECS
+            per_item = 3 * _skill_script("accept_eval").TIMEOUT_SECS
             wait = min(3600, 30 + per_item * max(done, 1))
             if args.get("item_id") is not None:
                 one = urlencode({"item_id": args["item_id"]})

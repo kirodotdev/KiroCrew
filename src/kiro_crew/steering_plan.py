@@ -126,6 +126,29 @@ def declared_steering_targets(agent: str | None, project: str | None) -> frozens
     return frozenset(targets)
 
 
+def entries_matching_a_file(entries: Sequence[str], project: str | None) -> list[str]:
+    """The ``file://`` *entries* that match at least one file, in order.
+
+    Each is anchored as kiro-cli anchors it (``_steering_glob_anchor``). An entry
+    matching nothing loads nothing on any backend, so a row naming it as unread
+    would report a loss that cannot happen. One that cannot be resolved is kept:
+    the plan cannot tell, so it must not hide it.
+    """
+    from kiro_crew.context_assembly.agent_spec import _steering_glob_anchor
+    from kiro_crew.file_uri import file_uri_path_text
+
+    project_root = Path(project).expanduser() if project else None
+    kept: list[str] = []
+    for entry in entries:
+        try:
+            anchor, pattern = _steering_glob_anchor(file_uri_path_text(entry), project_root)
+            if any(p.is_file() for p in anchor.glob(pattern)):
+                kept.append(entry)
+        except (OSError, ValueError, RuntimeError):
+            kept.append(entry)
+    return kept
+
+
 def _loads_through_crew(
     provider_type: str, native_steering: bool, agent: str | None, is_member: bool
 ) -> bool:
@@ -167,7 +190,7 @@ def tree_verdict(
         return REACHES_BRIEFING, REASON_MEMBER_BRIEFING
     if native_steering:
         return REACHES_HARNESS, REASON_HARNESS_NATIVE
-    if provider_type == ctx.PROVIDER_ACP:
+    if ctx.label_inherits_kiro_defaults(provider_type):
         if ctx._project_steering_delivered(provider_type, False, project):
             return REACHES_HARNESS, REASON_HARNESS_NATIVE
         if declared is None:
@@ -336,14 +359,16 @@ def chat_steering_plan(
 
     declared = (
         declared_steering_targets(agent, project)
-        if provider_type == ctx.PROVIDER_ACP and not native_steering and not is_member
+        if ctx.label_inherits_kiro_defaults(provider_type) and not native_steering and not is_member
         else None
     )
 
     via_seam = _loads_through_crew(provider_type, native_steering, agent, is_member)
-    # The switch is offered on Claude Code alone; Codex runs the same load but is
-    # not offered it.
-    switchable = via_seam and ctx.is_claude_code(provider_type)
+    # The switch is offered where the backend's capability record honours it
+    # (Claude Code today); Codex runs the same load but is not offered it.
+    from kiro_crew.steering_off import honoured_for as steering_off_honoured
+
+    switchable = via_seam and steering_off_honoured(provider_type)
     # Files Claude Code reads by itself through a memory file that resolves to them:
     # Crew's copy is then not the only one, so no switch is offered for them.
     natively_read = _claude_memory_targets(project) if switchable else frozenset()

@@ -1,0 +1,19 @@
++98
+The git/tar-to-self floor fails closed when its original-case and lowered
+readings of a line disagree: a frame of one reading with no partner in the other
+is refused rather than read on with the written-case option words dropped. As in
+the floor's other fail-closed reads, the refusal needs a self-dial signal and an
+unpaired frame that could run git or tar; otherwise the frame keeps the lowered
+reading. Payloads that differ only in case are one lowered frame but two written
+ones, so each lowered frame is read once per written spelling that lowers to it
+instead of counting that as a disagreement. A comment explains the guard.
+The read keeps per-payload signature sets to dedup incoming inherited
+launch environments without rescanning accumulated history. Each frame reads a
+snapshot of the unique stored environments without rehashing them; the top frame pairs by position
+when its words agree once lowered, so a local line with an uppercase same-line
+variable is not refused. The GNU parallel replacement readings move to the
+sibling argv_floor_git_tar_parallel.py, re-exported at this module's path, which
+keeps the reader under the file-line cap.
+A shared work budget bounds typed case-spelling replay across frames, commands
+and environment names and values. Exhaustion refuses unread; in-budget readings
+keep every written-case interpretation. Ordinary paired readings are unchanged.

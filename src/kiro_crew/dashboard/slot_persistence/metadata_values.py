@@ -239,6 +239,29 @@ def _restore_dismissed_source_links(slot: "_ChatSlot", raw: object) -> None:
     slot._dismissed_hydrated = True
 
 
+def _restore_source_links_off(slot: "_ChatSlot", meta: Mapping[str, Any]) -> None:
+    """Take the session's chips-off switch from a READABLE metadata line.
+
+    For a binder that re-creates a slot and reads its line by hand instead of
+    through the codec's restore (the cron, channel and workflow binders). A truthy
+    value reads as on, as the codec's own reader takes it.
+    """
+    slot.source_links_off = bool(meta.get("source_links_off"))
+    slot._source_links_off_hydrated = True
+
+
+def _mark_source_links_off_unread(slot: "_ChatSlot") -> None:
+    """Mark a re-bound slot's chips-off switch as held only on disk.
+
+    The in-memory value may be a reused slot object's from another transcript, so
+    it is cleared. Until :func:`_restore_source_links_off` runs, the slot's saves
+    write the stored value back (``metadata_line.source_links_off_fold``), never
+    this one.
+    """
+    slot.source_links_off = False
+    slot._source_links_off_hydrated = False
+
+
 def _restored_mode(raw: object) -> str:
     """The mode a persisted slot comes back with, or "" for plain chat.
 
@@ -255,7 +278,7 @@ def _restored_mode(raw: object) -> str:
 
 
 def _restore_model_fields(slot: Any, meta: dict, *, cfg: Any, effort_marker: bool = False) -> bool:
-    """Apply the persisted ``model`` and ``reasoning_effort`` to *slot*.
+    """Apply the persisted ``model``, ``reasoning_effort`` and ``effort_overlay_clear`` to *slot*.
 
     Shared by every path that hydrates a slot from a transcript -- the two
     restart reads (through :func:`apply`), History resume, and channel surfacing
@@ -288,4 +311,8 @@ def _restore_model_fields(slot: Any, meta: dict, *, cfg: Any, effort_marker: boo
         slot.reasoning_effort = cp._validate_reasoning_effort(
             meta["reasoning_effort"], persisted_marker=effort_marker
         )
+    # Only a literal true: the line is agent-writable, and a forged mark can do no
+    # more than clear one start's workspace level before the slot's own is written.
+    if meta.get("effort_overlay_clear") is True:
+        slot._effort_overlay_clear = True
     return has_model

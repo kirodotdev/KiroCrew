@@ -28,6 +28,7 @@ from collections.abc import Awaitable, Callable
 
 from aiohttp import web
 
+from kiro_crew.dashboard.crew_api_auth import app_owner_only_routes
 from kiro_crew.dashboard.crew_api_errors import (
     CREW_API_VERSION,
     OWNER_PATH_PREFIX,
@@ -39,6 +40,7 @@ from kiro_crew.dashboard.crew_api_errors import default_code as _default_code
 from kiro_crew.dashboard.crew_api_errors import (
     request_id_for,
 )
+from kiro_crew.dashboard.crew_api_scopes import CREDENTIAL_KEY, require_scope
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
 __all__ = ["OWNER_PATH_PREFIX", "contract_error", "owner_route", "request_id_for"]
@@ -59,6 +61,10 @@ def _as_contract_error(response: web.StreamResponse, request_id: str) -> web.Res
         except ValueError:
             parsed = None
     fields = parsed if isinstance(parsed, dict) else {}
+    if isinstance(fields.get("error"), dict) and isinstance(response, web.Response):
+        # Already in the contract shape (``contract_error``): its code and extra
+        # fields are the handler's own.
+        return response
     code = fields.get("code")
     message = fields.get("error")
     code = code if isinstance(code, str) else ""
@@ -74,14 +80,26 @@ def _as_contract_error(response: web.StreamResponse, request_id: str) -> web.Res
     )
 
 
-def owner_route(handler: Handler, operation: str) -> Handler:
-    """Serve *handler* as an Owner route (see the module docstring)."""
+def owner_route(
+    handler: Handler, operation: str, *, app_route: tuple[str, str] | None = None
+) -> Handler:
+    """Serve *handler* as an Owner route (see the module docstring).
+
+    *app_route* is given by a Public route that also serves an app: its own key in
+    ``crew_api_scopes.ROUTES``. A request that carries a verified app credential is
+    then judged by that row (``require_scope``) in place of the owner gate. Without
+    it the owner gate judges every caller, and refuses an app credential.
+    """
 
     @functools.wraps(handler)
     async def _owner(request: web.Request) -> web.StreamResponse:
         request_id = request_id_for(request)
         response: web.StreamResponse
-        denied = await require_owner_dashboard_request(request, operation)
+        denied: web.Response | None
+        if app_route is not None and request.get(CREDENTIAL_KEY) is not None:
+            denied = require_scope(request, app_route, app_owner_only_routes())
+        else:
+            denied = await require_owner_dashboard_request(request, operation)
         if denied is not None:
             response = _as_contract_error(denied, request_id)
         else:

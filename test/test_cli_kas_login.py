@@ -214,6 +214,7 @@ class _FakeService:
 
     polls: list[dict] = []
     begun: list[dict] = []
+    picks: list[str | None] = []
     closed = 0
 
     def __init__(self, store):
@@ -237,8 +238,9 @@ class _FakeService:
             "expires_at": "2099-01-01T00:00:00+00:00",
         }
 
-    async def poll_device(self, login_id):
+    async def poll_device(self, login_id, profile_arn=None):
         assert login_id == "lid-1"
+        _FakeService.picks.append(profile_arn)
         return _FakeService.polls.pop(0)
 
     async def close(self):
@@ -251,6 +253,7 @@ def fake_service(monkeypatch):
 
     _FakeService.polls = []
     _FakeService.begun = []
+    _FakeService.picks = []
     _FakeService.closed = 0
     monkeypatch.setattr(service, "KasLoginService", _FakeService)
     # No real waiting between polls: the cadence is the issuer's concern, not this test's.
@@ -275,6 +278,35 @@ class TestLogin:
         assert fake_service.begun == [
             {"provider": "builder_id", "start_url": "", "region": "", "replaces": ""}
         ]
+
+    def test_a_profile_choice_uses_the_selected_profile_without_a_prompt(
+        self, home_store, fake_service, capsys, monkeypatch
+    ):
+        """The terminal never asks: it sends ``selected`` back and names the profile."""
+        monkeypatch.setattr("sys.stdin", None)
+        profiles = [
+            {"arn": "arn:p/first", "name": "First", "region": "us-east-1"},
+            {"arn": "arn:p/current", "name": "Team B", "region": "eu-central-1"},
+        ]
+        fake_service.polls = [
+            {"status": "pending"},
+            {"status": "choose_profile", "profiles": profiles, "selected": "arn:p/current"},
+            {"status": "authorized", "provider": "Enterprise"},
+        ]
+        args = _parse("login", "--provider", "idc", "--start-url", "https://acme.awsapps.com/start")
+        assert cli_kas.kas_cmd(args) == 0
+        assert fake_service.picks == [None, None, "arn:p/current"]
+        lines = capsys.readouterr().out.splitlines()
+        code_lines = [i for i, line in enumerate(lines) if line.startswith("code: ")]
+        assert len(code_lines) == 1
+        assert parse_login_output("\n".join(lines)).code == "WXYZ-1234"
+        [used] = [i for i, line in enumerate(lines) if "Kiro profile" in line]
+        assert used > code_lines[0]
+        assert lines[used] == (
+            "Using Kiro profile 'Team B'. To choose another profile, sign out and sign in "
+            "again from the dashboard."
+        )
+        assert "Signed in to Kiro Crew" in lines[-1]
 
     def test_an_idc_login_forwards_its_start_url_and_region(self, home_store, fake_service):
         fake_service.polls = [{"status": "authorized", "provider": "Enterprise"}]
@@ -391,7 +423,7 @@ class TestLogin:
     ):
         import aiohttp
 
-        async def _drop(self, login_id):
+        async def _drop(self, login_id, profile_arn=None):
             raise aiohttp.ClientConnectionError("connection reset")
 
         monkeypatch.setattr(fake_service, "poll_device", _drop)
@@ -445,7 +477,7 @@ class TestLogin:
     ):
         from kiro_crew.auth.service import UnknownLoginError
 
-        async def _gone(self, login_id):
+        async def _gone(self, login_id, profile_arn=None):
             raise UnknownLoginError(login_id)
 
         monkeypatch.setattr(fake_service, "poll_device", _gone)

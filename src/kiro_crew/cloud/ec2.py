@@ -682,7 +682,7 @@ def _subnet_egress_kinds(vpc_id: str, profile: str, region: str) -> tuple[dict, 
     return result, dead
 
 
-def release_tag_exists(ref: str, repo: str = "") -> bool:
+def release_tag_exists(ref: str, repo: str = "") -> Optional[bool]:
     """Whether ``repo`` (default: the public repo) carries the tag ``ref``.
 
     One ``git ls-remote --exit-code`` against the remote, with a short timeout,
@@ -701,10 +701,11 @@ def release_tag_exists(ref: str, repo: str = "") -> bool:
     gateway's ``PATH`` can lead with an agent-writable directory, and a shim
     there would run with the gateway's privileges on every packaged launch.
     With no trusted ``git`` the default public repo is asked over HTTPS instead
-    (:func:`github_tag_probe.public_tag_exists`, no spawn); a fork cannot be. Any other
-    way of not getting a definite "yes" (no network, a 128 from the remote, a timeout)
-    answers ``False``: the caller then keeps the template default rather than asking the
-    instance to clone a tag that may not be there, which would fail the boot in the stack.
+    (:func:`github_tag_probe.public_tag_exists`, no spawn); a fork cannot be, and
+    answers ``False``. A definite "no" (exit 2, HTTP 404) answers ``False``; a probe
+    that could not tell (no network, a refused certificate, a 128 from the remote, a
+    timeout) answers ``None``. Neither asks the instance to clone a tag that may not
+    be there, which would fail the boot in the stack.
     """
     git = platform_compat.trusted_git_bin()
     if git is None:
@@ -735,7 +736,7 @@ def release_tag_exists(ref: str, repo: str = "") -> bool:
         )
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("could not probe %s for tag %s: %s", repo or PUBLIC_REPO_URL, ref, exc)
-        return False
+        return None
     if proc.returncode != 0:
         logger.warning(
             "tag %s not found on %s (git ls-remote exit %d)",
@@ -743,7 +744,8 @@ def release_tag_exists(ref: str, repo: str = "") -> bool:
             repo or PUBLIC_REPO_URL,
             proc.returncode,
         )
-        return False
+        # --exit-code makes 2 "the remote has no such ref"; anything else is an error.
+        return False if proc.returncode == 2 else None
     return True
 
 
@@ -759,8 +761,10 @@ def resolve_public_ref(repo: str = "") -> str:
     first) that the remote confirms it has. Returns ``""`` — "let the template
     default stand" — when no tag maps onto the version (a nightly) or the
     remote carries none of them (a fork, a build stamped before its tag was
-    pushed, no network from here); the WARNING says which, and the launch
-    proceeds exactly as it does today.
+    pushed); the WARNING says which, and the launch proceeds. When a probe could
+    not tell (no network, a refused certificate) and no tag was confirmed, raises
+    :class:`aws.AWSError` naming the fix, before anything is created: installing
+    ``main`` there would be a guess the user never made.
     """
     refs = release_channel.release_refs()
     if not refs:
@@ -768,9 +772,21 @@ def resolve_public_ref(repo: str = "") -> str:
             "no release tag maps onto Kiro Crew %s; the instance will run main", __version__
         )
         return ""
+    undecided = False
     for ref in refs:
-        if release_tag_exists(ref, repo):
+        found = release_tag_exists(ref, repo)
+        if found:
             return ref
+        undecided = undecided or found is None
+    if undecided:
+        raise aws.AWSError(
+            # The dashboard's launch job keeps 400 characters of this.
+            f"Could not check GitHub for release tag {' / '.join(refs)}. The launch stopped"
+            " before creating anything: the cloud crew would install main instead, which may"
+            f" not pair with Kiro Crew {__version__}. Let this machine reach api.github.com"
+            " over HTTPS (add your proxy's certificate to the system certificate store, or"
+            " set HTTPS_PROXY), or install git, then launch again."
+        )
     logger.warning(
         "could not confirm release tag %s for this Kiro Crew %s, so the cloud crew will install"
         " the development build from main, which this Kiro Crew may refuse to pair with",
@@ -1604,4 +1620,15 @@ def wait_for_delete(tag: str, profile: str = "", region: str = "") -> bool:
         timeout=_DEPLOY_TIMEOUT,
     )
     # `wait` exits 0 when the stack reaches DELETE_COMPLETE (including "not found").
+    return rc == 0
+
+
+def wait_for_create(tag: str, profile: str = "", region: str = "") -> bool:
+    """Block until a stack being created settles. Returns True on CREATE_COMPLETE."""
+    rc, _out, _err = aws.run_aws(
+        ["cloudformation", "wait", "stack-create-complete", "--stack-name", stack_name(tag)],
+        profile,
+        region,
+        timeout=_DEPLOY_TIMEOUT,
+    )
     return rc == 0

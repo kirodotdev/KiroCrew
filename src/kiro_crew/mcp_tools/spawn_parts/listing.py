@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from kiro_crew import mcp_core
+from kiro_crew.agent_discovery import is_internal_agent_spec
 from kiro_crew.constants import LEAKED_TOOL_CALL_NOTE, NO_TOOL_CALLS_NOTE, UNVERIFIED_MODEL_NOTE
 from kiro_crew.mcp_tools.spawn_parts.schemas import (
     _parent_allowlist_filter,
@@ -24,9 +25,8 @@ from kiro_crew.mcp_tools.spawn_parts.schemas import (
 )
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.subagent import (  # noqa: F401 -- visible_agent_names: the facade serves it
+from kiro_crew.subagent_standalone import (  # noqa: F401 -- visible_agent_names: the facade serves it
     format_subagent_usage,
-    is_internal_agent_spec,
     visible_agent_names,
 )
 from kiro_crew.subagent_wait_reasons import queued_wait_text
@@ -134,7 +134,7 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
             lines.append(f"\nAvailable agents: {', '.join(names)}")
         if restricted:
             lines.append(
-                "(restricted to this agent's toolsSettings.subagent.availableAgents; "
+                "(restricted to this agent's availableAgents; "
                 + ("other installed agents are" if names else "every installed agent is")
                 + " refused at spawn)"
             )
@@ -249,6 +249,9 @@ def spawn_status(name: str, args: dict[str, Any]) -> "str | DeferredTool":
             )
             if d.get(flag) is True
         ]
+        withheld = d.get("crew_tools_withheld")
+        if isinstance(withheld, str) and withheld:
+            notes.append(f"This agent {withheld}")
         if notes:
             result = "\n".join([*notes, result])
 

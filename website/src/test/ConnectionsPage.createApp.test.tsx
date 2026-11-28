@@ -122,10 +122,10 @@ describe('Create the Slack app', () => {
     // One numbered list: creating the app is step 1, and the last step says
     // where its Client ID and Client Secret go once sign-in is on.
     expect(tip.textContent).toContain(
-      'Slack signs in through Kiro Crew. To connect it: (1) create the Slack app with the button below (Slack opens with it filled in, and nothing changes in your workspace until you click Create), (2) turn on Kiro Crew sign-in with the button on this card, (3) in Settings, set chats to run on Kiro Agent, (4) back here, click Set up Slack and paste the app’s Client ID and Client Secret into its form.',
+      'Slack signs in through Kiro Crew. To connect it: (1) create the Slack app with the button below (Slack opens with it filled in), (2) open the Kiro Crew sign-in setting with the button on this card and make sure it is on, (3) in Settings → Agent Harness, choose Kiro Agent, (4) back here, click Set up Slack and paste the app’s Client ID and Client Secret into its form.',
     )
     expect(tip.textContent).not.toContain('Start by creating')
-    expect(within(tip).getByRole('link', { name: 'Settings' }).getAttribute('href')).toBe('/settings/agent')
+    expect(within(tip).getByRole('link', { name: 'Settings → Agent Harness' }).getAttribute('href')).toBe('/settings/agent')
   })
 
   it('leads the client-not-saved tip with the create step, naming the Set up button', async () => {
@@ -134,7 +134,7 @@ describe('Create the Slack app', () => {
 
     const tip = await openSlackTip({ closed: true })
     await within(tip).findByRole('link', { name: /Create the Slack app/ }, CHAIN_WAIT)
-    const hint = 'Start by creating the Slack app: Slack opens with it filled in, and nothing changes in your workspace until you click Create. Then click Set up Slack on this card and paste the app’s Client ID and Client Secret into its form.'
+    const hint = 'Start by creating the Slack app: Slack opens with it filled in. Then click Set up Slack on this card and paste the app’s Client ID and Client Secret into its form.'
     expect(tip.textContent).toContain(hint)
     // One set of instructions: the generic setup text is not repeated beside it.
     expect(tip.textContent).not.toContain('needs a one-time setup')

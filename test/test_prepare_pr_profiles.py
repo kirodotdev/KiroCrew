@@ -238,7 +238,8 @@ def test_kirocrew_markers_load_bundled_profile(tmp_path):
     assert prof["single_commit"] is True
     assert prof["base_branch"] == "main"
     assert prof["setup"] == [
-        "(cd website && node ./node_modules/playwright/cli.js install chromium)"
+        "(cd website && node ./node_modules/playwright/cli.js install chromium)",
+        "(cd website/electron && { [ -d node_modules ] || ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci --no-audit --no-fund; })",
     ]
     assert all("playwright install" not in gate for gate in prof["gates"])
     assert prof["readiness"]["status_context"] == "PR Readiness"
@@ -443,6 +444,13 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # run and lists what PR CI deselects. It judges no code and its input
         # exists only once CI runs on a pushed head.
         "scripts/ci_main_red_skip.py",
+        # Shadow only (`continue-on-error`, pull requests only): fetches the
+        # nightly selection bundle over the GitHub API and records what test
+        # selection WOULD run, as an artifact for the miss ledger. It judges no
+        # code and can fail no build, so by this floor's own rule it is not a
+        # gate; its inputs (a run's token and the published bundle) exist only
+        # in Actions.
+        "scripts/ci_test_selection_step.py",
         # Chooses WHICH tests to run for the changed surface; not itself a gate.
         "scripts/ci-surface-tests.py",
         # Decides whether a pull request is docs-only, and so which lanes run
@@ -652,6 +660,31 @@ def test_scoped_frontend_gate_keeps_the_lanes_npm_test_used_to_carry():
             f"{script!r} was covered transitively by `npm test`; the reduced "
             "frontend gate does not run it, so it needs its own floor entry"
         )
+
+
+def test_setup_installs_the_electron_shell_packages_its_gate_requires():
+    """The Electron gate needs `website/electron/node_modules`, which nothing else installs.
+
+    `npm --prefix website run test:electron` runs `npm test` in `website/electron`,
+    a package with its own lockfile, and its specs `require("electron")`. `npm ci`
+    in `website/` does not install that folder, and CI's Electron jobs run `npm ci`
+    in it before `npm test`. Without a setup entry, every fresh worktree fails the
+    gate with "Cannot find module 'electron'". The entry installs only when the
+    folder has no `node_modules`, so a developer's own install is left alone.
+    """
+    data = json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))
+    assert any("run test:electron" in gate for gate in data["gates"])
+    installs = [
+        command
+        for command in data["setup"]
+        if "cd website/electron" in command and "npm ci" in command
+    ]
+    assert (
+        len(installs) == 1
+    ), "exactly one setup entry must install website/electron for the Electron gate"
+    assert (
+        "[ -d node_modules ] ||" in installs[0]
+    ), "the install must leave an existing node_modules alone"
 
 
 # A whole-tree scan: CI's surface selector and the related-set checks read every

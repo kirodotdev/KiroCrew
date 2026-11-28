@@ -28,10 +28,15 @@ API can prevent, and the boundary that would prevent it is process isolation.
 
 **Best-effort.** ``record`` swallows a write failure: an audit sink that is full or
 unwritable must not take down the operation it only describes, and an app that let
-it raise would fail a user's publish because logging failed. A fail-closed variant
-is deliberately absent until an app needs one — ``sel().log_api_access(critical=True)``
-remains the route for the day a consent grant or safety override has to refuse an
-action it could not log.
+it raise would fail a user's publish because logging failed.
+
+**Fail-closed when the row gates the action** (seam level 17). ``record_or_raise``
+writes the same row synchronously and raises when it did not land, for an action that
+must not run unrecorded: an unattended agent launch, a tool call no person sees, a git
+run over the user's repository. It takes no attribution parameter either, and it
+writes only under the name the gateway gave the app (``ctx.audit``, or a spawned
+backend's ``KIROCREW_APP_NAME``): a writer built for a name the app chose itself
+refuses it, so no public spelling writes a fail-closed row as another app.
 
 **``outcome`` is not narrowed to a vocabulary.** The gateway's own writers use
 ``denied``, ``allowed``, ``ok``, ``completed``, ``rejected`` and more, and nothing
@@ -57,6 +62,12 @@ from ..sel import sel
 
 logger = logging.getLogger(__name__)
 
+#: Writer method -> the App Kit seam level that publishes it, for each method added
+#: after ``record``. An app reaches the writer as ``ctx.audit`` or through
+#: ``backend_sdk.audit_log``, so the adoption pin tool counts a tree's mention of one
+#: in any of its files, whichever package it names, at that level.
+METHOD_LEVELS: dict[str, int] = {"record_or_raise": 17}
+
 
 class AuditSDK:
     """App-scoped writes to the security event log.
@@ -66,11 +77,15 @@ class AuditSDK:
     simply not audit — leaving the gap this seam closes.
     """
 
-    def __init__(self, app_name: str) -> None:
+    def __init__(self, app_name: str, *, named_by_gateway: bool = False) -> None:
         self._app_name = app_name
         #: `app:<name>` matches how `cron_sdk` tags ownership, so one convention
         #: identifies app-originated rows across cron jobs and audit events.
         self._caller = f"app:{app_name}"
+        #: Whether the gateway chose *app_name* (the context it built, or the name it
+        #: set on a spawned backend) rather than the app. Only then may a fail-closed
+        #: row be written.
+        self._named_by_gateway = named_by_gateway
 
     def record(
         self,
@@ -111,3 +126,42 @@ class AuditSDK:
             # name is a manifest identifier and is safe to name; the app knows which
             # of its own calls failed from the traceback.
             logger.debug("app %s: audit emit failed", self._app_name, exc_info=True)
+
+    def record_or_raise(
+        self,
+        operation: str,
+        outcome: str,
+        *,
+        resources: str = "",
+        error: str = "",
+    ) -> None:
+        """Append the event :meth:`record` would, synchronously, or raise.
+
+        For an action that must not run unrecorded: write this first and refuse the
+        action when it raises. The row is the one ``record`` writes (``app:<name>``,
+        ``<name>.<operation>``, source ``app``, every field redacted), written with the
+        security event log's ``critical`` flag, so the write's own error (an
+        ``OSError`` when the log is unwritable or this process cannot open it)
+        propagates instead of being dropped. It blocks on the write, so call it from a
+        worker thread in an event-loop handler.
+
+        Raises ``LookupError`` before writing when the app chose this writer's name
+        (``backend_sdk.audit_log(app_name=...)`` naming an app other than the one the
+        gateway spawned): a fail-closed row is attributed only to the app the gateway
+        named.
+        """
+        if not self._named_by_gateway:
+            raise LookupError(
+                f"app {self._app_name}: a fail-closed audit row is written only under the "
+                "name the gateway gave the app (ctx.audit, or audit_log() with no name in "
+                "a spawned backend)"
+            )
+        sel().log_api_access(
+            caller=self._caller,
+            operation=f"{self._app_name}.{operation}",
+            outcome=outcome,
+            source="app",
+            resources=resources,
+            error=error,
+            critical=True,
+        )

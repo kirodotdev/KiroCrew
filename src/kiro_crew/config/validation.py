@@ -7,9 +7,9 @@ definitions and the loader's read/merge orchestration.
 What lives here:
 - Schema-introspection helpers (``_is_sensitive_path``, ``_mask_value``,
   ``_apply_field_default``, …) used while validating.
-- ``validate_config_data()`` — runs jsonschema validation, logs human-readable
-  warnings, and removes invalid values in-place so the loader falls back to
-  field defaults. Never raises.
+- ``validate_config_data()`` — runs Draft-07 schema validation
+  (``schema_check``), logs human-readable warnings, and removes invalid values
+  in-place so the loader falls back to field defaults. Never raises.
 - ``ConfigCache`` — a small wrapper around the process-global validated-data
   cache, with an explicit ``clear()`` (replacing the bare module globals that
   were impossible to reset/inject in tests).
@@ -37,6 +37,7 @@ import threading
 from typing import Any, Iterable
 
 from kiro_crew.apps.builtin_host_grants import config_top_keys as _builtin_config_top_keys
+from kiro_crew.config import schema_check
 from kiro_crew.config.fields import _coerce_bool
 
 # Top-level config.json sections an app owns and reads from the file directly,
@@ -90,12 +91,11 @@ _APP_OWNED_TOP_KEYS: frozenset = _builtin_config_top_keys()
 #     SCHEMA_REGISTRY entry, so Crew never writes a default copy of it.
 _CORE_OWNED_TOP_KEYS: frozenset = frozenset({"voice_reply", "connections", "sel"})
 
-try:
-    import jsonschema
-
-    _HAS_JSONSCHEMA = True
-except ImportError:  # pragma: no cover
-    _HAS_JSONSCHEMA = False
+#: Kept for the callers and tests that read or patch it. Validation always runs
+#: now: the in-house Draft-07 checker (``config.schema_check``) replaced
+#: jsonschema, which no Kiro Crew process imports any more. ``False`` still turns
+#: validation off, the survival path the tests exercise.
+_HAS_JSONSCHEMA = True
 
 # Config-validation warnings are part of the loader's observable contract, so
 # they are emitted on the loader's logger channel (see module docstring).
@@ -635,17 +635,16 @@ _VALIDATOR_CACHE: list[tuple[dict, Any]] = []  # process-cache-ok: keyed by sche
 
 
 def _schema_validator(schema: dict) -> Any:
-    """A validator for *schema*, checked against its meta-schema once and reused.
+    """A validator for *schema*, checked once and reused.
 
-    ``jsonschema.validate`` checks the schema and builds a validator on every
-    call; the config schema is built once at import, so that work would repeat
-    on every config load.
+    Checking the schema (``schema_check.check_schema``, which refuses any keyword
+    the checker does not implement) is work the config schema needs only once:
+    it is built once at import, so repeating it would cost every config load.
     """
     if _VALIDATOR_CACHE and _VALIDATOR_CACHE[0][0] is schema:
         return _VALIDATOR_CACHE[0][1]
-    validator_cls = jsonschema.validators.validator_for(schema)
-    validator_cls.check_schema(schema)
-    validator = validator_cls(schema)
+    schema_check.check_schema(schema)
+    validator = schema_check.SchemaChecker(schema)
     _VALIDATOR_CACHE[:] = [(schema, validator)]
     return validator
 
@@ -833,10 +832,21 @@ def validate_config_data(data: dict) -> dict:
                     else backend_to_stored(governance_floor_backend())
                 )
 
+    # 3e. ``memory.inject_lessons_per_turn`` was a boolean before it had a shadow
+    # mode. Map a stored bool to its mode here, or the type check below would
+    # replace a stored ``true`` with the default, ``off``.
+    memory = data.get("memory")
+    if isinstance(memory, dict) and isinstance(memory.get("inject_lessons_per_turn"), bool):
+        from kiro_crew.config.memory_sections import inject_lessons_per_turn_mode_from
+
+        memory["inject_lessons_per_turn"] = inject_lessons_per_turn_mode_from(
+            memory["inject_lessons_per_turn"]
+        )
+
     # 4. Preserve numeric values written by older config writers.
     _coerce_legacy_numeric_values(data, JSON_SCHEMA)
 
-    # 5. Run jsonschema validation
+    # 5. Run schema validation (``schema_check``: jsonschema's errors, in its order)
     validator = _schema_validator(JSON_SCHEMA)
     if not validator.is_valid(data):
         # Collect all errors (including nested ones)

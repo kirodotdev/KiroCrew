@@ -1920,11 +1920,14 @@ async def test_an_uncontended_subscribe_past_its_budget_commits_nothing(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("remaining", [(URI, "crux://reviews/CR-8"), (URI,)])
 async def test_a_removal_whose_holder_stalls_still_reports_the_removal(
-    tmp_path: Path, remaining: tuple[str, ...]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remaining: tuple[str, ...]
 ) -> None:
     ids = tuple(f"rsub_{n}" for n in range(len(remaining)))
     record = _record(SESSION, remaining, ids)
-    service = _budgeted_service(tmp_path, record, unsubscribe_budget=0.3)
+    # Only the holder's round trip meets a bound: the steps before the commit get
+    # one no stalled runner reaches, the holder the floor a spent budget leaves it.
+    service = _budgeted_service(tmp_path, record, unsubscribe_budget=_HANG)
+    monkeypatch.setattr(rs._Budget, "holder_call", lambda _budget: rs.HOLDER_CALL_FLOOR_SECS)
     holder = _StallingHolder(remaining)
     service._holders[record.key] = holder  # type: ignore[assignment]
 

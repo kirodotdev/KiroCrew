@@ -136,11 +136,12 @@ class ShareEvidence:
     # walk) rather than from the per-call caller block, so one backend can only
     # ever serve one session correctly.
     #
-    # Deliberately NOT "is this one of ours". Kiro Crew's own managed servers
-    # differ from each other here: ``kirocrew-core`` advertises the
-    # caller-identity extension and consumes the injected caller, while
-    # ``kirocrew-cron`` does not and still reads process identity. Keying this on
-    # authorship disqualified the first for a property only the second has.
+    # Deliberately NOT "is this one of ours". A server's author says nothing
+    # about this property: Kiro Crew's managed servers (``kirocrew-core``,
+    # ``kirocrew-cron`` and the rest of ``_MANAGED_SERVERS_CALLER_AWARE``)
+    # advertise the caller-identity extension and consume the injected caller,
+    # so keying this on authorship would disqualify them for a property they
+    # do not have.
     session_bound_by_construction: bool = False
     # Did the handshake succeed? A server we could not start is UNKNOWN.
     probe_ok: bool = False

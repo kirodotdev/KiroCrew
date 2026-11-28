@@ -48,7 +48,6 @@ from kiro_crew.dashboard.state_parts.notification_log import (
     sweep_expired_notifications,
 )
 from kiro_crew.dashboard.state_parts.transcript_rows import _mark_permission_resolved
-from kiro_crew.dashboard.turn_dispatch import BackgroundTurnAbandoned, mark_turn_unstarted
 from kiro_crew.dashboard.websocket_hub import WebSocketHub
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.notifications.bus import NotificationValidationError, payload_from_legacy
@@ -350,6 +349,10 @@ async def run_background_turn(self: DashboardState, slot: "_ChatSlot", coro: Any
     """
     if not slot.unattended:
         return await coro
+    # Imported here: turn_dispatch loads the ACP client, which test_package_import_ratchet
+    # keeps out of a fresh import of the dashboard state.
+    from kiro_crew.dashboard.turn_dispatch import BackgroundTurnAbandoned, mark_turn_unstarted
+
     sema = self._background_turn_sema()
     queued = sema.locked()
     if queued:

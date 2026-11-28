@@ -164,8 +164,12 @@ export function useChatPanelModelDefaults({
     normalizeHiddenModels(dashCfg.model_picker_hidden_models),
   )
   const isHiddenModel = hiddenModelMatcher(hiddenModels)
+  // A model the account hid on app.kiro.dev (`ModelInfo.hiddenByAccount`) is out of
+  // the chat picker whatever Crew's own list says, so its row is locked and unticked
+  // and no Crew edit (one row, select all, deselect all) writes it.
+  const editableModels = availableModels.filter(model => model.hiddenByAccount !== true)
   const selectedModelIds = new Set(
-    availableModels
+    editableModels
       .filter(model => model.name === 'auto' || !isHiddenModel(model.name))
       .map(model => model.name),
   )
@@ -224,9 +228,9 @@ export function useChatPanelModelDefaults({
       : [...hiddenModels.filter(value => value !== model), model]
     saveHiddenModels(selected ? { next, remove: [...new Set([model, ...stored])] } : { next, add: [model] })
   }
-  const isAdvertisedModel = hiddenModelMatcher(availableModels.map(model => model.name))
+  const isAdvertisedModel = hiddenModelMatcher(editableModels.map(model => model.name))
   const hiddenUnadvertisedModels = hiddenModels.filter(model => !isAdvertisedModel(model))
-  const advertisedOptionalModelIds = availableModels.filter(model => model.name !== 'auto').map(model => model.name)
+  const advertisedOptionalModelIds = editableModels.filter(model => model.name !== 'auto').map(model => model.name)
   // The server removes ids by exact string, so showing every model must name
   // each stored spelling of an advertised model, not only the advertised id.
   const selectAllModels = () => saveHiddenModels({
@@ -496,6 +500,24 @@ export function useChatPanelModelDefaults({
   const subagentEffortMut = useMutation(
     optimisticConfigOpts('agent.role_efforts.subagent', () => i18nT('pages.settings.chatPanel.failed_to_save_role_effort'))
   )
+
+  // Optimize prompt's own pair. Unset, it runs on what background work runs on,
+  // so the unset value of each row reads "Same as Background" rather than Auto
+  // or Model default, and the effort gate follows the Background row when no
+  // model is picked here.
+  const optimizerModel = mcCfg?.agent?.role_models?.optimizer || 'auto'
+  const shownOptimizerModel = overlay.shown('agent.role_models.optimizer', optimizerModel)
+  const optimizerModelOpts = roleModelOptions(shownOptimizerModel, optimizerModel)
+  const optimizerModelLabels = optimizerModelOpts.map(m => (m === 'auto' ? i18nT('pages.settings.chatPanel.same_as_background') : m))
+  const optimizerModelMut = useMutation(
+    optimisticConfigOpts('agent.role_models.optimizer', () => i18nT('pages.settings.chatPanel.failed_to_save_role_model'))
+  )
+  const shownOptimizerEffort = overlay.shown('agent.role_efforts.optimizer', mcCfg?.agent?.role_efforts?.optimizer ?? '')
+  const optimizerEffortLabels = EFFORT_LEVELS.map(l => (l === '' ? i18nT('pages.settings.chatPanel.same_as_background') : effortLabel(l)))
+  const optimizerEffortSupported = shownOptimizerModel !== 'auto' ? modelSupportsEffort(shownOptimizerModel) : bgEffortSupported
+  const optimizerEffortMut = useMutation(
+    optimisticConfigOpts('agent.role_efforts.optimizer', () => i18nT('pages.settings.chatPanel.failed_to_save_role_effort'))
+  )
   return {
     availableModelsQ, availableModels, selectedModelIds, modelPickerSummary, toggleVisibleModel,
     selectAllModels, deselectAllModels, shownDefaultModel, modelOptions, defaultModelMut, agentsQ,
@@ -506,6 +528,8 @@ export function useChatPanelModelDefaults({
     subagentModelMut, shownBackgroundEffort, shownSubagentEffort, bgEffortSupported,
     subEffortSupported, effortLabels, backgroundEffortMut, subagentEffortMut,
     memberEffortPinOverrides, showEffortPinNotice, resolvedEffortLabel, clearAgentEffortPinMut,
-    clearAgentEffortPinError,
+    clearAgentEffortPinError, shownOptimizerModel, optimizerModelOpts, optimizerModelLabels,
+    optimizerModelMut, shownOptimizerEffort, optimizerEffortLabels, optimizerEffortSupported,
+    optimizerEffortMut,
   }
 }

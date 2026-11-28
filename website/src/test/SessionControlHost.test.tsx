@@ -18,6 +18,9 @@ import SessionControlHost from '../components/SessionControlHost'
 import type { SessionControlContext } from '../components/SessionControlHost'
 import type { ResolvedSessionControl } from '../hooks/useSessionControls'
 
+// The registry the loader imports before an app bundle (appBundleImport.ts).
+// These tests are about the host's own UI; the real one costs seconds to load.
+vi.mock('../app-sdk/shared-modules', () => ({}))
 vi.mock('../app-sdk', () => ({
   // The provider's own behaviour is covered by its own tests; here it must only
   // pass children through so the host's tree is what we assert on.

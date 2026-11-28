@@ -622,8 +622,8 @@ def _switched_off_tools(server: str) -> frozenset[str]:
     global ``~/.kiro/settings/mcp.json``, where the dashboard's tool-off action
     writes. A source that cannot be read switches nothing off. The keys are
     compared through :func:`kiro_crew.mcp_utils.mcp_server_alias`, as the KAS path
-    compares them, because the tool-off action writes the key under the alias
-    discovery shows (``playwright-mcp`` for ``npm:@playwright/mcp``). The entries
+    compares them, because the tool-off action writes either the raw key the Kiro
+    global holds (``npm:@playwright/mcp``) or the alias discovery shows. The entries
     are returned as written; :func:`_tool_is_switched_off` matches them.
     """
     # Deferred: an import at module scope here is a name the cron_script facade
@@ -639,20 +639,13 @@ def _switched_off_tools(server: str) -> frozenset[str]:
 def _tool_is_switched_off(tool: str, entries: frozenset[str]) -> bool:
     """Whether a ``disabledTools`` entry in *entries* covers *tool*, as kiro-cli reads it.
 
-    kiro-cli compares an entry exactly, and an entry with ``*`` or ``?`` also as a
-    glob (``globset``). Such a glob is matched with :func:`fnmatch.fnmatchcase`;
-    one holding ``{``, ``}`` or ``\\``, whose meaning ``fnmatch`` does not share,
-    covers every tool, so the call is refused rather than let through.
+    The one copy of that rule is
+    :func:`kiro_crew.connected_computers.mcp_filter.tool_is_turned_off`.
     """
-    import fnmatch  # deferred for the reason given in _switched_off_tools
+    # deferred for the reason given in _switched_off_tools
+    from kiro_crew.connected_computers.mcp_filter import tool_is_turned_off
 
-    for entry in entries:
-        if entry == tool:
-            return True
-        if "*" in entry or "?" in entry:
-            if any(c in entry for c in "{}\\") or fnmatch.fnmatchcase(tool, entry):
-                return True
-    return False
+    return tool_is_turned_off(tool, entries)
 
 
 def _refuse_unlaunchable(name: str, spec: dict[str, Any]) -> None:

@@ -34,12 +34,12 @@
  * Both are pure functions over the transcript so they can be unit-tested and
  * reused by a reply-thread footer without dragging the pane along.
  */
-import { isSystemNoticeRow } from '../../pages/chat/CompactionCard'
-import { isWorkflowCompletionMessage } from '../../pages/chat/WorkflowCompletionCard'
-import { isSubagentCompletionMessage } from '../../pages/chat/subagentCompletion'
+import { isWorkflowCompletionMessage } from '../../lib/workflowCompletion'
+import { isSubagentCompletionMessage } from '../../lib/subagentCompletion'
 import { REASONING_ROLES } from '../../pages/chat/groupDisplayItems'
 import { isPendingTransientNotice } from '../../pages/chat/gatewayNotice'
 import type { ChatMessage } from '../../types'
+import { isStatusRow } from '../../app-sdk/protocol'
 import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
 
 /** Where a message sits in a run of consecutive crewmate messages. */
@@ -91,22 +91,19 @@ function isRunTransparent(m: ChatMessage): boolean {
 
 /** The crewmate speaking: an assistant row with visible words, or the live
  *  streaming row. A say-nothing assistant row (the bare U+200B a quiet patrol
- *  ends on), a gateway system notice written under the assistant role
- *  (compaction, session reload), an injected workflow completion and a
- *  sub-agent completion envelope written under the assistant role are status,
- *  not speech. Together with the user's own rows this is the twin of the
+ *  ends on) is not speech, and neither is a row the gateway wrote under the
+ *  assistant role (`isStatusRow`: a system notice, an injected workflow
+ *  completion, a sub-agent completion envelope). Together with the user's own rows this is the twin of the
  *  backend's `is_speech_row` (`dashboard/system_notices.py`), which decides
  *  what the Crew Members roster quotes; the two are pinned to one verdict per
  *  row by `test/fixtures/crewmate_speech_rows.json`, read by both test suites. */
 export function isCrewmateSpeech(m: ChatMessage): boolean {
   if (m.role === 'streaming') return true
   if (m.role !== 'assistant') return false
-  // A sub-agent completion envelope also reaches the transcript under the
-  // assistant role (the Slack gateway's delivery-timeout and orphan variants).
   // This chat draws neither file chips nor the Steered chip, so a row whose
   // only content is one of those (a quiet turn that only wrote files, a reply
   // that is only a steering note) says nothing here.
-  return !isHiddenInvisibleAssistantRow(m, { fileChips: false, steerChip: false }) && !isSystemNoticeRow(m) && !isWorkflowCompletionMessage(m) && !isSubagentCompletionMessage(m)
+  return !isHiddenInvisibleAssistantRow(m, { fileChips: false, steerChip: false }) && !isStatusRow(m)
 }
 
 /** Whether a row is drawn in a crewmate's chat at all. */
@@ -306,7 +303,7 @@ const CORNERS: Record<CrewmateRunPosition, string> = {
   end: 'rounded-2xl rounded-tl-md',
 }
 
-/** Surface + padding + measure, every bubble alike. A FILLED neutral gray, no
+/** Surface + padding + width, every bubble alike. A FILLED neutral gray, no
  *  border: the iMessage pairing #17839 chose — the user's own bubble on the
  *  right is the filled accent one, the crewmate's on the left the gray one, so
  *  colour tells the two speakers apart before alignment does. The fill and its
@@ -322,9 +319,16 @@ const CORNERS: Record<CrewmateRunPosition, string> = {
  *  theme already keeps readable on `--bg-hover`. In forced-colors mode the fill
  *  is taken away, so a border is drawn there and only there. The markdown's
  *  outermost first/last block margins are zeroed so the bubble's own padding is
- *  the whole inset. */
+ *  the whole inset. The width is `max-w-full`, not a `ch` cap: the bubble is a
+ *  block and spans the content column the transcript row clamps to
+ *  --mc-content-width, so Settings → Chat → Content Width governs it as it
+ *  governs the user's bubble (#30200). Not `w-fit` like the user's bubble: a
+ *  reply can be only a widget frame or a change card, which take no intrinsic
+ *  width, and inside `w-fit` they collapse to a sliver. Inside a flex column
+ *  with `items-start` (the typing bubble, the reply thread) the bubble still
+ *  shrinks to its content. */
 const BUBBLE_BASE =
-  'crewmate-bubble forced-colors:border px-3.5 py-1.5 max-w-[72ch] [&>.group>:first-child]:mt-0 [&>.group>:last-child]:mb-0'
+  'crewmate-bubble forced-colors:border px-3.5 py-1.5 max-w-full [&>.group>:first-child]:mt-0 [&>.group>:last-child]:mb-0'
 
 /** Classes for the crewmate's message bubble at `pos`. */
 export function crewmateBubbleClass(pos: CrewmateRunPosition): string {

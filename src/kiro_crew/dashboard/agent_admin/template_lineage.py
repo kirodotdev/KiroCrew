@@ -95,18 +95,25 @@ class _AmbiguousTemplateName(Exception):
     def refusal_text(self) -> str:
         """The ``error`` sentence of a ``409 ambiguous_template_name`` refusal.
 
-        Names each claimant by its file NAME inside ``~/.kiro/agents/`` (never
-        the absolute path, which would leak the home layout), sorted, so the
-        reader knows what to rename. A raiser that did not scan the files says
-        only that more than one matches. Each name goes through ``_roster_mask``
-        like every other agents-directory string the API returns: whoever writes
-        that directory chooses the file names.
+        Names each claimant by the folder it was found in, home-relative
+        (``~/...``) when it sits under the home directory, and its file name,
+        sorted, so the reader knows what to rename. The folder is the claimant's
+        own: ``KIRO_HOME`` moves the agents directory, and a claimant can come
+        from the crewmate folder too. A raiser that did not scan the files says
+        only that more than one matches. Each file name goes through
+        ``_roster_mask`` like every other agents-directory string the API
+        returns: whoever writes that directory chooses the file names.
         """
+        # Local: this owner runs on the agents facade's globals.
+        from kiro_crew.dashboard.side_readonly_spec import _home_relative
+
         head = f"'{_roster_mask(self.name)}' matches more than one template file"
         if not self.paths:
             return f"{head}; rename one first."
-        files = ", ".join(sorted(_roster_mask(p.name) for p in self.paths))
-        return f"{head} in ~/.kiro/agents/ ({files}); rename one first."
+        files = ", ".join(
+            sorted(f"{_home_relative(p.parent)}/{_roster_mask(p.name)}" for p in self.paths)
+        )
+        return f"{head} ({files}); rename one first."
 
 
 def _load_template_specs(

@@ -878,8 +878,8 @@ class TestStaleIdleCompactionStatus:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("source", ["buffered", "live"])
-    async def test_init_drain_counts_an_owed_terminal(self, tmp_path, source):
-        from kiro_crew.acp import stale_compaction
+    async def test_init_drain_counts_an_owed_terminal(self, tmp_path, monkeypatch, source):
+        from kiro_crew.acp import client_transport, stale_compaction
 
         client = AcpClient(work_dir=tmp_path)
         stale_compaction.discard_stale_compaction_status(client, within_secs=0.0)
@@ -888,10 +888,19 @@ class TestStaleIdleCompactionStatus:
             client._mcp_notifications = [terminal]
             duration = 0.0
         else:
+            # The drain's deadline and idle window run on a clock only a silent
+            # read moves, so a coarse host tick cannot end the drain before it
+            # reads the frame. A start of 0 keeps every reading exact, so the
+            # read that waits out the idle window ends the drain.
+            clock = ManualClock(monotonic_start=0.0)
+            clock.install(monkeypatch, client_transport)
             frames = [terminal]
 
             async def _read(timeout: float = 0.0):
-                return frames.pop(0) if frames else None
+                if frames:
+                    return frames.pop(0)
+                clock.advance(timeout)
+                return None
 
             client._read_message = _read
             duration = 0.01

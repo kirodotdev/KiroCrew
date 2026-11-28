@@ -46,8 +46,19 @@ def _oversized(field_name: str, container: dict[str, Any]) -> str:
     )
 
 
-def track_live_conn(conn: _StubConn, register: dict[str, Any], *, private_backend: bool) -> None:
-    """Remember *conn*, the Register it was accepted with, and how it was served."""
+def track_live_conn(
+    conn: _StubConn,
+    register: dict[str, Any],
+    *,
+    private_backend: bool,
+    agent_name: Optional[str] = None,
+) -> None:
+    """Remember *conn*, the Register it was accepted with, and how it was served.
+
+    *agent_name* is the declaring agent the daemon resolved for *conn*, kept in
+    place of the one the Register named, so a holder registering with the kept
+    Register names only what this connection was granted.
+    """
     conn.private_backend = private_backend
     conn.resource_holder = bool(register.get(RESOURCE_HOLDER_FIELD))
     # Measured as it is kept, without its two token fields, so the daemon, the
@@ -58,6 +69,8 @@ def track_live_conn(conn: _StubConn, register: dict[str, Any], *, private_backen
         for key, value in register.items()
         if key not in ("stub_uuid", "stub_session_token")
     }
+    if agent_name is not None and "agent_name" in retained:
+        retained["agent_name"] = agent_name
     conn.describe_refusal = _oversized("Register", retained)
     if conn.describe_refusal:
         conn.register = None

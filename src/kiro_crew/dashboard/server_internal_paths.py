@@ -16,8 +16,11 @@ from kiro_crew.apps.builtin_host_grants import (
 
 # Strict internal API paths — exact paths that ONLY internal processes
 # (mcp-core, doctor, cron) call, never the browser. Access requires loopback
-# AND a matching ``X-Internal-Secret`` header; non-loopback is always denied and
-# there is no cookie fall-through (see token_auth.token_auth_middleware).
+# AND a matching ``X-Internal-Secret`` header; non-loopback is always denied. A
+# loopback request with no secret falls through to cookie auth, which admits only
+# the owner's or a teammate's dashboard session (an app token stays under its own
+# scope); every other dashboard session is refused 403 ``owner_only`` (see
+# token_auth.token_auth_middleware).
 #
 # Module-level and shared by BOTH ``start_dashboard`` and ``start_api_server``
 # so the two entrypoints can never drift: the ``--slack-only`` headless server
@@ -43,6 +46,10 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # handler re-asserts ``internal_auth`` and hands it to the declaring app's own
         # route. One fixed core path for every app, so no app route is admitted here.
         "/api/app-tools/call",
+        # The ``app_store_search`` tool's read of the store listing; no browser page
+        # calls it (the store reads ``/api/apps/registry``). A loopback cookie still
+        # reaches it, as it does every strict path, and sees the same rows there.
+        "/api/app-store/search",
         # External terminal grant redemption. Its only caller is the desktop
         # shell's main process, loopback + internal-secret; the browser holds
         # the grant but must never redeem it, so
@@ -317,9 +324,10 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # X-Internal-Secret. EXACT path — a sibling of the STRICT
         # `/api/update/approve`, never its prefix: token_auth matches `p` or
         # `p + "/"`, so `/api/update` here would turn a host-only approval into
-        # a cookie-reachable one. Arming grants nothing (the record carries no
-        # nonce and no endpoint installs from it), so a mixed admission widens
-        # nothing.
+        # a cookie-reachable one. An X-Internal-Secret arm grants nothing (the
+        # record carries no nonce and no endpoint installs from it), so a mixed
+        # admission widens nothing: only the dashboard owner's own session gets
+        # the one-click install (`updates_step_up._one_click_hold`).
         "/api/update/arm",
         "/api/chat",
         "/api/lessons",

@@ -39,6 +39,15 @@ RECEIPT_INVALIDATING_EVENTS = frozenset(
 # Other slash commands (/help, /model, /context, …) keep prior evidence.
 RECEIPT_RESETTING_COMMANDS = frozenset({"/compact", "/clear"})
 
+#: The slot a bind takes when it names none: a member's essential context.
+ESSENTIALS_SLOT = "essentials"
+#: The slot of the reply-format rules block, which any interactive turn carries.
+RULES_SLOT = "reply-format-rules"
+#: The slot of a follow-up's ``[RUNTIME]`` line, which names the turn's surface.
+RUNTIME_SLOT = "runtime"
+#: The slot of the ``[PROJECT]`` line, which names the turn's project.
+PROJECT_SLOT = "project"
+
 
 @asynccontextmanager
 async def _closing_events(
@@ -58,6 +67,16 @@ class EssentialReceipt:
     native_envelope: str
     incarnation: object
     epoch: int
+    #: The one span of *envelope* that may change on its own, and its digest;
+    #: ``digest`` then covers the rest of the envelope only.
+    volatile: str = ""
+    volatile_digest: str = ""
+
+
+def _digest(scope: tuple[object, ...], text: str) -> str:
+    return hashlib.sha256(
+        json.dumps([scope, text], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def _tool_call_ended(event: object) -> bool:
@@ -71,7 +90,18 @@ def _tool_call_ended(event: object) -> bool:
 
 
 class EssentialDelivery:
-    """One provider's current candidate and last acknowledged conversation state.
+    """One provider's current candidates and last acknowledged conversation state.
+
+    Each candidate sits in its own slot (:data:`ESSENTIALS_SLOT`,
+    :data:`RULES_SLOT`, :data:`RUNTIME_SLOT`, :data:`PROJECT_SLOT`), with its own
+    acknowledgment, so a member turn can carry its essentials, the reply-format
+    rules and the context lines and the conversation is sent each once. A forced
+    bind drops only its own slot's acknowledgment; anything that can drop what
+    the conversation holds drops every slot's.
+
+    A bind may name one *volatile* span of its envelope (a member's briefing).
+    While the rest is acknowledged, a send that changed only that span carries
+    the span alone, so a briefing edit does not re-send the whole snapshot.
 
     It also records :attr:`request_floor`, the latest monotonic moment of the
     last stream that made a model request, known to be no later than the start of
@@ -86,8 +116,8 @@ class EssentialDelivery:
 
     def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
         self._lock = threading.Lock()
-        self._pending: EssentialReceipt | None = None
-        self._acknowledged: tuple[object, str, int] | None = None
+        self._pending: dict[str, EssentialReceipt] = {}
+        self._acknowledged: dict[str, tuple[object, str, int, str]] = {}
         self._epoch = 0
         self._clock = clock
         #: ``None`` until the first stream starts.
@@ -111,28 +141,49 @@ class EssentialDelivery:
         incarnation: object,
         force: bool = False,
         native_envelope: str | None = None,
+        slot: str = ESSENTIALS_SLOT,
+        volatile: str = "",
     ) -> None:
-        """Stage trusted builder output; retain complete text until wire dispatch.
+        """Stage trusted builder output in *slot*; retain complete text until wire dispatch.
 
+        *force* drops *slot*'s acknowledgment, so the next send carries it.
+        *volatile* names a span of *envelope* acknowledged on its own; it is
+        ignored unless it occurs in *envelope*, and in *native_envelope*, once.
         Callers must serialize builds/sends with their existing session lease.
         Previews omit the delivery object and cannot change live receipts.
         """
-        digest = hashlib.sha256(
-            json.dumps([scope, envelope], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
+        native = native_envelope or envelope
+        if not volatile or envelope.count(volatile) != 1 or native.count(volatile) != 1:
+            volatile = ""
+        stable = envelope.replace(volatile, "\0", 1) if volatile else envelope
+        receipt = EssentialReceipt(
+            envelope,
+            _digest(scope, stable),
+            native,
+            incarnation,
+            self._epoch,
+            volatile,
+            _digest(scope, volatile) if volatile else "",
+        )
         with self._lock:
             if force:
-                self._epoch += 1
-                self._acknowledged = None
-            self._pending = EssentialReceipt(
-                envelope, digest, native_envelope or envelope, incarnation, self._epoch
-            )
+                self._acknowledged.pop(slot, None)
+            self._pending[slot] = receipt
+
+    def withdraw(self, *slots: str) -> None:
+        """Take back *slots*' candidates, so a message built without binding them goes out whole.
+
+        Their acknowledgments stay: they describe the conversation, not the build.
+        """
+        with self._lock:
+            for slot in slots:
+                self._pending.pop(slot, None)
 
     def invalidate(self) -> None:
         """Compaction, clear or replacement makes prior delivery evidence unusable."""
         with self._lock:
             self._epoch += 1
-            self._acknowledged = None
+            self._acknowledged.clear()
 
     def prepare_command(self, command: str) -> bool:
         """Invalidate before a history-discarding slash command reaches the wire.
@@ -146,11 +197,11 @@ class EssentialDelivery:
             self.invalidate()
         return resets
 
-    def _invalidate_attempt(self, candidate: EssentialReceipt | None, epoch: int) -> None:
+    def _invalidate_attempt(self, attempt: list[tuple[str, EssentialReceipt]], epoch: int) -> None:
         with self._lock:
-            if candidate is not None and self._pending is candidate and self._epoch == epoch:
+            if self._epoch == epoch and any(self._pending.get(s) is c for s, c in attempt):
                 self._epoch += 1
-                self._acknowledged = None
+                self._acknowledged.clear()
 
     async def stream(
         self,
@@ -159,41 +210,56 @@ class EssentialDelivery:
         incarnation: Callable[[], object],
         *,
         requests_model: bool = True,
+        cancel_keeps_history: Callable[[], bool] | None = None,
     ) -> AsyncGenerator[EventT, None]:
         """Deduplicate only trusted, byte-matched builder content on the wire.
 
         *requests_model* is False when the transport makes no model request at
         all, as kiro's native ``_kiro.dev/commands/execute`` does: its output is
         the command's own result, so it never moves :attr:`request_floor`.
+
+        *cancel_keeps_history* answers whether the harness keeps the
+        conversation it already holds across a cancelled turn
+        (``SessionCapabilities.keeps_history_on_cancel``); it is asked only
+        once the engine has ended the turn ``cancelled``, and a True answer
+        leaves the earlier acknowledgments standing.
+        What the cancelled message carried itself is still not acknowledged.
         """
         from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPLETED as EVENT_COMPLETE
         from kiro_crew.agent_sdk import CONTEXT_EVENT_TEXT as EVENT_TEXT_CHUNK
         from kiro_crew.agent_sdk import CONTEXT_EVENT_TOOL as EVENT_TOOL_CALL
+        from kiro_crew.agent_sdk import TURN_STOP_REASON_CANCELLED as STOP_REASON_CANCELLED
         from kiro_crew.agent_sdk import TURN_STOP_REASON_END_TURN as STOP_REASON_END_TURN
 
         identity = incarnation()
         with self._lock:
-            candidate = self._pending
+            pending = list(self._pending.items())
             epoch = self._epoch
-            acknowledged = self._acknowledged
+            acknowledged = dict(self._acknowledged)
             report, self._report = self._report, None
         if report is not None and report[0] is not message:
             report = None
-        if candidate is not None and candidate.envelope not in message:
-            candidate = None
-        if candidate is not None:
-            if acknowledged == (identity, candidate.digest, epoch):
-                replacement = ""
+        # The candidates this message carries; only these are acknowledged or voided.
+        attempt: list[tuple[str, EssentialReceipt]] = []
+        for slot, candidate in pending:
+            if candidate.envelope not in message:
+                continue
+            ack = acknowledged.get(slot)
+            if ack is not None and ack[:3] == (identity, candidate.digest, epoch):
+                # The rest is held; only a changed volatile span goes out.
+                replacement = "" if ack[3] == candidate.volatile_digest else candidate.volatile
             elif candidate.incarnation == identity and candidate.epoch == epoch:
                 replacement = candidate.native_envelope
             else:
                 replacement = candidate.envelope
             # Provenance survives the rewrite: the envelope is injected context.
             message = replace_in_injected(message, candidate.envelope, replacement)
+            attempt.append((slot, candidate))
         if report is not None:
             report[1](message)
         productive = False
         completed = False
+        cancelled = False
         # Before the send, so the stream's first request starts no earlier. Held
         # until model output arrives: a slash command such as ``/context`` makes
         # no model request, and must not move the floor past the last one that did.
@@ -225,23 +291,32 @@ class EssentialDelivery:
                             and not event.synthetic_completion
                             and not event.refusal
                         )
-                        if (
-                            candidate is not None
-                            and completed
-                            and productive
-                            and candidate.incarnation == identity
-                            and incarnation() == identity
-                        ):
+                        cancelled = (
+                            event.stop_reason == STOP_REASON_CANCELLED
+                            and not event.synthetic_completion
+                        )
+                        if attempt and completed and productive and incarnation() == identity:
                             with self._lock:
-                                if self._pending is candidate and self._epoch == epoch:
-                                    self._acknowledged = (identity, candidate.digest, epoch)
+                                if self._epoch == epoch:
+                                    for slot, candidate in attempt:
+                                        if (
+                                            candidate.incarnation == identity
+                                            and self._pending.get(slot) is candidate
+                                        ):
+                                            self._acknowledged[slot] = (
+                                                identity,
+                                                candidate.digest,
+                                                epoch,
+                                                candidate.volatile_digest,
+                                            )
                     yield event
         except GeneratorExit:
             # Collectors may close immediately after consuming a raw terminal.
             raise
         except BaseException:
-            self._invalidate_attempt(candidate, epoch)
+            self._invalidate_attempt(attempt, epoch)
             raise
         finally:
-            if not (completed and productive):
-                self._invalidate_attempt(candidate, epoch)
+            kept = cancelled and cancel_keeps_history is not None and cancel_keeps_history()
+            if not (completed and productive) and not kept:
+                self._invalidate_attempt(attempt, epoch)

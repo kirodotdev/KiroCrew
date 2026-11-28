@@ -136,7 +136,7 @@ def is_system_notice(role: object, meta: object) -> bool:
 #: The injected workflow-completion envelope (``workflow_inject.py``) is written
 #: under the assistant role, like the system notices above, and is likewise
 #: status rather than speech -- but only when its HEADER parses. The frontend
-#: (``WorkflowCompletionCard.tsx``, ``WF_COMPLETION_RE``) deliberately draws a
+#: (its ``WF_COMPLETION_RE``) deliberately draws a
 #: malformed envelope as visible markdown rather than swallowing it, so a
 #: prefix-only test here would hide from the roster a row the chat shows. Same
 #: header shape as the frontend regex; ``test/fixtures/crewmate_speech_rows.json``

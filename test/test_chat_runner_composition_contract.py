@@ -495,6 +495,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_directive_source_channels",
         "_directive_owner_origin",
         "_commands_off",
+        "_expansions_off",
         "_recovery_echo_owed",
         "_card_origin",
         "_prompt_on_channel",
@@ -1221,6 +1222,7 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/native_cards.py",
         "dashboard/chat_turn/permission_prompt.py",
         "dashboard/chat_turn/prompt_assembly.py",
+        "dashboard/chat_turn/prompt_file_notice.py",
         "dashboard/chat_turn/queue_drain.py",
         "dashboard/chat_turn/recipient.py",
         "dashboard/chat_turn/segment_flush.py",
@@ -1311,6 +1313,7 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
     r"create_task\(": (
         "dashboard/chat_turn/account_identity.py",
         "dashboard/chat_turn/eager_spawn.py",
+        "dashboard/chat_turn/mcp_session.py",
         "dashboard/chat_turn/prompt_assembly.py",
         "dashboard/chat_turn/queue_cycle.py",
         "dashboard/chat_turn/queue_drain.py",

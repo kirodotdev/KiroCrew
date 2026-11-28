@@ -464,12 +464,18 @@ ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = (
 # Backends that honour a remote MCP entry's ``oauth`` block (the pre-registered
 # client id, redirect URI and scopes a Connections provider writes). Only kiro-cli
 # reads it: it loads the entry from the agent file it was launched with. KAS takes
-# its agents over ``_meta.kiro.customAgents``, whose remote-server schema has no
-# ``oauth`` slot, so the block is dropped and the engine falls back to dynamic
-# client registration, which a pre-registered provider does not offer.
-# The kiro-cli relay route of KAS projects through the same schema, so it is not a
-# member either. A backend joins only once its own path carries the block to the
-# engine; until then the Connections page marks those providers kiro-cli only.
+# its agents over ``_meta.kiro.customAgents``; from engine 0.66.104 that schema keeps
+# a public client's ``clientId`` and ``redirectUri`` (``kas_engine_features.carry_oauth``).
+# A confidential client's block, one naming ``clientSecret``, reaches only an engine
+# that announced ``mcpOAuthClientSecret`` (0.66.135, and only when Crew declared
+# ``secretStorage``, i.e. ``agent.kas_persist_mcp_sign_in``): Crew sends the block
+# without the secret and the secret through ``_kiro/mcp/oauth/setClientSecret``
+# (``kas_client_secret``). Every pre-registered Connections provider is
+# confidential, and this set is read where no engine is running yet (the
+# Connections page): which engine a KAS chat gets, and whether it announces the
+# flag, is known only once it starts. So KAS stays out, and the page keeps marking
+# those providers kiro-cli only rather than offer a sign-in an older engine cannot
+# finish. A backend joins only once every engine its path runs carries the block.
 ACP_BACKENDS_REMOTE_MCP_OAUTH = frozenset({ACP_BACKEND_KIRO})
 
 # Backends whose sessions reach a Crew-owned Connection (``crew_oauth`` preview)
@@ -714,3 +720,18 @@ ACP_BACKENDS_MCP_RELAUNCH_RELOAD = frozenset({ACP_BACKEND_STRANDS})
 ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN = frozenset(
     {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
 )
+
+# Backends whose ``session/new`` array gives a custom agent (a user-level spec Crew
+# did not write) Crew's own ``kirocrew-core`` and ``kirocrew-cron``: the read the
+# shared translation resolves its spec with adds them when the mirror asks
+# (``session_mcp.session_mcp_projection``), through the helper kiro-cli's skill view
+# and KAS apply on their own paths (``acp.default_crew_servers``). These mirrors
+# mount a server whole and apply no per-tool ``excludedTools``, so the helper adds no app
+# server here and leaves out a default one an ``excludedTools`` entry may reach.
+# Measured on claude-agent-acp 0.94.0 and codex-acp 2.3.0: a custom agent's chat
+# called ``cron_list`` and ``artifact_list`` as Crew's default agent's did (on
+# codex-acp, an enforced harness, ``kirocrew-cron`` answers only with the
+# agent-socket pickup ``acp.ipc_pickup.PICKUP_SERVERS`` gives its element). The
+# other array hosts read the same array but have no such measurement, so none
+# inherits the claim.
+ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})

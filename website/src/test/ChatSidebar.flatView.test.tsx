@@ -170,6 +170,16 @@ describe('chat sidebar — flat view (explode chats out of folders)', () => {
     expect(getByText('Beta')).toBeTruthy()
   })
 
+  it('leaves the pointer on the titled button, not on its animated icon, in every lane', () => {
+    const { getByTestId } = renderSidebar()
+    const toggle = getByTestId('flat-view-toggle')
+    for (let press = 0; press < 2; press++) {
+      expect(toggle.getAttribute('title')).toBeTruthy()
+      expect(getByTestId('flat-view-toggle-icon').className).toContain('pointer-events-none')
+      fireEvent.click(toggle)
+    }
+  })
+
   it('toggling on shows one lane with ALL sessions (foldered + unfoldered) in the tree\'s sort order', () => {
     const { getByTestId } = renderSidebar()
     fireEvent.click(getByTestId('flat-view-toggle'))
@@ -238,6 +248,20 @@ describe('chat sidebar — flat view (explode chats out of folders)', () => {
     const seq = Array.from(lane.querySelectorAll('[data-testid="date-segment-header"], [data-slot-key]'))
       .map(el => el.getAttribute('data-slot-key') ?? `H:${el.textContent}`)
     expect(seq).toEqual(['k-pin', 'H:Today', 'k-today', 'H:Last 7 Days', 'k-week'])
+  })
+
+  it('under "In progress, then newest" draws the running rows first with no header, then the dated rest', () => {
+    safeSetItem('mc-sidebar-flat-view', '1')
+    mocks.config = { dashboard: { session_sort: 'active-then-date' } }
+    const iso = pinClock()
+    const slots = [
+      { key: 'k-today', title: 'Fresh one', messages: 1, running: false, folder_id: 'f1', last_ts: iso(0) },
+      { key: 'k-run', title: 'Long turn', messages: 1, running: true, folder_id: 'f2', last_ts: iso(3) },
+    ]
+    const lane = renderSidebar(slots).getByTestId('flat-view-lane')
+    const seq = Array.from(lane.querySelectorAll('[data-testid="date-segment-header"], [data-slot-key]'))
+      .map(el => el.getAttribute('data-slot-key') ?? `H:${el.textContent}`)
+    expect(seq).toEqual(['k-run', 'H:Today', 'k-today'])
   })
 
   it('hides date segment headers on non-date sorts', () => {

@@ -10,7 +10,7 @@
 
 Owner only. Revoke and remove narrow access, so they work with the switch off.
 Nothing here can enroll a computer or widen a grant: that happens only from the
-computer itself.
+computer itself, after its desktop app's native consent (:mod:`.desktop_host`).
 
 Every gateway registers these routes, preview on or off, so this module stays
 import-light: at module level it imports only :mod:`.flag`. The broker, the
@@ -62,14 +62,11 @@ def device_rows() -> list[dict[str, Any]]:
     return rows
 
 
-async def _owner(request: web.Request, operation: str) -> Any:
+async def api_devices(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
-    return await require_owner_dashboard_request(request, operation)
-
-
-async def api_devices(request: web.Request) -> web.Response:
-    if (refusal := await _owner(request, "connected_computers.devices")) is not None:
+    refusal = await require_owner_dashboard_request(request, "connected_computers.devices")
+    if refusal is not None:
         return refusal
     # Off the loop: without a live config snapshot the switch is read from disk.
     off = await asyncio.to_thread(remote_refusal)
@@ -80,9 +77,10 @@ async def api_devices(request: web.Request) -> web.Response:
 
 async def _end(request: web.Request, *, remove: bool) -> web.Response:
     from kiro_crew.connected_computers.broker import get_broker
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
     op = "connected_computers.remove" if remove else "connected_computers.revoke"
-    if (refusal := await _owner(request, op)) is not None:
+    if (refusal := await require_owner_dashboard_request(request, op)) is not None:
         return refusal
     record = await end_device(
         _registry(), get_broker(), request.match_info["device_id"], remove=remove
@@ -181,8 +179,10 @@ async def api_connector_connect(request: web.Request) -> web.StreamResponse:
 
 
 def register_all(app: web.Application) -> None:
-    """Every connected-computers route: the connector socket and the device list."""
+    """Every connected-computers route: remote socket, remote list, local consent."""
+    from kiro_crew.connected_computers import local_routes
     from kiro_crew.dashboard.token_auth_paths import CONNECTOR_CONNECT_PATH
 
     app.router.add_route("*", CONNECTOR_CONNECT_PATH, api_connector_connect)
     register_routes(app)
+    local_routes.register_routes(app)

@@ -216,8 +216,13 @@ def _await_memory_recovery(client: _Client, *, secs: float = 60, interval: float
 
 
 @contextlib.contextmanager
-def _booted(fixture: str) -> Iterator[tuple[Any, _Client]]:
+def _booted(
+    fixture: str, launcher: Callable[[Path], Path] | None = None
+) -> Iterator[tuple[Any, _Client]]:
     """Boot one gateway whose agent binary is the packaged fake ACP backend.
+
+    ``launcher`` writes another agent binary into the directory it is given and
+    returns its path, for a module whose cases need the fake backend wrapped.
 
     ``KIROCREW_KIRO_BIN`` is set before the spawn (the child inherits
     ``os.environ``) and restored in ``finally``, so a fake backend can never leak
@@ -246,7 +251,8 @@ def _booted(fixture: str) -> Iterator[tuple[Any, _Client]]:
 
     previous = os.environ.get("KIROCREW_KIRO_BIN")
     with tempfile.TemporaryDirectory(prefix="kc-fake-backend-") as launcher_dir:
-        os.environ["KIROCREW_KIRO_BIN"] = str(fake_acp_backend_launcher(Path(launcher_dir)))
+        build = launcher or fake_acp_backend_launcher
+        os.environ["KIROCREW_KIRO_BIN"] = str(build(Path(launcher_dir)))
         try:
             with spawn_feature_gateway(fixture=fixture, approval="reads") as handle:
                 try:

@@ -457,6 +457,11 @@ async def _apply_mutation(request: web.Request, op: str, mutate) -> web.Response
 
 async def api_denied_commands_list(request: web.Request) -> web.Response:
     """GET /api/security/denied-commands — full snapshot (no audit; read)."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    denied = await require_owner_for_dashboard_caller(request, "denied_commands.list")
+    if denied is not None:
+        return denied
     return await _snapshot_response()
 
 
@@ -940,6 +945,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.security_trusted_apps import (  # noqa: F401
         _TRUST_SETTING_NAMES,
         TrustSettingOverlayOwned,
+        _apply_allow_all,
+        _blanket_fence_apps,
         _mutate_agent_config,
         _overlay_owned_trust_settings,
         _preflight_agent_config_mutable,

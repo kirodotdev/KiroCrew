@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { baseRelease, compareVersions, isNewSection, notesPredateRunningRelease } from './releaseVersion'
+import { baseRelease, compareVersions, isNewSection, notesPredateRunningRelease, stagedConsumesOffer } from './releaseVersion'
 
 describe('compareVersions', () => {
   it('orders release cores numerically, not lexically', () => {
@@ -171,5 +171,25 @@ describe('notesPredateRunningRelease', () => {
   it('makes no claim about versions it cannot place', () => {
     expect(notesPredateRunningRelease('Unreleased', '0.8.0')).toBe(false)
     expect(notesPredateRunningRelease('0.7.1', '—')).toBe(false)
+  })
+})
+
+describe('stagedConsumesOffer', () => {
+  it('lets the offered version stand in for the offer, in either spelling', () => {
+    expect(stagedConsumesOffer('0.14.0rc5', '0.14.0rc5')).toBe(true)
+    expect(stagedConsumesOffer('0.14.0-rc.5', '0.14.0rc5')).toBe(true)
+  })
+
+  it('never lets another version consume the offer, older or newer', () => {
+    // Older: a restart would start it instead of the offer.
+    expect(stagedConsumesOffer('0.14.0rc4', '0.14.0rc5')).toBe(false)
+    // Newer: staged from another lane (insider 0.14.1rc2, then Stable picked at
+    // 0.14.0rc5), so a restart would skip the switch.
+    expect(stagedConsumesOffer('0.14.1rc2', '0.14.0rc5')).toBe(false)
+  })
+
+  it('makes no claim about a staged version it cannot place', () => {
+    expect(stagedConsumesOffer('', '0.14.0rc5')).toBe(false)
+    expect(stagedConsumesOffer('—', '0.14.0rc5')).toBe(false)
   })
 })

@@ -184,14 +184,16 @@ async def _jobs_response(request: web.Request, job_id: str | None) -> web.Respon
     # row (each free-text field through both redaction passes) and encoding the
     # body took hundreds of milliseconds on the loop for a few hundred jobs with
     # long results, and the Schedule page reads this list often.
-    live = {
-        j.id: (
+    live = {}
+    for j in jobs:
+        running = state.crons.is_running(j.id)
+        live[j.id] = (
             state.has_slot(f"cron-{j.id}"),
-            state.crons.is_running(j.id),
+            running,
             state.crons.running_since(j.id),
+            # Only a claimed run can be waiting out its jitter.
+            state.crons.run_waiting_until(j.id) if running else None,
         )
-        for j in jobs
-    }
     # Copies, taken on the loop: a run or a mutator may write a job's fields
     # (or fill one of its lists and dicts) while the worker reads them.
     jobs = [_job_snapshot(j) for j in jobs]
@@ -330,6 +332,9 @@ async def _jobs_response(request: web.Request, job_id: str | None) -> web.Respon
                 "last_error": _result_text(j.last_error or "") or None,
                 "is_running": live[j.id][1],
                 "running_since": live[j.id][2],
+                # Epoch time a claimed run starts executing, while it waits out
+                # its jitter: `is_running` is true and nothing has run yet.
+                "waiting_until": live[j.id][3],
             }
             for j in jobs
         ]
@@ -524,5 +529,6 @@ async def api_cron_folders_delete(request: web.Request) -> web.Response:
 
 
 # Every api_* handler in this module is an owner surface, so a private member's
-# internal call is refused before it runs.
-guard_owner_surface_routes(globals(), member_scoped=frozenset())
+# internal call is refused before it runs, and so is a dashboard session that is
+# neither the owner nor a teammate; an app token keeps its own job confinement.
+guard_owner_surface_routes(globals(), member_scoped=frozenset(), dashboard_owner_only=True)

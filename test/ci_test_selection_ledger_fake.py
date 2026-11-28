@@ -102,6 +102,8 @@ class FakeGh:
         self.log_error = ""
         # Artifacts whose download arrives cut short.
         self.torn: set[int] = set()
+        # Artifacts whose download is these bytes, whatever the run uploaded.
+        self.damaged: dict[int, bytes] = {}
         # Further members of an artifact's archive, as `(name, bytes)`.
         self.padding: dict[int, list[tuple[str, bytes]]] = {}
         # The size GitHub lists for an artifact, where it is not the archive's own.
@@ -234,6 +236,8 @@ class FakeGh:
         """An artifact's archive: one JSON file for each text the run's artifact holds."""
         if artifact in self.torn:
             return b"PK not an archive"
+        if artifact in self.damaged:
+            return self.damaged[artifact]
         held = io.BytesIO()
         with zipfile.ZipFile(held, "w", zipfile.ZIP_DEFLATED) as archive:
             for number, text in enumerate(self.artifacts[artifact]):

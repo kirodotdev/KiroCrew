@@ -11,15 +11,18 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, AlertCircle, GitBranch, ArrowUp, X, Download, Copy } from 'lucide-react'
 import { Btn } from '../../components/ui'
-import { useAppDispatch, useAppSelector } from '../../store'
+import { useAppDispatch, useAppSelector, useAppStore } from '../../store'
+import { WorkConfirmDeclined } from '../../utils/workInFlight'
+import { useRestartRefusal } from '../../hooks/useRestartRefusal'
 import { setUpdateProgress } from '../../store/dashboardSlice'
 import { api, ApiError } from '../../api/client'
 import { copyToClipboard } from '../../utils/clipboard'
 import ErrorNotice from '../../components/ErrorNotice'
+import InfoTip from '../../components/InfoTip'
+import { selectUpdateInstalling } from '../../components/UpdatePill'
 import { reportForError, type ErrorReport } from '../../utils/errorReport'
 import { i18nT } from '../../i18n/t'
 import { fmtRelative } from '../../i18n/format'
-import { compareVersions } from '../../utils/releaseVersion'
 
 /**
  * How long a primed Restart button stays armed.
@@ -66,6 +69,22 @@ export const APPLY_START_GRACE_MS = 30_000
 export const AGENT_REQUEST_POLL_MS = { value: 5000 }
 
 /**
+ * Whether an approved in-app update of `offered` waits only for a restart:
+ * 'installed' beside the running version, or 'armed' to install at the next
+ * start (a gateway that runs from the stable link). Read from the status frame,
+ * never a card's own phase, so a reload keeps it, and only a cancelled arm
+ * brings Update back. Only the offered version counts: a Check that found a
+ * newer build keeps its Update, even while the frame names the staged one.
+ */
+export function useInstalledAndWaiting(offered: string): 'installed' | 'armed' | null {
+  const staged = useAppSelector(s =>
+    s.dashboard.status?.update_restart_ready === true ? s.dashboard.status?.update_restart_ready_version || '' : '')
+  const armed = useAppSelector(s => s.dashboard.status?.update_armed_version) || ''
+  if (!offered) return null
+  return staged === offered ? 'installed' : armed === offered ? 'armed' : null
+}
+
+/**
  * Copy a command and report the OUTCOME. `copyToClipboard` resolves `false`
  * when the legacy fallback fails without throwing (plain-HTTP remote gateway —
  * exactly the deployment these commands target) and rejects when both paths
@@ -106,6 +125,10 @@ export async function copyCommand(
  * `armedNote` is a line shown beside the button only while it is armed, and the
  * armed button's description, for a caller whose restart loses something the
  * user can still see (an unsaved form). Without it the button renders alone.
+ *
+ * `label` replaces the resting "Restart gateway" text, for a step whose one
+ * button names what the restart brings ("Restart to use vX"). The confirm and
+ * restarting texts are the same at every call site.
  */
 export function RestartGatewayButton({
   primary,
@@ -116,6 +139,7 @@ export function RestartGatewayButton({
   disabled,
   describedBy,
   armedNote,
+  label,
 }: {
   primary?: boolean
   pending: boolean
@@ -127,6 +151,7 @@ export function RestartGatewayButton({
   /** Id of the element that says why the button is disabled. */
   describedBy?: string
   armedNote?: string
+  label?: string
 }) {
   const [armed, setArmed] = useState(false)
   const noteId = useId()
@@ -166,7 +191,7 @@ export function RestartGatewayButton({
           ? i18nT('pages.settings.aboutPanel.restarting')
           : live
             ? i18nT('pages.settings.aboutPanel.restart_confirm')
-            : i18nT('pages.settings.aboutPanel.restart_gateway')}
+            : label || i18nT('pages.settings.aboutPanel.restart_gateway')}
       </Btn>
       {showNote && <span id={noteId} className="ml-2 text-[12px] text-warn-text">{armedNote}</span>}
     </>
@@ -175,11 +200,14 @@ export function RestartGatewayButton({
 
 /** The in-app update flow for a managed-venv install (RFC OQ7 step-up).
  *
- * Arming records the request server-side and yields the ONE command that can
- * approve it — run on the gateway host, where reading the nonce file proves
- * an identity a dashboard session does not have. The nonce itself never
- * reaches this client, so this panel can request an update but can never
- * approve one.
+ * One line and one button per step (decision entry "the update panel is one
+ * line and one button per step"). A newer release of this build's own channel
+ * installs with the click: the gateway answers `status: "applying"` and the panel
+ * shows the install's progress line. Every other arm (a channel move, a
+ * downgrade, an overridden update source, a policy-managed host) records the
+ * request server-side and yields the ONE command that can approve it, run on the
+ * gateway host, where reading the nonce file proves an identity a dashboard
+ * session does not have. The nonce itself never reaches this client.
  *
  * The phase machine is what keeps the post-approval story visible: a consumed
  * request (the poll answering `armed: false`) is the APPROVAL landing, so the
@@ -241,7 +269,8 @@ function armRefusalText(code: string | null, startLabel: string): string | null 
     case 'update_check_pending': return i18nT('pages.settings.aboutPanel.arm_check_failed', { label: startLabel })
     case 'arm_no_verdict': return i18nT('pages.settings.aboutPanel.arm_no_verdict')
     case 'arm_below_min_version': return i18nT('pages.settings.aboutPanel.arm_below_min_version')
-    case 'arm_policy_managed': return i18nT('pages.settings.aboutPanel.updates_managed_by_policy')
+    case 'arm_policy_managed':
+    case 'arm_blocked_by_policy': return i18nT('pages.settings.aboutPanel.updates_managed_by_policy')
     case 'arm_wrong_shape': return i18nT('pages.settings.aboutPanel.arm_wrong_shape')
     case 'arm_failed': return i18nT('pages.settings.aboutPanel.arm_failed')
     default: return null
@@ -255,7 +284,7 @@ function isOfferGoneCode(code: string | null): boolean {
 
 export function InAppUpdateFlow({
   version,
-  manualCommand,
+  rawVersion,
   isChannelMove,
   onHandoff,
   askAgent = true,
@@ -269,7 +298,8 @@ export function InAppUpdateFlow({
    * the stable channel names a prerelease that the user did not choose.
    */
   version: string
-  manualCommand: string
+  /** Raw offered build for exact status matching; labels may fold stable versions. */
+  rawVersion?: string
   /**
    * True when the target is the followed lane's release rather than a newer
    * build — i.e. this arm performs a channel MOVE, which is a downgrade by
@@ -283,7 +313,7 @@ export function InAppUpdateFlow({
   /** Disable hand-off where an enforcement overlay must remain visible. */
   askAgent?: boolean
 }) {
-  const [phase, setPhase] = useState<'idle' | 'armed' | 'applying' | 'staged' | 'failed' | 'expired' | 'ended'>('idle')
+  const [phase, setPhase] = useState<'idle' | 'armed' | 'applying' | 'done' | 'failed' | 'expired' | 'ended'>('idle')
   const [armed, setArmed] = useState<{
     approveCommand: string
     /**
@@ -320,24 +350,11 @@ export function InAppUpdateFlow({
   // copy showing the offer adopts a live arm another copy made, but only from an
   // answer read since then: an older one can predate an approval or expiry.
   const idleSince = useRef(Date.now())
-  // The armed version differs from the one the button offered, so the panel owes
-  // the user an explanation rather than a bare second number. Declared once
-  // because it decides BOTH armed lines: the explanatory note renders on it, and
-  // the plain "This installs v…" line renders on its negation — the note's own copy
-  // already opens by naming the armed version.
-  //
-  // Only an UPGRADE to a newer build gets the "a newer version was found" note:
-  // the re-check can also arm an older build than the button named (a pulled
-  // release, with an older one still ahead of the running build), and that note
-  // would then be false. Such an arm renders the plain line, which names what
-  // installs and claims nothing about why. A channel move's note is
-  // direction-neutral, so it renders on any difference.
-  const armedVersionChanged = Boolean(
-    armed?.versionDisplay && armed.offered && armed.versionDisplay !== armed.offered
-      && (isChannelMove || compareVersions(armed.versionDisplay, armed.offered) === 1),
-  )
   const [cmdCopied, setCmdCopied] = useState(false)
   const [cmdCopyFailed, setCmdCopyFailed] = useState(false)
+  // The version a one-click install is installing, for the progress line before
+  // the install's first frame names it.
+  const [installing, setInstalling] = useState('')
   // The report rides with the message: a refusal worded from the catalog no longer
   // matches the journal entry the transport filed under the gateway's message,
   // and the agent hand-off needs that entry's endpoint, status and body.
@@ -357,6 +374,9 @@ export function InAppUpdateFlow({
   const noticeRetiredByNextOffer = useRef(false)
   useEffect(() => {
     setOfferVoid(false)
+    // A finished apply belongs to the version it installed: a newer offer gets
+    // its own Update.
+    setPhase(p => (p === 'done' ? 'idle' : p))
     if (noticeRetiredByNextOffer.current) setArmError({ message: '' })
     noticeRetiredByNextOffer.current = false
   }, [version])
@@ -371,13 +391,30 @@ export function InAppUpdateFlow({
       : 'pages.settings.aboutPanel.update_to_version', { version })
     : i18nT('pages.settings.aboutPanel.update_when_i_restart')
   const dispatch = useAppDispatch()
+  const appStore = useAppStore()
   const queryClient = useQueryClient()
   const arm = useMutation({
     // The offered version rides as the mutation variable so `onSuccess` records
     // what THIS click was made against (see `armed.offered`).
-    mutationFn: (offered: string) => api.armUpdate(offered),
+    // A click starts a fresh narrative, so progress left by a PRIOR attempt is
+    // cleared BEFORE the request: a one-click install pushes its first frame as
+    // soon as it starts, which can land before this answer does. Progress of an
+    // install still running is not a prior attempt's: the gateway refuses this
+    // click (`arm_busy`), and the running install's frames stay on screen.
+    mutationFn: (offered: string) => {
+      if (!selectUpdateInstalling(appStore.getState())) dispatch(setUpdateProgress(null))
+      return api.armUpdate(offered)
+    },
     onSuccess: (res, offered) => {
-      if (res.armed && res.approve_command) {
+      if (res.status === 'applying' || res.status === 'armed') {
+        // One click installed it (a newer release of this build's own channel):
+        // no host approval, so the panel goes straight to the install's progress.
+        // `armed` is a gateway on the stable link: it installs at the next start,
+        // and its `done` frame has already been pushed.
+        setArmError({ message: '' })
+        setInstalling(res.version_display || offered)
+        setPhase(res.status === 'armed' ? 'done' : 'applying')
+      } else if (res.armed && res.approve_command) {
         setArmError({ message: '' })
         // A fresh arm starts a fresh narrative: clear any progress left by a
         // PRIOR attempt. Without this, a stale `failed` push instantly
@@ -403,7 +440,7 @@ export function InAppUpdateFlow({
         void queryClient.cancelQueries({ queryKey: ['update-arm-status'] })
         queryClient.setQueryData(['update-arm-status'], {
           armed: true, managed_by: 'kirocrew', request_id: res.request_id, version: res.version,
-          expires_in: expiresIn, approve_command: res.approve_command,
+          version_display: res.version_display, expires_in: expiresIn, approve_command: res.approve_command,
         })
       } else {
         setArmError({ message: res.error || i18nT('pages.settings.aboutPanel.update_failed') })
@@ -492,7 +529,9 @@ export function InAppUpdateFlow({
     dispatch(setUpdateProgress(null))
     setArmed({
       approveCommand: polled.approve_command,
-      versionDisplay: '',
+      // What the pending record installs, never this copy's offer: the arm's own
+      // re-check may have armed a newer release than the button named.
+      versionDisplay: polled.version_display || polled.version || '',
       offered: version,
       expiresIn,
       deadlineMs: polledAt + expiresIn * 1000,
@@ -527,9 +566,26 @@ export function InAppUpdateFlow({
   useEffect(() => {
     if (phase !== 'applying' && phase !== 'armed') return
     if (progressStep === 'failed' || progressStep === 'error') setPhase('failed')
-    // The apply installed beside the running version; it starts at the next restart.
-    else if (progressStep === 'done') setPhase('staged')
+    // The apply finished. "Installed, restart to use it" is the status frame's
+    // fact (`update_restart_ready`): the next status push carries it, and the
+    // card above then renders Restart in place of this flow.
+    else if (progressStep === 'done') setPhase('done')
   }, [progressStep, phase])
+  // `done` holds only while the status agrees. The mark is not in the store at
+  // the `done` push, so the frame on screen then is skipped; any later frame that
+  // says the offered version neither is installed nor is armed for the next start
+  // (a cancelled arm, an install of a version no longer offered) brings back Update.
+  const status = useAppSelector(st => st.dashboard.status)
+  const offeredInstalled = useInstalledAndWaiting(rawVersion || version)
+  const statusAtDone = useRef<typeof status | undefined>(undefined)
+  useEffect(() => {
+    if (phase !== 'done') {
+      statusAtDone.current = undefined
+      return
+    }
+    if (statusAtDone.current === undefined) statusAtDone.current = status
+    else if (status !== statusAtDone.current && !offeredInstalled) setPhase('idle')
+  }, [phase, status, offeredInstalled])
   // `armed: false` before the deadline is read as the approval, but a dismissed
   // request or a gateway that restarted and forgot the arm answers the same. Only
   // an approval starts an apply, and arming cleared the progress, so `applying`
@@ -561,39 +617,27 @@ export function InAppUpdateFlow({
     ? 'in-app-update-armed'
     : phase === 'applying'
       ? 'in-app-update-applying'
-      : phase === 'staged'
-        ? 'in-app-update-staged'
+      : phase === 'done'
+        ? 'in-app-update-done'
         : phase === 'failed'
           ? 'in-app-update-failed'
           : 'in-app-update'
 
   return (
     <div className="flex flex-col gap-2" data-testid={rootTestId}>
+      {/* Installing: one line. What happens next (the new version starts at
+          the next restart, this page keeps working) is in the info button. */}
       {phase === 'applying' && (
-        <>
-          {progress?.detail && (
-            <p className="text-[12px] text-muted font-mono break-all" data-testid="apply-progress">
-              {progress.detail}
-            </p>
-          )}
-          <p className="text-[12px] text-muted">
-            {i18nT('pages.settings.aboutPanel.applying_restart_note')}
-          </p>
-        </>
+        <p className="text-[13px] text-muted flex items-center gap-1.5 break-all" data-testid="apply-progress" role="status">
+          <RefreshCw size={13} className="lucide-inline animate-spin shrink-0" />
+          {i18nT('pages.settings.aboutPanel.installing_version', { version: installing || version })}
+          <InfoTip text={i18nT('pages.settings.aboutPanel.applying_restart_note')} />
+        </p>
       )}
 
-      {phase === 'staged' && (
-        <>
-          {progress?.detail && (
-            <p className="text-[12px] text-muted font-mono break-all" data-testid="apply-progress">
-              {progress.detail}
-            </p>
-          )}
-          <p className="text-[12px] text-muted" data-testid="update-staged-note">
-            {i18nT('pages.settings.aboutPanel.applying_restart_note')}
-          </p>
-        </>
-      )}
+      {/* `done` shows nothing of its own: the status read that follows puts the
+          card's one Restart button here, and an arm for the next start shows
+          its note above. */}
 
       {phase === 'failed' && (
         <ErrorNotice
@@ -615,95 +659,40 @@ export function InAppUpdateFlow({
               {i18nT('pages.settings.aboutPanel.arm_ended_without_update', { label: startLabel })}
             </p>
           )}
-          {/* Once the gateway has said this offer no longer exists, the intro and the
-              button (below) are both describing something that cannot happen, so both
-              stand down and the notice is the only claim left. What this component
-              CANNOT reach is the "Update available" badge in the header and the
-              heading above this panel: those are rendered from the status push, so
-              they clear on its next frame rather than instantly. */}
-          {!offerVoid && (
-            <p className="text-[13px] text-muted">
-              {i18nT(isChannelMove
-                ? 'pages.settings.aboutPanel.in_app_channel_move_intro'
-                : 'pages.settings.aboutPanel.in_app_update_intro')}
-            </p>
-          )}
-          {/* askAgent on: arming persists nothing client-side. The button is still
-              there for a retry EXCEPT on a void offer, where retrying is the one
-              thing that cannot help — hence the manual command below, which is the
-              honest way out of that state. */}
+          {/* The available step is the card's one line and this flow's one button:
+              no intro and no installer fold-out (decision entry "the update panel
+              is one line and one button per step"). Once the gateway has said the
+              offer no longer exists, the button (below) stands down and this notice
+              is the only claim left. What this component CANNOT reach is the
+              "Update available" badge in the header and the heading above this
+              panel: those are rendered from the status push, so they clear on its
+              next frame rather than instantly. askAgent on: arming persists nothing
+              client-side. */}
           <ErrorNotice message={armError.message} report={armError.report} askAgent={askAgent} onHandoff={onHandoff} testId="arm-error" />
-          {manualCommand && (
-            <details className="text-[12px] text-muted">
-              <summary className="cursor-pointer">{i18nT('pages.settings.aboutPanel.or_update_manually')}</summary>
-              <div className="mt-2 p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all">
-                {manualCommand}
-              </div>
-            </details>
-          )}
         </>
       )}
 
       {phase === 'armed' && armed && (
         <>
-          {/* The two lines below are mutually exclusive BY CONSTRUCTION, off one
-              boolean, because the note's own copy opens by naming the armed version
-              ("This installs v0.4.8…"). Rendering both would say the same number
-              twice, and keeping two independent conditions in sync is how they drift
-              into saying it twice again later.
-              Note this is NOT `armed.versionDisplay === version`: when nothing was
-              offered (`version` empty) there is no difference to explain, so the note
-              stays away AND the plain line has to render — that is the one case where
-              suppressing it would leave the panel naming no version at all. */}
-          {/* WHAT was armed, not what the button offered. The gateway re-checks the
-              feed as it arms, so on a panel whose verdict has gone stale these
-              differ — and the approval below installs this one.
-              DECLARATIVE, not the button's own `update_to_version` / `switch_to_version`
-              copy: reusing that copy would make the identical words a control in one
-              state and inert text in the next, which reads ambiguously to a screen
-              reader user. These open the same way
-              the changed-version note does, so the armed panel speaks one vocabulary
-              whether or not the number moved. */}
-          {armed.versionDisplay && !armedVersionChanged && (
-            <p className="text-[13px] text-text" data-testid="armed-version">
-              {i18nT(isChannelMove
-                ? 'pages.settings.aboutPanel.armed_switches_to_version'
-                : 'pages.settings.aboutPanel.armed_installs_version', { version: armed.versionDisplay })}
-            </p>
-          )}
-          {/* The number CHANGING is the whole point of the re-check, and it is the
-              one thing the plain "This installs v…" line cannot say. Without this, the
-              user reads "Update to v0.4.7" on the button and "This installs v0.4.8" here and
-              has to guess whether these are two updates or one of them is wrong —
-              seconds before running an approval command on another machine. Worth the
-              new string: only the difference needs explaining, so it is rendered only
-              when there is one, and it REPLACES the plain line rather than joining it.
-              BRANCHED on the lane move, because a channel move is a downgrade by
-              construction (see the `isChannelMove` prop): telling that user "a newer
-              version was found just now" would be false every time, about a number
-              that just went DOWN, seconds before they run a host command. The move
-              variant says what actually happened — the chosen channel serves this one
-              now — which is true whichever direction the version went. */}
-          {armedVersionChanged && (
-            <p className="text-[13px] text-text" data-testid="armed-version-changed">
-              {i18nT(isChannelMove
-                ? 'pages.settings.aboutPanel.armed_version_changed_channel_move'
-                : 'pages.settings.aboutPanel.armed_version_changed',
-              { version: armed.versionDisplay, offered: armed.offered })}
-            </p>
-          )}
-          <p className="text-[13px] text-muted">
-            {i18nT('pages.settings.aboutPanel.armed_run_on_host')}
+          {/* The host-approval step: one line, the one command, and Copy (the
+              button below). The line names WHAT was armed, not what the button
+              offered: the gateway re-checks the feed as it arms, so on a panel
+              whose verdict has gone stale the two differ, and the approval
+              installs this one. The approval window still closes (the poll and
+              the deadline decide `expired`), but no countdown is shown. */}
+          <p className="text-[13px] text-text flex items-center gap-1.5" data-testid="armed-version">
+            {/* The line names what the approval installs: the version the
+                gateway armed. Why it takes the host is in the info button. */}
+            {i18nT(isChannelMove
+              ? 'pages.settings.aboutPanel.armed_run_this_to_switch'
+              : 'pages.settings.aboutPanel.armed_run_this_to_install',
+            { version: armed.versionDisplay || armed.offered })}
+            <InfoTip text={i18nT('pages.settings.aboutPanel.armed_why_host')} />
           </p>
           <div className="p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all"
             data-testid="approve-command">
             {armed.approveCommand}
           </div>
-          <span className="text-[12px] text-muted" data-testid="arm-countdown">
-            {i18nT('pages.settings.aboutPanel.armed_expires_in', {
-              time: `${Math.floor(armed.expiresIn / 60)}:${String(armed.expiresIn % 60).padStart(2, '0')}`,
-            })}
-          </span>
           {cmdCopyFailed && (
             <ErrorNotice
               variant="inline"
@@ -725,29 +714,24 @@ export function InAppUpdateFlow({
               testId="arm-poll-error"
             />
           )}
-          <p className="text-[12px] text-muted">
-            {i18nT('pages.settings.aboutPanel.armed_waiting_note')}
-          </p>
         </>
       )}
 
       {/* "You're already up to date" under a live "Update to v0.4.7" button is two
           contradictory statements on one screen, and the button is the dangerous
           half: pressing it can only fail the same way again. So a void offer takes
-          the action away with the intro; the manual command above stays as the
-          way out of that state. */}
-      {!(canStart && offerVoid) && (
+          the action away. Installing has its progress line and no button: there is
+          nothing to press until it ends. */}
+      {!(canStart && offerVoid) && phase !== 'done' && phase !== 'applying' && (
       <div>
         <Btn
           key="update-action"
           data-testid="in-app-update-action"
           primary={canStart}
           onClick={runAction}
-          disabled={arm.isPending || phase === 'applying'}
+          disabled={arm.isPending}
         >
-          {phase === 'applying' ? (
-            <><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.applying_update')}</>
-          ) : phase === 'armed' ? (
+          {phase === 'armed' ? (
             <><Copy size={13} className="lucide-inline" /> {cmdCopied
               ? i18nT('pages.settings.aboutPanel.copied')
               : i18nT('pages.settings.aboutPanel.copy_command')}</>
@@ -767,6 +751,67 @@ export function InAppUpdateFlow({
         </Btn>
       </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * The installed step for a surface that hosts `InAppUpdateFlow` outside the About
+ * card (the What's-new dialog): one button, "Restart to use vX". The About card and
+ * the update dialog have their own restart controls; this is the same two-step
+ * `RestartGatewayButton`, and `api.restartGateway` asks first when work would be cut.
+ */
+export function InstalledRestartStep({ version, onHandoff }: {
+  /** Installed beside the running one, or armed to install at the next start: either way the restart brings it. */
+  version: string
+  /** Close the hosting overlay after Ask Agent navigates to chat. */
+  onHandoff?: () => void
+}) {
+  const appStore = useAppStore()
+  const [restarting, setRestarting] = useState(false)
+  const [error, setError] = useState<{ message: string; report?: ErrorReport }>({ message: '' })
+  // The 200 only hands the restart to its worker, which can still refuse it; that
+  // verdict arrives as an `error`/`failed` progress step, as the About card hears it.
+  // The worker can refuse before the 200 reaches this tab; a refused attempt must
+  // not be reopened by its own late answer.
+  const refusedRef = useRef(false)
+  const restartRefusal = useRestartRefusal(detail => {
+    refusedRef.current = true
+    setRestarting(false)
+    setError({ message: detail || i18nT('pages.settings.aboutPanel.restart_failed') })
+  })
+  const restart = useMutation({
+    mutationFn: () => api.restartGateway(),
+    onMutate: () => {
+      refusedRef.current = false
+      restartRefusal.begin()
+    },
+    onSuccess: () => { if (!refusedRef.current) setRestarting(true) },
+    onError: (e: unknown) => {
+      // The person declined the "work is running" confirmation: a quiet cancel.
+      if (e instanceof WorkConfirmDeclined) return restartRefusal.end()
+      // A failure while this tab is still connected means no restart is coming;
+      // after the socket dropped it is the restart itself.
+      if (e instanceof ApiError || appStore.getState().dashboard.connected) {
+        restartRefusal.end()
+        setError({ message: (e instanceof ApiError && e.message) || i18nT('pages.settings.aboutPanel.restart_failed'), report: reportForError(e) })
+      } else setRestarting(true)
+    },
+  })
+  return (
+    <div className="flex flex-col gap-2" data-testid="in-app-update-installed">
+      <div>
+        <RestartGatewayButton
+          primary
+          pending={restart.isPending}
+          restarting={restarting}
+          onConfirm={() => { setError({ message: '' }); restart.mutate() }}
+          testId="gateway-restart-installed"
+          armedNote={i18nT('pages.settings.aboutPanel.restart_stops_replies')}
+          label={i18nT('pages.settings.aboutPanel.restart_to_use_version', { version })}
+        />
+      </div>
+      <ErrorNotice message={error.message} report={error.report} askAgent onHandoff={onHandoff} testId="gateway-restart-installed-error" />
     </div>
   )
 }

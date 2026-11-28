@@ -204,6 +204,7 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
             "rule is stored, so restoring one exactly means removing this rule first; "
             "wording that shares few significant words with it can coexist."
         )
+    lost += _swept_warning(d)
     if outcome == "refused":
         if reason == LESSON_REFUSED_AT_CAPACITY:
             return (
@@ -224,6 +225,7 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
                 "assertion or imperative and state a reusable behavioral rule instead. "
                 "Put a concrete background or subagent model choice in config under "
                 "agent.role_models.<role>, not in learned memory."
+                f"{lost}"
             )
         return (
             f"Lesson was NOT saved{scope_note}: the memory store refused this "
@@ -318,13 +320,47 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
         )
     if outcome == "enriched":
         return f"Updated the stored lesson{scope_note} with the new clause: {rule}{lost}"
-    # ``lost`` is interpolated on EVERY branch, including the two that cannot carry it
-    # (``unchanged`` and ``enriched`` are decided before the dedup scan runs, so they
-    # delete nothing). It renders to the empty string when nothing was superseded, so
-    # the uniform interpolation costs nothing and means no future outcome can drop the
-    # warning by being added to a branch that forgot it -- which is the mistake that
-    # made this field necessary in the first place.
+    # ``lost`` is interpolated on EVERY branch. ``unchanged`` and ``enriched`` are decided
+    # before the dedup scan runs, so this save deletes nothing on them, but ``lost`` also
+    # carries an earlier save's sweep notice, which any outcome can deliver. It renders to
+    # the empty string when there is neither, so the uniform interpolation costs nothing
+    # and means no future outcome can drop the warning by being added to a branch that
+    # forgot it -- which is the mistake that made this field necessary in the first place.
     return f"Saved lesson{scope_note}: {rule}{lost}"
+
+
+def _swept_warning(d: dict[str, Any]) -> str:
+    """The lessons an earlier save's background contradiction check removed, or ``""``.
+
+    That check deletes after its save has answered, so the gateway hands each delete
+    to this session's next lesson call once, as ``swept``. Filtered like
+    ``superseded``: this crosses HTTP. ``swept_dropped`` counts removals the gateway
+    could not keep the details of.
+    """
+    raw = d.get("swept")
+    rows = [
+        r
+        for r in (raw if isinstance(raw, list) else [])
+        if isinstance(r, dict)
+        and isinstance(r.get("removed"), str)
+        and isinstance(r.get("cause"), str)
+    ]
+    dropped = d.get("swept_dropped")
+    if not isinstance(dropped, int) or isinstance(dropped, bool) or dropped < 1:
+        dropped = 0
+    if not rows and not dropped:
+        return ""
+    shown = "".join(f"\n  - {r['removed']}\n    (contradicted by: {r['cause']})" for r in rows)
+    if dropped:
+        shown += f"\n  - {dropped} more, whose details were not kept"
+    total = len(rows) + dropped
+    return (
+        f"\n\nWARNING -- after an earlier save in this session, a background check REMOVED "
+        f"{total} stored lesson{'s' if total != 1 else ''} judged to contradict the "
+        f"rule that save stored:{shown}\n"
+        "Those are no longer in effect and will not appear in learn_list. Tell the user "
+        "which ones were removed and by which rule, so they can restore any that should stay."
+    )
 
 
 def learn_list(name: str, args: dict[str, Any]) -> str:
@@ -347,10 +383,11 @@ def learn_list(name: str, args: dict[str, Any]) -> str:
         return f"Error: {err_val}"
     if d.get("lessons_withheld") == "memory_reads_disabled":
         return "Memory reads are disabled for this session."
+    swept = _swept_warning(d)
     lessons = d.get("lessons", [])
     lines = _window_header(d, len(lessons))
     if not lessons:
-        return "\n".join(lines) if lines else "No lessons saved."
+        return ("\n".join(lines) if lines else "No lessons saved.") + swept
     for le in lessons:
         withheld = (
             " [WITHHELD: volatile_session_fact]"
@@ -361,7 +398,7 @@ def learn_list(name: str, args: dict[str, Any]) -> str:
             f"[{le.get('category', '?')}] {le['rule']}{withheld}"
             f"{_applies_suffix(le)}{_scope_suffix(le)}{_source_suffix(le)}"
         )
-    text = "\n".join(lines)
+    text = "\n".join(lines) + swept
     if len(text) > _LIST_RENDER_BUDGET:
         # ``sanitize_response`` cuts the TAIL of a response over the cap, and
         # the header above is the head -- so a page that renders past the cap
@@ -372,7 +409,7 @@ def learn_list(name: str, args: dict[str, Any]) -> str:
         return (
             f"This page of {shown} lessons renders to {len(text)} characters, past the "
             f"{MAX_RESPONSE_LEN}-character tool response cap, so none of it is shown. "
-            f"Pass limit={fits} with the same offset to read it in parts."
+            f"Pass limit={fits} with the same offset to read it in parts.{swept}"
         )
     return text
 

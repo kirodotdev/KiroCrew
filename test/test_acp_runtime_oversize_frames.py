@@ -226,6 +226,16 @@ async def test_an_oversize_session_new_reply_releases_its_start_permit(monkeypat
     assert recorded == [False]
 
 
+def test_the_oversize_frame_message_names_the_agents_folder_outside_the_home(tmp_path, monkeypatch):
+    """A pod gateway sets ``KIRO_HOME`` to ``<pod home>/kiro`` and keeps the real home,
+    so the agents folder kiro-cli lists is outside the home and named in full."""
+    monkeypatch.setenv("KIRO_HOME", str(tmp_path / "pod" / "kiro"))
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path / "home"))
+    agents = (tmp_path / "pod" / "kiro").resolve() / "agents"
+    message = runtime_mod._oversize_frame_message(11_000_000)
+    assert f"lists every agent in {agents} with its description" in message
+
+
 def test_the_oversize_frame_id_is_read_only_from_a_reply_envelope():
     rid = runtime_mod._oversize_frame_request_id
     assert rid(b'{"jsonrpc":"2.0","id":12,"result":{') == 12

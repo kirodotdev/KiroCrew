@@ -103,6 +103,13 @@ MAX_AGENT_ERROR_CHARS = 500
 CEILING_MAX_NAMED_AGENTS = 5
 CEILING_MAX_LABEL_CHARS = 60
 
+# ``agent_progress`` bounds. A call reports the first tool call it starts at once,
+# then its newest one at most this often: the run record is rewritten whole every
+# few events, so the stream grows by a bounded amount per running call. Each
+# reported tool title is cut to the sub-agent cards' length.
+PROGRESS_EVERY_SECS = 30.0
+PROGRESS_MAX_TOOL_CHARS = 80
+
 
 async def _drain_cleanup(task: asyncio.Future[Any]) -> bool:
     """Drain owned cleanup and report caller cancellation without forwarding it."""
@@ -644,7 +651,7 @@ class _RunContext:
             "label": call_label,
             "started_mono": time.monotonic(),
         }
-        opts = {
+        opts: dict[str, Any] = {
             "label": label,
             "phase": use_phase,
             "schema": schema,
@@ -660,6 +667,11 @@ class _RunContext:
             opts["backend"] = backend
         fingerprint = _call_fingerprint(prompt, opts, position)
         replay_index = self._replay_indices.pop(fingerprint, None) if fingerprint else None
+        # The executor reports each tool call the step starts through
+        # ``_on_progress``. Added after the fingerprint, so a replay still matches;
+        # a replayed call reports none.
+        report_progress, stop_progress = self._progress_reporter(agent_id)
+        opts = {**opts, "_on_progress": report_progress}
         error = ""
         # A live call is one turn under its phase in the run's trace; a replayed one
         # streams nothing, so it emits nothing. Named by the script's own label or
@@ -722,6 +734,7 @@ class _RunContext:
             if isinstance(exc, WorkflowStepInterrupted) and not self.interrupted_error:
                 self.interrupted_error = error
         finally:
+            stop_progress()
             trace_workflows.release_agent(trace_root)
         # Settled: drop it from the in-flight set (only calls still running when
         # the ceiling fires should appear in the ceiling error).
@@ -839,6 +852,60 @@ class _RunContext:
         if self._failed_task_logs == self._FAILED_TASK_LOG_LIMIT:
             message += " (further failed tasks in this run are not logged)"
         self._record(self._stream.log(self.now, message=message))
+
+    def _progress_reporter(self, agent_id: str) -> tuple[Callable[..., None], Callable[[], None]]:
+        """``(report, stop)`` for one live call's ``agent_progress`` events.
+
+        ``report(title)`` is called with each tool call the step starts. The first
+        is sent at once; a later one waits until :data:`PROGRESS_EVERY_SECS` have
+        passed since the last event, on a timer, so the newest call is shown even
+        when the step then hangs in it. ``report(title, new_call=False)`` renames
+        the newest call (a refined title) through the same wait, and changes
+        nothing when the title is the one already held. ``stop()`` cancels a
+        pending send when the call settles, so no progress follows its
+        ``agent_finished``.
+        """
+        started = time.monotonic()
+        turns = 0
+        tool = ""
+        sent_at: Optional[float] = None
+        timer: Optional[asyncio.TimerHandle] = None
+
+        def send() -> None:
+            nonlocal sent_at, timer
+            timer = None
+            sent_at = time.monotonic()
+            self._record(
+                self._stream.agent_progress(
+                    self.now,
+                    agent_id=agent_id,
+                    turns=turns,
+                    last_tool=tool,
+                    elapsed_s=round(sent_at - started, 1),
+                )
+            )
+
+        def report(title: str, new_call: bool = True) -> None:
+            nonlocal turns, tool, timer
+            shown = _redact_then_cut(str(title), PROGRESS_MAX_TOOL_CHARS)
+            if new_call:
+                turns += 1
+            elif shown == tool:
+                return
+            tool = shown
+            if timer is not None:
+                return  # the pending send carries this call
+            wait = 0.0 if sent_at is None else sent_at + PROGRESS_EVERY_SECS - time.monotonic()
+            if wait <= 0:
+                send()
+            else:
+                timer = asyncio.get_running_loop().call_later(wait, send)
+
+        def stop() -> None:
+            if timer is not None:
+                timer.cancel()
+
+        return report, stop
 
     def _log_refusal(self, agent_id: str, label: str, refusal: str) -> None:
         # A ``schema=`` step's refused person-only directive; the SEL row the

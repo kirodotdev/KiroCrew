@@ -62,7 +62,7 @@ def builtin(tmp_path: Path, _floor_monkeypatch: Any) -> Path:
     _floor_monkeypatch.setattr(routes.members_mod, "is_dispatchable_member_name", bool)
     _floor_monkeypatch.setattr(routes, "_member_names_for_slug", lambda cfg, slug: [MEMBER])
     _floor_monkeypatch.setattr(routes, "_deny_app_caller", _none)
-    _floor_monkeypatch.setattr(routes, "_owner_only", _none)
+    _floor_monkeypatch.setattr(routes, "require_owner_dashboard_request", _none)
     _floor_monkeypatch.setattr(routes, "_write_session", lambda slug, member: "")
     # The stub config above has no ``agent`` section, so the panel switch would read
     # as off; these tests are about the tab, with the panel on as it ships.

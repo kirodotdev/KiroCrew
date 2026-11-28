@@ -1,11 +1,11 @@
 /**
  * Cancelling a composer upload that is still in flight (issue #5744).
  *
- * While `uploading` is true every attach entry point is disabled, and the
- * request itself used to run to completion whatever the user did: the only exit
+ * The request used to run to completion whatever the user did: the only exit
  * from a slow transfer was reloading the page, which throws away the bytes
- * already sent. Both composer hosts now register the request's AbortController
- * per slot (composerSendHolds) and hand a cancel control to ChatInput.
+ * already sent. Both composer hosts now send one request per file and register
+ * each request's AbortController, with the file's name, per slot
+ * (composerSendHolds); ChatInput shows each as a chip with its own cancel.
  *
  * Two things are pinned per host, because the second is the trap: aborting must
  * end the request AND must not be dressed up as a failure. The blanket catch
@@ -81,7 +81,7 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatPage from '../pages/ChatPage'
 import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
-import { cancelComposerUploads, UPLOAD_STALL_MS } from '../utils/composerSendHolds'
+import { cancelComposerUploads, isComposerSendHeld, UPLOAD_STALL_MS } from '../utils/composerSendHolds'
 
 /** The DOMException `fetch` rejects with once its signal aborts. */
 function abortError(): Error {
@@ -173,8 +173,8 @@ function pasteImage(input: HTMLElement, name = 'pasted.png') {
   })
 }
 
-// Either label: singular for one upload, counted once two or more are live (#13071).
-const cancelControl = () => screen.queryByRole('button', { name: /^Cancel (\d+ uploads|upload)$/ })
+/** The cancel on the one upload chip a case starts. */
+const cancelControl = () => screen.queryByRole('button', { name: /^Cancel uploading / })
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -202,8 +202,7 @@ describe.each([
     await act(async () => { fireEvent.click(cancelControl()!) })
 
     expect(signal()!.aborted).toBe(true)
-    // `uploading` is what disables every attach entry point, so its clearing is
-    // the user-visible half of the fix: the control disappears with the spinner.
+    // The chip goes once its request has ended.
     await waitFor(() => expect(cancelControl()).not.toBeInTheDocument())
     // A cancel the user asked for is not an upload failure.
     expect(screen.queryByText(/max \d+ MB/)).not.toBeInTheDocument()
@@ -211,7 +210,7 @@ describe.each([
     expect(screen.queryByText(/aborted/i)).not.toBeInTheDocument()
   })
 
-  it('shows the share sent beside the control, and a stall once no byte moves for 20 s', async () => {
+  it('shows the share sent on the chip, and a stall once no byte moves for 20 s', async () => {
     // Only the timeout clock is faked, from the start, so the stall window the
     // upload arms runs on it; vi.waitFor steps it while it polls.
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
@@ -279,14 +278,12 @@ describe.each([
 })
 
 /**
- * The two defects the Opus lane found in the first revision, both at the host
- * level because both are about which requests the control speaks for.
+ * Which request each chip speaks for, at the host level.
  */
-describe('ChatPage composer: what the cancel control speaks for (#5744)', () => {
-  it('collects every upload in flight, so a paste beside a pick is not orphaned', async () => {
-    // `uploading` disables the attach BUTTON, and nothing else: paste, drop and
-    // a Sketch insert all reach uploadFiles ungated. So two requests really can
-    // be in flight, and one control has to end both.
+describe('ChatPage composer: what each upload chip speaks for (#5744)', () => {
+  it('gives a paste beside a pick its own chip, and each cancel ends only its own request', async () => {
+    // Paste, drop and a Sketch insert all reach uploadFiles beside a pick, so
+    // two requests really can be in flight, and each needs its own way out.
     const signals: AbortSignal[] = []
     vi.mocked(api.uploadFiles).mockImplementation(
       ((_files: File[], signal?: AbortSignal) => {
@@ -304,19 +301,19 @@ describe('ChatPage composer: what the cancel control speaks for (#5744)', () => 
     await act(async () => { pasteImage(screen.getByLabelText('Message input')) })
     await waitFor(() => expect(api.uploadFiles).toHaveBeenCalledTimes(2))
     expect(signals).toHaveLength(2)
-    // One press ends both, so the label must say so rather than claim one.
-    await waitFor(() => expect(cancelControl()).toHaveAccessibleName('Cancel 2 uploads'))
+    expect(screen.getByRole('button', { name: 'Cancel uploading screencap.mp4' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cancel uploading pasted.png' })).toBeInTheDocument()
 
-    await act(async () => { fireEvent.click(cancelControl()!) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel uploading pasted.png' })) })
+    expect(signals.map(s => s.aborted)).toEqual([false, true])
 
-    // One slot per host would have left the first request running with nothing
-    // holding its controller.
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel uploading screencap.mp4' })) })
     expect(signals.map(s => s.aborted)).toEqual([true, true])
   })
 
-  it('offers no cancel control while a SCREENSHOT holds the same uploading flag', async () => {
-    // takeScreenshot sets `uploading` too, so a control gated on that flag would
-    // appear during a macOS `screencapture -i` with no request behind it.
+  it('shows no upload chip while a SCREENSHOT holds the same uploading flag', async () => {
+    // takeScreenshot sets `uploading` too, but registers no request, so no
+    // chip appears during a macOS `screencapture -i`.
     vi.mocked(api.screenshot).mockImplementation(
       (() => new Promise(() => {})) as unknown as typeof api.screenshot,
     )
@@ -326,9 +323,121 @@ describe('ChatPage composer: what the cancel control speaks for (#5744)', () => 
     await act(async () => { fireEvent.click(screen.getByTitle('Add files & options')) })
     await act(async () => { fireEvent.click(screen.getByText('Screenshot')) })
 
-    // The spinner is up (the flag is set) but there is nothing to cancel.
+    // The flag is set, but there is nothing to cancel.
     await waitFor(() => expect(api.screenshot).toHaveBeenCalled())
     expect(cancelControl()).not.toBeInTheDocument()
     expect(api.uploadFiles).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * A large set waits its turn (UPLOAD_CONCURRENCY in flight). Past six requests
+ * the browser queues the rest itself, and a request it holds back reports its
+ * start at zero bytes, so its chip would read Stalled though nothing is wrong.
+ */
+describe.each([
+  ['ChatPage', (slot: string) => <ChatPage key={slot} />, 'queue-page'],
+  ['ChatPane', (slot: string) => <ChatPane slotKey={slot} />, 'queue-pane'],
+])('%s composer: a set of files shares a limit of requests in flight', (_name, node, base) => {
+  /** Each request the host started, by file name: it reports its start at
+   *  zero bytes, as XHR loadstart does, and settles when the case says. */
+  function controlledUploads() {
+    const started = new Map<string, { signal: AbortSignal; land: () => void }>()
+    let inFlight = 0
+    let peak = 0
+    vi.mocked(api.uploadFiles).mockImplementation(
+      ((files: File[], signal?: AbortSignal, onProgress?: (loaded: number, total: number) => void) => {
+        const name = files[0].name
+        inFlight++
+        peak = Math.max(peak, inFlight)
+        onProgress?.(0, 1024)
+        return new Promise((resolve, reject) => {
+          const done = () => { inFlight-- }
+          signal?.addEventListener('abort', () => { done(); reject(abortError()) })
+          started.set(name, { signal: signal!, land: () => { done(); resolve({ paths: [`/up/${name}`] }) } })
+        })
+      }) as unknown as typeof api.uploadFiles,
+    )
+    return { started, peak: () => peak }
+  }
+
+  function pickFiles(container: HTMLElement, names: string[]) {
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement
+    Object.defineProperty(input, 'files', { value: names.map(n => new File(['x'], n, { type: 'text/plain' })), configurable: true })
+    fireEvent.change(input)
+  }
+
+  const NAMES = ['f1.txt', 'f2.txt', 'f3.txt', 'f4.txt', 'f5.txt']
+
+  it('keeps at most 3 requests in flight, gives every file its chip at once, and lands them all', async () => {
+    // Its own slot: a pane keeps the files that landed for a slot.
+    const slot = `${base}-all`
+    onTestFinished(() => { cancelComposerUploads(slot) })
+    const uploads = controlledUploads()
+    const { container } = renderHost(node(slot), slot)
+    await waitFor(() => expect(container.querySelector('input[type="file"]')).toBeTruthy())
+    await act(async () => { pickFiles(container, NAMES) })
+
+    await waitFor(() => expect(api.uploadFiles).toHaveBeenCalledTimes(3))
+    expect(screen.getAllByTestId('composer-upload-chip')).toHaveLength(5)
+    expect([...uploads.started.keys()]).toEqual(['f1.txt', 'f2.txt', 'f3.txt'])
+
+    await act(async () => { uploads.started.get('f1.txt')!.land() })
+    await waitFor(() => expect(api.uploadFiles).toHaveBeenCalledTimes(4))
+    await act(async () => { uploads.started.get('f2.txt')!.land(); uploads.started.get('f3.txt')!.land() })
+    await waitFor(() => expect(api.uploadFiles).toHaveBeenCalledTimes(5))
+    await act(async () => { uploads.started.get('f4.txt')!.land(); uploads.started.get('f5.txt')!.land() })
+
+    await waitFor(() => expect(screen.queryAllByTestId('composer-upload-chip')).toHaveLength(0))
+    expect(uploads.peak()).toBe(3)
+    for (const name of NAMES) expect(screen.getByRole('group', { name: `/up/${name}` })).toBeInTheDocument()
+  })
+
+  it('never shows Stalled on a file still waiting its turn', async () => {
+    const slot = `${base}-wait`
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    onTestFinished(() => { cancelComposerUploads(slot); vi.useRealTimers() })
+    controlledUploads()
+    const { container } = renderHost(node(slot), slot)
+    await vi.waitFor(() => expect(container.querySelector('input[type="file"]')).toBeTruthy())
+    await act(async () => { pickFiles(container, NAMES) })
+    await vi.waitFor(() => expect(api.uploadFiles).toHaveBeenCalledTimes(3))
+
+    act(() => { vi.advanceTimersByTime(UPLOAD_STALL_MS) })
+    const chip = (name: string) => screen.getByRole('group', { name })
+    // The three on the wire reported their start and moved no byte since.
+    for (const name of ['f1.txt', 'f2.txt', 'f3.txt']) expect(chip(name)).toHaveTextContent('Stalled')
+    // The two waiting have sent nothing: no percent, no stall.
+    for (const name of ['f4.txt', 'f5.txt']) {
+      expect(chip(name)).not.toHaveTextContent('Stalled')
+      expect(chip(name)).not.toHaveTextContent('%')
+    }
+  })
+
+  it('drops a cancelled waiting file without ever sending it, and the rest still land', async () => {
+    const slot = `${base}-cancel`
+    onTestFinished(() => { cancelComposerUploads(slot) })
+    const uploads = controlledUploads()
+    const { container } = renderHost(node(slot), slot)
+    await waitFor(() => expect(container.querySelector('input[type="file"]')).toBeTruthy())
+    await act(async () => { pickFiles(container, NAMES) })
+    await waitFor(() => expect(api.uploadFiles).toHaveBeenCalledTimes(3))
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel uploading f4.txt' })) })
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel uploading f4.txt' })).not.toBeInTheDocument())
+    expect(screen.getAllByTestId('composer-upload-chip')).toHaveLength(4)
+
+    await act(async () => { for (const name of ['f1.txt', 'f2.txt', 'f3.txt']) uploads.started.get(name)!.land() })
+    await waitFor(() => expect(uploads.started.has('f5.txt')).toBe(true))
+    await act(async () => { uploads.started.get('f5.txt')!.land() })
+
+    await waitFor(() => expect(screen.queryAllByTestId('composer-upload-chip')).toHaveLength(0))
+    expect(api.uploadFiles).toHaveBeenCalledTimes(4)
+    expect(uploads.started.has('f4.txt')).toBe(false)
+    expect(screen.queryByRole('group', { name: '/up/f4.txt' })).not.toBeInTheDocument()
+    for (const name of ['f1.txt', 'f2.txt', 'f3.txt', 'f5.txt']) expect(screen.getByRole('group', { name: `/up/${name}` })).toBeInTheDocument()
+    // No failure for the cancel, and Send is free again: every hold released.
+    expect(screen.queryByText(/Upload failed/i)).not.toBeInTheDocument()
+    expect(isComposerSendHeld(slot)).toBe(false)
   })
 })

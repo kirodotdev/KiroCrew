@@ -247,9 +247,9 @@ async def api_wakatime_oauth_authorize(request: web.Request) -> web.Response:
     cookie. The callback checks the value WakaTime echoes back against both,
     so a forged callback cannot complete.
     """
-    from kiro_crew.dashboard.handlers_system import _require_owner
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
-    denied = await _require_owner(request, "wakatime.oauth.authorize")
+    denied = await require_owner_dashboard_request(request, "wakatime.oauth.authorize")
     if denied is not None:
         return denied
 
@@ -327,9 +327,9 @@ async def api_wakatime_oauth_callback(request: web.Request) -> web.Response:
     with an error marker on failure, so the browser lands on a real page rather
     than a JSON blob.
     """
-    from kiro_crew.dashboard.handlers_system import _require_owner
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
-    denied = await _require_owner(request, "wakatime.oauth.callback")
+    denied = await require_owner_dashboard_request(request, "wakatime.oauth.callback")
     if denied is not None:
         return denied
 
@@ -370,9 +370,9 @@ async def api_wakatime_oauth_disconnect(request: web.Request) -> web.Response:
     tokens, so the integration falls back to the API key.
     The local clear happens even if the provider revoke fails.
     """
-    from kiro_crew.dashboard.handlers_system import _require_owner
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
-    denied = await _require_owner(request, "wakatime.oauth.disconnect")
+    denied = await require_owner_dashboard_request(request, "wakatime.oauth.disconnect")
     if denied is not None:
         return denied
 
@@ -397,9 +397,9 @@ async def api_wakatime_oauth_status(request: web.Request) -> web.Response:
     an OAuth client id and secret are set, so the UI can prompt for app setup
     before offering Connect. Reports no token material, only these two booleans.
     """
-    from kiro_crew.dashboard.handlers_system import _require_owner
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
-    denied = await _require_owner(request, "wakatime.oauth.status")
+    denied = await require_owner_dashboard_request(request, "wakatime.oauth.status")
     if denied is not None:
         return denied
 

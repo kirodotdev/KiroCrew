@@ -1,7 +1,7 @@
 ---
 name: feature-request
 description: Gathers a bug report, feature request or feedback in conversation and routes it to the in-app Report a Problem dialog, the public issue forms, or SECURITY.md for a vulnerability (never a public issue); load when the user wants to report a problem, send feedback or suggest an improvement.
-triggers: request a feature, request feature, feature request, report a bug, bug report, file an issue, github issue, I have an idea, something's broken, suggestion, report a problem, send feedback, submit feedback
+triggers: request a feature, request feature, feature request, report a bug, bug report, file an issue, github issue, something's broken, suggestion, report a problem, send feedback, submit feedback
 ---
 
 # Feature Request / Issue Report
@@ -28,9 +28,9 @@ Before gathering details, decide where the report belongs. Take the first case
 that fits:
 
 1. **A security vulnerability.** Do not draft it, search for it or file it.
-   Give the user the security policy and tell them to report it privately by
-   the email address that file lists, with the `[SECURITY]` subject prefix —
-   never in a public issue:
+   Give the user the security policy and tell them to report it privately
+   through one of the routes that file lists (the AWS Vulnerability Disclosure
+   Program on HackerOne, or email) — never in a public issue:
 
    ```
    https://github.com/kirodotdev/KiroCrew/blob/main/SECURITY.md

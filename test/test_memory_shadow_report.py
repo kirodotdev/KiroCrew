@@ -1,8 +1,7 @@
 """``kirocrew memory shadow report``: reads every shadow source, writes nothing.
 
-Fixtures stand in for what the stages already record: receipt shards and
-``stage-log.json`` under ``usage/injections``, and ``memory_meta`` counter rows in
-the default store's file. The command is run through ``_memory_cmd`` so config
+Fixtures stand in for what the stages already record: receipt shards under
+``usage/injections``, and ``memory_meta`` counter rows in the default store's file. The command is run through ``_memory_cmd`` so config
 loading and store admission are covered too.
 """
 
@@ -94,44 +93,6 @@ def origin_counts(lessons: int, demoted: int) -> dict:
     return {"shadow": {"learn_add": {"lessons": lessons, "demoted": demoted}}}
 
 
-def test_receipt_stage_reads_the_stage_log_and_sampled_lines(home: Path, capsys) -> None:
-    _config(home, relevance_rule="shadow")
-    lines = [
-        _receipt(
-            DAY,
-            "dashboard:a",
-            relevance_rule={
-                "mode": "shadow",
-                "policy": 1,
-                "would_add": ["lesson.b"],
-                "would_drop": [],
-            },
-        ),
-        _receipt(
-            "2026-11-02",
-            "dashboard:b",
-            relevance_rule={"mode": "shadow", "policy": 1, "would_add": [], "would_drop": []},
-        ),
-        _receipt("2026-11-02", "dashboard:b", phase="per_turn"),
-    ]
-    stage_log = {
-        "counts": {
-            DAY: {"relevance_rule": {"shadow": {"lines": 3, "would_add": 2, "would_drop": 1}}},
-            "2026-11-02": {"relevance_rule": {"shadow": {"lines": 1}}},
-        },
-        "stages": {"relevance_rule": {"policy": 1, "started_at": f"{DAY}T00:00:00+00:00"}},
-    }
-    _write_receipts(home, lines, stage_log)
-    card = _card(_run(capsys, json=True), "relevance_rule")
-    assert card["mode"] == "shadow"
-    assert card["policy"] == 1
-    assert card["window_start"].startswith(DAY)
-    assert (card["days"], card["sessions"], card["base"], card["changed"]) == (2, 2, 2, 1)
-    assert card["rate"] == 0.5
-    assert card["detail"] == {"lines": 4, "would_add": 2, "would_drop": 1}
-    assert card["status"] == msr.STATUS_WAITING
-
-
 @pytest.mark.parametrize(
     "stage, counts, base, changed",
     [
@@ -183,6 +144,8 @@ def test_each_meta_family_is_parsed(home, capsys, stage, counts, base, changed) 
     card = _card(_run(capsys, json=True), stage)
     assert (card["base"], card["changed"], card["days"], card["sessions"]) == (base, changed, 1, 3)
     assert card["policy"] == (None if stage == "dream" else 2)
+    if stage != "lesson_tier_policy":
+        assert card["quotes"] is None
     assert card["status"] == msr.STATUS_WAITING
     if stage == "dream":
         assert card["rate"] is None
@@ -195,8 +158,8 @@ def test_each_meta_family_is_parsed(home, capsys, stage, counts, base, changed) 
 
 
 @pytest.mark.parametrize("other_mode", ["enforce", "propose", "off"])
-def test_only_shadow_counters_and_receipt_fields_count(home: Path, capsys, other_mode) -> None:
-    _config(home, lesson_origin_gate="shadow", relevance_rule="shadow")
+def test_only_shadow_counters_count(home: Path, capsys, other_mode) -> None:
+    _config(home, lesson_origin_gate="shadow")
     _write_meta(
         {
             "memory_origin_log:counts:" + DAY: {other_mode: {"learn_add": {"lessons": 9}}},
@@ -206,41 +169,10 @@ def test_only_shadow_counters_and_receipt_fields_count(home: Path, capsys, other
             },
         }
     )
-    _write_receipts(
-        home,
-        [
-            _receipt(
-                "2026-11-02",
-                "dashboard:a",
-                relevance_rule={"mode": other_mode, "would_add": ["lesson.b"]},
-            ),
-            _receipt(
-                "2026-11-02",
-                "dashboard:b",
-                relevance_rule={"mode": "shadow", "would_add": []},
-            ),
-        ],
-        {
-            "counts": {
-                DAY: {"relevance_rule": {other_mode: {"lines": 9}}},
-                "2026-11-02": {
-                    "relevance_rule": {
-                        "shadow": {"lines": 1},
-                        other_mode: {"lines": 9, "would_add": 9},
-                    }
-                },
-            }
-        },
-    )
-    out = _run(capsys, json=True)
-    gate = _card(out, "lesson_origin_gate")
+    gate = _card(_run(capsys, json=True), "lesson_origin_gate")
     assert (gate["days"], gate["base"], gate["changed"]) == (1, 3, 1)
-    receipt = _card(out, "relevance_rule")
-    assert (receipt["days"], receipt["base"], receipt["changed"]) == (1, 1, 0)
-    assert receipt["detail"] == {"lines": 1, "would_add": 0, "would_drop": 0}
 
 
-@pytest.mark.parametrize("stage", ["lesson_origin_gate", "relevance_rule"])
 @pytest.mark.parametrize(
     "started, first_day",
     [
@@ -250,8 +182,8 @@ def test_only_shadow_counters_and_receipt_fields_count(home: Path, capsys, other
         ("2026-11-01T19:00:00-05:00", "2026-11-02"),
     ],
 )
-def test_window_uses_full_utc_days(home: Path, capsys, stage, started, first_day) -> None:
-    _config(home, **{stage: "shadow"})
+def test_window_uses_full_utc_days(home: Path, capsys, started, first_day) -> None:
+    _config(home, lesson_origin_gate="shadow")
     days = [DAY, "2026-11-02"]
     _write_meta(
         {
@@ -264,36 +196,113 @@ def test_window_uses_full_utc_days(home: Path, capsys, stage, started, first_day
             },
         }
     )
-    _write_receipts(
-        home,
-        [
-            _receipt(
-                day,
-                f"dashboard:{day}",
-                relevance_rule={"mode": "shadow", "would_add": ["lesson.b"]},
-            )
-            for day in days
-        ],
-        {
-            "stages": {"relevance_rule": {"started_at": started, "policy": 2}},
-            "counts": {
-                day: {"relevance_rule": {"shadow": {"lines": 2, "would_add": 2}}} for day in days
-            },
-        },
-    )
-    card = _card(_run(capsys, json=True), stage)
+    _write_receipts(home, [_receipt(day, f"dashboard:{day}") for day in days])
+    card = _card(_run(capsys, json=True), "lesson_origin_gate")
     included = [day for day in days if day >= first_day]
     assert card["window_start"] == first_day + "T00:00:00+00:00"
     assert list(card["by_day"]) == included
     assert card["days"] == card["sessions"] == len(included)
-    base = len(included) * (2 if stage == "lesson_origin_gate" else 1)
+    base = len(included) * 2
     assert (card["base"], card["changed"], card["rate"]) == (base, base, 1.0)
-    if stage == "relevance_rule":
-        assert card["detail"] == {
-            "lines": len(included) * 2,
-            "would_add": len(included) * 2,
-            "would_drop": 0,
+
+
+@pytest.mark.parametrize("policy", [2, 3])
+def test_a_lesson_stage_reports_its_quotes_from_the_new_rules_only(
+    home: Path, capsys, policy
+) -> None:
+    stage = "lesson_tier_policy"
+    _config(home, **{stage: "shadow"})
+    prefix = next(s.source for s in msr.STAGES if s.name == stage)
+    new = {
+        "lessons": 6,
+        "always": 4,
+        "quote_present": 3,
+        "quote_pass": 2,
+        "quote_fail": 1,
+        "backed": 1,
+        "unmeasured": 0,
+        "demoted": 4,
+        "support_0.8": 1,
+        "support_<0.4": 1,
+        "quote_calls": 2,
+        "quote_call_failed": 0,
+        "quote_cut": 1,
+    }
+    _write_meta(
+        {
+            prefix + "rules_version": str(policy),
+            prefix + "rules_changed_at": "2026-11-01T09:00:00+00:00",
+            # The day the rules changed mixes both rule sets: left out.
+            prefix + f"counts:{DAY}": {"shadow": {"consolidation": {"lessons": 9, "demoted": 9}}},
+            prefix + "counts:2026-11-02": {"shadow": {"consolidation": new}},
         }
+    )
+    card = _card(_run(capsys, json=True), stage)
+    assert (card["policy"], card["base"], card["changed"]) == (policy, 6, 4)
+    assert card["bias"] == ""
+    assert card["quotes"] == {
+        "absent": 1,
+        "fail": 1,
+        "pass": 2,
+        "backed": 1,
+        "unmeasured": 0,
+        "support": {"0.8": 1, "<0.4": 1},
+        "calls": 2,
+        "call_failed": 0,
+        "cut": 1,
+    }
+    text = _run(capsys)
+    assert "upper bound" not in text
+    assert (
+        f"quotes {stage}: absent=1 fail=1 pass=2 (backed=1) unmeasured=0  "
+        "support 0.8=1 <0.4=1  quote calls=2 failed=0 cut=1"
+    ) in text
+
+
+@pytest.mark.parametrize("policy", [None, "1"])
+def test_legacy_tier_counters_keep_the_upper_bound_note(home: Path, capsys, policy) -> None:
+    _config(home, lesson_tier_policy="shadow")
+    rows: dict[str, object] = {
+        "memory_tier_log:counts:"
+        + DAY: {"shadow": {"consolidation": {"lessons": 2, "always": 2, "demoted": 2}}},
+    }
+    if policy is not None:
+        rows["memory_tier_log:rules_version"] = policy
+    _write_meta(rows)
+    card = _card(_run(capsys, json=True), "lesson_tier_policy")
+    assert card["policy"] == (None if policy is None else 1)
+    assert (card["base"], card["changed"], card["rate"]) == (2, 2, 1.0)
+    assert card["quotes"] is None
+    assert "upper bound" in card["bias"]
+    text = _run(capsys)
+    assert "note lesson_tier_policy: upper bound" in text
+    assert "quotes lesson_tier_policy" not in text
+
+
+def test_origin_gate_never_reports_quotes_even_under_version_two(home: Path, capsys) -> None:
+    _config(home, lesson_origin_gate="shadow")
+    _write_meta(
+        {
+            "memory_origin_log:rules_version": "2",
+            "memory_origin_log:counts:"
+            + DAY: {
+                "shadow": {
+                    "consolidation": {
+                        "passes": 1,
+                        "no_human": 1,
+                        "lessons": 2,
+                        "standing": 2,
+                        "demoted": 2,
+                    }
+                }
+            },
+        }
+    )
+    card = _card(_run(capsys, json=True), "lesson_origin_gate")
+    assert card["policy"] == 2
+    assert card["quotes"] is None
+    assert card["bias"] == ""
+    assert "quotes lesson_origin_gate" not in _run(capsys)
 
 
 _DAYS = (DAY, "2026-11-02", "2026-11-03")
@@ -386,7 +395,7 @@ def test_meta_prefixes_match_the_owning_modules() -> None:
         "member_lesson_dedup": "memory_lesson_dedup",
         "dream": "memory_dream",
     }
-    sources = {s.name: s.source for s in msr.STAGES if s.source != msr.SOURCE_RECEIPTS}
+    sources = {s.name: s.source for s in msr.STAGES if s.name not in msr._RECEIPT_STAGES}
     assert set(sources) == set(owners)
     for stage, module in owners.items():
         owner = importlib.import_module(f"kiro_crew.{module}")
@@ -405,7 +414,9 @@ def test_missing_sources_print_no_data(home: Path, capsys) -> None:
     }
 
 
-@pytest.mark.parametrize("gone", ["kind_routing", "lesson_fold", "rule_authority_order"])
+@pytest.mark.parametrize(
+    "gone", ["kind_routing", "lesson_fold", "rule_authority_order", "relevance_rule"]
+)
 def test_a_stage_without_a_shadow_mode_is_not_listed(home: Path, capsys, gone) -> None:
     _config(home, **{gone: "shadow"})
     assert gone not in msr.STAGE_NAMES
@@ -413,14 +424,14 @@ def test_a_stage_without_a_shadow_mode_is_not_listed(home: Path, capsys, gone) -
 
 
 def test_unreadable_sources_are_no_data(home: Path, capsys) -> None:
-    _config(home, relevance_rule="shadow")
+    _config(home, lesson_origin_gate="shadow")
     folder = _write_receipts(home, [])
-    (folder / "stage-log.json").write_text("{not json", encoding="utf-8")
     (folder / f"{DAY}.jsonl").write_text("garbage\n[1]\n", encoding="utf-8")
     path = owned_store_path("default")
     assert path is not None
     path.write_text("not a database", encoding="utf-8")
-    assert _card(_run(capsys, json=True), "relevance_rule")["data"] is False
+    card = _card(_run(capsys, json=True), "lesson_origin_gate")
+    assert card["data"] is False and card["sessions"] == 0
 
 
 def test_json_shape(home: Path, capsys) -> None:
@@ -444,6 +455,7 @@ def test_json_shape(home: Path, capsys) -> None:
         "by_day",
         "data",
         "bias",
+        "quotes",
         "status",
         "miss",
         "control",
@@ -456,7 +468,7 @@ def test_stage_filter_prints_counts_by_day(home: Path, capsys) -> None:
     _config(home, lesson_origin_gate="shadow")
     _write_meta({"memory_origin_log:counts:" + DAY: origin_counts(1, 2)})
     out = _run(capsys, stage="lesson_origin_gate")
-    assert "relevance_rule" not in out
+    assert "fact_origin_gate" not in out
     assert f"  {DAY}  demoted=2, lessons=1" in out
 
 
@@ -513,23 +525,8 @@ def _snapshot(root: Path) -> dict[str, tuple[int, str]]:
 
 
 def test_the_report_changes_no_file_under_the_data_home(home: Path, capsys) -> None:
-    _config(home, relevance_rule="shadow", lesson_origin_gate="shadow")
-    _write_receipts(
-        home,
-        [
-            _receipt(
-                DAY,
-                "dashboard:a",
-                relevance_rule={
-                    "mode": "shadow",
-                    "policy": 1,
-                    "would_add": [],
-                    "would_drop": [],
-                },
-            )
-        ],
-        {"counts": {}, "stages": {}},
-    )
+    _config(home, lesson_origin_gate="shadow")
+    _write_receipts(home, [_receipt(DAY, "dashboard:a")], {"counts": {}, "stages": {}})
     _write_meta({"memory_origin_log:counts:" + DAY: origin_counts(1, 0)})
     # A first load may settle the config file; the report is measured after it.
     _run(capsys)
@@ -545,16 +542,24 @@ def test_parser_accepts_every_stage_and_no_other() -> None:
 
     parser = argparse.ArgumentParser()
     register_memory_parser(parser.add_subparsers(dest="command"))
-    ns = parser.parse_args(["memory", "shadow", "report", "--stage", "relevance_rule", "--json"])
+    ns = parser.parse_args(
+        ["memory", "shadow", "report", "--stage", "lesson_origin_gate", "--json"]
+    )
     assert (ns.mem_action, ns.shadow_action, ns.stage, ns.json) == (
         "shadow",
         "report",
-        "relevance_rule",
+        "lesson_origin_gate",
         True,
     )
     for stage in msr.STAGE_NAMES:
         assert parser.parse_args(["memory", "shadow", "report", "--stage", stage]).stage == stage
-    for other in ("lessons", "kind_routing", "lesson_fold", "rule_authority_order"):
+    for other in (
+        "lessons",
+        "kind_routing",
+        "lesson_fold",
+        "rule_authority_order",
+        "relevance_rule",
+    ):
         with pytest.raises(SystemExit):
             parser.parse_args(["memory", "shadow", "report", "--stage", other])
 
@@ -606,3 +611,139 @@ def test_no_renderer_reads_memory_meta_or_a_log_module(renderer: str) -> None:
     for module in _LOG_MODULES:
         short = module.rsplit(".", 1)[1]
         assert f"import {short}" not in text and f"{module} import" not in text, module
+
+
+#: Eighteen UTC dates with two skipped: sixteen days of follow-up turns, two of
+#: them after the stage's 14-day sample window has closed.
+_PER_TURN_DAYS = [date(2026, 11, d) for d in range(1, 19) if d not in (5, 12)]
+
+
+def _write_per_turn(home: Path, *, recall_session: str, turn_store: str = "") -> None:
+    """Receipt lines for the per-message-lesson stage, written through ``write_line``.
+
+    The real caps apply. Sessions ``s0..s199`` start on the sixteen days; one
+    follow-up turn a day runs in *turn_store*, and the first day's would have been
+    sent ``lesson.need``. One recall, in *recall_session*, names that lesson.
+    """
+    from kiro_crew import injection_receipts as ir
+
+    ctrl = [f"lesson.ctrl{i:02d}" for i in range(40)]
+
+    def at(day: date, hour: int) -> datetime:
+        return datetime(day.year, day.month, day.day, hour, tzinfo=timezone.utc)
+
+    def write(receipts: dict, *, session: str, phase: str, store: str, now) -> None:
+        line = ir.build_line(
+            receipts,
+            session_key=session,
+            turn_index=1,
+            user_msg_id="",
+            model="m",
+            agent="a",
+            phase=phase,
+            store=store,
+            now=now,
+        )
+        ir.write_line(line)
+
+    for n in range(200):
+        receipts = {ir.LESSONS: {"ids": ctrl, "omitted": 0}}
+        day = _PER_TURN_DAYS[n % len(_PER_TURN_DAYS)]
+        write(receipts, session=f"s{n}", phase="session_start", store="", now=at(day, 9))
+    for index, day in enumerate(_PER_TURN_DAYS):
+        need = ["lesson.need"] if index == 0 else []
+        with ir.collect() as sink:
+            ir.record_stage(
+                ir.INJECT_LESSONS_PER_TURN,
+                mode="shadow",
+                policy=ir.INJECT_LESSONS_PER_TURN_POLICY,
+                would_add=need,
+                chars=180 if need else 0,
+                lessons=[
+                    {"key": k, "tier": "legacy", "source": "user_explicit", "created_at": "x"}
+                    for k in need
+                ],
+            )
+        write(sink, session=f"s{index}", phase="turn", store=turn_store, now=at(day, 10))
+    outcome = ir.build_outcome_line(
+        ir.RECALL,
+        session_key=recall_session,
+        store="",
+        ids=["lesson.need"],
+        now=at(_PER_TURN_DAYS[1], 11),
+    )
+    ir.write_line(outcome)
+
+
+@pytest.mark.parametrize(
+    ("recall_session", "missed", "verdict", "reason"),
+    [("s0", 1, "pass", ""), ("s7", 0, "fail", "no would-add lesson was needed")],
+)
+def test_the_per_message_lessons_row_counts_days_past_the_sample_window(
+    home: Path, capsys, recall_session: str, missed: int, verdict: str, reason: str
+) -> None:
+    _config(home, inject_lessons_per_turn="shadow")
+    _write_per_turn(home, recall_session=recall_session)
+
+    card = _card(_run(capsys, json=True), "inject_lessons_per_turn")
+
+    # Sixteen counted days although samples stopped after the 14-day window.
+    assert (card["mode"], card["policy"], card["days"], card["sessions"]) == (
+        "shadow",
+        1,
+        16,
+        200,
+    )
+    assert (card["base"], card["changed"]) == (16, 1)
+    sampled = card["would_inject"]
+    assert (sampled["turns"], sampled["turns_with_block"], sampled["chars"]) == (12, 1, 180)
+    assert sampled["legacy_user_explicit"] == 1
+    assert (card["miss"]["items"], card["miss"]["missed"]) == (1, missed)
+    assert card["control"]["items"] > 0 and card["control"]["missed"] == 0
+    assert (card["verdict"], card["verdict_reason"]) == (verdict, reason)
+    text = _run(capsys, stage="inject_lessons_per_turn")
+    assert "would inject inject_lessons_per_turn:" in text
+    assert "legacy user_explicit=1" in text
+
+
+def test_another_stores_shadow_days_do_not_count(home: Path, capsys) -> None:
+    _config(home, inject_lessons_per_turn="shadow")
+    _write_per_turn(home, recall_session="s0", turn_store="other")
+
+    card = _card(_run(capsys, json=True), "inject_lessons_per_turn")
+
+    assert (card["days"], card["base"], card["data"]) == (0, 0, False)
+    assert card["verdict"] == "wait"
+
+
+def _add_card(miss: tuple[int, int], ctrl: tuple[int, int]) -> dict:
+    return {
+        "mode": "shadow",
+        "days": msr.DAYS_BAR,
+        "sessions": msr.SESSIONS_BAR,
+        "miss": {"missed": miss[0], "items": miss[1]},
+        "control": {"missed": ctrl[0], "items": ctrl[1]},
+    }
+
+
+@pytest.mark.parametrize(
+    ("miss", "ctrl", "verdict", "reason"),
+    [
+        ((1, 10), (3, 10), "fail", "needed 10.00% < control 30.00%"),
+        ((0, 10), (0, 10), "fail", "no would-add lesson was needed"),
+        ((0, 0), (1, 10), "wait", "no lesson would be added"),
+        ((3, 10), (3, 10), "pass", ""),
+    ],
+)
+def test_the_add_verdict_past_the_bar(miss, ctrl, verdict, reason) -> None:
+    assert msr._add_verdict(_add_card(miss, ctrl), outcomes_in_window=1) == (verdict, reason)
+
+
+def test_the_per_message_lessons_row_is_off_for_a_stored_false(home: Path, capsys) -> None:
+    (home / "config.json").write_text(
+        json.dumps({"memory": {"inject_lessons_per_turn": False}}), encoding="utf-8"
+    )
+
+    card = _card(_run(capsys, json=True), "inject_lessons_per_turn")
+
+    assert (card["mode"], card["verdict"], card["data"]) == ("off", "off", False)

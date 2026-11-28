@@ -29,15 +29,24 @@ from kiro_crew import mcp_entry
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
+# Keep interpreter cold starts on one worker and module-scoped snapshots shared.
+pytestmark = pytest.mark.xdist_group(name="mcp_listing_import_budget")
+
 #: Never loaded before the list, by any server. Each is the root of a large graph that
 #: only a tool call needs: the HTTP and cloud client stacks, the agent client, the CLI,
 #: the OS sandbox, the gateway's side of the MCP socket, the conversation store, and the
-#: two facades that load every sub-agent and tool handler.
+#: two facades that load every sub-agent and tool handler. ``jsonschema`` is never
+#: loaded at all: every server validates its config before the list, with the in-house
+#: ``kiro_crew.config.schema_check`` (jsonschema and its stack cost ~3 MB RSS a server).
+#: Neither SQLite driver loads either: the text sanitizer every listing runs reads its
+#: CJK helpers from ``kiro_crew.cjk_script``, not from ``kiro_crew._sqlite_compat``.
 FORBIDDEN_BEFORE_THE_LIST = (
     "aiohttp",
     "awscrt",
     "boto3",
     "botocore",
+    "jsonschema",
+    "pysqlite3",
     "slack_sdk",
     "kiro_crew.acp.client",
     "kiro_crew.cli",
@@ -48,6 +57,7 @@ FORBIDDEN_BEFORE_THE_LIST = (
     "kiro_crew.sandbox",
     "kiro_crew.session",
     "kiro_crew.subagent",
+    "sqlite3",
 )
 
 #: command -> the most ``kiro_crew`` modules it may hold when it has listed. A ceiling
@@ -99,11 +109,46 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: floor reads the Windows by-name kill programs through its own
 #: ``kiro_crew.security.self_kill_windows``, which ``argv_floor_self`` imports; the module
 #: count rose by that one file and nothing else loads (``mcp-cron`` and ``mcp-guide`` had room).
+#: Raised by 1 for all four: the credential redactor reads Unicode's default-ignorable
+#: table from the leaf ``kiro_crew.default_ignorable`` (moved there from the artifact
+#: store's tag rules, so both share one pinned table); that one file is the whole rise.
+#: Raised for the managed-environment lane: the default context the composition root
+#: builds wraps its provisioner provider and dashboard contributor in the lane's
+#: (``kiro_crew.managed_env`` and ``.provider``: 2 modules for ``mcp-core`` and ``mcp-mate``,
+#: 1 for the other two, which have no more room). The lane's client, engine and settings load only
+#: when it is used.
+#: Raised by 1 for all four: the git/tar self-target floor's GNU ``parallel`` replacement
+#: readings move to ``kiro_crew.security.argv_floor_git_tar_parallel``, which the deny-gate
+#: security path imports eagerly, so one more module loads before the listing on every server.
+#: Raised by 1 for each server: every thread pool ``kiro_crew.executors`` builds is now a
+#: ``kiro_crew.enqueue_only_pool.EnqueueOnlyThreadPoolExecutor``, which the module imports
+#: at its top (it was imported inside ``configure_default_executor()`` alone); that
+#: stdlib-only module is the one file added, and nothing else loads.
+#: Raised by 1 for each server: the line-cap split of ``security.argv_floor_git_tar`` moved
+#: the git grammar it reads a git argv with into the owner ``security.argv_floor_git_grammar``,
+#: which the facade imports with the rest of its owners; the module count rose by that one
+#: file and nothing new loads.
+#: Raised by 1 for each server: the line-cap split of ``security.deny_gate`` moved its
+#: substitution-nesting cap into ``security.deny_gate_nesting``, which the deny gate imports
+#: when the security package loads; the module count rose by that one file and nothing new
+#: loads.
+#: Raised by 1 for each server: the manifest's ``contributes`` block reads its Sessions New
+#: rows from the new owner ``apps.manifest_session_create``, which ``manifest_contributes``
+#: imports; the module count rose by that one file and nothing new loads.
+#: Raised by 1 for ``mcp-mate`` (368 to 369): the memory-change card tools read their
+#: limits and kind names from ``kiro_crew.change_card_memory``, a ``typing``-only leaf;
+#: that one file is the whole rise.
+#: Raised by 1 for ``mcp-core`` (505 to 506): the App Store search's declaration lives in
+#: its own ``kiro_crew.mcp_tools.catalog.app_store``, which the core listing loads from
+#: ``mcp_tools.DOMAIN_MODULES`` like every other domain.
+#: Raised by 1 for each server: config validation checks the schema with the in-house
+#: ``kiro_crew.config.schema_check`` instead of importing ``jsonschema`` (66 modules,
+#: none of them ``kiro_crew``); that one file is the whole rise.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 497,
-    "mcp-cron": 364,
-    "mcp-guide": 358,
-    "mcp-mate": 360,
+    "mcp-core": 507,
+    "mcp-cron": 373,
+    "mcp-guide": 367,
+    "mcp-mate": 370,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are
@@ -274,15 +319,31 @@ def test_the_live_hint_readers_are_inside_cores_budget(
 
 #: command -> the most ``kiro_crew`` modules its HANDLER module may load. The listing
 #: bounds above stop at the list; these hold what loads right after it, in every chat,
-#: whether or not a tool of that server is ever called. The three small servers reach the
+#: whether or not a tool of that server is ever called. These small servers reach the
 #: gateway through ``mcp_core_parts`` and never load the core server: importing
-#: ``kiro_crew.mcp_core`` for its HTTP helpers took each of them to about 970 modules.
+#: ``kiro_crew.mcp_core`` for its HTTP helpers took each of them to 750-970 modules.
 #: Same rules as the listing ceiling: room for a platform's extras, lowered when a change
 #: brings a count down.
+#: Lowered by 29 for ``mcp-guide``, ``mcp-mate``, ``mcp-panel`` and ``mcp-work``: they import
+#: the validation names from the ``validation_parts`` owners, so the facade and the owners
+#: only it loads (cron schemas, member goals, monitoring, the artifact store) stay out.
 HANDLER_MODULE_CEILING = {
     "mcp-cron": 500,
-    "mcp-guide": 380,
-    "mcp-mate": 380,
+    "mcp-crew-log": 320,
+    "mcp-debug": 320,
+    "mcp-guide": 351,
+    "mcp-mate": 351,
+    "mcp-panel": 371,
+    "mcp-work": 291,
+}
+
+#: command -> what its handler module never loads. ``kiro_crew.validation`` eagerly imports
+#: every one of its owners; these servers need a few names, read from the owners (the same
+#: objects, so a patch through the facade still reaches them). They keep no database, so
+#: neither SQLite driver loads.
+FORBIDDEN_IN_A_SMALL_HANDLER = {
+    command: ("kiro_crew.validation", "pysqlite3", "sqlite3")
+    for command in ("mcp-guide", "mcp-mate", "mcp-panel", "mcp-work")
 }
 
 _HANDLER_PROBE = f"""
@@ -310,5 +371,79 @@ def test_a_small_servers_handlers_do_not_load_the_core_server(command: str, tmp_
     modules = set(json.loads(marked[-1][len(_MARK) :]))
     assert handler_module in modules
     assert "kiro_crew.mcp_core" not in modules
+    assert sorted(set(FORBIDDEN_IN_A_SMALL_HANDLER.get(command, ())) & modules) == []
     package = sorted(name for name in modules if name.split(".")[0] == "kiro_crew")
     assert len(package) <= HANDLER_MODULE_CEILING[command], (len(package), package)
+
+
+#: Never loaded by a config load. Every server loads its config before it lists, so
+#: what the load imports is on every server's floor. These are the roster and hook
+#: graph (the artifact store, webhooks, metrics, milestones: about 124 modules, about
+#: 3 MB RSS a server); the loader's unsafe-row check needs only ``kiro_crew.path_component``.
+FORBIDDEN_IN_A_CONFIG_LOAD = ("kiro_crew.hooks", "kiro_crew.members")
+
+_CONFIG_PROBE = f"""
+import json, sys
+from kiro_crew.config import KiroCrewConfig
+cfg = KiroCrewConfig.load()
+assert "keep" in cfg.agents and "../x" not in cfg.agents, sorted(cfg.agents)
+sys.stderr.write({_MARK!r} + json.dumps(sorted(sys.modules)) + "\\n")
+"""
+
+#: Never loaded by core before its first call. ``run_mcp_core_server`` imports
+#: ``kiro_crew.mcp_tools.sessions`` before it serves; that module needs one constant,
+#: ``RECALL_ROLES``, which its owner ``kiro_crew.context_assembly.replay`` serves
+#: without the agent and context-assembly graph.
+FORBIDDEN_IN_CORE_BEFORE_A_CALL = ("kiro_crew.agent", "kiro_crew.context")
+
+_IMPORTS_PROBE = f"""
+import importlib, json, sys
+for name in sys.argv[1:]:
+    importlib.import_module(name)
+sys.stderr.write({_MARK!r} + json.dumps(sorted(sys.modules)) + "\\n")
+"""
+
+
+@pytest.fixture(scope="module")
+def loaded_snapshots(tmp_path_factory: pytest.TempPathFactory) -> tuple[set[str], set[str]]:
+    tmp_path = tmp_path_factory.mktemp("loaded_snapshots")
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / "config.json").write_text(
+        json.dumps({"agents": {"../x": {}, "keep": {}}}), encoding="utf-8"
+    )
+    handler_module, _ = mcp_entry.SLIM_SERVERS["mcp-core"]
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _CONFIG_PROBE + _IMPORTS_PROBE,
+            handler_module,
+            "kiro_crew.mcp_tools.sessions",
+        ],
+        env=_child_env(tmp_path, KIROCREW_PROJECT_DIR=str(tmp_path)),
+        cwd=str(tmp_path),
+        capture_output=True,
+        timeout=FALLBACK_TIMEOUT_SECS,
+        check=False,
+        **UTF8_TEXT,
+    )
+    marked = [line for line in done.stderr.splitlines() if line.startswith(_MARK)]
+    assert done.returncode == 0 and len(marked) == 2, done.stderr[-4000:]
+    config_modules, core_modules = [set(json.loads(line[len(_MARK) :])) for line in marked]
+    return config_modules, core_modules
+
+
+def test_a_config_load_cleans_the_roster_without_the_roster_graph(
+    loaded_snapshots: tuple[set[str], set[str]],
+) -> None:
+    """A disk read runs the unsafe-row check (the ``../x`` row is dropped) and still
+    leaves the roster and hook graph unloaded."""
+    modules, _ = loaded_snapshots
+    assert sorted(set(FORBIDDEN_IN_A_CONFIG_LOAD) & modules) == []
+
+
+def test_core_does_not_load_the_context_graph_before_a_call(
+    loaded_snapshots: tuple[set[str], set[str]],
+) -> None:
+    _, modules = loaded_snapshots
+    assert sorted(set(FORBIDDEN_IN_CORE_BEFORE_A_CALL) & modules) == []

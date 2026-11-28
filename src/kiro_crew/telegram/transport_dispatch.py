@@ -1294,6 +1294,22 @@ class TelegramDispatcher:
         # Deny-by-default (callbacks bypass transport.receive, so re-check here).
         return bool(user_id) and bool(self._allowed) and user_id in self._allowed
 
+    def _is_owner(self, user_id: int) -> bool:
+        """Whether *user_id* may change YOLO and answer approval prompts here.
+
+        ``telegram.owner_user_id`` when it is set, else the only id in
+        ``allowed_user_ids`` (:func:`is_channel_owner`). Read live, so a config
+        change takes effect on the next message.
+        """
+        # Imported here so the facade's pinned name surface does not grow.
+        from kiro_crew.messaging.commands import is_channel_owner
+
+        return self._authorized(user_id) and is_channel_owner(
+            (user_id,),
+            owner=getattr(self._live_cfg().telegram, "owner_user_id", 0),
+            allowed=self._allowed,
+        )
+
     def _configured_agent(self, route: tuple[str, str] | None = None) -> str:
         """The agent *route*'s current conversation uses when the user has picked none."""
         return self.agent or self._default_agent.for_route(

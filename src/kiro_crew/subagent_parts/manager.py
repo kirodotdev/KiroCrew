@@ -242,6 +242,12 @@ class SubagentManager:
         # keyed by run id. Set with the ClaimPoint reservation, popped by the
         # re-entry that registers it or ``release_reservation``.
         self._claim_prices: dict[str, tuple[float, bool]] = {}
+        # Claims admitted as shared starts but not registered yet: run id -> parent
+        # session key. Counted toward the parent's shared places
+        # (``_kas_shared_places_left``) and read back by the re-entry, so pending
+        # claims cannot all take the same last place; set and popped with
+        # ``_claim_prices``.
+        self._shared_claims: dict[str, str] = {}
         # One start admitted at the shared price re-checks the floor at a time,
         # so waiters do not each count the others' raised prices and all hold.
         self._dedicated_topup_lock = asyncio.Lock()

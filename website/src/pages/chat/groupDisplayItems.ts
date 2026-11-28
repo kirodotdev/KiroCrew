@@ -1,8 +1,8 @@
 import type { ChatMessage } from '../../types'
 import type { DisplayItem, TurnItem } from './types'
-import { isSubagentCompletionMessage } from './subagentCompletion'
+import { isSubagentCompletionMessage } from '../../lib/subagentCompletion'
 import { isNoteRow } from '../../lib/noteContract'
-import { isSystemNoticeRow } from './CompactionCard'
+import { isSystemNoticeRow } from '../../lib/systemNotice'
 import { injectOpensTurn } from './RecoveryCard'
 
 /** Roles that fold into a collapsible group in the turn view. Thinking is NOT

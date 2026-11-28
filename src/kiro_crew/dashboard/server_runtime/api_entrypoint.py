@@ -269,6 +269,15 @@ async def start_api_server(
     # chain must be too. Host-allowlist source of truth is shared with the CSRF
     # Origin check via build_allowed_origins/build_allowed_hosts (see origin.py).
     _cfg = KiroCrewConfig.load()
+    if _cfg.dashboard.entry_port:
+        # The entry port opens only beside the dashboard app (start_dashboard), so
+        # an owner who set it is told it stays closed here rather than finding out
+        # from a proxy that cannot connect.
+        logger.warning(
+            "dashboard.entry_port %s is set, but the API-only server does not open the "
+            "entry port; it opens with the regular or the headless kirocrew gateway",
+            _cfg.dashboard.entry_port,
+        )
     _ts_cfg = _cfg.dashboard.tailscale
     _tailnet_host = await tailnet.resolve_tailnet_host(_ts_cfg.enabled)
     # Same identity-trust value as start_dashboard, via the same shared helper
@@ -279,6 +288,7 @@ async def start_api_server(
         local_only,
         configured_host,
         tailnet_host=_tailnet_host,
+        tailnet_https_port=_ts_cfg.https_port,
     )
     # Stashed for the same reason as in start_dashboard, and set here too even
     # though /api/tailnet/status is registered on the dashboard app: leaving one of
@@ -299,6 +309,7 @@ async def start_api_server(
         enabled=_ts_cfg.enabled,
         initial_host=_tailnet_host,
         load_enabled=_tailnet_origin_enabled,
+        https_port=_ts_cfg.https_port,
     )
 
     # Per-session internal secret for machine-to-machine (mcp-core, cron) auth.
@@ -413,7 +424,7 @@ async def start_api_server(
     # container override honored inside bind_address_for). Without this the
     # documented `gateway --slack-only` container path would silently bind
     # loopback and be unreachable through a published Docker port.
-    bind_addr = bind_address_for(local_only)
+    bind_addr = state._bind_asked = bind_address_for(local_only)
     site = web.TCPSite(runner, bind_addr, port)
     await _start_site(site, port)
     # After the bind, never on the boot path (no-new-work-on-gateway-boot-path):

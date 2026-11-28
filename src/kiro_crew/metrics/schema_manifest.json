@@ -118,7 +118,8 @@
             "desktop",
             "other",
             "page",
-            "popout"
+            "popout",
+            "shortcut"
           ]
         }
       }
@@ -1428,6 +1429,7 @@
           "values": [
             "catalog",
             "curated",
+            "exploratory",
             "generated",
             "other"
           ]

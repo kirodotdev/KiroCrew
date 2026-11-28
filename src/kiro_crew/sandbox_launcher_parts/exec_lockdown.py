@@ -38,11 +38,13 @@ def scrub_env(launch):
     # user namespace because uid 0 is unmapped, and ssh refuses to load them. An
     # explicit -F skips the system config and its includes: the user's own
     # ~/.ssh/config when this tier leaves it readable and ssh would load it, else
-    # /dev/null.
+    # /dev/null. With the user's config no IdentityFile is added: ssh offers a
+    # command-line IdentityFile before any key the config names for the host.
     if not environ.get("GIT_SSH_COMMAND"):
+        config = _git_ssh_config_file(launch)
         environ["GIT_SSH_COMMAND"] = "ssh -F %s%s -o UserKnownHostsFile=~/.ssh/known_hosts%s" % (
-            _git_ssh_config_file(launch),
-            _git_ssh_identity_opts(launch),
+            config,
+            _git_ssh_identity_opts(launch) if config == "/dev/null" else "",
             launch.strict_host_key_opt,
         )
 
@@ -63,7 +65,7 @@ def scrub_env(launch):
 
 
 def _git_ssh_identity_opts(launch):
-    """The ``-o IdentityFile=`` options for the default ``GIT_SSH_COMMAND``.
+    """The ``-o IdentityFile=`` options for the default ``GIT_SSH_COMMAND`` with ``-F /dev/null``.
 
     Only the named keys that exist, read after the masks are placed, so a strict
     tier's tmpfs ``~/.ssh`` is what is looked at. A user-supplied ``IdentityFile``

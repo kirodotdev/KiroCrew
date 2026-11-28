@@ -91,6 +91,20 @@ with Playwright's own message naming the exact `apt-get install` line. The
 one-time host setup: on a fresh Linux host run
 `sudo npx playwright install --with-deps chromium` once, alongside `npm ci`.
 
+## A package with its own lockfile needs its own install
+
+`npm --prefix website run test:electron` runs `npm test` in `website/electron`,
+which locks its own dependencies in `website/electron/package-lock.json`, and its
+specs `require("electron")`. `npm ci` in `website/` does not install that folder.
+CI's Electron jobs run `npm ci` there before `npm test`, so a floor carrying only
+the npm script fails every fresh worktree with `Cannot find module 'electron'`.
+
+`setup[]` therefore runs that install, from the lockfile and with CI's
+`ELECTRON_SKIP_BINARY_DOWNLOAD=1`, but only when `website/electron` has no
+`node_modules` yet. `npm ci` deletes an existing `node_modules` first, and a
+developer's own install there is something they rely on (constraint 2), so it is
+left alone.
+
 ## For a pinned external tool, run it ephemerally rather than installing it
 
 `uv tool run --from "cfn-lint==1.22.3" cfn-lint …` fetches CI's exact version,
@@ -211,6 +225,11 @@ through xdist's own knob keeps those and adds the gate's cap on top. A human who
 wants the machine saturated runs a bare `python -m pytest` and gets the budget's
 default.
 `scripts/local-gate.py` is the same selection for both surfaces in one command.
+Its `--tree-scans` flag adds a pre-push tier: when the diff touches `src/`, every
+backend test that scans the whole source tree (a ratchet or import-boundary guard,
+found by `run_scoped_tests.tree_scan_targets` from how the test reads the tree) runs
+too, because such a guard fails on files it never names. It costs a few minutes,
+so run it before a push rather than on every inner-loop pass.
 `scripts/leaf_test_scope.py` is unchanged in contract: CI consumes its verdict to
 skip the matrix, so it must stay SOUND and its escalations still mean "CI runs
 the full suite" — which is exactly where the full suite belongs.
@@ -278,8 +297,8 @@ any future import-graph work will meet the same ones:
 ### Rules this section leaves behind
 
 **Roots and paths are read, never transcribed, and every hardcoded path is
-asserted to exist.** `ALWAYS_ON` carried such an assertion from the start; the
-broad-impact prefixes did not, and one of them — `website/src/test/setup` —
+asserted to exist.** The broad-impact path prefixes once had no such assertion,
+and one of them — `website/src/test/setup` —
 resolved to nothing at all, so the real vitest setup graph (`integration/setup.ts`
 per `vite.config.ts`, plus the global MSW handlers in `integration/mocks/server.ts`
 that every integration spec inherits without naming) was never treated as

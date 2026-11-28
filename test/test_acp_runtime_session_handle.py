@@ -119,6 +119,42 @@ async def test_handle_destroy_terminates_and_unregisters_session():
 
 
 @pytest.mark.asyncio
+async def test_handle_destroy_forgets_the_sessions_agent_binding():
+    """destroy() drops this session's entry from the agent-binding cache.
+
+    On a shared runtime the pid outlives each ephemeral session, so the
+    dead-pid eviction never fires for one; without a forget on session end the
+    cache would grow for every session the long-lived runtime hosts. A handle
+    that carried no stub token leaves the cache untouched."""
+    from kiro_crew.mcp_gateway import claim
+
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA", "sB")
+    rt._send_and_await = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    token = "stub-tok-destroy"
+    other = "stub-tok-other"
+    claim._BOUND_AGENTS[token] = (os.getpid(), "start", frozenset({"agentA"}))
+    claim._BOUND_AGENTS[other] = (os.getpid(), "start", frozenset({"agentB"}))
+    try:
+        handle = AcpSessionHandle("sA", q["sA"], rt)
+        handle.stub_session_token = token
+        await handle.destroy()
+        # This session's binding is gone; a co-tenant session's stays.
+        assert token not in claim._BOUND_AGENTS
+        assert other in claim._BOUND_AGENTS
+
+        # A session with no stub token forgets nothing.
+        handle_b = AcpSessionHandle("sB", q["sB"], rt)
+        assert handle_b.stub_session_token == ""
+        await handle_b.destroy()
+        assert other in claim._BOUND_AGENTS
+    finally:
+        claim._BOUND_AGENTS.pop(token, None)
+        claim._BOUND_AGENTS.pop(other, None)
+
+
+@pytest.mark.asyncio
 async def test_terminate_session_sends_bounded_terminate_for_target_only():
     """terminate_session issues _kiro.dev/session/terminate for exactly the
     target sessionId with a bounded timeout (teardown can't stall on an

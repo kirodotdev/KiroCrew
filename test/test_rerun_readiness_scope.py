@@ -10,6 +10,8 @@ is refused before the cut.
 
 from __future__ import annotations
 
+import contextlib
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -205,3 +207,75 @@ async def test_a_rerun_that_discards_a_live_kiro_cli_provider_is_not_gated_by_it
     got, payload = await _post(state, route, body)
 
     assert got == 200, payload
+
+
+_KAS_ROUTE = "kiro_crew.agent_sdk.kas_bundle.kas_route"
+
+
+@contextlib.contextmanager
+def _crew_sign_in(relay_crew_auth: bool):
+    """KAS on the relay, ``crew_auth`` as given, and a vault credential that resolves."""
+    from kiro_crew.acp.kas_route import KasRoute
+
+    with (
+        patch(_KAS_ROUTE, return_value=KasRoute(bundle=False, crew_auth=relay_crew_auth)),
+        patch("kiro_crew.auth.bridge.default_token_store"),
+        patch("kiro_crew.auth.provider.KasAuthProvider") as provider,
+    ):
+        provider.return_value.current = AsyncMock(return_value=object())
+        yield provider.return_value.current
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("route", "body"), [_REGENERATE, _EDIT_RESEND, _REWIND])
+@pytest.mark.parametrize(
+    ("crew_auth", "status"), [(True, 200), (False, 503)], ids=["crew-owned", "cli-owned"]
+)
+async def test_a_signed_out_kiro_cli_refuses_a_rerun_only_on_a_cli_owned_kas_relay(
+    state, route, body, crew_auth, status
+) -> None:
+    _pin_applied(state, acp_backend=ACP_BACKEND_KAS)
+    state.kiro_prerequisite_service = object.__new__(_SignedOutKiroCli)
+    slot = _answered_slot(state)
+    before = list(slot.messages)
+
+    with _crew_sign_in(crew_auth) as current:
+        got, payload = await _post(state, route, body)
+
+    assert got == status, payload
+    if status == 503:
+        assert payload["code"] == "kiro_prerequisite_required"
+        # Refused before the cut: history and the native conversation are untouched.
+        assert slot.messages == before
+        state.sessions.discard_conversation.assert_not_awaited()
+        current.assert_not_called()
+    else:
+        current.assert_awaited_once()
+        if route != _REGENERATE[0]:
+            assert slot.messages[0]["content"] == "edited"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("host_auth", "status"), [(True, 200), (False, 503)], ids=["crew-owned", "cli-owned"]
+)
+async def test_a_regenerate_on_a_live_kas_relay_follows_its_spawn_plan(
+    state, host_auth, status
+) -> None:
+    # The live process runs the turn; the configured relay alone would be refused.
+    _pin_applied(state, acp_backend=ACP_BACKEND_KAS)
+    state.kiro_prerequisite_service = object.__new__(_SignedOutKiroCli)
+    slot = _answered_slot(state)
+    before = list(slot.messages)
+    runtime = SimpleNamespace(
+        acp_backend=ACP_BACKEND_KAS, _kas_engine_bundle=False, _kas_host_auth=host_auth
+    )
+    state.sessions.get_provider = MagicMock(return_value=SimpleNamespace(_runtime=runtime))
+
+    with _crew_sign_in(False):
+        got, payload = await _post(state, *_REGENERATE)
+
+    assert got == status, payload
+    if status == 503:
+        assert payload["code"] == "kiro_prerequisite_required"
+        assert slot.messages == before

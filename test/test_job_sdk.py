@@ -1046,8 +1046,10 @@ class TestDisableTrace:
         behavior: dict[str, str] = {}
         both_running = threading.Event()
         worker: list[threading.Thread] = []
+        thread_of: dict[str, threading.Thread] = {}
 
         def runner(h, **kw):
+            thread_of[h.run_id] = threading.current_thread()
             # list.append is atomic under the GIL, so this doubles as the
             # "both workers are up" counter.
             worker.append(threading.current_thread())
@@ -1065,6 +1067,21 @@ class TestDisableTrace:
         assert both_running.wait(5.0)
         behavior[stubborn] = "stubborn"
         gate.set()
+
+        # The cooperative worker only has to notice its cancel signal, but how
+        # long its thread takes to END is the runner's scheduling, not the
+        # code's: a slow runner can push it past any short join deadline and
+        # flag it too. So the join starts only once that thread has ended; the
+        # stubborn sibling, still alive with the same thread name, is what
+        # makes per-run attribution observable.
+        real_join_workers = sdk._join_workers
+
+        def join_after_the_cooperative_worker_ends(live):
+            thread_of[coop].join(timeout=30.0)
+            assert not thread_of[coop].is_alive(), "the cooperative worker ignored its cancel"
+            return real_join_workers(live)
+
+        monkeypatch.setattr(sdk, "_join_workers", join_after_the_cooperative_worker_ends)
 
         try:
             cleanup = asyncio.run(sdk.remove_all_async())

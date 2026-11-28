@@ -45,7 +45,8 @@ import SpecHooksRunNowhereNotice, {
   projectHookFilesNoticeDismissed,
   specHooksRunNowhereDismissed,
 } from '../pages/chat/SpecHooksNotice'
-import { SystemNoticeRow, isSystemNoticeRow } from '../pages/chat/CompactionCard'
+import { SystemNoticeRow } from '../pages/chat/CompactionCard'
+import { isSystemNoticeRow } from '../lib/systemNotice'
 import { replyShowsFooter, replyTurnStats } from '../pages/chat/replyFooter'
 import { toolRailColor } from '../utils/toolRailColor'
 import SkillLoadCard, { isSkillLoadRow } from '../pages/chat/SkillLoadCard'
@@ -59,7 +60,7 @@ import { warmBriefBodyOf } from '../components/chat/WarmBriefCard'
 import { grillRowId } from '../components/chat/GrillCard'
 import { grillKeysSentAfter } from './protocol/grillMarker'
 import { ToolDetails } from '../pages/chat/ToolDetails'
-import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
+import { isSubagentCompletionMessage } from '../lib/subagentCompletion'
 import { REASONING_ROLES, stripAppEnvelope } from '../pages/chat/groupDisplayItems'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'
@@ -126,6 +127,9 @@ export interface MessageRenderContext {
    *  bubble arms its context menu. Receives the row's own fields, so the
    *  renderer never has to know what the host stores. */
   onQuoteMessage?: (role: 'user' | 'assistant', content: string, ts?: string, mid?: string) => void
+  /** Fork the chat from an assistant reply, by its `meta.mid`. Absent: the row
+   *  offers no fork (a reply with no `mid` offers none either). */
+  onForkMessage?: (mid: string) => void | Promise<unknown>
   /** Jump to the message a sent quote card quotes, in the host's own
    *  transcript. A host capability: absent, a sent quote card is a plain
    *  card, not a control. */
@@ -589,6 +593,9 @@ export interface AssistantBubbleOptions {
   /** Draw link previews under the reply's links (Settings -> Chat -> Link
    *  Previews). Absent: off. */
   linkPreviews?: boolean
+  /** Who the reply's offscreen speaker heading names (a crewmate's chat: the
+   *  crewmate). Absent: the product name, as on the main chat. */
+  speakerName?: string
 }
 
 /**
@@ -616,6 +623,14 @@ export function quoteMessageFor(m: ChatMessage, ctx: MessageRenderContext, role:
   // Typed check, not `??`: a user row wires this straight to `onClick`, which
   // hands over the click event, and an event must never become the quote.
   return (shown?: string) => fn(role, typeof shown === 'string' ? shown : m.content, m.ts, mid)
+}
+
+/** The fork props of a finished reply whose host offers `onForkMessage`. */
+function forkPropsFor(m: ChatMessage, ctx: MessageRenderContext): { onFork?: () => void | Promise<unknown>; forkIndex?: number; forkMessageId?: string } {
+  const fn = ctx.onForkMessage
+  const mid = typeof m.meta?.mid === 'string' && m.meta.mid ? m.meta.mid : undefined
+  if (!fn || !mid || m.role === 'streaming') return {}
+  return { onFork: () => fn(mid), forkIndex: ctx.index, forkMessageId: mid }
 }
 
 export function renderAssistantBubble(
@@ -663,6 +678,7 @@ export function renderAssistantBubble(
       decisionsStrip={decisionStripFieldOf(m)}
       fileChanges={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined}
       fileChangesOmittedFiles={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files}
+      engineSubagents={(m.meta as Record<string, unknown> | undefined)?.engine_subagents}
       onRegenerate={opts.onRegenerate}
       onSpeak={opts.onSpeak}
       revealActions={opts.revealActions}
@@ -674,10 +690,12 @@ export function renderAssistantBubble(
       // it. Only the card's Allow needs a local slot (`redactionSlot`).
       blockedLinks={(m.meta as Record<string, unknown> | undefined)?.link_blocks}
       redactionSlot={opts.redactionSlot}
+      speakerName={opts.speakerName}
       suppressSteerAck={suppressSteerAck}
       bubbleClassName={bubbleClassName}
       onReplyInThread={isStreaming ? undefined : replyInThreadFor(m, ctx)}
       onQuoteMessage={quoteMessageFor(m, ctx, 'assistant')}
+      {...forkPropsFor(m, ctx)}
       // A structured warm brief draws as a fixed card in place of the markdown,
       // inside this same bubble, so it keeps the timestamp and row actions.
       body={warmBriefBodyOf(m)}

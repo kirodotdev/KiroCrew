@@ -77,12 +77,12 @@ from kiro_crew.mcp_shared_wire import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.session_directive import neutralize_markers
-from kiro_crew.validation import (
+from kiro_crew.validation_parts.field_engine import ValidationError
+from kiro_crew.validation_parts.wire_envelopes import (
     JSONRPC_INTERNAL_ERROR,
     JSONRPC_INVALID_PARAMS,
     JSONRPC_INVALID_REQUEST,
     JsonRpcEnvelopeError,
-    ValidationError,
     build_tool_response,
     validate_jsonrpc_request,
 )

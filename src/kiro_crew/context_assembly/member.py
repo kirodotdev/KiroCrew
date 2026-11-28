@@ -276,20 +276,17 @@ _MEMBER_BRIEFING_ITEM_NO_FILE_TOOLS = _prompt("conductor.briefing_item_no_file_t
 # Item 7 — the crewmate's own Dashboard page, appended to EVERY briefing variant:
 # the gateway renders the tab from the instance store, independent of layer 4.
 #
-# The SUBAGENT name is a WIRE STRING (kiro-cli reads ``<agents dir>/<name>.json``);
-# a mismatch fails the turn. It is spelled out rather than read from
-# ``agent_files.DASHBOARD_MANAGER_AGENT_NAME`` because owners here import no Kiro
-# Crew module at module scope (``TestPlacement``); a test guards it:
-# ``test_dashboard_manager_agent.py::test_the_base_prompt_names_the_agent_the_installer_writes``
-#
-# THE CREWMATE drives its own page: ``_MEMBER_PANEL_GRANTS`` grants it every tool
-# this item names. The crewmate is also the only one of the two whose identity the
-# panel's tools can resolve: they go through ``mcp_core.require_strict_session_key``,
+# THE CREWMATE drives its own page, in its own thread: ``_MEMBER_PANEL_GRANTS``
+# grants it every tool this item names, and it is the only caller whose identity the
+# panel's tools can resolve. They go through ``mcp_core.require_strict_session_key``,
 # which resolves the CALLING session and never a parent through a ``/proc`` walk,
 # because that walk is how a subagent would reach a page that is not its own. A
-# member DM session has that identity; a subagent is a weaker place to stand. So the
-# subagent is extra capacity for a long page job, and the crewmate's own hands are
-# the path.
+# member DM session has that identity. A subagent has no dashboard slot, so the
+# gateway refuses each of its dashboard calls (``no_dashboard_slot``,
+# ``agent_panel_publish._resolve_publishing_crew``). The item therefore names no
+# subagent for page work, the ``kirocrew-dashboard-manager`` one included; a test
+# guards it:
+# ``test_dashboard_manager_agent.py::test_no_bot_prompt_sends_a_page_job_to_a_subagent``
 _MEMBER_DASHBOARD_ITEM = _prompt("conductor.dashboard_item")
 
 
@@ -335,8 +332,12 @@ def build_member_section(
     include_briefing: bool = True,
     desk_withheld: bool = False,
     dispatch_mounted: bool | None = None,
+    briefing_out: list[str] | None = None,
 ) -> str:
     """Assemble the four-layer identity for a member's bound execution.
+
+    ``briefing_out``, when given, receives the layer-4 text exactly as it sits
+    in the section, so a delivery can acknowledge it apart from the rest.
 
     Layer ownership (precedence is the injection order — earlier outranks
     later — with ONE stated exception: layer 3's header explicitly claims
@@ -438,7 +439,7 @@ def build_member_section(
     goals = _read_goal_block(slug, member)
     from kiro_crew.member_mate_tools import binding_has_file_write, binding_has_mate_tools
 
-    has_mate_tools = binding_has_mate_tools(crew)
+    has_mate_tools = binding_has_mate_tools(crew, crew_key)
     # Layer-4 availability decides the briefing read and the wording of item 6 and
     # the placeholder: where the briefing read fails closed (Windows,
     # member_briefing_supported) the section says the layer is unavailable. A turn
@@ -571,6 +572,8 @@ def build_member_section(
             _fill("conductor.assignment_head", briefing_path=str(briefing_path))
             + (briefing if briefing else _prompt("conductor.assignment_empty"))
         )
+        if briefing_out is not None:
+            briefing_out.append(parts[-1])
     elif briefing_ok:
         # Read, but not the member's to write, so the header says whose file it
         # is now: it names the file, so a member can point the user at a stale
@@ -581,6 +584,8 @@ def build_member_section(
             _fill("conductor.assignment_head_read_only", briefing_path=str(briefing_path))
             + (briefing if briefing else _prompt("conductor.assignment_empty_read_only"))
         )
+        if briefing_out is not None:
+            briefing_out.append(parts[-1])
     elif desk_withheld:
         # No layer 4 and no placeholder: placeholders speak to a member AT ITS
         # DESK, and a turn off the desk has no layer 4 to miss. Its memory scope
@@ -628,8 +633,12 @@ def build_v2_essentials(
     desk_withheld: bool,
     provider_type: str | None,
     dispatch_mounted: bool | None = None,
+    briefing_out: list[str] | None = None,
 ) -> str:
     """Refresh complete member essentials without opening learned memory.
+
+    ``briefing_out``, when given, receives the member's ``[CURRENT ASSIGNMENT]``
+    text as rendered inside the returned envelope.
 
     ``desk_withheld`` is :func:`_desk_withheld`'s verdict for the turn being
     built and is handed to the member-section builder unchanged: the
@@ -637,7 +646,8 @@ def build_v2_essentials(
     withholds only the desk protocol and briefing.
 
     ``provider_type`` names the harness serving the session. Only kiro-cli
-    (:data:`PROVIDER_ACP`) honours ``chat.disableInheritingDefaultResources``,
+    (``SessionCapabilities.inherits_kiro_default_resources``) honours
+    ``chat.disableInheritingDefaultResources``,
     so its verdict is read once here, where the harness is known, and handed
     to every consumer; no consumer reads the setting itself. ``None`` means
     the harness is not known to be kiro-cli, so the opt-out is not read and
@@ -675,12 +685,14 @@ def build_v2_essentials(
     include_project = not blocks_reads and _inclusion._group_included(
         context_groups, _inclusion.CONTEXT_GROUP_PROJECT
     )
+    briefing: list[str] = []
     identity = builder._build_member_section(
         owner,
         strict=True,
         include_briefing=reads,
         desk_withheld=desk_withheld,
         dispatch_mounted=dispatch_mounted,
+        briefing_out=briefing,
     )
     # A validation pass measures the largest envelope any harness can build,
     # so it keeps inheritance and never reads kiro-cli's opt-out. On a normal
@@ -689,7 +701,11 @@ def build_v2_essentials(
     # the project group applies, and pass the verdict to the snapshot and the
     # folder-steering dedup below so the two cannot disagree.
     inherits_default_resources = True
-    if profile_overrides is None and include_project and provider_type == ctx.PROVIDER_ACP:
+    if (
+        profile_overrides is None
+        and include_project
+        and ctx.label_inherits_kiro_defaults(provider_type)
+    ):
         inherits_default_resources = ctx.member_inherits_default_resources(project)
     # The member's CORE (persona prompt, SOUL.md, context settings, the
     # profile anchors and recall note appended below) is never left out; every
@@ -797,6 +813,9 @@ def build_v2_essentials(
         )
         documents[folder_insert_at:folder_insert_at] = fitted
     envelope = render_essentials(documents, identity=identity)
+    if briefing_out is not None and briefing:
+        # Neutralized as render_essentials neutralizes the identity around it.
+        briefing_out.append(ctx._neutralize_structural_markers(briefing[0]))
     if native_envelope_out is not None:
         native = native_documents or {}
         native_envelope_out.append(

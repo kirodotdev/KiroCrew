@@ -239,17 +239,21 @@ def _row(state: Any, selectable: set) -> Dict[str, Any]:
 def _sandbox_refusal(backend: str) -> str:
     """Whose fix it is that a session start refuses *backend* here, or ``""``.
 
-    The launch's own predicate (``tool_gate.sandbox_floor_refusal``) at the
-    configured tier, so the row cannot disagree with a session start. ``"setting"``
+    The launch's own predicate (``tool_gate.sandbox_floor_refusal``) at the tier a
+    session of *backend* starts at (``agent.sandbox`` raised to its
+    ``agent.harness_sandbox`` floor), so the row cannot disagree with a session start. ``"setting"``
     when the host has a sandbox backend that ``agent.sandbox`` leaves off, ``"host"``
     when it has none (native Windows): the split first-run setup makes
     (``sandbox_facts`` in ``kiro_prerequisite_service``), because the remedies are
     opposite.
     """
     from kiro_crew import sandbox
-    from kiro_crew.agent_sdk.tool_gate import sandbox_floor_refusal
+    from kiro_crew.agent_sdk.tool_gate import (
+        configured_harness_sandbox_mode,
+        sandbox_floor_refusal,
+    )
 
-    if not sandbox_floor_refusal(backend, sandbox.configured_sandbox_mode()):
+    if not sandbox_floor_refusal(backend, configured_harness_sandbox_mode(backend)):
         return ""
     return "setting" if sandbox.detect_backend() != "none" else "host"
 

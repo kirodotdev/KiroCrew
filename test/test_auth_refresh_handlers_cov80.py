@@ -79,7 +79,7 @@ def _phone_trust(*, pin_scope: str = "node") -> TailnetTrust:
 
 def _legacy_claimless_require_peer_refresh() -> tuple[str, str, str, float]:
     """Build the pre-fix signed shape that had require_peer but no peer_key."""
-    token, chain_id, jti, exp = generate_refresh_token("phone")
+    token, chain_id, jti, exp = generate_refresh_token("phone", family="fam")
     payload = json.loads(rt._b64url_decode(token.split(".", 1)[0]))
     payload["require_peer"] = "1"
     raw = json.dumps(payload, separators=(",", ":")).encode()
@@ -328,7 +328,7 @@ async def test_me_reports_the_published_principal_and_unknown_without_one() -> N
 @pytest.mark.asyncio
 async def test_me_reports_both_expiries(state: RefreshStateManager) -> None:
     access = generate_token("alice", ttl_seconds=MAX_SESSION_TTL_SECS, register_nonce=False)
-    refresh, _chain, _jti, refresh_exp = generate_refresh_token("alice")
+    refresh, _chain, _jti, refresh_exp = generate_refresh_token("alice", family="fam")
     request = _mk(
         "GET",
         "/api/auth/me",
@@ -455,7 +455,7 @@ async def test_require_peer_is_enforced_before_the_grace_replay_return(
     token was honoured with no identity check at all.
     """
     refresh, chain_id, jti, _exp = generate_refresh_token(
-        "phone", require_peer=True, peer_key=PHONE_PEER_KEY
+        "phone", family="fam", require_peer=True, peer_key=PHONE_PEER_KEY
     )
     # Stage exactly the state the grace branch reads: this jti consumed as the
     # chain head, with the replacement pair it minted available for replay.
@@ -506,7 +506,7 @@ async def test_require_peer_chain_refuses_to_rotate_without_a_verified_peer(
     hiccup into a re-scan.
     """
     refresh, chain_id, _jti, _exp = generate_refresh_token(
-        "phone", require_peer=True, peer_key=PHONE_PEER_KEY
+        "phone", family="fam", require_peer=True, peer_key=PHONE_PEER_KEY
     )
     request = _mk(
         "POST",
@@ -529,16 +529,18 @@ def test_require_peer_survives_rotation_and_defaults_off() -> None:
     A chain that lost the claim on its first rotation would silently become an
     ordinary rotating session - the same defect one rotation later.
     """
-    bound, _c, _j, _e = generate_refresh_token("phone", require_peer=True, peer_key=PHONE_PEER_KEY)
+    bound, _c, _j, _e = generate_refresh_token(
+        "phone", family="fam", require_peer=True, peer_key=PHONE_PEER_KEY
+    )
     assert refresh_token_requires_peer(bound) is True
     assert refresh_token_peer_key(bound) == PHONE_PEER_KEY
-    plain, _c2, _j2, _e2 = generate_refresh_token("desktop")
+    plain, _c2, _j2, _e2 = generate_refresh_token("desktop", family="fam")
     assert refresh_token_requires_peer(plain) is False
 
 
 def test_require_peer_refresh_cannot_be_minted_without_a_device_key() -> None:
     with pytest.raises(ValueError, match="original peer_key"):
-        generate_refresh_token("phone", require_peer=True)
+        generate_refresh_token("phone", family="fam", require_peer=True)
 
 
 def test_require_peer_fails_closed_on_an_undecodable_payload() -> None:
@@ -561,7 +563,7 @@ async def test_require_peer_rotation_preserves_signed_device_on_both_cookies(
     """A matching peer may rotate, and neither half may lose the binding."""
     monkeypatch.setattr(h, "resolve_forwarded_peer", AsyncMock(return_value=_phone_peer()))
     token, _chain, _jti, _exp = generate_refresh_token(
-        "phone", require_peer=True, peer_key=PHONE_PEER_KEY
+        "phone", family="fam", require_peer=True, peer_key=PHONE_PEER_KEY
     )
     response = await h.api_auth_refresh(
         _mk(
@@ -590,7 +592,7 @@ async def test_require_peer_rotation_rejects_another_allowed_node_without_consum
         AsyncMock(return_value=_phone_peer("other-phone.tail.ts.net")),
     )
     token, chain_id, jti, _exp = generate_refresh_token(
-        "phone", require_peer=True, peer_key=PHONE_PEER_KEY
+        "phone", family="fam", require_peer=True, peer_key=PHONE_PEER_KEY
     )
     response = await h.api_auth_refresh(
         _mk(
@@ -640,7 +642,7 @@ async def test_require_peer_grace_replay_checks_signed_device_before_cached_pair
         AsyncMock(return_value=_phone_peer("other-phone.tail.ts.net")),
     )
     token, chain_id, jti, _exp = generate_refresh_token(
-        "phone", require_peer=True, peer_key=PHONE_PEER_KEY
+        "phone", family="fam", require_peer=True, peer_key=PHONE_PEER_KEY
     )
     state.mark_consumed(
         jti,
@@ -682,7 +684,7 @@ async def test_require_peer_rotation_preserves_signed_login_scope(
         AsyncMock(return_value=_phone_peer("replacement-phone.tail.ts.net")),
     )
     token, _chain, _jti, _exp = generate_refresh_token(
-        "phone", require_peer=True, peer_key=login_key
+        "phone", family="fam", require_peer=True, peer_key=login_key
     )
     response = await h.api_auth_refresh(
         _mk(
@@ -756,7 +758,7 @@ async def test_refresh_401_on_a_malformed_refresh_cookie(
 async def test_refresh_401_and_clears_the_cookie_when_the_chain_is_revoked(
     state: RefreshStateManager, audit: list
 ) -> None:
-    token, chain_id, _jti, _exp = generate_refresh_token("alice")
+    token, chain_id, _jti, _exp = generate_refresh_token("alice", family="fam")
     state.revoke_chain(chain_id, time.time() + MAX_REFRESH_TTL_SECS)
     request = _mk(cookies={refresh_cookie_name(str(PORT)): token})
     response = await h.api_auth_refresh(request)
@@ -771,7 +773,7 @@ async def test_refresh_401_and_clears_the_cookie_when_the_chain_is_revoked(
 async def test_refresh_happy_path_rotates_both_cookies(
     state: RefreshStateManager, audit: list
 ) -> None:
-    token, chain_id, jti, _exp = generate_refresh_token("alice")
+    token, chain_id, jti, _exp = generate_refresh_token("alice", family="fam")
     request = _mk(cookies={refresh_cookie_name(str(PORT)): token})
     response = await h.api_auth_refresh(request)
     assert response.status == 200
@@ -813,7 +815,7 @@ async def test_rotation_carries_the_boot_binding_onto_both_new_cookies(
     from kiro_crew.dashboard.refresh_tokens import refresh_token_boot
 
     bid = boot_id.current_boot_id()
-    token, _chain, _jti, _exp = generate_refresh_token("alice", boot=bid)
+    token, _chain, _jti, _exp = generate_refresh_token("alice", family="fam", boot=bid)
     response = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): token}))
     assert response.status == 200
 
@@ -846,7 +848,9 @@ async def test_rotation_carries_the_embed_parent_port_onto_both_new_cookies(
     from kiro_crew.dashboard.refresh_tokens import refresh_token_embed_parent_port
     from kiro_crew.dashboard.token_auth_tokens import token_embed_parent_port
 
-    token, _chain, _jti, _exp = generate_refresh_token("alice", embed_parent_port="5476")
+    token, _chain, _jti, _exp = generate_refresh_token(
+        "alice", family="fam", embed_parent_port="5476"
+    )
     response = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): token}))
     assert response.status == 200
 
@@ -855,7 +859,7 @@ async def test_rotation_carries_the_embed_parent_port_onto_both_new_cookies(
     assert refresh_token_embed_parent_port(cookies[refresh_cookie_name(str(PORT))]) == "5476"
 
     # A chain opened without the claim stays without it.
-    plain, *_ = generate_refresh_token("alice")
+    plain, *_ = generate_refresh_token("alice", family="fam")
     assert refresh_token_embed_parent_port(plain) == ""
     assert refresh_token_embed_parent_port("not-a-token") == ""
 
@@ -873,7 +877,7 @@ async def test_rotation_carries_the_embed_forward_port_onto_both_new_cookies(
     from kiro_crew.dashboard.token_auth_tokens import _b64url_decode
 
     token, _chain, _jti, _exp = generate_refresh_token(
-        "alice", embed_parent_port="5476", embed_forward_port="7778"
+        "alice", family="fam", embed_parent_port="5476", embed_forward_port="7778"
     )
     response = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): token}))
     assert response.status == 200
@@ -883,7 +887,7 @@ async def test_rotation_carries_the_embed_forward_port_onto_both_new_cookies(
     assert access["embed_forward_port"] == "7778"
     assert refresh_token_embed_forward_port(cookies[refresh_cookie_name(str(PORT))]) == "7778"
 
-    plain, *_ = generate_refresh_token("alice")
+    plain, *_ = generate_refresh_token("alice", family="fam")
     assert refresh_token_embed_forward_port(plain) == ""
     assert refresh_token_embed_forward_port("not-a-token") == ""
 
@@ -908,7 +912,9 @@ async def test_a_boot_bound_rotation_keeps_its_address_pin(
     def rt_state_has_binding(tok: str) -> bool:
         return _token_state.has_binding(tok)
 
-    token, _chain, _jti, _exp = generate_refresh_token("alice", boot=boot_id.current_boot_id())
+    token, _chain, _jti, _exp = generate_refresh_token(
+        "alice", family="fam", boot=boot_id.current_boot_id()
+    )
     request = _mk(cookies={refresh_cookie_name(str(PORT)): token})
     response = await h.api_auth_refresh(request)
     assert response.status == 200
@@ -935,7 +941,7 @@ async def test_an_unbound_rotation_is_left_unpinned(
     from kiro_crew.dashboard.token_auth import _state as _token_state
     from kiro_crew.dashboard.token_auth import check_token_ip
 
-    token, _chain, _jti, _exp = generate_refresh_token("alice")
+    token, _chain, _jti, _exp = generate_refresh_token("alice", family="fam")
     response = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): token}))
     assert response.status == 200
     new_access = response.cookies[f"mc_token_{PORT}"].value
@@ -953,7 +959,7 @@ async def test_rotation_of_an_unbound_chain_stays_unbound(
     """The default path must not acquire a binding it never asked for."""
     from kiro_crew.dashboard.refresh_tokens import refresh_token_boot
 
-    token, _chain, _jti, _exp = generate_refresh_token("alice")
+    token, _chain, _jti, _exp = generate_refresh_token("alice", family="fam")
     response = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): token}))
     assert response.status == 200
     value = response.cookies[refresh_cookie_name(str(PORT))].value
@@ -965,7 +971,7 @@ async def test_refresh_replays_the_same_pair_inside_the_grace_window(
     state: RefreshStateManager, audit: list
 ) -> None:
     """A second tab presenting the same jti from the same IP gets the cached pair."""
-    token, _chain, jti, _exp = generate_refresh_token("alice")
+    token, _chain, jti, _exp = generate_refresh_token("alice", family="fam")
     cookies = {refresh_cookie_name(str(PORT)): token}
     first = _body(await h.api_auth_refresh(_mk(cookies=cookies)))
     replay = await h.api_auth_refresh(_mk(cookies=cookies))
@@ -985,7 +991,7 @@ async def test_refresh_revokes_the_chain_on_genuine_reuse(
     state: RefreshStateManager, audit: list
 ) -> None:
     """Reuse from a different IP is theft, not a multi-tab race: kill the chain."""
-    token, chain_id, jti, exp = generate_refresh_token("alice")
+    token, chain_id, jti, exp = generate_refresh_token("alice", family="fam")
     state.mark_consumed(jti, chain_id=chain_id, exp=exp, ip="198.51.100.7", replacement="")
     request = _mk(cookies={refresh_cookie_name(str(PORT)): token}, remote="203.0.113.9")
     response = await h.api_auth_refresh(request)
@@ -1001,7 +1007,7 @@ async def test_refresh_revokes_the_chain_when_the_cached_replacement_is_corrupt(
     state: RefreshStateManager, audit: list
 ) -> None:
     """An undecodable grace payload must fall through to revocation, not 500."""
-    token, chain_id, jti, exp = generate_refresh_token("alice")
+    token, chain_id, jti, exp = generate_refresh_token("alice", family="fam")
     state.mark_consumed(jti, chain_id=chain_id, exp=exp, ip="203.0.113.9", replacement="{not json")
     request = _mk(cookies={refresh_cookie_name(str(PORT)): token}, remote="203.0.113.9")
     response = await h.api_auth_refresh(request)
@@ -1107,7 +1113,7 @@ async def test_logout_without_cookies_still_clears_both(
 
 @pytest.mark.asyncio
 async def test_logout_revokes_the_refresh_chain(state: RefreshStateManager, audit: list) -> None:
-    token, chain_id, _jti, _exp = generate_refresh_token("alice")
+    token, chain_id, _jti, _exp = generate_refresh_token("alice", family="fam")
     request = _mk("POST", "/api/auth/logout", cookies={refresh_cookie_name(str(PORT)): token})
     response = await h.api_auth_logout(request)
     assert _body(response) == {"logged_out": True}
@@ -1199,7 +1205,7 @@ async def test_a_refused_rotation_leaves_an_audit_row_like_every_other_outcome(
     reconstructing "why did every session stop refreshing" from the audit trail saw nothing
     at all for the requests that were actually refused.
     """
-    token, chain_id, jti, _exp = generate_refresh_token("alice")
+    token, chain_id, jti, _exp = generate_refresh_token("alice", family="fam")
 
     # Make the store's write fail, which is what drives the handler down the 503 branch.
     monkeypatch.setattr(type(state), "mark_consumed", lambda self, *a, **kw: False, raising=True)
@@ -1237,7 +1243,7 @@ async def test_logout_on_a_degraded_store_still_revokes_and_does_not_claim_succe
     next write to succeed cleared the mark, after which the un-revoked cookie validated again
     for the rest of its TTL. That is the replay the revocation exists to stop.
     """
-    token, chain_id, _jti, _exp = generate_refresh_token("alice")
+    token, chain_id, _jti, _exp = generate_refresh_token("alice", family="fam")
 
     # Degrade the store the way a full disk does, without touching the endpoint's own code.
     monkeypatch.setattr(
@@ -1334,7 +1340,7 @@ async def test_a_same_ip_refresh_during_a_rotation_write_never_revokes_the_chain
 
     monkeypatch.setattr(state, "is_consumed", _spy_is_consumed)
 
-    token, chain_id, _jti, _exp = generate_refresh_token("alice")
+    token, chain_id, _jti, _exp = generate_refresh_token("alice", family="fam")
 
     def _request() -> web.Request:
         return _mk(
@@ -1380,7 +1386,7 @@ async def test_a_same_ip_duplicate_is_served_the_pair_once_the_rotation_write_la
         return real_await(*args, **kw)
 
     monkeypatch.setattr(state, "await_pending_rotation", _spy_await)
-    token, _chain, _jti, _exp = generate_refresh_token("alice")
+    token, _chain, _jti, _exp = generate_refresh_token("alice", family="fam")
 
     def _request() -> web.Request:
         return _mk(
@@ -1427,7 +1433,7 @@ async def test_a_duplicate_of_a_failed_rotation_is_told_to_retry_not_revoked(
     monkeypatch.setattr(state, "await_pending_rotation", _spy_await)
     revoked: list[str] = []
     monkeypatch.setattr(state, "revoke_chain", lambda c, e: revoked.append(c) or True)
-    token, chain_id, _jti, _exp = generate_refresh_token("alice")
+    token, chain_id, _jti, _exp = generate_refresh_token("alice", family="fam")
 
     def _request() -> web.Request:
         return _mk(
@@ -1465,7 +1471,7 @@ async def test_a_different_ip_duplicate_during_a_rotation_write_still_revokes(
         real_atomic_write(path, payload, **kw)
 
     monkeypatch.setattr(rt, "atomic_write", _stuck_write)
-    token, chain_id, _jti, _exp = generate_refresh_token("alice")
+    token, chain_id, _jti, _exp = generate_refresh_token("alice", family="fam")
     cookies = {refresh_cookie_name(str(PORT)): token}
 
     first = asyncio.ensure_future(

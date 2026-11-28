@@ -51,6 +51,7 @@ from kiro_crew.crewmate_bundle import JSON_MAX_BYTES as MAX_JSON_BYTES
 from kiro_crew.crewmate_bundle import MANIFEST_ENTRY, SKILL_FILE
 from kiro_crew.crewmate_bundle import SKILL_FOLDER_MAX_BYTES as MAX_SKILL_BYTES
 from kiro_crew.guide_catalog import _has_control_chars, _redacts
+from kiro_crew.platform_compat_links import names_a_verbatim_only_file, strip_extended_length_prefix
 from kiro_crew.preview_text import drop_format_chars
 
 FORMAT_VERSION = max(CREWMATE_FORMAT_VERSIONS)
@@ -289,8 +290,12 @@ def read_cron_script(spec: str, crons_root: Path) -> tuple[str, str, str] | Left
         return LeftOut("cron", "", REASON_SCRIPT_MISSING)
     except Exception:
         return LeftOut("cron", "", REASON_SCRIPT_REFUSED)
-    path = Path(file_path)
-    root = crons_root.resolve()
+    # Admission accepts the ``\\?\`` spelling of a cron script; fold it off both
+    # sides lexically, after refusing a name only that spelling reaches.
+    if names_a_verbatim_only_file(file_path):
+        return LeftOut("cron", "", REASON_SCRIPT_REFUSED)
+    path = Path(strip_extended_length_prefix(str(file_path)))
+    root = Path(strip_extended_length_prefix(str(crons_root.resolve())))
     if path.parent != root or not _allowed_name(path.name) or path.suffix != ".py":
         return LeftOut("cron", "", REASON_SCRIPT_REFUSED)
     if text_refusal(path.name) or text_refusal(func):

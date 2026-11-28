@@ -48,6 +48,14 @@ describe('a collapsed turn', () => {
     expect(container.querySelectorAll('[data-collapsed="true"]')).toHaveLength(2)
   })
 
+  it('keeps the servers-left-out notice visible', () => {
+    seq = 0
+    collapsedTurn([
+      notice({ kind: 'mcp_servers_left_out' }), tool(), tool(), { role: 'assistant', content: ANSWER, ts: '90' },
+    ])
+    expect(screen.getByTestId('row-notice').closest('[data-collapsed="true"]')).toBeNull()
+  })
+
   it('folds the same row when it carries no tag', () => {
     seq = 0
     collapsedTurn([notice(), tool(), tool(), { role: 'assistant', content: ANSWER, ts: '90' }])

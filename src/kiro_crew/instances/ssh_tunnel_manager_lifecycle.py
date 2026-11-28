@@ -45,6 +45,7 @@ from kiro_crew.instances.ssh_tunnel_manager_transport import _Mint
 from kiro_crew.instances.token_mint import TokenMintError
 from kiro_crew.instances.validation import (
     SshValidationError,
+    SsmTargetUnresolvedError,
     SsmValidationError,
     UnsupportedConnectionMethodError,
 )
@@ -259,11 +260,15 @@ async def connect(
 
         # Injection-safe validation immediately before building command lines.
         try:
-            params = self._resolve_transport(inst, await self._with_parent(inst))
+            params = self._resolve_transport(
+                await self._with_resolved_target(inst), await self._with_parent(inst)
+            )
         except UnsupportedConnectionMethodError:
             # Raised, like a disabled crew, so the route answers with its typed
             # code; nothing has been spawned for this crew.
             raise
+        except SsmTargetUnresolvedError as e:
+            return self._error_status(inst, f"could not look up the SSM target: {e}")
         except (SshValidationError, SsmValidationError) as e:
             return self._error_status(inst, f"invalid {inst.connection_method} settings: {e}")
 
@@ -505,7 +510,12 @@ async def connect(
             with contextlib.suppress(Exception):
                 await tunnel.stop()
             self._tunnels.pop(instance_id, None)
-            return self._error_status(inst, cycle)
+            # Coded, because the row is already stored by now and a loop never
+            # connects: the dashboard that added it reads the code to take it out.
+            looped = self._error_status(inst, cycle)
+            looped.error_code = "chain_cycle"
+            self._last_error_code[instance_id] = (cycle, looped.error_code)
+            return looped
         # Who answers at the far end of this hop right now: the crew the
         # credential below is for. Recorded only once that credential is
         # stored, so a refused connect leaves nothing behind.

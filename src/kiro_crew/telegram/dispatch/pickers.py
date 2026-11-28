@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from kiro_crew.agent_files import member_label
 from kiro_crew.agent_switch_command import switch_channel_agent
 
 if TYPE_CHECKING:
@@ -362,10 +363,11 @@ def _agent_labels() -> dict[str, str]:
     (``agent_capabilities``), a name that tells the user nothing. When the
     crew named by the copy's ``private_to`` is still BOUND to it in
     ``config.json`` (the same corroboration ``fork_refresh`` requires), the
-    label is that crew's display name, else its name. Any other spec keeps its
-    own name: a shared template can serve many crews, and an orphaned copy no
-    longer belongs to the crew it records. Labels only; the button still
-    resolves to the exact spec name.
+    label is the one the dashboard shows that crew by (``agent_files.member_label``:
+    its display name, else "Bot" for the first crewmate, else its name). Any other
+    spec keeps its own name: a shared template can serve many crews, and an
+    orphaned copy is no crew's, whatever crew it records. Labels only; the
+    button still resolves to the exact spec name.
     """
     from kiro_crew.telegram import transport_dispatch as facade
 
@@ -381,7 +383,7 @@ def _agent_labels() -> dict[str, str]:
     for info in facade.list_agents():
         crew = crews.get(info.private_to) if info.private_to else None
         if crew is not None and crew.kiro_agent == info.name:
-            label = (crew.display_name or "").strip() or info.private_to
+            label = member_label(info.private_to, crew)
         elif _is_crewless_copy(info.name, info.private_to, bound):
             label = f"No crew ({_short_id(info.name)})"
         else:

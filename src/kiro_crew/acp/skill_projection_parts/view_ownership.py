@@ -364,8 +364,10 @@ def _sidecar_record_in(
 #: shared alias lock, and each full check reads two files through the sensitive-path
 #: screen, so a burst of spawns queued behind one another for minutes. On POSIX any
 #: write, rename or ``utime`` moves a file's ctime, so a changed file is read again.
-#: Windows reports creation time as ``st_ctime_ns``, and a same-size in-place edit with
-#: its mtime put back would look unchanged there, so Windows always runs the full check.
+#: Windows reports creation time as ``st_ctime_ns``, so there the fingerprint is the
+#: file index, size and mtime: Kiro Crew's own writes replace the file and change the
+#: index, and a same-size in-place edit that puts its mtime back is seen only at the
+#: next ordinary change or restart.
 _PROVED_CURRENT: dict[tuple[str, str, str], tuple[tuple[int, ...], tuple[int, ...]]] = {}
 # shortcut: cleared whole when full; one more full check per view, never a wrong answer.
 _PROVED_CURRENT_MAX = 4096
@@ -375,12 +377,9 @@ _PROVED_CURRENT_MIN_AGE_NS = 2_000_000_000
 
 
 def _fingerprint(info: os.stat_result) -> tuple[int, ...]:
+    if platform_compat.IS_WINDOWS:
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-
-
-def _fingerprints_show_writes() -> bool:
-    """Whether a file's fingerprint moves on every write here (not on Windows)."""
-    return not platform_compat.IS_WINDOWS
 
 
 def _settled(*infos: os.stat_result) -> bool:
@@ -422,8 +421,7 @@ def _is_current_publication(
     )
     proved = (
         (_fingerprint(info), _fingerprint(sidecar_info))
-        if _fingerprints_show_writes()
-        and sidecar_info is not None
+        if sidecar_info is not None
         and stat.S_ISREG(sidecar_info.st_mode)
         and _settled(info, sidecar_info)
         else None

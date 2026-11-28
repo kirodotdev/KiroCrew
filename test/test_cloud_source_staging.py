@@ -16,6 +16,10 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from cloud_staging_walk_helpers import (  # noqa: F401 -- the fixture registers by import
+    host_directories_out_of_the_staging_walk,
+    real_chain_the_launcher_owns,
+)
 from group_privacy_helpers import _ACL_USER, _acl_xattr, _serve_acl
 
 from conftest import make_dir_link
@@ -33,6 +37,7 @@ def _no_git_attributes(_floor_monkeypatch):
     _floor_monkeypatch.setattr(source, "_tracked_attr_values", lambda root, names, attr: {})
 
 
+@pytest.mark.usefixtures("host_directories_out_of_the_staging_walk")
 class TestTarballStagingDirectory:
     """Where the source tarball is built, not what goes into it.
 
@@ -623,7 +628,7 @@ class TestTarballStagingDirectory:
         home.mkdir(mode=0o700, parents=True)
         monkeypatch.setenv("KIROCREW_HOME", str(home))
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: account))
-        chain = source._chain_the_launcher_owns(home)
+        chain = real_chain_the_launcher_owns(home)
         assert chain[0] == account.resolve(), "the walk should start at the operator's own home"
         assert chain[-1] == home.resolve()
         assert (
@@ -643,9 +648,41 @@ class TestTarballStagingDirectory:
         home = tmp_path / "srv-shared" / "kirocrew"
         home.mkdir(mode=0o700, parents=True)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: elsewhere))
-        chain = source._chain_the_launcher_owns(home)
+        chain = real_chain_the_launcher_owns(home)
         assert chain[0] == Path(home.resolve().root), "the walk should start at the root"
         assert chain[-1] == home.resolve()
+
+    def test_a_foreign_owned_root_above_the_base_temp_does_not_decide_these_tests(
+        self, monkeypatch, tmp_path
+    ):
+        # Pins the class fixture: inside a user namespace '/' reads as uid 65534, and a
+        # relocated home under tmp_path would otherwise be refused on '/' rather than
+        # on what the test planted.
+        if os.name != "posix":
+            pytest.skip("POSIX ownership")
+        home = tmp_path / "relocated" / "kirocrew"
+        home.mkdir(mode=0o700, parents=True)
+        temp_root = tmp_path / "process-temp-root"
+        temp_root.mkdir()
+        elsewhere = tmp_path / "pretend-account-home"
+        elsewhere.mkdir(mode=0o700)
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        monkeypatch.setattr(tempfile, "tempdir", str(temp_root))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: elsewhere))
+
+        real_stat = Path.stat
+        root = str(Path(home.resolve().root))
+
+        def _stat_with_a_foreign_root(self, *a, **kw):
+            info = real_stat(self, *a, **kw)
+            if str(self) == root:
+                fields = list(info)
+                fields[4] = 65534  # st_uid
+                return os.stat_result(tuple(fields))
+            return info
+
+        monkeypatch.setattr(Path, "stat", _stat_with_a_foreign_root)
+        assert source._staging_dir() == home / source._STAGING_DIR_LEAF
 
     def test_a_peer_writable_directory_under_the_account_refuses_the_build(
         self, monkeypatch, tmp_path

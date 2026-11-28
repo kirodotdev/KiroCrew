@@ -11,8 +11,8 @@ measures both against the pinned ``codex-acp``:
 2. The shared teardown keeps the record. A chat leaving a shared process is ended
    with the verb ``CodexHarness.teardown`` names, sent the way it says (a request,
    not a notification). After it the other session still answers, and
-   ``session/load`` restores the departed one with its first turn, on the same
-   process and on a restarted one.
+   ``session/resume``, the verb Crew restores a codex session with, brings the
+   departed one back with its first turn, on the same process and on a restarted one.
 
 A sibling of ``test_codex_session_mcp.py`` (at its line cap); the gate and the
 driver runner are imported from there, so both files measure the same installed
@@ -228,7 +228,7 @@ try:
         out["teardown_reply"] = a.wait(rid, 30) if rid is not None else None
         rs2 = a.call("session/prompt", {"sessionId": s, "prompt": text("SLOW-SESSION-AGAIN hello")})
         out["other_alive_after_teardown"] = (rs2.get("result") or {}).get("stopReason")
-        out["load_same"] = a.call("session/load", {"sessionId": f, "cwd": work, "mcpServers": []})
+        out["load_same"] = a.call("session/resume", {"sessionId": f, "cwd": work, "mcpServers": []})
         n0 = len(log)
         a.call("session/prompt", {"sessionId": f, "prompt": text("RECALL-SAME which session?")})
         out["recall_same"] = recalled("RECALL-SAME", n0)
@@ -238,7 +238,7 @@ if out.get("sids") and all(out["sids"]):
     b = Agent()
     try:
         b.call("initialize", {"protocolVersion": 1, "clientCapabilities": {"fs": {}}})
-        out["load_fresh"] = b.call("session/load", {"sessionId": f, "cwd": work, "mcpServers": []})
+        out["load_fresh"] = b.call("session/resume", {"sessionId": f, "cwd": work, "mcpServers": []})
         n0 = len(log)
         b.call("session/prompt", {"sessionId": f, "prompt": text("RECALL-FRESH which session?")})
         out["recall_fresh"] = recalled("RECALL-FRESH", n0)
@@ -314,11 +314,11 @@ def test_real_codex_acp_two_chats_share_one_process():
         "the other chat stopped answering after one chat left the process\n" + ctx
     )
     assert "result" in (m.get("load_same") or {}), (
-        "session/load after the shared teardown failed on the same process, so the "
+        "session/resume after the shared teardown failed on the same process, so the "
         "teardown disposed the record\n" + ctx
     )
     assert m["recall_same"], "the reloaded chat lost its first turn\n" + ctx
     assert "result" in (m.get("load_fresh") or {}), (
-        "session/load from a restarted adapter failed after the shared teardown\n" + ctx
+        "session/resume from a restarted adapter failed after the shared teardown\n" + ctx
     )
     assert m["recall_fresh"], "the chat reloaded on a fresh process lost its first turn\n" + ctx

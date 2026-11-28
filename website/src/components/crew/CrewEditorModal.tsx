@@ -12,10 +12,11 @@ import type { CrewEditorController } from './useCrewEditor'
 
 export type { NextSection as CrewEditorSectionKey }
 
-export default function CrewEditorModal({ ctl, initialSection, onSectionChange }: {
+export default function CrewEditorModal({ ctl, initialSection, onSectionChange, onOpenProfile }: {
   ctl: CrewEditorController
   initialSection?: NextSection
   onSectionChange?: (section: NextSection | null) => void
+  onOpenProfile?: (name: string) => void
 }) {
-  return <CrewEditorNextDialog ctl={ctl} initialSection={initialSection} onSectionChange={onSectionChange} />
+  return <CrewEditorNextDialog ctl={ctl} initialSection={initialSection} onSectionChange={onSectionChange} onOpenProfile={onOpenProfile} />
 }

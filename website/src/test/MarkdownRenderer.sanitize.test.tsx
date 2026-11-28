@@ -1,7 +1,11 @@
-import { describe, it, expect, vi } from 'vitest'
+import { beforeAll, describe, it, expect, vi } from 'vitest'
 import { render, fireEvent, act } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
+import { loadKatex } from '../components/markdown/lazyKatex'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'
+
+// KaTeX loads on demand (lazyKatex.ts); these assertions expect it rendered.
+beforeAll(() => loadKatex())
 
 describe('rehypeSanitize allowlist (React #290 fix)', () => {
   it('renders unknown bare XML tags as escaped literal text', () => {

@@ -549,6 +549,57 @@ def _app_token_spawn_refusal(
     return _app_token_parent_refusal(request, parent_session, "spawn.create")
 
 
+def _granted_approval_mode(
+    request: web.Request, state: Any, parent_session: str, asked: str
+) -> str:
+    """The approval mode the run is admitted with: *asked*, or ``""`` when it would
+    approve more than the caller's own session already does.
+
+    ``"auto"`` approves every tool call of the run, so it is kept only where it was
+    already chosen: the owner's own dashboard request, an app token (its run is held
+    to the app's own agents, as for the App Kit SDK), a parent session that is
+    trusted, a scheduled job set to auto (the mode its ``spawn_run`` forwards), or a
+    sub-agent that itself runs auto. The internal secret shows only that the caller
+    runs on this machine, so an internal caller with no session keeps nothing; the
+    manager still applies the global ``agent.approval_mode`` to a run with no parent.
+    The parent named here was matched to the caller's own session by
+    ``internal_memory_scope`` before this runs. ``""`` never approves more than the
+    session, so it is the safe answer when a check cannot be read.
+    """
+    if asked != "auto":
+        return asked
+    if request.get("internal_auth") is not True and (
+        request.get("app") == "" or _app_token_caller(request)
+    ):
+        return asked
+    from kiro_crew.cron import cron_job_id_from_session_key
+    from kiro_crew.cron_service.fields import effective_job_approval_mode
+    from kiro_crew.subagent_manager.turn_session import approval_policy_of
+
+    manager = state.subagents
+    try:
+        if parent_session and approval_policy_of(manager, parent_session) == "auto":
+            return asked
+        job_id = cron_job_id_from_session_key(parent_session)
+        get_job = getattr(getattr(state, "crons", None), "get_job", None)
+        job = get_job(job_id) if job_id and callable(get_job) else None
+        if job is not None and effective_job_approval_mode(job.approval_mode) == "auto":
+            return asked
+        if parent_session.startswith("subagent:"):
+            run = manager.get(parent_session.removeprefix("subagent:"))
+            if run is not None and not run.done and run.approval_mode == "auto":
+                return asked
+    except Exception:  # noqa: BLE001 - an unreadable grant keeps the session's own mode
+        pass
+    _record_isolation_denial(
+        "internal",
+        "spawn.approval_mode",
+        f"parent_session={parent_session}" if parent_session else "parent_session=",
+        "approval_mode 'auto' is not granted to this caller; the run keeps its session's mode",
+    )
+    return ""
+
+
 async def api_spawn(request: web.Request) -> web.Response:
     """POST /api/spawn — spawn a subagent.
 
@@ -670,11 +721,12 @@ async def api_spawn(request: web.Request) -> web.Response:
     # (docs/decisions/, "a silent parent's sub-agent completions never ring
     # the bell").
     #
-    # Security: this endpoint requires X-Internal-Secret (internal_paths
-    # in server.py), so only local MCP server processes can call it.
+    # The internal secret admits any local process, so ``auto`` is kept only where
+    # the caller's own session already has it (``_granted_approval_mode``).
     approval_mode = body.get("approval_mode", "")
     if approval_mode not in ("", "auto"):
         return web.json_response({"error": "approval_mode must be '' or 'auto'"}, status=400)
+    approval_mode = _granted_approval_mode(request, state, parent_session, approval_mode)
     silent = body.get("silent", False)
     if not isinstance(silent, bool):
         silent = str(silent).lower() in ("true", "1", "yes")
@@ -1058,32 +1110,38 @@ async def api_spawn(request: web.Request) -> web.Response:
     # Reporting only, like the effort verdict. Read from the run's own sharing
     # plan, the one decision the start and admission take, so the note can
     # never follow a copy of the pin rule. The plan reads config (file I/O),
-    # so off the loop; a crew spawn already loaded it above.
+    # so off the loop; a crew spawn already loaded it above. The run's AWS
+    # binding is resolved as the run resolves it: without it a possible
+    # profile split reads as dedicated and the pin is blamed for it.
+    try:
+        child_aws_profile = await state.subagents._run_events._resolve_child_aws_profile(info)
+    except Exception:
+        child_aws_profile = None
+
     def _runtime_note() -> str:
         manager = state.subagents
         if manager is None:
             return ""
-        import copy
-
         from kiro_crew.subagent import _selection_kind
 
         try:
             # Only a template run can ever take the shared arm.
             if _selection_kind(info) != "template":
                 return ""
-            plan = manager._sharing_plan(info, cfg=config)
+            plan = manager._sharing_plan(info, cfg=config, child_aws_profile=child_aws_profile)
             pins = (getattr(plan, "eff_model", ""), getattr(plan, "eff_effort", ""))
             if not any(isinstance(p, str) and p for p in pins):
                 return ""
             if getattr(plan, "shared", None) is not False or getattr(info, "keep", False):
                 return ""
             # Name the pin only when it is what took the share away: the same
-            # run without its own model would take the shared arm. A backend
-            # or setting that never shares gets no note.
-            unpinned = copy.copy(info)
-            unpinned.model = ""
-            unpinned.routed_model = ""
-            if manager._should_use_session_sharing(unpinned) is not True:
+            # run would take the shared arm without it. A backend or setting
+            # that never shares, or an AWS profile binding that keeps the run
+            # off the shared arm anyway, gets no note.
+            if manager._should_use_session_sharing(info) is not True:
+                return ""
+            rules_out = manager._run_events._aws_profile_rules_out_sharing
+            if rules_out(info, child_aws_profile) is True:
                 return ""
         except Exception:
             return ""

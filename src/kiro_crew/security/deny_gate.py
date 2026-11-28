@@ -35,6 +35,7 @@ from kiro_crew.executors import maintenance_executor
 from kiro_crew.security import _submodule, logger
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
 
+from .deny_gate_nesting import _DEPTH_NOTE, _DEPTH_REFUSAL, _nested_past_cap
 from .redaction_switch import always_scan
 from .shell_commands import sharing_views
 from .text_redaction import redact_and_truncate
@@ -499,115 +500,6 @@ class _DenyWaiver:
         return verdict
 
 
-# Matches the ssh floor's _MAX_SSH_READING_DEPTH; unify the two once both are on main.
-_MAX_SUBSTITUTION_DEPTH = 32
-# Where a shell word starts, for a ``#`` comment and the ``case`` / ``esac`` words.
-_WORD_BREAK = frozenset(" \t\n;&|()<>`")
-_DEPTH_REFUSAL = f"substitution nesting deeper than {_MAX_SUBSTITUTION_DEPTH}"
-_DEPTH_NOTE = (
-    f"a command nested more than {_MAX_SUBSTITUTION_DEPTH} substitutions deep is refused;"
-    " flatten it"
-)
-
-
-def _nested_past_cap(text: str) -> bool:
-    """True once *text* nests command text more than ``_MAX_SUBSTITUTION_DEPTH`` deep.
-
-    One pass, linear in *text*. The floors re-walk every substitution body as its own
-    string, so their cost grows with depth times length; past the cap the command is
-    refused before any floor runs. Bash opens a FRESH quoting context inside each
-    ``$(``, so ``"$(echo "$(``... nests even though the quotes alternate: the scan keeps
-    a stack of contexts rather than one flat quote state. Only ``$(``, ``<(`` and
-    ``>(`` count. A bare ``(`` is tracked, so its ``)`` closes it, and so is a backtick
-    span, so a ``)`` or quote inside it reads right, but neither counts. An unescaped
-    backtick cannot open inside a backtick span (it closes it, even from inside a
-    double-quoted string there), so between two counted levels sits at most one
-    backtick level and the floors' work stays within about twice the cap. Not counting
-    them also keeps strings that are not posix shell from tripping the cap: PowerShell
-    escapes with a backtick (a backtick before a quote), and a non-shell tool string may nest parens.
-    A ``#`` comment runs to its newline, and between ``case`` and ``esac`` a ``)`` ends
-    a pattern rather than a frame, as the floors' own walk reads them.
-    """
-    stack = ["c"]  # c: substitution body, p: bare ( group, d: double quotes, b: backtick body
-    cases = [0]  # open ``case`` words per frame: a pattern's ``)`` closes nothing there
-    depth = 0  # open $( <( >( frames above the outermost command
-    escaped = -1  # index of the last character a backslash escaped
-    i, n = 0, len(text)
-    while i < n:
-        ch, top = text[i], stack[-1]
-        if ch == "\\":
-            escaped = i + 1
-            i += 2
-            continue
-        if top == "d":
-            if ch == '"':
-                stack.pop()
-                cases.pop()
-            elif ch == "$" and text.startswith("(", i + 1):
-                stack.append("c")
-                cases.append(0)
-                depth += 1
-                i += 1
-            elif ch == "`":
-                if stack[-2] == "b":  # bash closes the enclosing backtick span here
-                    del stack[-2:]
-                    del cases[-2:]
-                else:
-                    stack.append("b")
-                    cases.append(0)
-        elif ch == "'":
-            ansi = i > 0 and text[i - 1] == "$"
-            j = i + 1
-            while j < n and text[j] != "'":
-                j += 2 if ansi and text[j] == "\\" else 1
-            i = j + 1
-            continue
-        elif ch == "#" and (i == 0 or text[i - 1] in _WORD_BREAK):
-            newline = text.find("\n", i)
-            if newline < 0:
-                break
-            i = newline  # the comment's own quotes and parens are text
-            continue
-        elif ch in "ce" and (i == 0 or text[i - 1] in _WORD_BREAK):
-            word = text[i : i + 4]
-            j = i - 1  # each blank run is walked only by the word after it: linear
-            while j >= 0 and text[j] in " \t":
-                j -= 1
-            before = text[j] if j >= 0 else ""  # shortcut: reads no reserved-word chain
-            if (
-                word in ("case", "esac")
-                and text[i + 4 : i + 5] in _WORD_BREAK
-                and before in ("", "\n", ";", "&", "|", "(", "`")
-            ):
-                cases[-1] = cases[-1] + 1 if word == "case" else max(0, cases[-1] - 1)
-                i += 4
-                continue
-        elif ch == '"':
-            stack.append("d")
-            cases.append(0)
-        elif ch == "(":
-            if i > 0 and text[i - 1] in "$<>" and escaped != i - 1:
-                stack.append("c")
-                depth += 1
-            else:
-                stack.append("p")
-            cases.append(0)
-        elif ch == ")" and top in "cp" and len(stack) > 1 and not cases[-1]:
-            depth -= stack.pop() == "c"
-            cases.pop()
-        elif ch == "`":
-            if top == "b":
-                stack.pop()
-                cases.pop()
-            else:
-                stack.append("b")
-                cases.append(0)
-        if depth > _MAX_SUBSTITUTION_DEPTH:
-            return True
-        i += 1
-    return False
-
-
 #: The ``_self_protection_floor_hit`` read in progress: its row set, and the list
 #: the hit of a command it carries is kept in (``_reentered_floor_hit``).  Outside
 #: a read it is ``(None, None)``: every row-backed floor runs and nothing is kept.
@@ -867,7 +759,9 @@ def is_denied(
     # as git-publish, so a disabled row stays disabled.
     _argv_rules = _submodule("argv_rules")
     argv_enabled = {p for p in regex_patterns if p in _argv_rules.ARGV_RULE_PATTERNS}
-    regex_patterns = [p for p in regex_patterns if p not in _argv_rules.ARGV_RULE_PATTERNS]
+    # An operator's own copy of a row's text is not shipped-only, so it stays a regex.
+    stripped = argv_enabled & shipped if hasattr(denied_regexes, "shipped") else argv_enabled
+    regex_patterns = [p for p in regex_patterns if p not in stripped]
     # The two self-protection rules get an ADDITIONAL argv-structural floor
     # below, for the reason documented on ``_SELF_PROTECTION_FLOOR_PATTERNS``:
     # only a tokenized view can tell ``kirocrew "token"`` from
@@ -1191,28 +1085,35 @@ def _deny_pattern_passes(
     # a destructive needle at any offset within a single un-separated segment is
     # caught here.  In ``is_denied``, ``_is_git_publish`` / the always-on floors
     # also run on the full string before this call.
-    for pattern, is_regex in all_patterns:
-        if _rules._deny_pattern_matches(pattern, lower, is_regex):
-            whole_string_exception_match = _rules._exception_applies(
-                lower, _rules._DENY_EXCEPTIONS.get(pattern, [])
-            )
-            if not whole_string_exception_match and (
-                _s3_download_narrows(pattern, lower, narrow_cache, tool_name, shipped)
-                or _nc_redirect_narrows(pattern, text, shipped)
-            ):
-                # Same shape as the glob exception above: a whole-string carve-out
-                # only DEFERS to Pass 2, which re-judges each segment on its own,
-                # so an embedded real invocation is still denied there.  The audit
-                # is emitted here and GATES the carve-out.
-                if _emit_deny_exception_event(
-                    tool_name, pattern, _deny_exception_mechanism_for(pattern)
+    #
+    # Windows runs ``curl.exe`` as ``curl``, and a row that spans a separator
+    # (``curl .* \| sh``) is in no segment's view, so the full input is also matched
+    # with its program words unsuffixed, nested shell payloads included, after the raw
+    # string.  The narrowings still read the command as written, as Pass 2 does.
+    for whole in (lower, *_submodule("deny_gate_windows")._unsuffixed_whole_views(lower)):
+        for pattern, is_regex in all_patterns:
+            if _rules._deny_pattern_matches(pattern, whole, is_regex):
+                whole_string_exception_match = _rules._exception_applies(
+                    whole, _rules._DENY_EXCEPTIONS.get(pattern, [])
+                )
+                if not whole_string_exception_match and (
+                    _s3_download_narrows(pattern, lower, narrow_cache, tool_name, shipped)
+                    or _nc_redirect_narrows(pattern, text, shipped)
+                    or _file_body_narrows(pattern, text, shipped)
                 ):
-                    whole_string_exception_match = True
-            if not whole_string_exception_match:
-                if waive is not None and waive(pattern):
-                    continue
-                _emit_deny_event(tool_name, pattern, lower)
-                return reason(pattern)
+                    # Same shape as the glob exception above: a whole-string carve-out
+                    # only DEFERS to Pass 2, which re-judges each segment on its own,
+                    # so an embedded real invocation is still denied there.  The audit
+                    # is emitted here and GATES the carve-out.
+                    if _emit_deny_exception_event(
+                        tool_name, pattern, _deny_exception_mechanism_for(pattern)
+                    ):
+                        whole_string_exception_match = True
+                if not whole_string_exception_match:
+                    if waive is not None and waive(pattern):
+                        continue
+                    _emit_deny_event(tool_name, pattern, whole)
+                    return reason(pattern)
 
     # ── Pass 2: per-segment (re-)evaluation ──
     # Split into segments and check each.  This runs UNCONDITIONALLY: besides
@@ -1277,6 +1178,7 @@ def _deny_pattern_passes(
                         _rules._exception_applies(view, _rules._DENY_EXCEPTIONS.get(pattern, []))
                         or _s3_download_narrows(pattern, lower, narrow_cache, tool_name, shipped)
                         or _nc_redirect_narrows(pattern, text, shipped)
+                        or _file_body_narrows(pattern, text, shipped)
                     ):
                         # ``lower``, not ``view``: the s3 reading judges the WHOLE
                         # command, since a Pass 2 segment is not always a command.
@@ -1492,10 +1394,38 @@ def _deny_exception_mechanism_for(pattern: str) -> str:
         return _S3_DOWNLOAD_MECHANISM
     if pattern == _submodule("exfil_bash")._NC_FILE_REDIRECT_PATTERN:
         return _NC_REDIRECT_SCOPE_MECHANISM
+    if pattern == _submodule("exfil_bash")._FILE_BODY_PATTERN:
+        return _FILE_BODY_SCOPE_MECHANISM
     return "_DENY_EXCEPTIONS"
 
 
 _NC_REDIRECT_SCOPE_MECHANISM = "_NC_REDIRECT_SCOPE"
+
+_FILE_BODY_SCOPE_MECHANISM = "_FILE_BODY_SCOPE"
+
+
+def _file_body_narrows(pattern: str, raw: str, shipped: frozenset[str]) -> bool:
+    """Whether the shipped ``-d @`` / ``--data @`` file-body row is narrowed away
+    on *raw*.
+
+    The catalog regex matches the flag text anywhere, so a ``curl --data-binary @``
+    written inside a search PATTERN is refused by the regex tier even though no
+    curl runs. True only when :func:`~.exfil_bash._file_body_line_is_inert` reads
+    the whole line as a benign search that reaches no HTTP client -- the same
+    carve-out the substring tier already applies. An operator's own copy of the
+    pattern is not shipped-only and keeps reading the full text.
+    """
+    exfil = _submodule("exfil_bash")
+    if pattern != exfil._FILE_BODY_PATTERN or pattern not in shipped:
+        return False
+    # False on Windows, like the nc-redirect narrower: a Windows script hook runs
+    # under cmd.exe, which reads `'` literally and splits on `&`, so the bash
+    # reading this carve-out relies on is the wrong shell. Gating the regex tier
+    # here keeps the row fail-closed on Windows without touching the substring
+    # tier's own behaviour.
+    if exfil.platform_compat.IS_WINDOWS:
+        return False
+    return exfil._file_body_line_is_inert(raw)
 
 
 def _nc_redirect_narrows(pattern: str, raw: str, shipped: frozenset[str]) -> bool:

@@ -213,6 +213,27 @@ export function baseRelease(version: string): string | null {
 }
 
 /**
+ * Whether the build staged beside the gateway (`update_restart_ready_version`)
+ * stands in for `offered`, so a restart replaces the offer's install action:
+ * exactly when the two are the same version (`compareVersions` reads the tag
+ * and wheel spellings of one build as equal).
+ *
+ * Equality is the whole rule. Every writer of the note records the version that
+ * was on offer, so within a lane a staged build is never newer than that lane's
+ * offer; and across lanes a newer staged build is the one case that must NOT
+ * read as installed (an insider build staged, then Stable picked with an older
+ * offer: a restart would start the insider build and skip the switch). An older
+ * staged build leaves the offer installable, since a restart would start the
+ * older one. Unorderable staged versions never consume the offer. The About
+ * card's `useInstalledAndWaiting` answers the same question on the same frame
+ * with `staged === offered`: both strings there are the gateway's own raw
+ * spelling, so the two agree.
+ */
+export function stagedConsumesOffer(staged: string, offered: string): boolean {
+  return compareVersions(staged, offered) === 0
+}
+
+/**
  * True when the newest changelog section being shown is NOT the running build's
  * own release, i.e. the reader is looking at an earlier release's notes because
  * this one's have not been written yet. Unorderable input answers false: the

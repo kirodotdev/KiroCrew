@@ -753,6 +753,9 @@ class TestEnsureBackendRejections:
         self, peer_ok, monkeypatch, exc, expected_reason, fallback, audit
     ):
         monkeypatch.setattr(gw, "_acquire_backend", AsyncMock(side_effect=exc))
+        # The session the audit names is the one gatewayd's own peer walk attests.
+        monkeypatch.setattr(gw.socketsec, "get_peer_pid", lambda w: 4242)
+        monkeypatch.setattr(gw, "_resolve_peer_identity", lambda _pid: ("sess-cov", [4242]))
         audited: list[tuple[str, str, str]] = []
         monkeypatch.setattr(
             gw, audit, lambda caller, label, reason: audited.append((caller, label, reason))

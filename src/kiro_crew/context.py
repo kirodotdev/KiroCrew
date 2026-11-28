@@ -63,9 +63,10 @@ from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent import _prompt_path, _shipped_prompt, is_managed_prompt  # noqa: F401
 from kiro_crew.agent_discovery import WHOLE_CATALOG_TEMPLATES, agent_skill_globs
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
-from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, is_claude_code
+from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, is_claude_code  # noqa: F401
 from kiro_crew.agent_spec_format import iter_agent_spec_files, parse_agent_spec_text  # noqa: F401
 from kiro_crew.board_tag_grammar import is_grantable_tag_id
+from kiro_crew.clear_command import is_clear_command_row
 from kiro_crew.config import live  # noqa: F401
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
 from kiro_crew.config.paths import kiro_agents_dir  # noqa: F401
@@ -1055,6 +1056,20 @@ def ui_language_tag(cfg: "KiroCrewConfig") -> str:
     return normalize_ui_language_tag(cfg.dashboard.language, source="dashboard.language")
 
 
+def label_inherits_kiro_defaults(provider_type: str | None) -> bool:
+    """Whether the harness behind the provider label *provider_type* lends kiro-cli's defaults.
+
+    Asked of the backend that carries the label
+    (``SessionCapabilities.inherits_kiro_default_resources``). A label no known
+    backend carries, ``None`` and ``""`` answer False.
+    """
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
+    from kiro_crew.agent_sdk.kas_tool_names import backend_of_provider_label
+
+    backend = backend_of_provider_label(provider_type)
+    return backend is not None and capabilities_for(backend).inherits_kiro_default_resources
+
+
 def _project_steering_delivered(
     provider_type: str | None,
     native_steering: bool,
@@ -1090,7 +1105,10 @@ def _project_steering_delivered(
     from kiro_crew.agent_files import is_kirocrew_default_agent
 
     return (
-        (provider_type == PROVIDER_ACP and acp_driver.inherits_default_resources(project))
+        (
+            label_inherits_kiro_defaults(provider_type)
+            and acp_driver.inherits_default_resources(project)
+        )
         or (
             acp_driver.crew_loads_spec_steering(provider_type)
             and (not agent or is_kirocrew_default_agent(agent))
@@ -1207,6 +1225,10 @@ def _replay_rows(
 
     Conversation rows get the full quota whatever the inject volume, which a
     single bounded query cannot guarantee.
+
+    Only rows after the newest ``/clear`` row are replayed: the clear kept the
+    transcript but not the agent's memory of it, so a later replay must not
+    hand the earlier turns back.
     """
     messages = conversation_log.read_messages_chained(session_key) if conversation_log else []
     if pending_messages is not None or current_message is not None:
@@ -1217,6 +1239,10 @@ def _replay_rows(
         messages = messages[:-exclude_last_n]
     messages = _without_warm_task_brief_messages(messages)
     messages = [row for row in messages if not _replay.is_context_cap_notice(row)]
+    for i in range(len(messages) - 1, -1, -1):
+        if is_clear_command_row(messages[i]):
+            messages = messages[i + 1 :]
+            break
     return _replay._quota_tail(
         messages, conv_max=_REPLAY_CONVERSATION_MAX_ROWS, inject_max=_REPLAY_INJECT_MAX_ROWS
     )
@@ -1357,7 +1383,7 @@ def _skills_injection_plan(
     hand-copied second gate is exactly what let the re-injection path ship
     without scoping, handing a mapped agent the catalog its mapping excludes.
     """
-    inherit = provider_type == PROVIDER_ACP
+    inherit = label_inherits_kiro_defaults(provider_type)
     pinned = pinned_skill_globs(session_key, project_dir=project_dir, inherit_defaults=inherit)
     if pinned is not None:
         globs = pinned
@@ -1567,6 +1593,9 @@ class ContextBuilder:
         # `context_assembly.agent_spec._resolve_agent_prompt`.
         self._browser_gates: dict[str, bool] = {}
         self._browser_gates_lock = threading.Lock()
+        # The same, for how the contract names KAS's own sub-agent tool.
+        self._engine_subagent_gates: dict[str, str] = {}
+        self._engine_subagent_gates_lock = threading.Lock()
         # Captured for the Jev decision point at `skills.select`. Production
         # reaches `build_message` only through `run_in_embed_pool`, a thread
         # executor with no running loop, so the point cannot obtain one where it
@@ -1602,6 +1631,9 @@ class ContextBuilder:
         # block since, so `memory.inject_lessons_per_turn` skips them. In memory
         # and bounded; see `_ShownLessons`.
         self._lessons_shown: OrderedDict[str, _ShownLessons] = OrderedDict()
+        # The same, for `shadow` mode: what `enforce` would have sent, never
+        # what was sent, so turning `enforce` on later skips nothing unsent.
+        self._lessons_shadow_shown: OrderedDict[str, _ShownLessons] = OrderedDict()
         self._lessons_shown_lock = threading.Lock()
         # Per-session record of triggered-skill BODIES injected, so a later match
         # in the same provider window sends the cheap pointer line instead of the

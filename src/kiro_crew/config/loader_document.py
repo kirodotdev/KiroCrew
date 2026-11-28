@@ -403,7 +403,13 @@ def _refuse_unpublishable(data: dict, path: Path) -> None:
     through the same function is untouched -- it has neither mapping.
     """
     _refuse_deepseek_env_plaintext(data, path)
-    _refuse_vault_env_plaintext(data, path, "strands_env", "a Strands session")
+    _refuse_vault_env_plaintext(
+        data,
+        path,
+        "strands_env",
+        "a Strands session",
+        guidance=_sections.STRANDS_ENV_LITERAL_GUIDANCE,
+    )
     _refuse_agent_env_entries(data, path)
 
 
@@ -416,12 +422,16 @@ def _refuse_deepseek_env_plaintext(data: dict, path: Path) -> None:
     _refuse_vault_env_plaintext(data, path, "deepseek_env", "a DeepSeek session")
 
 
-def _refuse_vault_env_plaintext(data: dict, path: Path, key: str, refused_session: str) -> None:
+def _refuse_vault_env_plaintext(
+    data: dict, path: Path, key: str, refused_session: str, guidance: str = ""
+) -> None:
     """Refuse a plaintext provider key under ``agent.<key>``.
 
     The rule every ``secret://``-only provider-key map shares
     (``agent.deepseek_env``, ``agent.strands_env``); *refused_session* names the
-    session the spawn-time validator refuses while a plaintext stands.
+    session the spawn-time validator refuses while a plaintext stands. *guidance*,
+    when given, is the map's own how-to-fix text and replaces the default one
+    (save the key under Settings > Secrets), for a map that holds more than keys.
 
     That mapping takes ``secret://`` references only, and a plaintext that reaches
     disk is already the defect the spawn-time validator would later name.
@@ -447,6 +457,17 @@ def _refuse_vault_env_plaintext(data: dict, path: Path, key: str, refused_sessio
         return
     names = ", ".join(repr(name) for name in plaintext)
     if _agent_key_on_disk(path, key) == mapping:
+        if guidance:
+            logger.warning(
+                "config.json already holds a literal value under agent.%s entry %s; "
+                "this write left that mapping as it found it, and %s is refused while "
+                "it stands. %s",
+                key,
+                names,
+                refused_session,
+                guidance,
+            )
+            return
         logger.warning(
             "config.json already holds a literal value under agent.%s entry %s; "
             "this write left that mapping as it found it. That mapping takes a "
@@ -458,6 +479,11 @@ def _refuse_vault_env_plaintext(data: dict, path: Path, key: str, refused_sessio
             refused_session,
         )
         return
+    if guidance:
+        raise ConfigWriteRefused(
+            f"agent.{key} entry {names} holds a literal value, so the config write "
+            f"was refused. {guidance}"
+        )
     raise ConfigWriteRefused(
         f"agent.{key} entry {names} holds a literal value, so the config "
         "write was refused: this mapping takes a 'secret://<vault name>' reference "
@@ -1095,6 +1121,8 @@ def update_config_locked(
             # Every locked raw edit lands here, not in save(), so this is where the retired keys
             # go; config.local.json is the operator's own file and keeps what it holds.
             _resolution.drop_retired_section_keys(result)
+            # A raw edit of a channel's agent makes it the owner's (slack.shared_access).
+            _sections.drop_stale_shared_agents(result)
         if stamp_meta:
             result = stamp_config_meta(result)
         if unreadable is None:

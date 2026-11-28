@@ -111,6 +111,19 @@ def test_read_auto_skill_body_and_namespace_guard(loader):
     assert loader.read_auto_skill_body("other/thing") is None
 
 
+@pytest.mark.parametrize("nl", ["\n", "\r\n"], ids=["bom-lf", "bom-crlf"])
+def test_read_auto_skill_body_drops_a_leading_bom(loader, nl):
+    """The update path parses this body with fences anchored at position 0, so
+    a leading U+FEFF would hide the frontmatter from both of its readers."""
+    live = _write_live(loader, "bomb", body="hello world")
+    plain = loader.read_auto_skill_body("auto/bomb")
+    text = (live / "SKILL.md").read_text(encoding="utf-8")
+    (live / "SKILL.md").write_bytes(b"\xef\xbb\xbf" + text.replace("\n", nl).encode("utf-8"))
+
+    assert plain is not None and plain.startswith("---\n")
+    assert loader.read_auto_skill_body("auto/bomb") == plain
+
+
 # ── staging update candidates ──
 
 

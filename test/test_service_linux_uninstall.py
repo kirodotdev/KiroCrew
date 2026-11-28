@@ -21,6 +21,7 @@ from service_helpers import (  # noqa: F401 -- fixtures are found by name
     _fake_systemctl,
     _no_host_env_file,
     _no_host_unit_files,
+    _posix_installer_path,
     _restart_settle_without_waiting,
 )
 

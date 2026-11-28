@@ -416,18 +416,54 @@ class TestApplySecurityHeaders:
         unchanged: bare 'self' + X-Frame-Options."""
         resp = _make_response()
         _apply_security_headers(resp, _make_app(with_instances=False))
-        assert resp.headers["X-Frame-Options"] == "SAMEORIGIN"
+        assert resp.headers["X-Frame-Options"] == "DENY"
         assert resp.headers["X-Content-Type-Options"] == "nosniff"
         assert resp.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
-        assert "max-age=31536000" in resp.headers["Strict-Transport-Security"]
+        assert resp.headers["Strict-Transport-Security"] == "max-age=47304000; includeSubDomains"
         assert "frame-ancestors 'self'" in resp.headers["Content-Security-Policy"]
+
+    def test_handler_policy_without_frame_ancestors_gets_one_added(self) -> None:
+        """A handler that sets its own CSP with no ``frame-ancestors`` (the sandboxed
+        PDF, a theme overlay) would otherwise leave X-Frame-Options: DENY as the only
+        framing rule and the dashboard's own frame of it would be refused. The handler's
+        policy is kept as is and a second policy adds the directive."""
+        own = "sandbox; default-src 'none'; object-src 'none'"
+        resp = _make_response()
+        resp.headers["Content-Security-Policy"] = own
+        _apply_security_headers(resp, _make_app(with_instances=False))
+        assert resp.headers.getall("Content-Security-Policy") == [own, "frame-ancestors 'self'"]
+        assert resp.headers["X-Frame-Options"] == "DENY"
+
+    def test_handler_policy_with_frame_ancestors_is_left_alone(self) -> None:
+        own = "sandbox allow-scripts; frame-ancestors 'self'"
+        resp = _make_response()
+        resp.headers["Content-Security-Policy"] = own
+        _apply_security_headers(resp, _make_app(with_instances=False))
+        assert resp.headers.getall("Content-Security-Policy") == [own]
+
+    def test_added_frame_ancestors_carries_the_embed_parent(self, monkeypatch) -> None:
+        """Inside an Instances embed the added directive names the signed parent too,
+        as the shell's own policy does, so a handler-policy frame keeps rendering
+        three levels down."""
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.server.token_embed_parent_port",
+            lambda token: 5476 if token else None,
+        )
+        request = make_mocked_request("GET", "/?token=deadbeef")
+        resp = _make_response()
+        resp.headers["Content-Security-Policy"] = "default-src 'none'; sandbox allow-scripts"
+        _apply_security_headers(resp, _make_app(with_instances=True), request=request)
+        added = resp.headers.getall("Content-Security-Policy")[1]
+        assert added.startswith("frame-ancestors 'self'")
+        assert "http://localhost:5476" in added
+        assert "X-Frame-Options" not in resp.headers
 
     def test_frame_ancestors_trusts_token_embed_parent(self, monkeypatch) -> None:
         """When the request's signed token carries an embed_parent_port claim (the
         parent desktop app's port, minted at connect), frame-ancestors lists that
         EXACT loopback origin (all loopback hosts at that port) so the cross-port
         multi-instance embed renders. Never a wildcard, never a hardcoded port;
-        X-Frame-Options is omitted so SAMEORIGIN can't refuse the cross-port
+        X-Frame-Options is omitted so it can't refuse the cross-port
         embed."""
         # Focused header-logic test: stub the (separately unit-tested) signed
         # claim reader so we don't re-mint a real token here.
@@ -504,7 +540,7 @@ class TestApplySecurityHeaders:
 
     def test_frame_ancestors_default_without_embed_token(self, monkeypatch) -> None:
         """A request with no valid embed-parent token (or none at all) keeps the
-        default posture: frame-ancestors 'self' + X-Frame-Options: SAMEORIGIN.
+        default posture: frame-ancestors 'self' + X-Frame-Options: DENY.
         A random local page has no signed token, so it can never inject an
         ancestor (CSE SEC-016 clickjacking)."""
         # Real reader returns None for a request with no token → default posture.
@@ -514,7 +550,7 @@ class TestApplySecurityHeaders:
         csp = resp.headers["Content-Security-Policy"]
         assert "frame-ancestors 'self'" in csp
         assert "localhost:3000" not in csp
-        assert resp.headers["X-Frame-Options"] == "SAMEORIGIN"
+        assert resp.headers["X-Frame-Options"] == "DENY"
 
     def test_shell_csp_ancestors_go_through_the_same_validator(self, monkeypatch) -> None:
         """The dashboard shell's ``frame-ancestors`` is built by
@@ -553,7 +589,7 @@ class TestApplySecurityHeaders:
         does NOT monkeypatch the signed-claim reader: the real verifier
         (``token_embed_parent_port``) rejects the unsigned JWT and returns None,
         so ``_extra_frame_ancestors`` adds nothing and the posture stays the
-        default bare frame-ancestors 'self' + X-Frame-Options: SAMEORIGIN. A
+        default bare frame-ancestors 'self' + X-Frame-Options: DENY. A
         local page that plants an attacker cookie can therefore never inject an
         ancestor origin (clickjacking, CSE SEC-016 / CWE-778)."""
         from kiro_crew.dashboard.state import _DEFAULT_PORT
@@ -574,7 +610,7 @@ class TestApplySecurityHeaders:
         assert "http://localhost:" not in frame_anc
         assert "http://127.0.0.1:" not in frame_anc
         # The legacy clickjacking backstop stays in place in the default posture.
-        assert resp.headers["X-Frame-Options"] == "SAMEORIGIN"
+        assert resp.headers["X-Frame-Options"] == "DENY"
 
     def test_csp_extends_frame_src_when_instances_enabled(self) -> None:
         resp = _make_response()

@@ -4,7 +4,7 @@ import { ArrowLeft, Copy, KeyRound } from 'lucide-react'
 import type { KasLoginStatus } from '../api/client'
 import { i18nT } from '../i18n/t'
 import { copyCode } from '../utils/clipboard'
-import { KasLoginEmbedded, SignInBackContext, type SignInBackSlot } from './KasLoginGate'
+import { KasLoginEmbedded, SignInBackContext, type SignInBack, type SignInBackSlot } from './KasLoginGate'
 import { Dialog, DialogBody, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import ErrorNotice from './ErrorNotice'
 import { Btn, Card, IconButton } from './ui'
@@ -21,8 +21,8 @@ function CloseWhenSignedIn({ onDone }: { onDone: () => void }) {
  * cancel. The dialog below wraps it.
  * Settings > Kiro account renders it in its card for both states, passing
  * *renderSignedIn* for the signed-in summary, so the flow stays mounted when a
- * sign-in lands and its landed result settles; there the device screen draws its
- * own back arrow (no `SignInBackContext`).
+ * sign-in lands and its landed result settles; there the card draws the device
+ * screen's heading and back control itself (`SignInBackContext`, `ownsHeading`).
  * *onSignedIn* runs once a sign-in lands, except a switch whose old account could
  * not be removed: that stays on its warning, so the person reads it.
  * Unmounting it mid-sign-in cancels the pending login (`useKasLoginFlow`).
@@ -70,8 +70,9 @@ export function KiroSignInDialog({
 }) {
   const close = () => onOpenChange(false)
   // The device-code screen hands its back control to this header (next to the
-  // title), so the way back to the choices sits where a dialog's back sits.
-  const [back, setBack] = useState<{ onBack: () => void; disabled: boolean } | null>(null)
+  // title), so the way back to the choices sits where a dialog's back sits. The
+  // screen keeps its own heading and hint under this header's "Sign in to Kiro".
+  const [back, setBack] = useState<SignInBack | null>(null)
   const backSlot = useMemo<SignInBackSlot>(() => ({ set: setBack }), [])
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

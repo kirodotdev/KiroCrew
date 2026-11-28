@@ -97,10 +97,14 @@ def random_bucket_name() -> str:
 # exactly why the Artifact Deploy "Verify" step failed for Homebrew users until
 # the gateway was relaunched from a shell that carried the full PATH. The SSM
 # session-manager-plugin installs into these same dirs, so it is resolved and
-# spawn-searched through them too. Windows skips both: see :func:`_aws_bin_dirs`.
+# spawn-searched through them too. A relative entry is a Windows folder under
+# ``%ProgramFiles%``: see :func:`_aws_bin_dirs`.
 _AWS_BIN_DIRS = (
     "/opt/homebrew/bin",  # Apple Silicon Homebrew
     "/usr/local/bin",     # Intel Homebrew + official AWS CLI v2 pkg symlink
+    # The plugin's Windows installer adds this to the registry PATH only, which a
+    # running gateway never re-reads.
+    os.path.join("Amazon", "SessionManagerPlugin", "bin"),
 )
 # The tools in those dirs that a child runs by name: ``aws ssm start-session``
 # runs the plugin, and an ssh ``ProxyCommand`` can run either.
@@ -110,15 +114,19 @@ _AWS_BIN_DIR_TOOLS = ("session-manager-plugin", "aws")
 def _aws_bin_dirs() -> tuple[str, ...]:
     """:data:`_AWS_BIN_DIRS` for this platform.
 
-    On Windows the drive-less POSIX dirs are left out: there ``/usr/local/bin``
-    resolves against the current drive, to a folder no AWS installer uses.
+    Elsewhere only the POSIX dirs. On Windows the drive-less POSIX dirs are left
+    out: there ``/usr/local/bin`` resolves against the current drive, to a folder no
+    AWS installer uses. A relative dir is read under ``%ProgramFiles%`` and skipped
+    while that is unset or relative; a hit there still passes the provenance check.
     """
-    if sys.platform == "win32":
-        return tuple(d for d in _AWS_BIN_DIRS if not d.startswith("/"))
-    return _AWS_BIN_DIRS
+    if sys.platform != "win32":
+        return tuple(d for d in _AWS_BIN_DIRS if d.startswith("/"))
+    program_files = os.environ.get("ProgramFiles", "")
+    dirs = (os.path.join(program_files, d) for d in _AWS_BIN_DIRS if not d.startswith("/"))
+    return tuple(d for d in dirs if os.path.isabs(d))
 
 
-# ``(name, directory)`` pairs in :data:`_AWS_BIN_DIRS` whose candidate the
+# ``(name, directory)`` pairs in :func:`_aws_bin_dirs` whose candidate the
 # provenance chokepoint most recently REFUSED. Keyed by the pair, not the dir
 # alone, because :func:`resolve_aws_tool_bin` is generic over ``name``: ``aws``
 # and ``session-manager-plugin`` share one body and one install dir, so a dir can
@@ -334,7 +342,7 @@ def refused_aws_tool(name: str) -> AwsToolRefusal | None:
             for tool, directory, path, reason in _WARNED_AWS_TOOL_REFUSALS
             if tool == name
         }
-    return next((recorded[d] for d in _AWS_BIN_DIRS if d in recorded), None)
+    return next((recorded[d] for d in _aws_bin_dirs() if d in recorded), None)
 
 
 def refresh_aws_tool_trust() -> None:
@@ -468,9 +476,10 @@ def tool_spawn_env(argv_head: str) -> dict[str, str]:
     pairs its configured spelling with the canonical path published to the
     child, so retargeting a checked link cannot redirect the child's lookup.
 
-    Dirs already on ``PATH`` under either their configured or canonical spelling
-    are not repeated, so a terminal-launched gateway gets a byte-identical env
-    and the fix is inert outside the minimal-PATH case it exists for.
+    Dirs already on ``PATH`` under either their configured or canonical spelling,
+    a trailing separator included, are not repeated, so a terminal-launched
+    gateway gets a byte-identical env and the fix is inert outside the
+    minimal-PATH case it exists for.
 
     Unlike the resolvers above this touches no filesystem — it is a dict copy and
     a string join over ``os.environ`` — so it is safe to call directly on the
@@ -482,12 +491,12 @@ def tool_spawn_env(argv_head: str) -> dict[str, str]:
         # alone so it keeps failing execvp, as it did before this env existed.
         return env
     current = env.get("PATH", "")
-    have = {os.path.normcase(p) for p in current.split(os.pathsep) if p}
+    have = {os.path.normcase(os.path.normpath(p)) for p in current.split(os.pathsep) if p}
     # Copied in one step: resolver walks in worker threads add and discard pairs.
     refused_dirs = {directory for _name, directory in _REFUSED_AWS_BIN_DIRS.copy()}
     extra: list[str] = []
     for original, canonical in _TRUSTED_AWS_BIN_DIRS:
-        spellings = {os.path.normcase(original), os.path.normcase(canonical)}
+        spellings = {os.path.normcase(os.path.normpath(p)) for p in (original, canonical)}
         if original in refused_dirs or spellings & have:
             continue
         extra.append(canonical)

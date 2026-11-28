@@ -63,6 +63,124 @@ def hosted_by_desktop() -> bool:
     return bool(os.environ.get(DESKTOP_HOSTED_ENV))
 
 
+def _headless_desktop() -> bool:
+    """The Windows desktop bundle with no desktop app hosting this gateway.
+
+    ``False`` whenever a policy provider owns updates: its own apply (or its
+    refusal) runs through ``kirocrew update`` below, and the desktop installer
+    must never stand in for it.
+    """
+    from kiro_crew.platform.desktop_installer_update import (
+        headless_desktop_install,
+        provider_owns_updates,
+    )
+
+    return headless_desktop_install() and not provider_owns_updates()
+
+
+async def _record_failure_best_effort(error: str) -> None:
+    """End the arm with *error*; a record that cannot be written must not stop the start.
+
+    The gateway then starts on the version it has, as every other refused apply does.
+    """
+    try:
+        await asyncio.to_thread(lambda: update_next_start.finish(error=error))
+    except Exception:
+        logger.warning("Could not record the update failure; starting anyway", exc_info=True)
+
+
+def _forget_desktop_hand_off() -> None:
+    """Drop the hand-off record and the helper's result once the update runs."""
+    from kiro_crew.platform import desktop_installer_update as desktop
+
+    update_next_start.clear_applying()
+    desktop.clear_result()
+
+
+async def _hand_off_desktop_install(state: update_next_start.NextStartState, running: str) -> bool:
+    """Verify the armed installer and hand it to the helper, then end this process.
+
+    The installer replaces the files this process runs from, which Windows keeps
+    locked while it runs, so the gateway cannot install it itself: a detached
+    helper waits for this process to exit, verifies the file again, installs it
+    and starts the gateway again with the same arguments. A refusal here, or a
+    failure the helper recorded on an earlier start, ends the arm with the error
+    and the gateway starts on the version it has. Returns ``False`` in those
+    cases; a hand-off does not return.
+    """
+    from kiro_crew.platform import desktop_installer_update as desktop
+
+    if await asyncio.to_thread(desktop.desktop_app_running):
+        # The helper would wait on the app, and the app's own updater owns this
+        # install while it runs: the arm stays for a start without it.
+        logger.info(
+            "Update armed (%s): the desktop app is running and owns the apply", state.armed_version
+        )
+        return False
+    # The record a previous start left for its restart waiter: that start is over.
+    await asyncio.to_thread(update_next_start.clear_applying)
+    failed = await asyncio.to_thread(desktop.result_error_for, state.armed_version)
+    if failed:
+        logger.error(
+            "Desktop update %s failed in the installer helper: %s", state.armed_version, failed
+        )
+        await _record_failure_best_effort(failed)
+        try:
+            await asyncio.to_thread(desktop.clear_result)
+        except OSError:
+            logger.warning("Could not clear the installer helper's result", exc_info=True)
+        return False
+    if state.attempts >= update_next_start.MAX_BOOT_ATTEMPTS:
+        logger.error(
+            "Armed update %s gave up after %d boot attempts", state.armed_version, state.attempts
+        )
+        await _record_failure_best_effort(
+            f"The update to {state.armed_version} did not complete after "
+            f"{state.attempts} starts; run `kirocrew update`."
+        )
+        return False
+    try:
+        await asyncio.to_thread(update_next_start.note_boot_attempt)
+        # The download binds nothing and can take minutes: a restart waiter reads
+        # this record to wait it out rather than report a wedged start.
+        await asyncio.to_thread(update_next_start.mark_applying)
+        prepared = await desktop.prepare(running, expected_version=state.armed_version)
+        # The installer rewrites this install: copy every memory store first, and
+        # install nothing when the copy did not land.
+        from kiro_crew.platform.wheel_apply import (
+            snapshot_memory_before_update,
+            snapshot_refusal,
+        )
+
+        _copied, failure = await asyncio.to_thread(snapshot_memory_before_update)
+        if failure:
+            raise RuntimeError(snapshot_refusal(failure))
+        helper = await asyncio.to_thread(
+            lambda: desktop.hand_off(prepared, wait_pids=(os.getpid(),), restart=True)
+        )
+    except asyncio.CancelledError:
+        await asyncio.to_thread(update_next_start.clear_applying)
+        raise
+    except Exception as exc:
+        logger.error("Desktop update %s refused: %s", state.armed_version, exc)
+        message = str(exc) or type(exc).__name__
+        try:
+            await asyncio.to_thread(update_next_start.clear_applying)
+        except Exception:
+            logger.debug("could not clear the applying record", exc_info=True)
+        await _record_failure_best_effort(message)
+        return False
+    await asyncio.to_thread(update_next_start.mark_handed_off, helper)
+    logger.info(
+        "Update armed (%s): verified the installer; exiting so helper pid %d can install it",
+        state.armed_version,
+        helper,
+    )
+    # Before the listeners and the session restore, so nothing is cut; the
+    # helper starts the gateway again once the installer has finished.
+    raise SystemExit(0)
+
+
 async def _stop_apply_child(proc: asyncio.subprocess.Process) -> None:
     """Interrupt the apply child, give its cleanup a bounded moment, then kill it."""
     if platform_compat.IS_POSIX and proc.returncode is None:
@@ -142,6 +260,16 @@ def _reexec(launcher: str | None, exe: str | None) -> None:
         platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
 
 
+def _settle_channel_move_best_effort() -> None:
+    """Settle the channel move record; a record left in place only costs a host approval."""
+    try:
+        from kiro_crew.platform import update_channel_move
+
+        update_channel_move.settle_followed()
+    except Exception:
+        logger.warning("Could not settle the channel move record", exc_info=True)
+
+
 async def apply_armed_update_at_boot() -> bool:
     """Apply the armed update, if any, stopping it cleanly on SIGTERM.
 
@@ -183,6 +311,19 @@ def _exit_with_sigterm_status() -> None:
     """End this process as a SIGTERM would have, once the apply child has been stopped."""
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
     os.kill(os.getpid(), signal.SIGTERM)
+
+
+def _desktop_running_reaches(running: str, armed: str) -> bool:
+    """The desktop installer's ordering: a full nightly stamp and edition builds count.
+
+    Unordered versions are not "reached" (equal text aside): the apply then runs
+    and its own newer-than check refuses, with a reason, rather than dropping the arm.
+    """
+    if running == armed:
+        return True
+    from kiro_crew.platform.desktop_installer_update import is_newer
+
+    return is_newer(armed, running) is False
 
 
 def _running_reaches(running: str, armed: str) -> bool:
@@ -231,14 +372,20 @@ async def _apply_armed_update_at_boot() -> bool:
     # A git checkout can be behind its upstream with no version bump, so its arm
     # carries the distance and an equal version is not "already running" for it.
     git_ahead = state.armed_behind > 0
-    # Order decides only where the desktop owns the apply: there an older arm is always
-    # stale. Elsewhere a policy provider's check may name an older version on purpose
-    # (a rollback), and that arm still applies, so only equality clears it.
-    reached = not git_ahead and (
-        _running_reaches(running, state.armed_version)
-        if hosted_by_desktop()
-        else running == state.armed_version
-    )
+    headless_desktop = _headless_desktop()
+    # Order decides only where the desktop installer applies: there an older arm is
+    # always stale (that path never downgrades), and the arm names the feed's SemVer
+    # while this build reports its PEP 440 form. Elsewhere a policy provider's check
+    # may name an older version on purpose (a rollback), and that arm still applies,
+    # so only equality clears it.
+    if headless_desktop:
+        reached = _desktop_running_reaches(running, state.armed_version)
+    else:
+        reached = not git_ahead and (
+            _running_reaches(running, state.armed_version)
+            if hosted_by_desktop()
+            else running == state.armed_version
+        )
     if hosted_by_desktop() and not reached:
         logger.info("Update armed (%s): the desktop app owns the apply", state.armed_version)
         return False
@@ -251,7 +398,11 @@ async def _apply_armed_update_at_boot() -> bool:
             running,
         )
         await _clear_arm_best_effort()
+        if headless_desktop:
+            await asyncio.to_thread(_forget_desktop_hand_off)
         return False
+    if headless_desktop:
+        return await _hand_off_desktop_install(state, running)
     if state.attempts >= update_next_start.MAX_BOOT_ATTEMPTS:
         logger.error(
             "Armed update %s gave up after %d boot attempts", state.armed_version, state.attempts
@@ -295,6 +446,11 @@ async def _apply_armed_update_at_boot() -> bool:
         # Cleared BEFORE the exec: a restart that lands on this version again must
         # not apply again, for ever.
         await asyncio.to_thread(update_next_start.finish)
+        if moved:
+            # The boot apply installs the followed channel's release, so the
+            # install now came from that channel: settle the channel move record
+            # the one-click update reads (`platform.update_channel_move`).
+            await asyncio.to_thread(_settle_channel_move_best_effort)
         if not moved and not git_ahead:
             logger.info("Update applied, and this install already runs it")
             return False

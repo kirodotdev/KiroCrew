@@ -657,6 +657,34 @@ minted token's own `exp`, `session_exp` and `iat` claims and returns them as
 so it reads those claims unverified; they are display-only and the pod enforces the
 limits. `pod_up` on a running pod leaves it running and returns a fresh token.
 
+Three more tools have no `pod/*` route; they are served only through the
+`agent-tools` route, so they add nothing to `strict_internal_paths`:
+
+- **`pod_api`** (`agent_pod_api.pod_api_response` → `worktree_ops._pod_api` →
+  `pod.runtime_client.pod_api`) sends one request to a running pod. The token is minted
+  in the gateway, spent over the pod's own unix socket and scrubbed from the reply,
+  so the agent never holds it. GET and HEAD go through; any other method needs
+  `allow_write: true`, as `kirocrew pod api` needs `--allow-write`. Every call, a
+  refusal included, is written to the Security Event Log as `dev_fleet.agent.pod_api`.
+  The reply body is cut at 50,000 characters. The tool is not a security boundary
+  and refuses no route: `pod_up` already hands the agent a token for the same pod.
+  The boundary is the operator turning Dev Fleet on; the pod runs the worktree's
+  code as the operator outside the agent sandbox, so a write here acts with the
+  operator's rights.
+- **`pod_provision_start` / `pod_provision_status`** run `worktree_ops._pod_provision`
+  (the Provision button's run, sandboxed `strict`) in the gateway and answer at once
+  with its run id; the status reads that run's state and last 40 output lines, and
+  answers only for a run this gateway started for that worktree.
+
+Pod configuration goes through `pod_api` PATCH `/api/config/kirocrew` (a dotted
+`path` and `value`), then `pod_restart`, which keeps the data directory and applies
+restart-marked keys.
+
+A pod's environment names the host's `engines/kas` as `KIROCREW_BUNDLED_KAS_DIR`
+(`pod.runtime._share_host_kas_engines`), so a pod whose KAS pin the host already
+installed runs that engine instead of downloading it. This saves the download and is
+not a boundary: the pod gateway runs outside the agent sandbox and can write there.
+
 ## Authorization
 
 The backend-proxied endpoints (`/apps/dev-fleet/api/...`) inherit gateway session
@@ -790,6 +818,8 @@ failure is operational except a positive permission-denied match, which is `sand
 neither can become `PodBackendAbsent`. Probe and unit operations
 resolve `systemctl` through `platform_compat.trusted_system_bin()` and pass that absolute path to
 the subprocess seam; a PATH entry can neither execute code nor forge the removal-safety verdict.
+On macOS `launchctl` resolves the same way, and a missing trusted `launchctl` raises
+`LaunchdError` instead of falling back to `PATH`.
 If no trusted executable exists, the operation fails closed. Dev Fleet therefore refuses
 removal instead of treating the host as unable to contain a live pod. Spawned probes use
 `LC_ALL=C`, distinguish a reachable manager,
@@ -819,7 +849,10 @@ worktree removal never blocks the gateway event loop.
   `run/gateway-<port>.secret`, and falls back to the shared `.local_secret` only
   for a gateway predating the per-listener file — the shared slot is one per data
   home, so a live second gateway leaves it naming the other generation
-- `runtime.recent_journal(cfg, name, n)` — journalctl tail (blocking, offloaded)
+- `runtime.recent_journal(cfg, name, n)` — journalctl tail (blocking, offloaded);
+  `journalctl` resolves through `platform_compat.trusted_system_bin()`, and with
+  none there the tail is a one-line "could not read the pod journal" note, never a
+  `PATH` lookup
 - `provision.has_venv(path)` / `provision.has_dist(path)` — "present AND built
   from the artifact's current build input" checks (offloaded): a filesystem probe
   gated by a per-checkout provenance stamp (see *Build-state provenance* below);
@@ -2535,6 +2568,21 @@ stale rather than certified against the post-build HEAD.
   `has_venv(path, require_stamp=False)` for the `is_main` row. A stamp check
   there would report a freshly synced main venv as unbuilt, which reads as "the
   cutover failed". Every other worktree keeps the stamp requirement.
+
+**Provision's own dist check is stricter than `has_dist`.** `has_dist` keeps a
+dist it cannot verify (presence-only) so the Fleet view never hides one, but
+`build_dist` decides whether to skip the build with
+`_dist_serves_current_source`, which also rebuilds when the dist cannot carry the
+source a pod would run: `website/` has uncommitted or untracked changes
+(`git status --porcelain --untracked-files=normal -- website`, so a repo's
+`status.showUntrackedFiles` cannot hide a new file, and a checkout that names a
+`filter.<name>.clean` driver reads dirty without running it, per
+`update_governance.repo_exec_driver_reason`; the stamp names `HEAD:website`, not the
+working tree), or the dist's `build-id.json` carries an empty `websiteTree`,
+which `vite.config.ts` writes when it built from a dirty tree. Otherwise a
+dist built mid-edit would be kept by every later provision after the edits are
+committed, and the pod would serve the old bundle. With no resolvable `HEAD:website`
+it keeps the dist, as `has_dist` does.
 
 The venv/`node_modules` manifest lives INSIDE the git directory (`git rev-parse
 --git-path kirocrew-provision.json`, a per-worktree private path), not in the

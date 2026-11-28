@@ -109,7 +109,7 @@ export function RemoteControlCard() {
             <p className="m-0 text-[13px]" role="status">
               {data.connecting
                 ? i18nT('pages.settings.remoteControlCard.connecting')
-                : i18nT('pages.settings.remoteControlCard.restart_to_connect')}
+                : i18nT('pages.settings.remoteControlCard.not_connected')}
             </p>
           )}
           {/* Why config keeps the relay from starting: a restart would not help.

@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         _THINKING,
         _THINKING_PLACEHOLDER,
         ACTIVATION_REVIEW,
+        CONTINUES_BELOW,
         DELIVERY_DEBT_NOTICE,
         LINE_BREAKS,
         MARKER_WRAPPERS,
@@ -49,12 +50,16 @@ if TYPE_CHECKING:
         is_echo,
         is_wait_identity,
         logger,
+        message_landed_since,
+        messages_noted,
         redact,
         redact_credentials,
         redact_exfiltration_urls,
         relocate_glued_tail_marker,
         seal_stream,
         split_message,
+        stream_clock,
+        stream_due_for_renewal,
         strip_control_comments,
         strip_thinking_tags,
     )
@@ -255,6 +260,18 @@ def _resolve_comment_hold(bracket_hold: str, accumulated: str) -> tuple[str, str
     return "", bracket_hold
 
 
+def _shown_tool_name(title: str) -> str:
+    """A tool call's title as the thread shows it: no ``Running:`` lead, redacted."""
+    tool_name, _ = redact_exfiltration_urls(title.removeprefix("Running: "))
+    tool_name, _ = redact_credentials(tool_name)
+    return tool_name
+
+
+def _tool_line(tool_name: str) -> str:
+    """The line a tool call adds to the answer when the turn does not stream."""
+    return f"\n🫆 `{tool_name}`\n"
+
+
 async def _safe_update(slack: SlackClientOps, channel: str, ts: str, text: str) -> None:
     """Update a Slack message, truncating if too long.
 
@@ -291,8 +308,24 @@ async def _safe_final_update(
     best-effort regardless (a dropped tail is a truncated answer, not a missing
     one), matching the streaming path's overflow handling.
     """
+    await _final_update_landed(
+        slack, channel, ts, text, thread_ts, raise_on_primary_failure=raise_on_primary_failure
+    )
+
+
+async def _final_update_landed(
+    slack: SlackClientOps,
+    channel: str,
+    ts: str,
+    text: str,
+    thread_ts: str | None = None,
+    *,
+    raise_on_primary_failure: bool = False,
+) -> bool:
+    """``_safe_final_update``, reporting whether every part of *text* landed."""
     text, _ = redact_exfiltration_urls(text)
     parts = split_message(text)
+    complete = True
     # First part updates the existing streaming message
     try:
         await slack.update_message(channel, ts, parts[0])
@@ -300,12 +333,15 @@ async def _safe_final_update(
         logger.debug("Failed to update message %s", ts, exc_info=True)
         if raise_on_primary_failure:
             raise
+        complete = False
     # Overflow parts posted as follow-up messages in the same thread
     for part in parts[1:]:
         try:
             await slack.post_message(channel, part, thread_ts)
         except Exception:
             logger.debug("Failed to post continuation message", exc_info=True)
+            complete = False
+    return complete
 
 
 def _ts_before(ts: str) -> str | None:
@@ -403,6 +439,14 @@ class _AnswerStream:
         self.channel_activation = channel_activation
         self.use_slack_stream = False
         self.stream_ts: str | None = None
+        # ``stream_clock()`` reading when the live stream was opened; 0 when none is open. Slack
+        # ends a stream 10 minutes after it starts (``stream_window``).
+        self.stream_started_at = 0.0
+        # ``messages_noted()`` count when the live stream was opened; None when none
+        # is open. A message recorded after it sits below the stream.
+        self.stream_messages_noted: int | None = None
+        self.text_since_step = False
+        self.renewal: asyncio.Task | None = None  # the ``renew_if_due`` in flight, if any
         self.rotated_ts: list[str] = []  # stream messages ``rotate`` replaced, oldest first
         self.thinking_ts: str | None = None  # 💭 reasoning placeholder, posted above the answer
         self.show_thinking = show_thinking
@@ -461,10 +505,25 @@ class _AnswerStream:
         self.task_counter = 0  # incrementing task ID for task cards
         self.active_task_id = ""  # current in-progress task
         self.active_task_title = ""  # display title (purpose or tool name)
+        self.active_task_has_details = False  # opened with the tool name as details
+        self.active_task_has_purpose = False  # titled with its call's purpose
+        # What a refined title (``on_tool_title``) renames: the running call's
+        # ``tool_call_id`` and, when the turn does not stream, the line it added.
+        self.active_tool_call_id = ""
+        self.tool_line = ""
         self.tool_start_time = 0.0  # monotonic time when current tool started
         self.tool_timer_task: asyncio.Task | None = None  # periodic elapsed-time updater
         self.status_dirty = False  # True when status needs reset to base on next text chunk
         self.tool_gap = False
+        # A V2 refusal fallback dropped the refused model's streamed text this
+        # turn (``on_model_fallback``). It forces the final seal to OVERWRITE the
+        # visible copy, because the refused text was already appended to the live
+        # stream and only the redaction-overwrite path rewrites it.
+        self.refused_drop = False
+        # The last refused text dropped above, kept so a refusal the fallback did
+        # NOT recover from still shows the provider's own words rather than an
+        # empty reply (``_deliver_answer`` restores it when nothing answered).
+        self.last_refused = ""
 
     async def rotate(self) -> str | None:
         """Stop the dead stream and start a fresh one. Returns new ts or None.
@@ -487,6 +546,9 @@ class _AnswerStream:
                     "Slack stop_stream failed during rotation — abandoning old stream",
                     exc_info=True,
                 )
+        # Read before the request: a message that lands while Slack opens the
+        # stream is below it.
+        noted = messages_noted()
         try:
             new_ts = await self.slack.start_stream(
                 self.channel,
@@ -502,8 +564,12 @@ class _AnswerStream:
             if self.stream_ts:
                 self.rotated_ts.append(self.stream_ts)
             self.stream_ts = new_ts
+            self.stream_started_at = stream_clock()
+            self.stream_messages_noted = noted
             logger.info("Stream rotated: new ts=%s", new_ts)
         else:
+            self.stream_started_at = 0.0
+            self.stream_messages_noted = None
             self.use_slack_stream = False
             logger.warning("Stream rotation failed — falling back to chat.update")
         return new_ts
@@ -593,6 +659,8 @@ class _AnswerStream:
 
     async def _deliver(self, safe: str) -> bool:
         """Put already-redacted text on the stream, rotating once on a refusal."""
+        self.text_since_step = True
+        await self.renew_if_due()
         assert self.stream_ts is not None
         if self.move_back is not None:
             ts, run = self.move_back
@@ -722,7 +790,7 @@ class _AnswerStream:
                 )
 
     async def append_task(self, task_id: str, title: str, status: str, details: str = "") -> bool:
-        """Append task card to stream. Never rotates — see below.
+        """Append task card to stream. Never rotates on a refusal — see below.
 
         A task card is progress decoration: the tool's name, its state, and the
         elapsed-time refresh ``_tool_elapsed_updater`` fires every 30s for as
@@ -736,6 +804,7 @@ class _AnswerStream:
         later. Skipping the card costs nothing: no answer text is withheld, and
         ``append`` still rotates when there is real text to deliver and
         the stream refuses it, which is the moment a rotation is worth its price.
+        An old stream is still renewed first (``renew_if_due``), before Slack ends it.
         """
         if not self.stream_ts:
             return False
@@ -752,6 +821,11 @@ class _AnswerStream:
         # session failure — on a turn that is still live and will finish. The
         # card is decorative (no answer text is withheld), so swallow the failure
         # here, logging the traceback at WARNING for diagnosis.
+        # A closing card stays on the message that showed its step; the next
+        # running one is what goes below a newer message.
+        await self.renew_if_due(step=status == "in_progress")
+        if not self.stream_ts:
+            return False
         try:
             return await self.slack.append_task(
                 self.channel, self.stream_ts, task_id, title, status, details=details
@@ -759,6 +833,73 @@ class _AnswerStream:
         except Exception:
             logger.warning("Slack append_task failed — skipping progress card", exc_info=True)
             return False
+
+    async def renew_if_due(self, *, step: bool = False) -> None:
+        """Move to a fresh stream before Slack's 10-minute limit closes this one.
+
+        Slack would close it itself and mark the running step's card as an error
+        on a turn that is still going (``stream_window``). The running step is
+        closed on the old message with a "continues below" title and opened
+        again on the new one, so the reader sees it go on rather than fail. Not
+        once the final copy is taken (``finishing``): the seal owns the stream
+        from there.
+
+        A caller drawing a running step (``step``) also moves once a person's
+        message has landed in the thread below this stream, so the steps go on
+        under that message. Text never moves for one: an answer already being
+        written stays in one piece above it.
+
+        One renewal at a time: a caller that comes while one is under way waits
+        for it, ``finish`` included, so its card or text lands on the new
+        message and a second rotation does not leave an empty message behind.
+        Shielded, because the 30 s card refresh that usually starts it is
+        cancelled when its tool ends, and the next caller would otherwise stop
+        and close the old message a second time. Best-effort: MUST NOT raise, as
+        ``rotate``.
+        """
+        renewal = self.renewal
+        if renewal is None or renewal.done():
+            if (
+                self.finishing
+                or not self.use_slack_stream
+                or not self.stream_ts
+                or not (
+                    stream_due_for_renewal(self.stream_started_at, stream_clock())
+                    or (
+                        step
+                        # The elapsed refresh outlives its tool; it must not split a reply.
+                        and not self.text_since_step
+                        and message_landed_since(
+                            self.channel, self.reply_ts, self.stream_messages_noted
+                        )
+                    )
+                )
+            ):
+                return
+            renewal = self.renewal = asyncio.ensure_future(self._renew())
+        await asyncio.shield(renewal)
+
+    async def _renew(self) -> None:
+        """Close the running step on the old message, rotate, open it on the new one."""
+        assert self.stream_ts is not None
+        old_ts = self.stream_ts
+        task_id, title = self.active_task_id, self.active_task_title
+        if task_id:
+            try:
+                await self.slack.append_task(
+                    self.channel, old_ts, task_id, title + CONTINUES_BELOW, "complete"
+                )
+            except Exception:
+                logger.warning("Slack append_task failed closing a renewed stream", exc_info=True)
+        logger.info("Renewing the Slack stream: its age, or a newer message below it")
+        if await self.rotate() and task_id:
+            assert self.stream_ts is not None
+            try:
+                await self.slack.append_task(
+                    self.channel, self.stream_ts, task_id, title, "in_progress"
+                )
+            except Exception:
+                logger.warning("Slack append_task failed on a renewed stream", exc_info=True)
 
     async def _tool_elapsed_updater(self) -> None:
         """Periodically update the active task card with elapsed time (every 30s)."""
@@ -788,6 +929,17 @@ class _AnswerStream:
         if self.tool_timer_task and not self.tool_timer_task.done():
             self.tool_timer_task.cancel()
         self.tool_timer_task = None
+
+    async def abandon(self) -> None:
+        """Stop background writes when the turn exits without delivering its answer."""
+        self.finishing = True
+        self.cancel_tool_timer()
+        renewal = self.renewal
+        if renewal is not None:
+            renewal.cancel()
+            # ``wait`` never raises the renewal's own outcome, so only this task's
+            # cancellation can leave here.
+            await asyncio.wait([renewal])
 
     def tool_elapsed_str(self) -> str:
         """Return formatted elapsed time for the current tool, or empty string."""
@@ -831,6 +983,7 @@ class _AnswerStream:
         # from the first TEXT_CHUNK or TOOL_CALL event. A raise is the same
         # event as a None return — streaming is unavailable — so map it onto
         # the existing demotion path below.
+        noted = messages_noted()  # before the request, as in ``rotate``
         try:
             self.stream_ts = await self.slack.start_stream(
                 self.channel,
@@ -842,6 +995,8 @@ class _AnswerStream:
             logger.warning("Slack start_stream failed — demoting to chat.update", exc_info=True)
             self.stream_ts = None
         self.use_slack_stream = self.stream_ts is not None
+        self.stream_started_at = stream_clock() if self.use_slack_stream else 0.0
+        self.stream_messages_noted = noted if self.use_slack_stream else None
         if not self.use_slack_stream:
             # ``SlackClient.start_stream`` swallows its own errors and returns
             # None, but the ``chat.update`` fallback below goes through the base
@@ -888,10 +1043,12 @@ class _AnswerStream:
 
     async def release_quoted_hold(self) -> None:
         """Project what the text holds back, before a tool call, an approval prompt or
-        the turn's end breaks it off, so it is never lost: the line the quoted-marker
-        filter holds, then the turn's held opening unless it is the whole alternation
-        placeholder, which is dropped."""
-        held = self.quoted_filter.flush()
+        the turn's end breaks it off, so it is never lost: the text the steer-ack
+        filter holds behind a frame still waiting for its own ``]``, the line the
+        quoted-marker filter holds, then the turn's held opening unless it is the
+        whole alternation placeholder, which is dropped."""
+        steered = "".join(payload for kind, payload in self.steer_filter.flush() if kind == "text")
+        held = (self.quoted_filter.feed(steered) if steered else "") + self.quoted_filter.flush()
         if held:
             await self._hold_opening(held)
         opening = self.echo_held
@@ -999,12 +1156,12 @@ class _AnswerStream:
     async def on_tool_call(self, event: LLMEvent) -> None:
         """Project a tool call the provider is already running: show its task card (or
         an inline line without streaming), and seal the message before a ``wait``."""
-        tool_name = event.title.removeprefix("Running: ")
-        tool_name, _ = redact_exfiltration_urls(tool_name)
-        tool_name, _ = redact_credentials(tool_name)
+        tool_name = _shown_tool_name(event.title)
         tool_kind = event.tool_kind or ""
         tool_detail = event.tool_purpose or tool_kind
-        tool_status = f"\n🫆 `{tool_name}`\n"
+        tool_status = _tool_line(tool_name)
+        self.active_tool_call_id = event.tool_call_id or ""
+        self.tool_line = ""
         # Keyed on the tool's programmatic identity when the transport
         # sent one (same rule as SlackRenderer); the title compare is the
         # fallback for a frame without ``_meta.kiro``.
@@ -1045,20 +1202,30 @@ class _AnswerStream:
                     f"{self.active_task_title}  {_elapsed}" if _elapsed else self.active_task_title
                 )
                 await self.append_task(self.active_task_id, _ct, "complete")
+                self.active_task_id = ""
+            # Renewed before the new step is named, so a renewal never carries a
+            # step the old message did not show. A review channel draws no steps,
+            # so a newer message moves nothing there.
+            self.text_since_step = False
+            await self.renew_if_due(step=self.channel_activation != ACTIVATION_REVIEW)
             self.task_counter += 1
             self.active_task_id = f"tool_{self.task_counter}"
             self.active_task_title = event.tool_purpose or tool_name
             self.active_task_title, _ = redact_exfiltration_urls(self.active_task_title)
             self.active_task_title, _ = redact_credentials(self.active_task_title)
+            self.active_task_has_purpose = bool(event.tool_purpose)
+            _details = tool_name if tool_detail else ""
+            self.active_task_has_details = bool(_details)
             await self.append_task(
                 self.active_task_id,
                 title=self.active_task_title,
                 status="in_progress",
-                details=tool_name if tool_detail else "",
+                details=_details,
             )
             self.start_tool_timer()
         else:
             self.accumulated += tool_status
+            self.tool_line = tool_status
             # ``stream_ts`` may be None here: ``ensure_started``
             # demoted (``use_slack_stream`` False) AND its chat.update
             # fallback post failed, so there is no placeholder to edit.
@@ -1140,6 +1307,41 @@ class _AnswerStream:
                 # The next text continues that run, so no gap goes between them.
                 self.tool_gap = False
 
+    async def on_tool_title(self, event: LLMEvent) -> None:
+        """Rename the running call's step with the title its ``tool_call_update`` sends.
+
+        ``_run_turn`` calls this only on a backend whose capabilities say
+        ``refines_tool_call_titles``, and it acts only for the call ``on_tool_call``
+        showed last. The open card takes the title in place (same task id) unless
+        its call's purpose titles it; without a stream the call's line is rewritten
+        while it still ends the answer. A closed card, a line that text has
+        followed and the ``is using …`` status keep what they showed.
+        """
+        if not event.tool_call_id or event.tool_call_id != self.active_tool_call_id:
+            return
+        tool_name = _shown_tool_name(event.title)
+        if not tool_name:
+            return
+        if self.use_slack_stream:
+            if (
+                self.active_task_id
+                and not self.active_task_has_purpose
+                and tool_name != self.active_task_title
+            ):
+                self.active_task_title = tool_name
+                await self.append_task(self.active_task_id, tool_name, "in_progress")
+        elif self.tool_line and self.accumulated.endswith(self.tool_line):
+            line = _tool_line(tool_name)
+            if line == self.tool_line:
+                return
+            self.accumulated = self.accumulated[: -len(self.tool_line)] + line
+            self.tool_line = line
+            if self.stream_ts and self.channel_activation != ACTIVATION_REVIEW:
+                await _safe_update(
+                    self.slack, self.channel, self.stream_ts, redact(self.accumulated) + _CURSOR
+                )
+                self.last_edit = time.monotonic()
+
     def take_carried(self) -> None:
         """Put the text carried across a ``wait`` back into the answer.
 
@@ -1184,14 +1386,77 @@ class _AnswerStream:
             logger.debug("agent session resume after approval failed", exc_info=True)
 
     async def on_tool_rejected(self) -> None:
-        """Close the running tool's card as failed, or note the rejection inline."""
+        """Close the running tool's card as rejected, or note the rejection inline.
+
+        The card closes ``complete`` with ``rejected`` in its details, never
+        ``error``: one ``error`` task makes Slack title the whole plan
+        "Something went wrong" while the turn keeps running. Slack adds details
+        to what the card shows, so after the tool name it starts its own line.
+        """
         if self.use_slack_stream and self.active_task_id:
             self.cancel_tool_timer()
             assert self.stream_ts is not None
-            await self.append_task(self.active_task_id, self.active_task_title, "error")
+            details = "\nrejected" if self.active_task_has_details else "rejected"
+            await self.append_task(
+                self.active_task_id, self.active_task_title, "complete", details=details
+            )
             self.active_task_id = ""
         if not self.use_slack_stream:
             self.accumulated += "\n🚫 _Tool use rejected._"
+
+    async def on_model_fallback(self, event: LLMEvent) -> None:
+        """Drop the refused model's streamed text when a V2 refusal hop supersedes it.
+
+        On a content-filter refusal the engine streams the refused model's canned
+        explanation as ordinary ``agent_message_chunk`` text, THEN a
+        ``model_fallback`` hop (``cause: refused``, ``promoted: false``), then the
+        fallback model's real answer (see
+        ``test/fixtures/acp_frames/kiro/refusal-fallback-live.jsonl``). Everything
+        streamed before the hop is the refused model's words, not the turn's
+        answer: this discards it so only the fallback's reply remains, and arms
+        the seal to rewrite the live message, since the refused text was already
+        appended to it. The PROMOTION notice (``promoted: true``) and a
+        throttle/capacity hop (``cause`` other than ``refused``) move nothing
+        visible and are left alone -- a mid-answer throttle hop keeps its partial.
+
+        Best-effort: MUST NOT raise. A raise here would escape into the turn
+        loop's generic ``except Exception`` catch-all and fake a terminal error
+        on a turn that is still answering.
+        """
+        try:
+            notice = event.model_fallback
+            if notice is None or notice.promoted or notice.cause != "refused":
+                return
+            # Keep the refused text in case the fallback never answers, so a
+            # still-refused turn shows the provider's words, not an empty reply.
+            # Only when there is some: a second refused hop or a decline before
+            # any new text must not blank the FIRST refusal's words.
+            if self.accumulated.strip():
+                self.last_refused = self.accumulated
+            self.refused_drop = True
+            # Discard every content-bearing buffer so the fallback's answer opens
+            # a fresh segment. The live-channel state (``stream_ts``,
+            # ``use_slack_stream``, ``delivered``) is untouched: the seal's
+            # overwrite, forced by ``refused_drop``, replaces the refused text on
+            # the single live message in the common case (no rotation, no wait).
+            self.accumulated = ""
+            self.stream_buffer = ""
+            self.bracket_hold = ""
+            self.echo_held = ""  # re-arm the alternation-placeholder hold
+            self.carried = ""
+            # A run held at a ``wait`` boundary, and a for-good delivery loss, are
+            # both refused text here, not answer: drop them so ``_give_back``
+            # cannot put the refused run back on an earlier message and the debt
+            # notice does not claim answer text was lost.
+            self.move_back = None
+            self.debt = False
+            self.line_start = True
+            self.tool_gap = False
+            self.redactor.reset()
+        except Exception:  # noqa: BLE001 — refusal drop is best-effort visibility
+            logger.warning(
+                "Slack on_model_fallback failed — leaving the reply intact", exc_info=True
+            )
 
     async def finish(self, untrimmed: str) -> None:
         """Complete the last task card and send what the stream still holds.
@@ -1273,7 +1538,7 @@ class _AnswerStream:
         if _demoted:
             # The answer's last text is on no message yet, so this update is what
             # delivers it: a failed send raises and the turn books a failure.
-            await _safe_final_update(
+            complete = await _final_update_landed(
                 self.slack,
                 self.channel,
                 self.stream_ts,
@@ -1281,17 +1546,29 @@ class _AnswerStream:
                 self.reply_ts,
                 raise_on_primary_failure=True,
             )
+            if complete and _redact_overwrite:
+                await self._redact_rotated()
             self.delivered = True
             return False
         # Redaction overwrite is decoration on an already-delivered stream:
         # it corrects the visible copy, it does not deliver the answer.
         if _redact_overwrite:
             fallback_text = _convert_tables(clean_text) if clean_text else _NO_RESPONSE
-            await _safe_final_update(
+            complete = await _final_update_landed(
                 self.slack,
                 self.channel,
                 self.stream_ts,
                 fallback_text or _NO_RESPONSE,
                 self.reply_ts,
             )
+            if complete:
+                await self._redact_rotated()
         return _folded
+
+    async def _redact_rotated(self) -> None:
+        """Replace old copies only after the whole redacted answer has landed."""
+        for ts in self.rotated_ts:
+            try:
+                await self.slack.update_message(self.channel, ts, CONTINUES_BELOW.strip())
+            except Exception:
+                logger.warning("Failed to redact rotated message %s", ts, exc_info=True)

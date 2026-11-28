@@ -987,13 +987,16 @@ def _get_released_app_names(
     """The released apps (:func:`_released_app_names`) whose packaged copy *rows* hold.
 
     Asked only when a row's key is a packaged skill naming an app, so a catalog
-    holding no such copy reads no adoption state. The released set is kept for the
-    catalog TTL, like the disabled set.
+    holding no such copy reads no adoption state. A key whose copy the package does
+    not ship takes its app from ``skills_builtin_provenance._recorded_skill_apps``, so
+    a host's installed copy stays withheld. The released set is kept for the catalog
+    TTL, like the disabled set.
     """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
+    from kiro_crew.skills_builtin_provenance import _recorded_skill_apps
 
-    claims = _packaged_app_claims(str(sk._BUILTIN_SKILLS_DIR))
-    owners = {claims[key] for key, _path, _within in rows if key in claims}
+    claims, recorded = _packaged_app_claims(str(sk._BUILTIN_SKILLS_DIR)), _recorded_skill_apps()
+    owners = {claims.get(k) or recorded[k] for k, _p, _w in rows if k in claims or k in recorded}
     if not owners:
         return frozenset()
     now = time.monotonic()
@@ -1464,6 +1467,7 @@ def _invalidate_iter_cache(loader: SkillsLoader) -> None:
     loader._disabled_apps_cache = None
     loader._released_apps_cache = None
     loader._visible_memo.clear()
+    loader._shipped_root_memo.clear()
     with loader._catalog_lock:
         # Moved BEFORE the drop: it fences every walk already in flight, and it
         # turns the snapshot tier off (`_snapshot_trusted_locked`) until the drop

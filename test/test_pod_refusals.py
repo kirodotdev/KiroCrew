@@ -103,6 +103,45 @@ class TestBootRefusesAnUnverifiableOsHome:
         assert len(seen) == 1, "a normal pod did not exec the gateway exactly once"
         assert (c.home_dir("x") / "os-home").is_dir()
 
+    @requires_posix_pod_lifecycle
+    def test_the_kiro_settings_dir_exists_before_the_child_probe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """kiro-cli 3.x locks ``$KIRO_HOME/settings/cli.json.lock`` without creating
+        ``settings`` inside the pod, so the folder must exist when the probe runs."""
+        at_probe: list[bool] = []
+
+        def probe(env: dict[str, str], **_kw: object) -> None:
+            settings = Path(env["KIRO_HOME"]) / "settings"
+            at_probe.append(settings.is_dir())
+
+        monkeypatch.setattr(rt, "_probe_pod_child_bootstrap", probe)
+        code, seen, c = self._boot(tmp_path, monkeypatch)
+
+        assert code == 0, code
+        assert at_probe == [True]
+        assert len(seen) == 1
+        for path in (c.home_dir("x") / "kiro", c.home_dir("x") / "kiro" / "settings"):
+            assert stat.S_IMODE(path.stat().st_mode) == 0o700, path
+
+    @requires_posix_pod_lifecycle
+    def test_a_symlinked_kiro_home_aborts_the_boot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
+        home = PodConfig.load().home_dir("x")
+        home.mkdir(parents=True)
+        elsewhere = tmp_path / "host-kiro"
+        elsewhere.mkdir()
+        (home / "kiro").symlink_to(elsewhere, target_is_directory=True)
+        monkeypatch.setattr(rt, "_probe_pod_child_bootstrap", lambda _env, **_kw: None)
+
+        code, seen, _ = self._boot(tmp_path, monkeypatch)
+
+        assert code == EXIT_REFUSED_UNRECOVERABLE, code
+        assert seen == []
+        assert not (elsewhere / "settings").exists()
+
 
 class TestLaunchdTerminalRefusalIsNotRestartLooped:
     """launchd has no ``RestartPreventExitStatus``, so the terminal code becomes 0.

@@ -75,6 +75,7 @@ from kiro_crew.session_pid_orphan_scan import (
     _is_sweepable_orphan_mcp,
     _is_sweepable_orphan_work,
     _linux_pid_age,
+    _trusted_ps,
 )
 from kiro_crew.session_pid_provider_kill import (
     _root_identity_holds,
@@ -291,6 +292,52 @@ def _kill_pid_tree(pid: int, *, expected_start: str | None = None) -> tuple[int,
     return killed, root_killed
 
 
+class _DeadRootPruneLog:
+    """One INFO line per tracked row a sweep prunes because its root already exited.
+
+    The line names the root pid, the owning gateway pid (``none`` for a bare row) and how
+    many live processes still list the root as an ancestor. On Windows a child keeps its
+    exited parent's pid, so that count is the only trace of a tree that outlived its root.
+    The process table is read once per sweep, at the first dead root; ``unknown`` when it
+    cannot be read. It carries pids and counts only, and never raises: a log record must
+    not change what the sweep prunes or signals.
+    """
+
+    def __init__(self) -> None:
+        self._parent_map: dict[int, int] | None = None
+        self._read = False
+
+    def _live_descendants(self, root_pid: int) -> str:
+        if not self._read:
+            self._read = True
+            try:
+                parent_map = (
+                    platform_compat._windows_process_parent_map()
+                    if platform_compat.IS_WINDOWS
+                    else platform_compat._posix_process_parent_map()
+                )
+            except Exception:
+                parent_map = {}
+            # The POSIX snapshot answers empty when ``ps`` could not run, and a readable
+            # table always lists this process, so empty reads as unknown on both.
+            self._parent_map = parent_map or None
+        if self._parent_map is None:
+            return "unknown"
+        return str(len(platform_compat._descendants_from_parent_map(root_pid, self._parent_map)))
+
+    def pruned(self, root_pid: int, owner_pid: int | None) -> None:
+        try:
+            logger.info(
+                "Orphan sweep: tracked root pid=%d already exited; row pruned "
+                "(owner gateway pid=%s, live_descendants=%s)",
+                root_pid,
+                "none" if owner_pid is None else owner_pid,
+                self._live_descendants(root_pid),
+            )
+        except Exception:
+            pass
+
+
 def _sweep_pid_entries(
     lines: list[str],
     *,
@@ -312,12 +359,15 @@ def _sweep_pid_entries(
     killed = 0
     killed_or_dead: set[str] = set()
     candidates: list[int] = []
+    malformed = 0
+    dead_root_log = _DeadRootPruneLog()
     for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
         try:
             recorded_token: str | None = None
+            owner_pid: int | None = None
             if ":" in stripped:
                 # ``gw:pid`` (legacy) or ``gw:pid:start_token`` (recycle guard).
                 parts = stripped.split(":")
@@ -325,16 +375,20 @@ def _sweep_pid_entries(
                     recorded_token = parts[2] or None
                 elif len(parts) != 2:
                     killed_or_dead.add(stripped)
+                    malformed += 1
                     continue
                 try:
                     gw_pid = int(parts[0])
                     pid = int(parts[1])
                 except ValueError:
                     killed_or_dead.add(stripped)
+                    malformed += 1
                     continue
                 if gw_pid <= 0 or pid <= 0:
                     killed_or_dead.add(stripped)
+                    malformed += 1
                     continue
+                owner_pid = gw_pid
                 if should_skip_tagged(gw_pid, pid):
                     continue
             else:
@@ -342,9 +396,11 @@ def _sweep_pid_entries(
                     pid = int(stripped)
                 except ValueError:
                     killed_or_dead.add(stripped)
+                    malformed += 1
                     continue
                 if pid <= 0:
                     killed_or_dead.add(stripped)
+                    malformed += 1
                     continue
                 if should_skip_bare(pid):
                     continue
@@ -358,6 +414,7 @@ def _sweep_pid_entries(
             liveness = platform_compat.pid_liveness(pid)
             if liveness == platform_compat.PID_DEAD:
                 killed_or_dead.add(stripped)
+                dead_root_log.pruned(pid, owner_pid)
                 continue
             if liveness == platform_compat.PID_UNSIGNALABLE:
                 logger.debug("No permission to signal PID %s — skipping", pid)
@@ -445,6 +502,8 @@ def _sweep_pid_entries(
                     killed_or_dead.add(stripped)
         except Exception:
             logger.debug("Error processing PID entry %s", stripped, exc_info=True)
+    if malformed:
+        logger.debug("Orphan sweep: %d malformed row(s) dropped", malformed)
     return killed, killed_or_dead, candidates
 
 
@@ -830,6 +889,8 @@ def cleanup_orphaned_session_roots() -> int:
     my_gw_pid = os.getpid()
     entries_to_remove: set[str] = set()
     supervisor_verdicts: dict[int, bool] = {}
+    malformed = 0
+    dead_root_log = _DeadRootPruneLog()
 
     for line in lines:
         stripped = line.strip()
@@ -847,16 +908,19 @@ def cleanup_orphaned_session_roots() -> int:
             recorded_token = parts[2] or None
         elif len(parts) != 2:
             entries_to_remove.add(stripped)
+            malformed += 1
             continue
         try:
             gw_pid = int(parts[0])
             child_pid = int(parts[1])
         except (ValueError, IndexError):
             entries_to_remove.add(stripped)
+            malformed += 1
             continue
 
         if gw_pid <= 0 or child_pid <= 0:
             entries_to_remove.add(stripped)
+            malformed += 1
             continue
 
         # Skip entries owned by the current (live) gateway
@@ -896,6 +960,7 @@ def cleanup_orphaned_session_roots() -> int:
         if child_liveness == platform_compat.PID_DEAD:
             # Already dead — just prune the entry
             entries_to_remove.add(stripped)
+            dead_root_log.pruned(child_pid, gw_pid)
             continue
         if child_liveness == platform_compat.PID_UNSIGNALABLE:
             continue  # can't signal — skip
@@ -982,6 +1047,8 @@ def cleanup_orphaned_session_roots() -> int:
             if not platform_compat.pid_exists(child_pid):
                 entries_to_remove.add(stripped)
 
+    if malformed:
+        logger.debug("Orphan sweep: %d malformed row(s) dropped", malformed)
     if entries_to_remove:
         _write_back_pid_file(entries_to_remove)
 
@@ -1033,7 +1100,7 @@ def kill_orphan_mcps(pids: list[int]) -> int:
                 cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
             else:
                 cmdline = subprocess.check_output(
-                    ["ps", "-o", "command=", "-p", str(pid)],
+                    [_trusted_ps(), "-o", "command=", "-p", str(pid)],
                     stderr=subprocess.DEVNULL,
                     timeout=2,
                 )
@@ -1116,7 +1183,7 @@ def kill_orphan_mcps(pids: list[int]) -> int:
                         live_cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
                     else:
                         live_cmdline = subprocess.check_output(
-                            ["ps", "-o", "command=", "-p", str(pid)],
+                            [_trusted_ps(), "-o", "command=", "-p", str(pid)],
                             stderr=subprocess.DEVNULL,
                             timeout=2,
                         )
@@ -1356,6 +1423,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _is_untracked_managed_agent_orphan,
         _linux_pid_sid,
         _linux_session_leader_alive,
+        _orphan_scan_skip_logged,
         _our_orphan_pids,
         _parse_etime,
         _read_env_has_kirocrew_marker,

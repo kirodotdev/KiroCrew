@@ -20,6 +20,7 @@ def _crewmate_worker_spec(
     spec_policy_honoured: bool = False,
     mcp_tool_limits_honoured: bool = False,
     native_tool_limits_honoured: bool = False,
+    mounted: bool | None = None,
 ) -> dict[str, Any] | None:
     """*spec*, or for a crewmate's worker session the worker spec it runs on.
 
@@ -41,6 +42,8 @@ def _crewmate_worker_spec(
     On a host that applies no ``hooks``, ``permissions`` or ``toolsSettings``
     (*spec_policy_honoured* False, the default), a crewmate file that sets any
     refuses the worker, naming them.
+    *mounted* is whether this session's start mounts session control, handed down
+    to the seam so the conducting kit follows that start; ``None`` reads the switch.
     """
     from kiro_crew.mate_worker import MATE_WORKER_AGENT, WorkerKitUnreadable, worker_session_spec
 
@@ -58,7 +61,56 @@ def _crewmate_worker_spec(
         refuse_spec_policy=not spec_policy_honoured,
         mcp_tool_limits_carried=mcp_tool_limits_honoured,
         native_tool_limits_carried=native_tool_limits_honoured,
+        mounted=mounted,
     )
+
+
+def crewmate_worker_switch_off_spec(
+    agent: str | None, spec: dict[str, Any] | None, session_key: str
+) -> dict[str, Any] | None:
+    """*spec*, or for a crewmate's worker session the spec built for it, read for switch-offs.
+
+    :func:`_crewmate_worker_spec` builds the worker base plus its Bot's file, which is
+    the spec that session's composition reads a whole-server ``disabled`` from, so a
+    server the Bot's file switches off reads as off here too. Built with no limit
+    refused and no conducting kit (``mounted=False``): neither changes a switch-off.
+    Any other agent or no key keeps *spec*, and so does a worker whose spec cannot be
+    built: its start is refused where that spec is projected, and an unreadable
+    source switches nothing off. Blocking.
+    """
+    if not session_key:
+        return spec
+    try:
+        return _crewmate_worker_spec(
+            agent,
+            spec,
+            session_key,
+            tool_limits_honoured=True,
+            spec_policy_honoured=True,
+            mounted=False,
+        )
+    except Exception:  # noqa: BLE001 - an unreadable source switches nothing off
+        return spec
+
+
+def _crewmate_conductor_spec(
+    agent: str | None, spec: dict[str, Any] | None, session_key: str
+) -> dict[str, Any] | None:
+    """*spec*, or for a Bot's own chat the conductor spec built for that session.
+
+    The sibling of :func:`_crewmate_worker_spec`: the on-disk
+    ``kirocrew-mate-conductor`` is the base every Bot's chat shares, and the session's
+    own chat is that base plus the app servers its owner turned on for THIS Bot
+    (``bot_chat_app_tools.conductor_session_spec``; nothing with its preview off).
+    Any other agent, no session key or no spec keeps *spec*. Never narrows.
+    """
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+
+    if agent != MATE_CONDUCTOR_AGENT or not session_key or not isinstance(spec, dict):
+        return spec
+    from kiro_crew.bot_chat_app_tools import conductor_session_spec
+
+    return conductor_session_spec(spec, session_key)
 
 
 def crewmate_worker_deny_rules(
@@ -86,9 +138,13 @@ def crewmate_worker_deny_rules(
         ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
         ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     )
-    from kiro_crew.mate_worker import MATE_WORKER_AGENT
+    from kiro_crew.bot_chat_app_tools import carries_app_tools
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, MATE_WORKER_AGENT
 
-    if agent != MATE_WORKER_AGENT or not session_key:
+    # A Bot's own chat too: its spec is the shared conductor plus the app servers
+    # mounted for THIS session (``bot_chat_app_tools``), whose switched-off tools the
+    # base on disk does not name.
+    if agent not in (MATE_WORKER_AGENT, MATE_CONDUCTOR_AGENT) or not session_key:
         return None
     projection = session_mcp.session_mcp_projection(
         agent,
@@ -97,6 +153,7 @@ def crewmate_worker_deny_rules(
         worker_tool_limits_honoured=backend in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
         worker_mcp_tool_limits_honoured=backend in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
         worker_native_tool_limits_honoured=backend in ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
+        bot_app_tools_carried=carries_app_tools(agent, session_key, backend),
     )
     return worker_deny_rules(projection.disabled_tools, projection.agent_spec)
 

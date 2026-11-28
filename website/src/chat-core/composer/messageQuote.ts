@@ -75,8 +75,9 @@ export function quoteFromMessage(role: MessageQuoteRole, content: string, ts?: s
   return q
 }
 
-/** The card's one-line excerpt: the quoted markdown as plain prose. The card is
- *  a one- or two-line reference, not a rendering surface, so emphasis marks,
+/** The one-line excerpt the staged composer card and a queued row show: the
+ *  quoted markdown as plain prose. Those are one-line references, not
+ *  rendering surfaces (the SENT card renders the text as markdown), so emphasis marks,
  *  list bullets, heading hashes, fences and link syntax are dropped rather
  *  than shown raw; lines join with a middle dot so a list still reads as
  *  items. The record's `text` keeps the markdown for the agent's blockquote. */

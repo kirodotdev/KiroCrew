@@ -9,7 +9,7 @@
  * its case has ended lands a state update on whichever case runs next. The page
  * file mocks this component and pins only the identity it passes in.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { api, type DashboardManifest } from '../api/client'
 import { ApiError } from '../api/apiError'
@@ -30,6 +30,7 @@ function withIsland(credits: number): string {
   )
 }
 import { handleDashboardMoved } from '../hooks/useWebSocket'
+import { focusEntry, frameInputs, hostInput } from '../hooks/useFrameLinkBridge'
 import { LANG_STORAGE_KEY } from '../i18n/detect'
 
 /**
@@ -388,6 +389,26 @@ describe('CrewDynamicDashboard', () => {
       expect(screen.queryByTestId('crew-dashboard-card-send-badge')).toBeNull()
     })
 
+    it('hides the one-click-send badge for good once dismissed, on every bot', async () => {
+      localStorage.removeItem('mc-dashboard-card-send-badge-dismissed')
+      onTestFinished(() => localStorage.removeItem('mc-dashboard-card-send-badge-dismissed'))
+      vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+      const onSend = vi.fn().mockResolvedValue('sent')
+      const { unmount } = renderWithProviders(
+        <CrewDynamicDashboard target={{ kind: 'member', slug: 'oncall', member: 'oncall' }} displayName="On Call" onAct={vi.fn()} onSend={onSend} />,
+      )
+      fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }))
+      await waitFor(() => expect(screen.queryByTestId('crew-dashboard-card-send-badge')).toBeNull())
+      expect(localStorage.getItem('mc-dashboard-card-send-badge-dismissed')).toBe('1')
+      unmount()
+      // Another bot with the switch on: still hidden, the reader already knows.
+      renderWithProviders(
+        <CrewDynamicDashboard target={{ kind: 'member', slug: 'research', member: 'research' }} displayName="Research" onAct={vi.fn()} onSend={onSend} />,
+      )
+      await screen.findByTestId('crew-dashboard-frame')
+      expect(screen.queryByTestId('crew-dashboard-card-send-badge')).toBeNull()
+    })
+
     it('refuses the same texts act refuses', async () => {
       activation(true)
       const onSend = vi.fn().mockResolvedValue('sent')
@@ -425,6 +446,70 @@ describe('CrewDynamicDashboard', () => {
     expect(mints[mints.length - 1]).toContain('kirocrew-dashboard:open')
     // The grant set is unchanged: the bridge is the way out, not a wider sandbox.
     expect(screen.getByTestId('crew-dashboard-iframe')).toHaveAttribute('sandbox', 'allow-scripts')
+  })
+
+  describe('a page\'s open message', () => {
+    const post = (frame: HTMLIFrameElement, url: string) =>
+      window.dispatchEvent(new MessageEvent('message', {
+        data: { type: 'kirocrew-dashboard:open', url }, source: frame.contentWindow,
+      }))
+    const activation = (isActive: boolean) =>
+      Object.defineProperty(navigator, 'userActivation', { value: { isActive }, configurable: true })
+    // A click the dashboard can tie to the frame: focus came in from the dashboard
+    // and no input outside the frame is live (the bridge's `tiedToFrame`).
+    const tie = (frame: HTMLIFrameElement) => {
+      hostInput.lastAt = -Infinity
+      frameInputs.clear()
+      focusEntry.frame = frame
+      focusEntry.pointer = null
+      vi.spyOn(document, 'activeElement', 'get').mockReturnValue(frame)
+    }
+    afterEach(() => {
+      Reflect.deleteProperty(navigator, 'userActivation')
+      focusEntry.frame = null
+      vi.restoreAllMocks()
+    })
+
+    async function mountOpen(onOpenLink?: (url: string) => boolean) {
+      vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+      renderWithProviders(
+        <CrewDynamicDashboard target={{ kind: 'member', slug: 'oncall', member: 'oncall' }} displayName="On Call" onOpenLink={onOpenLink} />,
+      )
+      return (await screen.findByTestId('crew-dashboard-iframe')) as HTMLIFrameElement
+    }
+
+    it('hands a link clicked in the page to the host\'s opener, resolved against the dashboard', async () => {
+      activation(true)
+      const onOpenLink = vi.fn(() => true)
+      const opened = vi.spyOn(window, 'open').mockReturnValue(null)
+      const frame = await mountOpen(onOpenLink)
+      tie(frame)
+      post(frame, '/artifacts/task-receipt')
+      expect(onOpenLink).toHaveBeenCalledWith(`${window.location.origin}/artifacts/task-receipt`)
+      expect(opened).not.toHaveBeenCalled()
+    })
+
+    it('opens nothing for a post with no click in the frame, or from another window', async () => {
+      const onOpenLink = vi.fn(() => true)
+      const frame = await mountOpen(onOpenLink)
+      activation(false)
+      tie(frame)
+      post(frame, '/artifacts/task-receipt')
+      activation(true)
+      window.dispatchEvent(new MessageEvent('message', {
+        data: { type: 'kirocrew-dashboard:open', url: '/artifacts/task-receipt' }, source: window,
+      }))
+      expect(onOpenLink).not.toHaveBeenCalled()
+    })
+
+    it('opens outside the app when the host claims nothing', async () => {
+      activation(true)
+      const opened = vi.spyOn(window, 'open').mockReturnValue(null)
+      const frame = await mountOpen()
+      tie(frame)
+      post(frame, 'https://example.com/docs')
+      expect(opened).toHaveBeenCalledWith('https://example.com/docs', '_blank', 'noopener,noreferrer')
+    })
   })
 
   it('mounts the gateway-composed page and never the stored copy', async () => {

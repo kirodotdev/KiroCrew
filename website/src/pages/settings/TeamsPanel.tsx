@@ -412,10 +412,9 @@ export function TeamsPanel() {
           <div className="flex items-start gap-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 mt-3">
             <AlertTriangle size={13} className="lucide-inline text-warn flex-none mt-0.5" />
             <span className="text-[12px] text-text">
-              <strong>{i18nT('pages.settings.teamsPanel.requires_a_public_https_url')}</strong>{' '}
               <Trans
                 i18nKey="pages.settings.teamsPanel.public_host_required_detail"
-                components={{ localhost: <code>{i18nT('pages.settings.teamsPanel.localhost')}</code>, host: <code>{i18nT('pages.settings.teamsPanel.your_host')}</code> }}
+                components={{ strong: <strong />, localhost: <code>{i18nT('pages.settings.teamsPanel.localhost')}</code>, host: <code>{i18nT('pages.settings.teamsPanel.your_host')}</code> }}
               />
             </span>
           </div>

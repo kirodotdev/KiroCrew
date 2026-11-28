@@ -11,12 +11,15 @@ import {
 } from '../hooks/useBottomTerminal'
 
 const terminal = vi.hoisted(() => ({ title: 'workspace', autofocus: false, dispose: vi.fn(), del: vi.fn() }))
-vi.mock('../components/CliPanel', () => ({
+vi.mock('../components/LazyCliPanel', () => ({
   default: function MockCliPanel({ sessionId, visible }: { sessionId: string; visible: boolean }) {
     const ref = useRef<HTMLTextAreaElement>(null)
     useEffect(() => { if (visible && terminal.autofocus) ref.current?.focus() }, [visible])
     return <textarea ref={ref} tabIndex={-1} aria-label={`Terminal input ${sessionId}`} data-testid={`cli-${sessionId}`} />
   },
+}))
+vi.mock('../components/terminalSessions', () => ({
+  preloadTerminal: vi.fn(),
   disposeTerminalSession: terminal.dispose,
   useDeleteTerminalSession: () => ({ mutate: terminal.del }),
 }))

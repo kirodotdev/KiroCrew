@@ -41,7 +41,8 @@ import json
 import logging
 import os
 import secrets
-from typing import Optional
+from collections import OrderedDict
+from typing import Any, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.executors import subprocess_executor
@@ -127,9 +128,7 @@ def build_claim_frame(
         "caller": {
             "session_key": session_key,
             "session_type": classify_session_type(session_key),
-            "principal_id": os.environ.get("USER")
-            or os.environ.get("USERNAME")
-            or "",
+            "principal_id": os.environ.get("USER") or os.environ.get("USERNAME") or "",
             "channel_id": channel_id or "",
         },
     }
@@ -168,7 +167,9 @@ async def _send_claim_inner(
         if kind == "claimed":
             logger.info(
                 "claim-push acknowledged: pid=%d session_key=%s updated=%s",
-                pid, session_key, resp.get("updated"),
+                pid,
+                session_key,
+                resp.get("updated"),
             )
             return True
         if kind == "claim-noop":
@@ -185,12 +186,15 @@ async def _send_claim_inner(
                 "claim-push pending: pid=%d session_key=%s matched no stub "
                 "connection yet; gatewayd keeps the session token binding for "
                 "the stubs that register next",
-                pid, session_key,
+                pid,
+                session_key,
             )
             return False
         logger.warning(
             "claim-push not acknowledged: pid=%d session_key=%s resp=%r",
-            pid, session_key, resp,
+            pid,
+            session_key,
+            resp,
         )
         return False
     finally:
@@ -231,15 +235,15 @@ async def send_claim(
     """
     try:
         return await asyncio.wait_for(
-            _send_claim_inner(
-                socket_path, pid, session_key, channel_id, stub_session_token
-            ),
+            _send_claim_inner(socket_path, pid, session_key, channel_id, stub_session_token),
             timeout=_CLAIM_TIMEOUT_SECS,
         )
     except (OSError, asyncio.TimeoutError, ValueError) as exc:
         logger.warning(
-            "claim-push failed (recaller fallback still applies): pid=%d "
-            "session_key=%s: %s", pid, session_key, exc,
+            "claim-push failed (recaller fallback still applies): pid=%d " "session_key=%s: %s",
+            pid,
+            session_key,
+            exc,
         )
         return False
 
@@ -272,7 +276,7 @@ def schedule_claim(
     except RuntimeError:
         return
     task = loop.create_task(
-        send_claim(socket_path, pid, session_key, channel_id, stub_session_token)
+        _claim_and_rebind(socket_path, pid, session_key, channel_id, stub_session_token)
     )
     # Retain a reference so the task is never GC'd mid-flight; discard on done.
     _PENDING.add(task)
@@ -280,3 +284,261 @@ def schedule_claim(
 
 
 _PENDING: set["asyncio.Task[bool]"] = set()
+
+
+async def _claim_and_rebind(
+    socket_path: str,
+    pid: int,
+    session_key: str,
+    channel_id: Optional[str],
+    stub_session_token: str,
+) -> bool:
+    """Send the claim, then the token's agent binding again when one was sent before.
+
+    gatewayd keeps both in memory only, so the claim a turn re-pushes
+    (``reclaim``) is also what restores the agents after a daemon respawn.
+    """
+    claimed = await send_claim(socket_path, pid, session_key, channel_id, stub_session_token)
+    entry = _BOUND_AGENTS.get(stub_session_token) if stub_session_token else None
+    if entry:
+        _bound_pid, start_id, agents = entry
+        await send_agent_binding(
+            socket_path, pid, stub_session_token, agents, pid_start_id=start_id
+        )
+    return claimed
+
+
+#: Cap on remembered token -> binding entries, ONE named bound shared with the
+#: daemon's own table (``daemon.identity._MAX_TOKEN_BINDINGS`` imports it). It is
+#: a BACKSTOP, not an LRU: a live session's binding is never evicted by age (that
+#: would lose its declared env after a daemon restart, with no path back but
+#: recreating the session). An entry is dropped when its session ends
+#: (:func:`forget_agent_binding`), and over the cap only entries whose runtime
+#: process is gone are pruned (:func:`_evict_dead_bindings_over_cap`); a live one
+#: is kept even past the cap.
+MAX_SESSION_BINDINGS = 512
+
+#: Sentinel for ``send_agent_binding``'s ``pid_start_id`` so ``None`` (a genuine
+#: "unknown token", which never denies a resolution) is told from "not supplied,
+#: read it fresh".
+_UNSET_START_ID = "\x00unset"
+
+#: ``stub_session_token`` -> (runtime pid, that pid's start token, the agents
+#: last bound to it), most recent last, so :func:`_claim_and_rebind` and
+#: :func:`replay_agent_bindings` can send the binding again after a gatewayd
+#: restart with the ORIGINAL process generation, never a recycled pid's.
+_BOUND_AGENTS: "OrderedDict[str, tuple[int, Optional[str], frozenset[str]]]" = OrderedDict()
+
+
+def forget_agent_binding(stub_session_token: str) -> None:
+    """Drop a session's remembered agent binding when its session ends.
+
+    Called from the session teardown that retires the token, so the cache holds
+    only live sessions and a long-lived one is never pushed out by newer ones.
+    """
+    if stub_session_token:
+        _BOUND_AGENTS.pop(stub_session_token, None)
+
+
+def _evict_dead_bindings_over_cap() -> None:
+    """Keep :data:`_BOUND_AGENTS` bounded without ever evicting a live session.
+
+    Past the backstop cap, drop only entries whose runtime process is gone -- a
+    session that ended without its :func:`forget_agent_binding` hook (a crash, a
+    missed teardown). A live session's binding stays, even past the cap, because
+    losing it would strand its private backends with no declared env after a
+    daemon restart. If every entry over the cap is still live, they are kept and
+    the overflow is logged once rather than evicting one of them.
+    """
+    if len(_BOUND_AGENTS) <= MAX_SESSION_BINDINGS:
+        return
+    for token, (pid, _start, _agents) in list(_BOUND_AGENTS.items()):
+        if len(_BOUND_AGENTS) <= MAX_SESSION_BINDINGS:
+            return
+        if not platform_compat.pid_exists(pid):
+            _BOUND_AGENTS.pop(token, None)
+    if len(_BOUND_AGENTS) > MAX_SESSION_BINDINGS:
+        logger.warning(
+            "agent-binding cache holds %d live sessions, over the %d backstop; "
+            "not evicting a live session",
+            len(_BOUND_AGENTS),
+            MAX_SESSION_BINDINGS,
+        )
+
+
+#: How deep :func:`stub_entry_agents` looks: the ``session/new`` params, a
+#: ``mcpServers`` array or map, an entry, and the ``_meta.kiro.customAgents``
+#: descriptors one KAS session carries its own servers in.
+_STUB_SCAN_DEPTH = 8
+
+
+def stub_entry_agents(params: Any) -> frozenset[str]:
+    """The ``--agent`` of every gateway stub entry anywhere in *params*.
+
+    A gateway stub is identified the way the rewriter marks one: a kiro-agent-JSON
+    entry carries the wrapper marker, and an ACP array entry (whose marker the
+    shaping drops) runs the stub module. Only such an entry's ``--agent`` is read,
+    from the ``--server`` / ``--agent`` flags the rewriter packs into the
+    ``--stub-flags-b64`` envelope. An unrelated agent-spec server that happens to
+    pass ``--server`` / ``--agent`` CLI flags of its own is not a stub and binds no
+    agent. Read from the ``session/new`` / ``session/load`` params the gateway
+    itself built, so the answer is the agents whose stubs this session is about to
+    start.
+    """
+    # Local: every Kiro Crew MCP server imports this module, and only the gateway
+    # process calls this function.
+    from kiro_crew.mcp_gateway import STUB_MODULE
+    from kiro_crew.mcp_gateway.hashing import expand_stub_flags
+    from kiro_crew.mcp_gateway.rewriter_launch import _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY
+
+    found: set[str] = set()
+
+    def _walk(node: Any, depth: int) -> None:
+        if depth > _STUB_SCAN_DEPTH:
+            return
+        if isinstance(node, dict):
+            raw_args = node.get("args")
+            # The rewriter's own test for a stub: the wrapper marker (kiro-agent
+            # JSON), or args that run the stub module (an ACP array element, whose
+            # marker the shaping dropped). Without this, any server passing
+            # ``--server``/``--agent`` of its own would be read as a stub binding.
+            marked = node.get(_WRAPPER_MARKER) is True or node.get(_WRAPPER_MARKER_LEGACY) is True
+            runs_stub = isinstance(raw_args, list) and any(
+                isinstance(a, str) and STUB_MODULE in a for a in raw_args
+            )
+            if marked or runs_stub:
+                args = raw_args if isinstance(raw_args, list) else []
+                try:
+                    # A rewritten stub carries its flags in one envelope token.
+                    args = expand_stub_flags(args)
+                except ValueError:
+                    args = []
+                if "--server" in args:
+                    for flag, value in zip(args, args[1:]):
+                        if flag == "--agent" and isinstance(value, str) and value:
+                            found.add(value)
+            for value in node.values():
+                _walk(value, depth + 1)
+        elif isinstance(node, list):
+            for value in node:
+                _walk(value, depth + 1)
+
+    _walk(params, 0)
+    return frozenset(found)
+
+
+def build_agent_binding_frame(
+    pid: int, stub_session_token: str, agents: frozenset[str], pid_start_id: Optional[str]
+) -> dict:
+    """The ``agent-binding`` frame: these *agents*' stubs run under this token in *pid*.
+
+    *pid_start_id* is the runtime's process-start token, captured when the
+    binding was first sent and carried unchanged through a replay, so a daemon
+    that restarted re-authorizes the ORIGINAL process and not a different one
+    that recycled its pid.
+    """
+    return {
+        "type": "agent-binding",
+        "pid": pid,
+        "pid_start_id": pid_start_id,
+        "stub_session_token": stub_session_token,
+        "agents": sorted(agents),
+    }
+
+
+async def _send_agent_binding_inner(
+    socket_path: str,
+    pid: int,
+    stub_session_token: str,
+    agents: frozenset[str],
+    pid_start_id: Optional[str],
+) -> bool:
+    frame = build_agent_binding_frame(pid, stub_session_token, agents, pid_start_id)
+    reader, writer = await transport.connect(socket_path)
+    try:
+        writer.write(json.dumps(frame).encode("utf-8") + b"\n")
+        await writer.drain()
+        raw = await reader.readline()
+        resp = json.loads(raw.decode("utf-8")) if raw else {}
+        if isinstance(resp, dict) and resp.get("type") == "agent-bound":
+            return True
+        logger.warning("agent binding not acknowledged: pid=%d resp=%r", pid, resp)
+        return False
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
+
+
+async def send_agent_binding(
+    socket_path: Optional[str],
+    pid: Optional[int],
+    stub_session_token: str,
+    agents: frozenset[str],
+    pid_start_id: Optional[str] = _UNSET_START_ID,
+) -> bool:
+    """Tell gatewayd which agents' stubs run under *stub_session_token*.
+
+    Sent before the ``session/new`` that starts those stubs, and awaited, so a
+    stub registering under the token is served its agent's declared env.
+    gatewayd takes it only from its owner gateway. Best-effort under the same
+    time budget as a claim: a missing or wedged daemon returns False, and the
+    stubs are then served with no declaring agent until the next claim of the
+    session sends it again.
+
+    *pid_start_id* is the runtime's process-start token. Left at the sentinel,
+    it is read fresh here and cached with the binding; a replay passes the
+    cached value back so a recycled pid is never re-authorized as the original
+    runtime.
+    """
+    if (
+        not socket_path
+        or not isinstance(pid, int)
+        or isinstance(pid, bool)
+        or pid <= 1
+        or not stub_session_token
+        or not agents
+    ):
+        return False
+    if pid_start_id is _UNSET_START_ID:
+        # Read the runtime's start token once, off the loop (a /proc read can
+        # wedge on a D-state target), and cache it so a replay reuses it.
+        try:
+            pid_start_id = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), platform_compat.get_process_start_id, pid
+            )
+        except Exception:  # graceful: an unknown token never denies a resolution
+            pid_start_id = None
+    _BOUND_AGENTS.pop(stub_session_token, None)
+    _BOUND_AGENTS[stub_session_token] = (pid, pid_start_id, agents)
+    _evict_dead_bindings_over_cap()
+    try:
+        return await asyncio.wait_for(
+            _send_agent_binding_inner(socket_path, pid, stub_session_token, agents, pid_start_id),
+            timeout=_CLAIM_TIMEOUT_SECS,
+        )
+    except (OSError, asyncio.TimeoutError, ValueError) as exc:
+        logger.warning("agent binding failed: pid=%d: %s", pid, exc)
+        return False
+
+
+async def replay_agent_bindings(socket_path: Optional[str]) -> int:
+    """Re-send every remembered agent binding to the daemon on *socket_path*.
+
+    The gateway calls this the moment it (re)connects to a daemon it owns, right
+    after it announces the owner port: a restarted daemon holds no bindings
+    (they live only in its memory), and a stub that reconnects before the
+    session's next turn would otherwise have its private backend started with no
+    declared env. Re-sending every live binding at once closes that window
+    without waiting for the next turn's ``reclaim``. The runtime pids are the
+    stubs' own, unchanged by a gatewayd restart. Returns how many were sent.
+    """
+    if not socket_path:
+        return 0
+    sent = 0
+    for token, (pid, start_id, agents) in list(_BOUND_AGENTS.items()):
+        if await send_agent_binding(socket_path, pid, token, agents, pid_start_id=start_id):
+            sent += 1
+    return sent

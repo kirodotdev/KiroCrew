@@ -1,0 +1,9 @@
++130
+`shell_commands.xargs_pipelines`, `xargs_handed_on` and `xargs_cut_rebuilds`: each
+pipeline that feeds `xargs` is also read as a line of its own, from the words its first
+command hands on, so a command chained before it no longer changes what the xargs
+rebuild sees; each such rebuild is made once per walk, and a pipeline nested more than
+32 groups deep is not cut, so the cost stays linear in the line. Deny-only: no allow
+widened.
+`_split_brace_alternatives` moves unchanged into `shell_normalizer_walk` to keep
+`shell_normalizer.py` under the 2,000-line cap; its import costs one line.

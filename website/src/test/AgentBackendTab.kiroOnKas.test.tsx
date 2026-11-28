@@ -54,7 +54,7 @@ describe('a Kiro CLI pick that runs on KAS', () => {
     wrap()
     const notice = await screen.findByTestId('kiro-runs-on-kas')
     // Named by the option's visible name, so the reader can match it to the list.
-    expect(notice.textContent).toContain('Kiro CLI now runs on Kiro Agent, so new sessions already use it.')
+    expect(notice.textContent).toContain('Your Kiro CLI now runs Kiro Agent, so new sessions already use Kiro Agent.')
     fireEvent.click(screen.getByRole('button', { name: 'Save Kiro Agent as my setting' }))
     await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith('agent.acp_backend', 'kas'))
     // The click visibly lands where the callout was.
@@ -94,7 +94,7 @@ describe('a Kiro CLI pick that runs on KAS', () => {
     await screen.findByTestId('kiro-runs-on-kas')
     fireEvent.click(screen.getByRole('radio', { name: 'Kiro CLI' }))
     expect((await screen.findByTestId('kiro-row-runs-on-kas')).textContent).toBe(
-      'Kiro CLI now runs on Kiro Agent. New sessions already use Kiro Agent, so there is nothing to switch here.',
+      'Your Kiro CLI now runs Kiro Agent, and new sessions already use Kiro Agent. There is nothing to switch.',
     )
     // The setting already is Kiro CLI: a button here would save the saved value.
     expect(screen.queryByRole('button', { name: 'Use Kiro CLI' })).toBeNull()
@@ -111,7 +111,7 @@ describe('a Kiro CLI pick that runs on KAS', () => {
     wrap()
     fireEvent.click(await screen.findByRole('radio', { name: 'Kiro CLI' }))
     expect((await screen.findByTestId('kiro-row-runs-on-kas')).textContent).toBe(
-      'Kiro CLI now runs on Kiro Agent. New sessions already use Kiro Agent, so there is nothing to switch here.',
+      'Your Kiro CLI now runs Kiro Agent, and new sessions already use Kiro Agent. There is nothing to switch.',
     )
     // Saving Kiro CLI here would still run new sessions on Kiro Agent.
     expect(screen.queryByRole('button', { name: 'Use Kiro CLI' })).toBeNull()

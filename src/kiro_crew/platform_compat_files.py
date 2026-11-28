@@ -347,8 +347,12 @@ def publish_dir_noreplace(src: str | os.PathLike, dst: str | os.PathLike) -> Non
     its metadata. This wrapper closes that window: on POSIX it uses
     :func:`rename_noreplace` with both names pinned to their shared parent's
     directory descriptor; on Windows plain ``os.rename`` already refuses any
-    existing destination. Raises :class:`FileExistsError` when *dst* exists,
-    and :class:`ValueError` when the two paths do not share a parent (the
+    existing destination, and it goes through ``rename_with_retry`` so a file
+    inside *src* briefly held by an editor, indexer or scanner (a sharing
+    violation, ``PermissionError``) does not fail the publish; the
+    ``FileExistsError`` refusal is never retried. Raises
+    :class:`FileExistsError` when *dst* exists, and :class:`ValueError` when
+    the two paths do not share a parent (the
     staging-sibling contract every caller follows).
 
     Hosts without the no-replace primitive (glibc < 2.28, and NFS/SMB/FUSE
@@ -361,7 +365,10 @@ def publish_dir_noreplace(src: str | os.PathLike, dst: str | os.PathLike) -> Non
     instead of crashing with ``NotImplementedError``.
     """
     if IS_WINDOWS:
-        os.rename(src, dst)
+        # atomic_write imports platform_compat, so this import cannot sit at module top.
+        from kiro_crew.atomic_write import rename_with_retry
+
+        rename_with_retry(os.fspath(src), os.fspath(dst))
         return
     src_abs = os.path.abspath(os.fspath(src))
     dst_abs = os.path.abspath(os.fspath(dst))

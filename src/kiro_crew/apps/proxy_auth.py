@@ -118,7 +118,8 @@ def verify_proxy_request(
     if not key or not header_value or ":" not in header_value:
         return False
     ts_str, _, sig = header_value.partition(":")
-    if not ts_str.isdigit() or not sig:
+    # ``str.isdigit`` alone admits non-ASCII digits such as "²", which ``int`` rejects.
+    if not (ts_str.isascii() and ts_str.isdigit()) or len(ts_str) > _MAX_TS_DIGITS or not sig:
         return False
     clock = time.time() if now is None else now
     if abs(clock - int(ts_str)) > _MAX_SKEW_SECONDS:

@@ -20,10 +20,6 @@ const PORTABILITY_SRC = src('../pages/overview/PortabilityTab.tsx')
 type Expect = { labelKey: string; aliasKeys?: string[]; source: string; en: string; zh: string; tab: string; route: string }
 
 const EXPECTED: Record<string, Expect> = {
-  'overview.memory-details': {
-    labelKey: 'pages.overviewPage.view_details', aliasKeys: ['pages.overviewPage.memory'], source: OVERVIEW_SRC,
-    en: 'View details', zh: '查看详情', tab: 'settings.tab.overview', route: '/settings/overview',
-  },
   'backup.export': {
     labelKey: 'pages.overview.portabilityTab.download_export_zip', source: PORTABILITY_SRC,
     en: 'Download Export (.zip)', zh: '下载导出文件（.zip）', tab: 'settings.tab.imports', route: '/settings/imports',
@@ -62,11 +58,12 @@ describe('settings area locations', () => {
     })
   }
 
-  it('marks the Memory card\'s View details, not the Usage or WakaTime twins', () => {
-    const card = OVERVIEW_SRC.indexOf('function MemorySummaryCard')
-    const marker = OVERVIEW_SRC.indexOf("uiLocation('overview.memory-details')")
-    expect(card).toBeGreaterThan(-1)
-    expect(marker).toBeGreaterThan(card)
-    expect(OVERVIEW_SRC.slice(card + 1, marker)).not.toContain('function ')
+  it('finds the memory page as its own Settings entry, not an Overview card', () => {
+    const tab = byId.get('settings.tab.memory')
+    expect(tab?.placements.map(p => p.route)).toEqual(['/settings/memory'])
+    expect(tab?.terms?.en).toContain('manage memory')
+    expect(tab?.terms?.['zh-CN']).toContain('管理记忆')
+    expect(byId.has('overview.memory-details')).toBe(false)
+    expect(OVERVIEW_SRC).not.toContain('MemorySummaryCard')
   })
 })

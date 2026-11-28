@@ -138,6 +138,9 @@ def _check_location(
             raise IndexUnavailable("malformed caution text")
     if "setting_id" in loc and not isinstance(loc["setting_id"], str):
         raise IndexUnavailable("malformed location")
+    if "app" in loc and not (isinstance(loc["app"], str) and loc["app"].strip()):
+        # The display name of the packaged app whose manifest gave this page.
+        raise IndexUnavailable("malformed location")
     if "guide_ref" in loc and not isinstance(loc["guide_ref"], dict):
         raise IndexUnavailable("malformed guide binding")
     if "guide_plan" in loc and not isinstance(loc["guide_plan"], dict):

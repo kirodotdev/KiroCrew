@@ -14,6 +14,8 @@ owner-only routes.
 
 from __future__ import annotations
 
+import asyncio
+import os
 from typing import Any
 
 from aiohttp import web
@@ -23,7 +25,11 @@ from kiro_crew.change_card_mcp_server import (
     ACTIONS,
     KIND_MCP_SERVER,
     OPTION_USE_NOW,
+    PARAM_PROJECT_FILE,
+    PARAM_PROJECT_FOLDER,
+    PARAM_TARGET,
     PARAM_USES_CHAT_FOLDER,
+    TARGET_PROJECT,
 )
 from kiro_crew.dashboard.handlers.guide import _audit, _deny
 
@@ -37,8 +43,11 @@ def is_page_request(body: dict[str, Any]) -> bool:
     return action != ACTION_ADD or body.get("source") == SOURCE_CUSTOM
 
 
-def server_state(name: str) -> dict[str, Any]:
+def server_state(name: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     """The card's snapshot of server *name*. Blocking.
+
+    A ``project`` add (*params* ``target``) reads only the chat folder's MCP file:
+    ``project`` is its ``exists`` and ``corrupt``, and ``has_server`` for *name*.
 
     ``exists``: the name is on the MCP page in any store. ``editable``: it is in the
     Kiro Crew store, the one a change writes. ``entry``: that stored entry without
@@ -50,6 +59,18 @@ def server_state(name: str) -> dict[str, Any]:
     server is shared now; ``cwd_use``: its recorded project-files answer.
     ``share_exclusive``: no other source declares the name (or its broker stem).
     """
+    if (params or {}).get(PARAM_TARGET) == TARGET_PROJECT:
+        from kiro_crew.change_card_mcp_server import project_file_path
+        from kiro_crew.dashboard.handlers.mcp_project_file import read_project_servers
+
+        read = read_project_servers(project_file_path(params or {}))
+        return {
+            "project": {
+                "exists": read["exists"],
+                "corrupt": read["corrupt"],
+                "has_server": name in read["servers"],
+            }
+        }
     from kiro_crew.dashboard.change_cards_readers import _mcp_exists, _mcp_scopes
     from kiro_crew.dashboard.handlers.mcp import _get_kirocrew_entry
     from kiro_crew.dashboard.handlers.mcp_custom import _update_carried
@@ -160,6 +181,74 @@ def _sharing_state(name: str) -> dict[str, Any]:
     }
 
 
+#: Why :func:`project_place` found no file to write.
+NO_CHAT_FOLDER = "no_chat_folder"
+HARNESS_NOT_SUPPORTED = "harness_not_supported"
+SPEC_SKIPS_PROJECT_FILE = "spec_skips_project_file"
+
+#: What the agent is told for each, with the way forward. A card is never raised
+#: for a file the chat would not load, so a project add never reports a server
+#: that does not start.
+_PLACE_REFUSALS = {
+    NO_CHAT_FOLDER: "this chat has no folder to add the server to; use target 'crew'",
+    HARNESS_NOT_SUPPORTED: (
+        "Kiro Crew cannot confirm this chat's harness loads a project MCP file; "
+        "use target 'crew'"
+    ),
+    SPEC_SKIPS_PROJECT_FILE: (
+        "this chat's agent does not load project MCP files (includeMcpJson is off); "
+        "use target 'crew'"
+    ),
+}
+
+
+def project_place(state: Any, sk: str) -> dict[str, str] | str:
+    """The folder and file a ``project`` add from session *sk* writes, or why none.
+
+    Read from the asking chat's live session, never from the agent's body: its
+    working folder, and the project MCP file its harness reads.
+    :data:`NO_CHAT_FOLDER` when the session has no live provider or its folder is
+    not an absolute path; :data:`SPEC_SKIPS_PROJECT_FILE` for a Kiro or KAS chat
+    whose agent spec does not opt in with ``includeMcpJson`` (the default agent),
+    so a server written there would never load; :data:`HARNESS_NOT_SUPPORTED` for
+    every other harness. Claude Code is one of them: whether its session loads
+    ``.mcp.json`` depends on the session's setting sources and
+    ``strictMcpConfig`` (a Bot's worker sets it) and on the project-server
+    approval, none of which Crew reads back from a live session.
+    """
+    from kiro_crew.agent_sdk.capabilities import capabilities_of
+    from kiro_crew.agent_sdk.mcp_json_reach import spec_opts_into_mcp_json
+    from kiro_crew.project_mcp_files import KIRO_PROJECT_MCP_FILE
+
+    get_provider = getattr(getattr(state, "sessions", None), "get_provider", None)
+    provider = get_provider(sk) if callable(get_provider) else None
+    folder = str(getattr(provider, "cwd", "") or "")
+    if provider is None or not os.path.isabs(folder):
+        return NO_CHAT_FOLDER
+    backend = capabilities_of(provider).backend
+    if not spec_opts_into_mcp_json(backend):
+        return HARNESS_NOT_SUPPORTED
+    if not _spec_loads_mcp_json(provider, backend, folder):
+        return SPEC_SKIPS_PROJECT_FILE
+    return {PARAM_PROJECT_FOLDER: folder, PARAM_PROJECT_FILE: KIRO_PROJECT_MCP_FILE}
+
+
+def _spec_loads_mcp_json(provider: Any, backend: str, folder: str) -> bool:
+    """Whether the agent spec *provider* runs asks *backend* to load ``mcp.json`` files.
+
+    Blocking. ``AcpProvider.client`` is an ``AcpClient`` or an
+    ``AcpSessionProvider``; both name their agent as ``_agent``. An unknown agent
+    answers False, so no card is raised for a file the chat might not load.
+    """
+    from kiro_crew.agent_sdk.mcp_json_reach import agent_includes_mcp_json
+
+    client = getattr(provider, "client", provider)
+    agent = getattr(client, "_agent", "")
+    if not isinstance(agent, str) or not agent:
+        return False
+    return agent_includes_mcp_json(agent, backend, folder)
+
+
 async def request_page_change(
     request: web.Request, slot_key: str, sk: str, body: dict[str, Any]
 ) -> web.Response:
@@ -179,9 +268,15 @@ async def request_page_change(
         "server": body.get("server"),
         OPTION_USE_NOW: True,
     }
-    for key in ("entry", PARAM_USES_CHAT_FOLDER):
+    for key in ("entry", PARAM_USES_CHAT_FOLDER, PARAM_TARGET):
         if key in body:
             params[key] = body[key]
+    if body.get(PARAM_TARGET) == TARGET_PROJECT and action == ACTION_ADD:
+        place = await asyncio.to_thread(project_place, request.app["state"], sk)
+        if isinstance(place, str):
+            _audit(sk, operation, "denied", place)
+            return _deny(409, place, _PLACE_REFUSALS[place])
+        params.update(place)
     return await propose_for_caller(
         request, slot_key, sk, kind=KIND_MCP_SERVER, params=params, reason=body.get("reason")
     )

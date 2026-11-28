@@ -416,7 +416,8 @@ export default function WindowsTitlebarMenu() {
             <button
               key={item.index}
               type="button"
-              role={item.type === 'normal' ? 'menuitem' : 'menuitemcheckbox'}
+              // A radio is one of a mutually exclusive set, never an independent checkbox.
+              role={item.type === 'normal' ? 'menuitem' : item.type === 'radio' ? 'menuitemradio' : 'menuitemcheckbox'}
               aria-checked={item.type === 'normal' ? undefined : item.checked}
               disabled={!item.enabled}
               className="flex w-full cursor-pointer select-none items-center gap-2 rounded-md border-none bg-transparent px-3 py-1.5 text-left text-[13px] text-text outline-hidden transition-colors hover:bg-bg-hover focus:bg-bg-hover disabled:pointer-events-none disabled:opacity-50"

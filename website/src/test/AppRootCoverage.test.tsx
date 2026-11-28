@@ -359,6 +359,68 @@ describe('App — update progress overlay', () => {
     expect(screen.getByText('Page will reconnect when ready…')).toBeInTheDocument()
   })
 
+  it('is a modal: focus stays inside and keys do not reach the page shortcuts behind it', async () => {
+    await startProgress()
+    const overlay = await screen.findByRole('dialog', { name: 'Updating Kiro Crew…' })
+    expect(overlay).toHaveAttribute('aria-modal', 'true')
+    expect(overlay.contains(document.activeElement)).toBe(true)
+    const pageKeys = vi.fn()
+    window.addEventListener('keydown', pageKeys)
+    act(() => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: ',', metaKey: true, bubbles: true, cancelable: true })) })
+    window.removeEventListener('keydown', pageKeys)
+    expect(pageKeys).not.toHaveBeenCalled()
+    // With no focus stop inside it yet, Tab stays put rather than walking onto the shell.
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    act(() => { document.activeElement!.dispatchEvent(tab) })
+    expect(tab.defaultPrevented).toBe(true)
+  })
+
+  it('swallows Escape too: the overlay has no Escape action, so Escape must not reach the page behind it', async () => {
+    await startProgress()
+    await screen.findByRole('dialog', { name: 'Updating Kiro Crew…' })
+    const pageKeys = vi.fn()
+    window.addEventListener('keydown', pageKeys)
+    try {
+      act(() => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })) })
+      expect(pageKeys).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('keydown', pageKeys)
+    }
+  })
+
+  it('pin: once the overlay has a focus stop, Tab is left to the focus trap', async () => {
+    const { store } = await startProgress()
+    const overlay = await screen.findByRole('dialog', { name: 'Updating Kiro Crew…' })
+    act(() => { store.dispatch(setUpdateProgress({ step: 'failed', detail: 'boom' })) })
+    const [first] = within(overlay).getAllByRole('button')
+    first.focus()
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    act(() => { first.dispatchEvent(tab) })
+    expect(tab.defaultPrevented).toBe(false)
+  })
+
+  it('holds the update-found prompt while the overlay is up, so focus returns to the prompt, not the page behind', async () => {
+    vi.mocked(api.status).mockResolvedValue({ ...STATUS, update_latest_version: '0.4.1' } as never)
+    let finish!: () => void
+    vi.mocked(api.applyUpdate).mockReturnValueOnce(new Promise<never>(r => { finish = r as () => void }) as never)
+    const behind = document.createElement('button')
+    behind.textContent = 'behind'
+    document.body.appendChild(behind)
+    try {
+      behind.focus()
+      await startUpdate()
+      const overlay = await screen.findByRole('dialog', { name: 'Updating Kiro Crew…' })
+      await waitFor(() => expect(overlay.contains(document.activeElement)).toBe(true))
+      await act(async () => { finish() })
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Updating Kiro Crew…' })).toBeNull())
+      // Chain: the lazy UpdateFoundModal import resolves, then its mc-config-update-nudge query answers and it opens.
+      const prompt = await screen.findByRole('dialog', {}, namedCeiling('UPDATE_PROMPT_READY', 5000))
+      await waitFor(() => expect(prompt.contains(document.activeElement)).toBe(true))
+    } finally {
+      behind.remove()
+    }
+  })
+
   it.each(['failed', 'error'] as const)('treats the %s step as terminal', async (step) => {
     // The apply worker pushes `failed` from its outer handler and `error` from
     // its per-step handlers (a fast-forward that will not apply, pip refusing

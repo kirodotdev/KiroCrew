@@ -866,9 +866,22 @@ class OpencodeLaunch(ProcessAdapter):
         self._config_content = ""
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
-        """Resolve the binary, warm the session's MCP array, then establish the routing."""
+        """Refuse or mask first, then resolve the binary, warm MCP, establish the routing."""
         session = ctx.session
         assert session is not None, "opencode is launched for one session"
+        # The refuse-then-mask preflight, keyed on the routing question rather than
+        # on this harness's identity: it is ENFORCED, so the OS credential mask is
+        # the compensating control for the passive reads ACP v1 cannot make it ask
+        # about, and several wrap_argv paths return without applying it.
+        #
+        # FIRST, before the binary lookup and the read-back below: on a host where
+        # the mask cannot be applied the session is refused anyway, so refusing here
+        # means the operator is not told to install a binary this host cannot run,
+        # and no foreign binary starts at all.
+        hidden = await launch_mod._run_preflight_bounded(
+            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
+        )
+        expose = acp_tool_gate.adapter_expose_files(self.backend, hidden)
         opencode_bin, argv, spawn_label, stderr_label = await launch_mod.resolve_self_served_launch(
             self.backend
         )
@@ -882,19 +895,6 @@ class OpencodeLaunch(ProcessAdapter):
         # and then read back out of the harness itself below, so a session that
         # cannot establish the asking posture is refused rather than run.
         await session._prepare_session_mcp()
-        # The refuse-then-mask preflight, keyed on the routing question rather than
-        # on this harness's identity: it is ENFORCED, so the OS credential mask is
-        # the compensating control for the passive reads ACP v1 cannot make it ask
-        # about, and several wrap_argv paths return without applying it.
-        #
-        # FIRST, before the read-back below: that read-back runs a child of this
-        # harness, and on a host where the mask cannot be applied the session is
-        # refused anyway -- so refusing here means no foreign binary starts at all,
-        # rather than one starting and then being told the session is off.
-        hidden = await launch_mod._run_preflight_bounded(
-            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
-        )
-        expose = acp_tool_gate.adapter_expose_files(self.backend, hidden)
         # The version gate, BEFORE the read-back: every child below this line is
         # this harness's own binary doing work only its tested major's shapes are
         # measured against. A binary outside that line is refused here, so the

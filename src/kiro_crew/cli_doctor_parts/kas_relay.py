@@ -135,6 +135,7 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
     the vault row is the only credential row.
     """
     from kiro_crew.agent_sdk import backend_install, kas_bundle
+    from kiro_crew.agent_sdk.host_auth import for_terminal
 
     installed = kas_bundle.installed_bundle()  # type: ignore[misc]  # checked before kas_bundle
     if installed is None:
@@ -238,10 +239,10 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
             "  crew vault:  ⚠️  signed in through Kiro Crew, but the sign-in may not be usable;"
             " see the line above"
         )
-        print(f"               {kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY}")
+        print(f"               {for_terminal(kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY)}")
     else:
         print("  crew vault:  ⚠️  not signed in; the first prompt will ask for a sign-in")
-        print(f"               {kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY}")
+        print(f"               {for_terminal(kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY)}")
     _report_kas_bundle_spec_permissions(installed.version, issues)
 
 
@@ -275,7 +276,7 @@ def _report_kas_bundle_spec_permissions(version: str | None, issues: list[str]) 
         return
     print(f"  auto-approve: ❌ withheld: the bundled engine KAS {version} is below {floor},")
     print("               the lowest engine verified to accept the field. Fix: run the")
-    print(f"               pinned engine ({kas_bundle.KAS_PIN_VERSION}; unset")
+    print(f"               pinned engine ({kas_bundle.host_pin_version()}; unset")
     print(f"               {kas_bundle.KAS_VERSION_OVERRIDE_ENV} or install it).")
     issues.append("the bundled KAS engine is too old to carry the KAS `permissions` block")
 
@@ -307,7 +308,7 @@ def _report_kas_bundle_pin(installed_version: str) -> None:
     """The installed engine against this release's pin.
 
     ``installed_bundle()`` looks up exactly the version ``pinned_version()`` names,
-    so the installed version can differ from ``KAS_PIN_VERSION`` only through the
+    so the installed version can differ from this host's pin only through the
     ``KIROCREW_KAS_VERSION`` override; that is the one case worth a ⚠️, because it
     is the gateway's environment choosing an engine this release was not tested
     with, and the row names the variable so the operator can find it. Every other
@@ -316,7 +317,7 @@ def _report_kas_bundle_pin(installed_version: str) -> None:
     """
     from kiro_crew.agent_sdk import kas_bundle
 
-    pin = kas_bundle.KAS_PIN_VERSION
+    pin = kas_bundle.host_pin_version()
     if installed_version == pin:
         print(f"  pin:         ✅ KAS {pin} is this release's pin")
     else:

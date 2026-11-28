@@ -486,7 +486,7 @@ export function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pi
               {a.publication && (
                 <Share2
                   size={12}
-                  className={a.publication.last_error ? 'text-danger' : a.publication.notice ? 'text-warn' : 'text-ok'}
+                  className={a.publication.expired ? 'text-muted' : a.publication.last_error ? 'text-danger' : a.publication.notice ? 'text-warn' : 'text-ok'}
                   aria-label={publicationBadgeLabel(a.publication, providerName)}
                 >
                   <title>{publicationBadgeLabel(a.publication, providerName)}</title>
@@ -495,7 +495,7 @@ export function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pi
             </div>
             {a.description && <div className="text-[12px] text-muted truncate max-w-[400px]">{a.description}</div>}
             <LiveSiteLink slug={a.slug} />
-            {a.publication?.last_error && (
+            {a.publication?.last_error && !a.publication.expired && (
               <span role="presentation" className="block mt-1" onClick={(e) => e.stopPropagation()}>
                 {/* The hand-off is on: this list holds no unsaved input. */}
                 <ErrorNotice

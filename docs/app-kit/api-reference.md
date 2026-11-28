@@ -204,9 +204,11 @@ text }], key_results: [{ id, text, target, current, updated_at, goal_ids, histor
 A wake sends no text. `ref` is an opaque id your app minted (1 to 64 of
 `A-Z a-z 0-9 _ . : -`). The Bot reads a line the gateway writes, naming your app and
 the ref, and fetches the message through your app's own tools if it has them. A busy
-Bot gets the wake when its current turn ends. Each app may wake one Bot at most 20 times
-in 5 minutes, and at most 10 refs from one app wait on a busy Bot; past either limit the
-call fails with a 429 and a `Retry-After` header.
+Bot gets the wake when its current turn ends. A Bot a person stopped in its chat answers
+`queued` and gets the wake after the next turn that starts in that chat, for instance
+the person's next message. Each app may wake one Bot at most 20 times in 5 minutes,
+and at most 10 refs from one app wait on a busy Bot; past either limit the call fails
+with a 429 and a `Retry-After` header.
 
 No scope reaches a Bot's chats, briefing or rules. A Bot that is not ticked answers 404,
 the same as one that does not exist.
@@ -326,6 +328,12 @@ A conversation the embed's own send begins (no `onSend`) is recorded as begun on
 app's page, so uninstalling the app gives it a fresh start: the agent does not resume
 it. Its transcript stays, as for every conversation an app leaves behind, and the
 session stays the person's: the record grants your app nothing.
+
+While the embed is on screen in a focused window, the rows it shows count as
+read, so the session's unread badge clears on every device up to the newest of
+those rows. A newer row, such as a tool approval the embed has not loaded yet,
+keeps its badge. An embed out of sight (`display: none`, collapsed,
+scrolled out of view, or in a host tab that is not active) reads nothing.
 
 | Prop | Type | Default | What it does |
 |---|---|---|---|
@@ -1090,6 +1098,69 @@ it.
 | `anchorRect` | `DOMRect \| null` | no | An anchor rectangle, when there is no element |
 | `startPath` | `string` | no | Where **Browse** opens; empty opens at the gateway user's home |
 
+## File Tree
+
+`FileTree` is the dashboard's own project file tree, the one the chat window's **Files**
+rail draws: expandable folders read one level at a time, changed files coloured, and a
+filter over the names it has listed. An app that shows a project's files renders it
+instead of restating it. It needs `APP_SDK_LEVEL >= 19`.
+
+```tsx
+import * as sdk from '@kirocrew/app-sdk'
+
+sdk.APP_SDK_LEVEL >= 19 && sdk.FileTree
+  ? <sdk.FileTree projectDir={dir} onOpenFile={openInMyViewer} searchQuery={filter} />
+  : null
+```
+
+The tree reads through your app's scoped client and needs `/api/project/tree` in your
+manifest's `permissions.api`. Without it, or outside an app, the tree renders a refusal
+naming the path and sends nothing. `/api/project/git/status` is a separate entry:
+declare it to colour changed files, or leave it out and the rows are drawn plain and no
+status request is sent. Left out, nothing says the marks are missing: the tree looks the
+same as one where nothing changed, so tell your users if your page relies on them. Declare the two exact entries; the `/api/project` prefix would cover
+both, but it also grants the diff, log and session file reads. When a declared status read
+fails, a notice above the rows says why the colours are missing. A failed tree read takes the
+tree's place only before anything is listed; a failed refresh keeps the listed tree, its open
+folders and selection under an inline "Couldn't refresh the file list; showing the last one."
+with a Retry beside it. A failed status read's notice carries a Retry too. No notice in your app's tree
+offers **Ask the agent**, including the tree's own notices for unreadable or failed folders: it
+would leave your page and lose what the page had not saved. The
+`permissions.api` check runs in the page, like every scoped request: it is a frontend
+guardrail, not a server boundary, and the gateway's own checks below are what confine the
+read.
+
+The gateway lists only a directory it knows as a project (a chat's project folder), and
+keeps its sensitive-path refusals: any other `projectDir` shows "Folder not found",
+and a refused one "No access to this folder". Pick one with [`ProjectPicker`](#project-picker) or take it from a chat you
+show. The tree reads no file contents: clicking a file hands its absolute path to
+`onOpenFile`, and showing it is your page's job; reading the file through your scoped
+client needs `/api/file-read` declared too. The person's **Show hidden files** setting
+in the Files rail carries over, so with it on the tree also lists the names (never the
+contents) of git-ignored dot-files, still behind the sensitive-path refusals. The row menu's **Add to chat**,
+**Upload files…**, **New file…** and **Download**, the drag onto the composer, and the
+rows other installed apps contribute are not offered, so the rows carry no menu: those
+act on the dashboard's composer and dialogs, or send requests outside the tree's two
+reads. A built-in page
+keeps the tree as the dashboard has it.
+
+| Prop | Type | Required | Purpose |
+|---|---|---|---|
+| `projectDir` | `string` | yes | The project directory listed; empty renders nothing |
+| `onOpenFile` | `(path: string) => void` | no | Called with a file's absolute path once each time the opened file changes (see below) |
+| `selectedPath` | `string \| null` | no | Absolute path of the file your page shows, echoed as the selection; a project file you set here becomes the opened file |
+| `searchQuery` | `string \| null` | no | Shows only the rows whose names match; empty shows all. Opening a match closes the filter and shows the file in place, as the Files rail does; a new query filters again |
+
+`onOpenFile` fires once per change of the opened file: the first file the user opens, then
+each different one. The opened file is the last one the tree reported, or a project file
+you set as `selectedPath`. A listing refresh, a filter change, the second notification of a
+click on a filtered row, a multi-selection, re-clicking the opened file and the tree
+adjusting its rows to a `selectedPath` you set never fire it.
+Limits: setting `selectedPath` to `null` or to a file outside the project leaves the tree's
+row selected, as in the Files rail, so picking the file you just closed fires only after
+another file has been opened. A refresh that leaves exactly one file of a multi-selection
+(the others were deleted) reports that file as opened, as the Files rail does.
+
 ## Host Sessions
 
 `useHostSessions()` gives your page the person's own sessions as the dashboard's session
@@ -1134,6 +1205,8 @@ and the install prompt says so.
   `refused` with the server's reason, `unknown` when it was accepted but its answer could
   not be read (it may be running, so do not resend), `response-late` when no answer came in
   time (check the session before sending again) and `transport-error` when it never left.
+  The message shows at once in every dashboard tab that has the session open, as one typed
+  in the composer does.
 - `decide` takes the `pendingApproval` object from `sessions` and resolves to
   `{ outcome: 'decided' }`, or `settled` (someone else decided it first), `gone` (it is no
   longer pending) or `failed`, each with the sentence the dashboard's approval card shows.
@@ -1192,6 +1265,44 @@ The dialog is a guardrail, not a security boundary: your page runs in the dashbo
 document with the owner's session, and a backend that mints an owner token through the
 local owner mint reaches the `POST` too, as it reaches `/enable` (see the
 [trust model](../architecture/app-platform-trust-model.md)).
+
+## Keep Alive
+
+`useKeepAlive(busy)` keeps your routed page running, hidden, when the person opens
+another dashboard page, for as long as `busy` is true: a recording, an upload, anything
+that must not stop when the page closes. It needs `APP_SDK_LEVEL >= 16` and no
+`permissions.api` entry.
+
+```tsx
+import * as sdk from '@kirocrew/app-sdk'
+
+const status = sdk.useKeepAlive?.(recording) ?? 'unsupported'
+// 'off' | 'on' | 'refused' | 'unsupported'
+```
+
+It is never on by default. Set `busy` true only while the work runs, and back to false
+as soon as it ends: a hidden page closes once no caller is busy.
+
+You may call it from several components. The page stays while any of them passes
+`busy` true; one caller going false, or unmounting, ends only its own hold.
+
+- While your page is hidden, every dashboard page shows a bar naming your app, with
+  **Open** (back to your page, the same instance) and **Stop** (the page closes, as it
+  would without keep-alive). `useAppInfo().active` is `false` while hidden.
+- At most two apps hold a keep-alive at once. A third gets `refused`; ask again by
+  setting `busy` false and then true.
+- A hidden page also closes when your app throws, or is turned off or uninstalled from
+  this dashboard.
+- `unsupported` means the surface cannot keep the page: a side-panel tab, a desktop
+  window, or a popped-out page.
+- Moving the page in and out of view moves its elements, so an `<iframe>` in it
+  reloads each time.
+- While hidden, the SDK leaves the dashboard the person is using alone: `useNavigate`
+  and `useChatLauncher().openChat` do nothing (a console warning says so), and a
+  `ChatPanel` neither opens its session nor shows its chat until the page is shown
+  again. Your own timers, sockets and microphone keep running. Read
+  `useAppInfo().active` to hold back anything else of yours that touches the page
+  around it.
 
 ## Browser Media
 
@@ -1286,6 +1397,48 @@ browser's autoplay rule; the route then clicks the element once, which counts as
 gesture. The hook draws nothing, so the buttons are yours. Only the dashboard owner's own
 page can call it: the agent's tools and app tokens are refused.
 
+### Browser recipes
+
+`runRecipe(name)` (`APP_SDK_LEVEL >= 15`) runs one of your approved
+[`permissions.browserRecipes`](manifest-reference.md) on the same tab: fixed clicks on
+CSS selectors, with no agent turn and no guessed wait. It resolves to `{ ok: true }`, or
+`{ ok: false, code, step }` naming the step that failed (from 0), so your page can ask its
+agent instead. A click is `el.click()` on the matched element (`"click": "script"` in the
+answer): the site sees `isTrusted` false, and one that ignores such clicks does nothing
+while the answer is still `ok: true`. Check the effect (for play, `state`) and fall back to
+your agent then too.
+
+```tsx
+const { runRecipe } = sdk.useBrowserMedia(sessionKey)
+const played = await runRecipe('play')
+if (!played.ok) chat.send('The play button did not work. Press play on the video.')
+```
+
+The route is the same `POST /api/browser/media`, with every gate above, and body
+`{"session_key", "action": "recipe", "recipe": "<name>"}` (success adds `"click":
+"script"`). Recipes sit behind the
+`app_browser_sdk` Feature Preview (Settings > Developer > Feature previews), off by
+default. Answers: `{"ok": true, "session_key", "recipe", "steps"}`; HTTP 403
+`preview_off` while that preview is off; HTTP 403 `recipe_not_approved` for a name that is
+not an approved recipe (undeclared, waiting for the owner, or changed since approval); or
+`{"ok": false, "code", "error", "recipe", "step"}` with `code` one of `not_found` (no
+element matches), `hidden` (it matches but is not shown in the viewport), `covered` (something else is
+drawn over it),
+`wait_timeout`, `bad_selector`, `password_field`, `wrong_site` (the page is not the
+recipe's `site`) or `redirect_refused` (the page left your approved sites).
+
+A recipe with `"watch": true` can also run by itself, once the owner turns on its own
+"runs by itself" switch on your app's page (approving the recipe alone lets your page run
+it, nothing more). The owner can turn that switch off again; the recipe then runs only
+when your page asks. Then, while the gateway watches your agent's
+tab (above), each 3-second tick while the media plays (never while it is paused or has ended) runs it when its first click's element is shown, so
+`{"name": "skip_ad", "watch": true, "steps": [{"click": "button.ytp-skip-ad-button"}]}`
+presses "Skip ad" with nobody in a turn. Each run writes an audit row. It is skipped while
+the person has taken the tab over, and stops when the tab closes, the app is turned off or
+untrusted, the preview is turned off, or the recipe is no longer approved. Every click lands in the owner's own
+signed-in browser; it is bounded to the selectors the owner approved, on your approved
+sites.
+
 ## Browser View
 
 `BrowserView` shows the live browser of one of your app's own chat slots, and lets the
@@ -1378,6 +1531,7 @@ website/src/app-sdk/protocol/
   optionMarker.ts   the marker pattern (in-tree only) + stripPartialOptionMarker
   options.ts        parseOptions, deriveFollowUpOptions
   steering.ts       extractSteeringAcks
+  statusRow.ts      isStatusRow
   grillMarker.ts    the `[GRILL:]` card parser (in-tree only, not exported from the package)
 ```
 
@@ -1422,6 +1576,18 @@ const { followUpOptions } = deriveFollowUpOptions(messages, running)
 
 When nothing is on offer, every call returns the same shared empty array, so identity comparison works for that case; non-empty results are fresh arrays. Treat it as read-only and copy it before mutating.
 
+To find the agent's last reply in a transcript you read yourself, skip the rows the gateway wrote
+with `isStatusRow(message)`. It is true for a system notice (compaction, session reload and the
+like), a workflow completion whose header parses, and a sub-agent completion envelope, in every role
+the gateway writes them under. A malformed envelope is false, because the chat draws it as text.
+The crewmate chat uses the same verdict, so an app that calls it follows new notice kinds without a
+copy of its own. It does not skip an empty reply (the invisible one a quiet turn ends on); check the
+text yourself when that matters:
+
+```tsx
+const lastReply = [...messages].reverse().find(m => m.role === 'assistant' && !isStatusRow(m))
+```
+
 The module imports no React and no dashboard component, so it is also usable from a worker, a test,
 or a non-React renderer.
 
@@ -1450,6 +1616,7 @@ marker — the exact failure the module exists to prevent. Apps get functions; t
 | `deriveFollowUpOptions(messages, isStreaming)` | function | the choices that still apply to the conversation |
 | `extractSteeringAcks(content)` | function | pull `[STEERING …]` out, returning `{ cleaned, acks }` |
 | `stripPartialOptionMarker(text)` | function | hide a half-streamed marker |
+| `isStatusRow(message)` | function | true for a row the gateway wrote (a notice or a completion envelope), not the agent; seam level 15 |
 | `ParsedOptions` | type | `{ text, options, multi }` |
 | `FollowUpDerivation` | type | `{ followUpOptions, followUpSourceKey }`; `followUpSourceKey` names the row the options came from, or `null` when none are on offer |
 | `ChatMessage` | type | the message shape `deriveFollowUpOptions` consumes |
@@ -1855,8 +2022,9 @@ publish(result.text)          # only the scrubbed text may leave
 A credential is masked at its value, inside a URL too. A link the dashboard would
 draw as a Blocked link chip (its query carries data out, and its host is not one the
 owner allowed) is replaced whole with `[REDACTED: suspicious URL to <host>]` and
-counted in `urls_removed`, because your page has no chip to hold it back. Every
-other link leaves as written.
+counted in `urls_removed`, because your page has no chip to hold it back. A fixed
+reason for the rule that blocked it follows in parentheses, such as `(credential)`
+or `(long query)`; it never carries URL text. Every other link leaves as written.
 
 You get **counts, not descriptions**, and there is deliberately no way to learn
 which value was removed. That is not an omission to be filled in later: the
@@ -1898,6 +2066,14 @@ ctx.audit.record("publish", "denied", resources=doc_id, error="no edit access")
 
 `record(operation, outcome, *, resources="", error="")` **never raises** — an audit
 sink that is unwritable must not fail the user's publish.
+
+`record_or_raise(operation, outcome, *, resources="", error="")` (level 17) is the
+fail-closed form, for an action that must not run unrecorded (an unattended agent
+launch, a tool call no person sees): it writes the same row synchronously and raises
+when it did not land, so write it first and refuse the action when it raises. It
+blocks on the write, so call it with `asyncio.to_thread` from a handler. It is a level
+17 method, so look it up with `getattr(ctx.audit, "record_or_raise", None)` and refuse
+the action when it is `None`.
 
 `outcome` is a short verb you choose (`success`, `denied`, `error`, `completed`, …).
 It is not checked against a vocabulary — a spelling of your own is kept, because
@@ -2305,7 +2481,7 @@ slots.send(state, slot, "Start with the README.")
 | `track(state, task)` | `None` | Hold a follow-up task with the Gateway's background work, so shutdown cancels and awaits it |
 | `nudges(state=None)` | view or `None` | The AutoNudge loops on live slots you own (`get_by_slot`, `list_all`, `remove`, `remove_on_slot`, `deactivate_and_wait`); `None` when AutoNudge is not running. Non-blocking |
 | `nudge_maintenance(state=None)` | async context manager | The same view over the AutoNudge store, serialized with startup, for recovery; it also lists loops whose slot is not live when the saved transcript records your app. A loop you pause there stays paused until you remove it or the block ends |
-| `arm_nudge(state, slot, *, message, idle_secs, max_cycles, stop_sentinel_path="", caller="")` | `(loop, error, status)` | Arm a loop through the same authorization `POST /api/autonudge` uses, with source `app:<your app>` (async). Armed only when `error` is `None` |
+| `arm_nudge(state, slot, *, message, idle_secs, max_cycles, stop_sentinel_path="", caller="", max_runtime_secs=None)` | `(loop, error, status)` | Arm a loop through the same authorization `POST /api/autonudge` uses, with source `app:<your app>` (async). Armed only when `error` is `None`. `max_runtime_secs` is 1 up to the owner's `monitoring.max_runtime_secs` ceiling, and the ceiling when left out, so the loop always ends; out of range is `(None, <reason>, 400)`. Disabling your app stops the loop |
 
 A key is `<app>-<id>`, where *id* is 1 to 400 of `A-Z a-z 0-9 . _ -`, as for
 `ctx.turns`, and the whole key is at most 193 characters, the length the Gateway folds a
@@ -2526,6 +2702,65 @@ source `app_context`. Do not read an `.app_secret` file in your app's folder: an
 version left it there, the Gateway never accepts it, and the first load of your hooks
 removes it. Both methods need `ctx.sdk_level >= 5`.
 
+### Verified download (`ctx.verified_download`)
+
+Level 20. One file your app installs from the internet (a compiler, an engine archive),
+fetched the way the Gateway fetches its own pinned downloads, into your app's own data
+directory. It needs no permission. Feature-detect it with
+`getattr(ctx, "verified_download", None)`. A spawned backend makes the same call through
+the [backend SDK](#backend-sdk-kiro_crewappsbackend_sdk)'s `verified_download`.
+
+```python
+import asyncio
+
+ENGINE_URL = "https://downloads.example.com/engine-1.4.2.tar.gz"
+ENGINE_SHA256 = "<the file's 64 hex characters>"
+ENGINE_SIZE = 18_403_112
+
+async def install_engine(ctx) -> str | None:
+    fetch = getattr(ctx, "verified_download", None)
+    if fetch is None:
+        return None  # an older host: refuse rather than fetch unverified
+    # The folder must already exist; create it off the event loop.
+    await asyncio.to_thread((ctx.data_dir / "vendor").mkdir, exist_ok=True)
+    try:
+        path = await asyncio.to_thread(
+            fetch, ENGINE_URL, "vendor/engine.tar.gz", sha256=ENGINE_SHA256, size=ENGINE_SIZE
+        )
+    except (ValueError, OSError):  # a refused argument, or nothing was installed
+        return None
+    return str(path)
+```
+
+`ctx.verified_download(url, dest, *, sha256, size)` downloads `url` to `dest` and returns
+the installed `Path`:
+
+- `sha256` (64 hex characters) and `size` (the exact length in bytes) are required.
+  Nothing appears at `dest` until the bytes match both; on a mismatch `dest` stays as it
+  was. The file is owner-only.
+- `dest` is a path relative to your data directory, and its folders must already exist
+  (the call creates none). A link or a junction anywhere on the way to it refuses the
+  download, and nothing is written. So does a folder that is moved, or turned into a
+  junction, while the download runs: the lock, the staging file and the installed file
+  must each be in the folder that was checked.
+- `url` must be `https`. The certificate is always verified, and a redirect is followed
+  only on the same host and port, with no option to allow another one. A GitHub release
+  or `/archive/` url redirects to another host, so use a url that serves the file itself,
+  such as the `codeload.github.com` tarball.
+- One download runs in a folder at a time. A second one into the same folder, from
+  anywhere, raises `VerifiedDownloadError` at once instead of running beside the first;
+  try it again once the first ends, or give each file its own folder.
+- No other file of yours is replaced or removed. The bytes go to a hidden staging file the
+  call creates itself (`.<random>.kc-dl`, so a `<name>.part` of yours is left alone), which
+  is gone when the call returns or raises. The folder keeps an empty `.kc-dl.lock` file,
+  the lock every download there takes; leave it in place.
+
+It raises `ValueError` or `TypeError` for a refused argument before anything is opened,
+and `VerifiedDownloadError` (an `OSError`, from `kiro_crew.apps.backend_sdk`) when nothing
+was installed; its message names hosts and local folders, never the url's path. It blocks
+for the whole transfer and raises `RuntimeError` when called on the event loop, so run it
+through `asyncio.to_thread`.
+
 ### App Kit seam level (`ctx.sdk_level`)
 
 An `int`, the App Kit seam level this host provides. Level 1 means the owner gate,
@@ -2566,25 +2801,42 @@ installed app's `credentialMasks` to the agent's file tools too and adds the man
 shared embedder's batch members (`ctx.embed.embed_batch`, see
 [Shared embedder](#shared-embedder-ctxembed)), and level 11
 adds the page's [`BrowserView`, `useBrowserView` and `useBrowserCoords`](#browser-view) and the
-dashboard's `appWebOriginStatus(name)`, and level 12 adds
+dashboard's `appWebOriginStatus(name)`, level 12 adds
 `permissions.kiroOperations` with its route and `ctx.kiro_call` ([Kiro calls](#kiro-calls)) and the dashboard's
-[`SessionChanges` and `DiffView`](#session-changes-and-diff-view), and level 13 adds
-[`useBrowserSites`](#browser-sites) and `/api/apps/<name>/browser-sites`; each level
-includes every level below it. Several seams share level 7, three share level 8, and
-level 10 is shared by the seams of the batch it opens, so an app that needs one
+[`SessionChanges` and `DiffView`](#session-changes-and-diff-view), level 13 adds
+[`useBrowserSites`](#browser-sites) and `/api/apps/<name>/browser-sites`, level 14
+adds the [backend SDK](#backend-sdk-kiro_crewappsbackend_sdk)'s `canonical_file_path`,
+its outbound URL check (`vet_public_url`, `UrlRejectedError` and
+`address_is_not_public`), its raster sniff (`sniff_raster_mime` and
+`RASTER_SNIFF_BYTES`) and its pinned path walk and copy (`pin_parent`,
+`copy_file_pinned` and their helpers), and level 15 adds `permissions.browserRecipes`
+with [`runRecipe`](#browser-recipes) and the marker protocol's `isStatusRow`, and level 18 adds the backend SDK's trusted tool
+lookups, host agent-template values, `address_covers_loopback` and `extra_hidden_dirs` on
+its spawns, and level 20 adds the [verified download](#verified-download-ctxverified_download)
+(`ctx.verified_download` and the backend SDK's `verified_download`); each level includes
+every level below it. Several seams
+share level 7, three share level 8, level 10 is shared by the seams of the batch it
+opens, and levels 14, 17 and 18 by the backend SDK names of their batches, so an app that needs one
 feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
 The dashboard exports the same number as `APP_SDK_LEVEL`.
 
+Level 16 adds the dashboard SDK's [`useKeepAlive`](#keep-alive). Level 19 adds the
+dashboard's [`FileTree`](#file-tree).
+
 ### Backend SDK (`kiro_crew.apps.backend_sdk`)
 
 The host controls your backend's own Python may call when no `ctx` seam fits: a
-sensitive-path check, a no-follow read, an atomic write, outbound redaction, an audit
-row, a sandboxed child process and the cross-platform process and lock helpers. Each
-name calls the control the Gateway itself enforces, so a check tightened in a later
-release reaches your app with the upgrade. Use these instead of a private `kiro_crew`
-name: a private name moves between releases, and these do not.
+sensitive-path check, the file path gate, a no-follow read, an atomic write, outbound
+redaction, a credential or exfiltration-URL check on text you hold, an audit row, a
+sandboxed child process with its environment, hidden paths, output cap and git hook
+overrides, the cross-platform process and lock helpers, the trusted location of a host
+tool, the public-address check for a URL your backend fetches, a verified download, a
+media-type sniff and a descriptor-pinned path walk and copy. Each name calls the control the
+Gateway itself enforces, so a check tightened in a later release reaches your app with
+the upgrade. Use these instead of a private `kiro_crew` name: a private name moves
+between releases, and these do not.
 
 It works the same in a hooks backend (in the Gateway process) and in an `entryPoint`
 backend the Gateway spawns on its own interpreter. A backend on its own venv
@@ -2608,27 +2860,101 @@ def read_attachment(path: str, root: str) -> bytes | None:
     return sdk.read_bytes_nofollow(path, within_root=root, max_bytes=5_000_000)
 ```
 
+A name added after level 7 is feature-detected by name as well, since the level alone
+does not say which batch member a host has: `getattr(sdk, "copy_file_pinned", None)`
+is `None` on a Gateway older than level 14. Keep your own refusal when it is. A keyword
+added later, such as `max_output_bytes` (level 17) or `extra_hidden_dirs` (level 18), is
+detected by the level: pass it only when `sdk.SDK_LEVEL` is at least that level, since an
+older spawn raises `TypeError` for it.
+
+To copy a file a person named by path, refuse when `supports_pinned_walk()` is
+`False`, resolve the path once (`os.path.realpath`), check it with
+`is_sensitive_path`, then pin its directory and copy through it:
+
+```python
+import os
+
+def snapshot(sdk, path: str, into_dir: str, max_bytes: int) -> str | None:
+    """Copy *path* into *into_dir*, a directory this request just created."""
+    if not sdk.supports_pinned_walk() or sdk.is_reparse_point(path):
+        return None  # no race-free open here, or a link at the name: refuse
+    real = os.path.realpath(path)
+    if sdk.is_sensitive_path(real):
+        return None
+    dst = os.path.join(into_dir, "copy" + os.path.splitext(real)[1])
+    try:
+        judged = os.stat(real)
+        dir_fd = sdk.pin_parent(os.path.dirname(real), what="import source")
+    except (sdk.PinnedPathRefusal, OSError):
+        return None
+    try:
+        copied = sdk.copy_file_pinned(
+            real,
+            dst,
+            dir_fd=dir_fd,
+            name=os.path.basename(real),
+            force_mode=0o600,
+            max_bytes=max_bytes,
+            expected_src_ident=(judged.st_dev, judged.st_ino),
+        )
+    except OSError:
+        return None
+    finally:
+        os.close(dir_fd)
+    return dst if copied else None
+```
+
 | Name | What it does |
 |---|---|
 | `is_sensitive_path(path)` | `True` when `path` is inside a location the Gateway never reads or writes (credential homes, its own policy files). Refuse on `True`. |
 | `contains_sensitive_path(directory)` | `True` when such a location lies under `directory`. Check it before a bulk operation rooted there (`git add -A`, an archive, a recursive copy). |
+| `DENIED_ROOT_PARTS` | Level 17. The credential directory names (`.ssh`, `.aws`, `.gnupg`, `.kube`, `.docker` today) the Gateway refuses as a component at any depth of a folder a person picks, as a `frozenset`. Check it on top of `is_sensitive_path`, which anchors these under the home directory, never instead of it. |
 | `read_bytes_nofollow(path, *, within_root=None, max_bytes=None, within_root_is_canonical=False)` | The file's bytes, or `None` when refused: a link at the last component, a hardlinked or non-regular file, a sensitive path, or a file whose opened descriptor resolves outside `within_root`. Raises `FileTooLargeError` past `max_bytes`. |
+| `canonical_file_path(path)` | Level 14. The canonical path of `path`, every link followed, or `None` when the Gateway's file path gate refuses it: an empty path, a Windows UNC path outside the trusted roots, a Windows link the Gateway refuses, or a path whose real target is sensitive. It judges the name, not the file, so read the bytes with `read_bytes_nofollow` or through a descriptor you opened and checked, never a plain `open()` of the answer. It blocks: call it off the event loop. A host below level 14 has the package without this name, so look it up with `getattr(sdk, "canonical_file_path", None)` and refuse the path when it is `None`. |
 | `atomic_write(path, content, *, fsync=False, mode=None, newline=None, restrict_to_owner=False)` | Writes through a temp file and one rename, so a reader never sees a torn file. `restrict_to_owner=True` makes the file owner-only on every platform. |
 | `ensure_owner_only_dir(path)` | `mkdir -p`, owner-only (`0700`) inside the data home and a plain `mkdir -p` elsewhere. |
+| `supports_pinned_walk()` | Level 14. `True` when this platform can open a path relative to a directory descriptor without following a link. `False` on Windows: refuse a path the person named rather than open it by name. |
+| `is_reparse_point(path)` | Level 14. `True` when `path` itself is a symlink or, on Windows, any reparse point (wider than `is_link_or_junction` there). A cheap first refusal at the name, not the guard. |
+| `pin_parent(resolved_parent, *, what)` | Level 14. An open descriptor for an already-resolved directory, walked one component at a time without following a link. Raises `PinnedPathRefusal` for a component that is a link or not a directory. Close the descriptor yourself. Only when `supports_pinned_walk()` is `True`. |
+| `copy_file_pinned(src, dst, *, dir_fd=None, name=None, force_mode=None, max_bytes=None, expected_src_ident=None, on_skip=None, on_created=None)` | Level 14. Copies one file from a descriptor judged before a byte is read, opened through `dir_fd` + `name` when given. `True` when copied; `False` when refused, with `on_skip(reason, src)` told `"symlink"`, `"not_regular"` (a hardlinked or non-regular file), `"identity_changed"` (not the inode `expected_src_ident` names) or `"too_large"` (over `max_bytes`, checked before and while copying). `dst` is created exclusively and never overwritten (`FileExistsError`), so put it in a directory you just created. `on_created` gets the copy's `fstat`. Other `OSError`s propagate. It does not check sensitive paths: call `is_sensitive_path` first. |
+| `fd_real_path(fd)` | Level 14. Where an open descriptor really is, from the kernel, or `None` when that cannot be read. Treat `None` as a refusal. |
+| `PinnedPathRefusal` | Level 14. Raised by `pin_parent`. It subclasses `Exception`, not `OSError`. |
 | `scrub_outbound(text)` | The same pass as [`ctx.scrub.outbound`](#content-scrubbing-ctxscrub), with the same rules: send only `.text`, and do not send when it raises. |
-| `audit_log(app_name=None)` | The same writer as [`ctx.audit`](#audit-events-ctxaudit). Without a name it uses `KIROCREW_APP_NAME`, which a spawned backend always has; with neither it raises `LookupError`. `record(...)` never raises. |
+| `iter_credential_matches(text)` | Level 17. Each credential-shaped run in `text`, as `re.Match` objects on `text`, from the Gateway's own credential scan; `any(iter_credential_matches(text))` is the yes-or-no answer. It matches more than redaction masks (an AWS access key ID, say), so use it to refuse serving or uploading content, and `scrub_outbound` for text you send. |
+| `CREDENTIAL_PLACEHOLDER` | Level 17. The text the Gateway writes where it removed a credential (`"[REDACTED: credential]"` today). Write it where your app removes a credential itself, so the two read the same. |
+| `contains_exfiltration_url(text)` | Level 17. `True` when a URL in `text` looks like it carries data out by the Gateway's rules (a long, encoded or random-looking query, or a credential in the URL), whatever its host. Only the answer is given, never which URL. It raises when the Gateway's policy cannot be read: refuse the text then. |
+| `audit_log(app_name=None)` | The same writer as [`ctx.audit`](#audit-events-ctxaudit). Without a name it uses `KIROCREW_APP_NAME`, which a spawned backend always has; with neither it raises `LookupError`. `record(...)` never raises. Its `record_or_raise(...)` (level 17) writes only when the name is the one the Gateway set (no `app_name`, or the same as `KIROCREW_APP_NAME`) and raises `LookupError` otherwise. |
 | `run_sandboxed(argv, *, mode="standard", env=None, strip_python_env=False, **run_kwargs)` | Runs `argv` to completion in the Gateway's OS sandbox, with its resource limits and a scrubbed environment, and returns a `subprocess.CompletedProcess`. `run_kwargs` are the `subprocess.run` keywords that shape stdio, the working directory and the result (`input`, `capture_output`, `timeout`, `check`, `cwd`, `stdin`, `stdout`, `stderr`, `text`, `encoding`, `errors`, `universal_newlines`, `bufsize`); any other keyword raises `TypeError` and starts nothing. Past `timeout` the child is killed (its whole tree on Windows), but a POSIX descendant that outlives it is not: use `run_sandboxed_async` for a child that leaves work running in the background. `mode` is `"standard"` or `"strict"`; anything else raises `ValueError`. Raises `SandboxUnavailableError` when the host cannot sandbox the child, and then no child starts. |
-| `run_sandboxed_async(argv, *, mode="standard", env=None, strip_python_env=False, input=None, timeout=None, cwd=None)` | The same for an event loop, with stdout and stderr captured as bytes. The child starts in its own process group, so past `timeout`, or on a cancel, the child and its descendants are killed, a descendant that outlived the child included (one that called `setsid()` is outside the group), and `subprocess.TimeoutExpired` (or the cancel) is raised. |
+| `run_sandboxed_async(argv, *, mode="standard", env=None, strip_python_env=False, input=None, timeout=None, cwd=None, max_output_bytes=None)` | The same for an event loop, with stdout and stderr captured as bytes. The child starts in its own process group, so past `timeout`, or on a cancel, the child and its descendants are killed, a descendant that outlived the child included (one that called `setsid()` is outside the group), and `subprocess.TimeoutExpired` (or the cancel) is raised. `max_output_bytes` (level 17) keeps at most that many bytes of each of stdout and stderr: once either passes it, the child is stopped the same way and `OutputLimitExceeded` is raised. While a capped run stops, on any of those exits, what is still written to its pipes (by a descendant that left the group, say) is read in bounded chunks and dropped, so the run keeps no more than the cap. It must be a positive `int` (anything else raises `ValueError` and starts nothing); `None` keeps everything. |
+| `OutputLimitExceeded` | Level 17. Raised by `run_sandboxed_async` past `max_output_bytes`, after the child was stopped. A `subprocess.SubprocessError` with `limit`, and `stdout` and `stderr` holding what was kept. |
+| `minimal_env(**extra)` | Level 17. Your process's environment cut to location hints (`PATH`, `HOME`, the locale, temp and per-user directories, the SSH agent socket and a few tool homes), plus `extra`: the base environment the Gateway gives its own install and build children, without API keys, tokens or cloud credentials. Pass it as `env` to `run_sandboxed`. |
+| `git_hook_disable_args(cwd, *, mode="standard", env=None)`, `git_hook_disable_args_async(...)` | Level 17. The `-c hook.<name>.enabled=false` entries for every hook a repository defines in its config (git 2.54 and later run these, and `core.hooksPath` does not stop them), its initialized submodules' included, then the pins that stop submodule recursion. Put them before the subcommand of a git you run with `run_sandboxed` at the same `mode` and `env`. The names are listed by a git that runs in the sandbox at that `mode`. Raises `GitHookScanError` when they cannot be listed safely and `SandboxUnavailableError` when the host cannot sandbox the listing: refuse the git call on either. The sync form blocks, so call it off the event loop. |
+| `GitHookScanError` | Level 17. Raised by the two above. `git_stderr` is the listing git's own stderr when it ran and refused, else `None`. |
 | `sandboxed_argv(...)`, `sandboxed_argv_async(...)` | Only the preparation, `(argv, env, cleanup)`, for a child whose output you stream yourself. Run that argv with that env, and delete `cleanup`, when it is not `None`, after the child exits. |
+| `extra_hidden_dirs=[...]` on `run_sandboxed`, `run_sandboxed_async`, `sandboxed_argv` and `sandboxed_argv_async` | Level 18. More files and folders to hide from the child, on top of everything the sandbox mode already hides; nothing the mode hides can be shown by it. A relative path is resolved against your process's working directory. A path that is, holds or sits in one of the Gateway's policy files or the other data-home files sandboxed code must read (`security_policy.json`, `profiles`, the data home itself) raises `ValueError`, because hiding a policy file switches it off rather than protecting it. When the host cannot apply the paths to this child (no sandbox, or your backend is itself already sandboxed) it raises `SandboxUnavailableError`. On every refusal nothing starts. |
 | `kill_and_reap(proc, *, timeout=None)` | A coroutine. Kills a child and its descendants and waits for it, for a `communicate()` you abandoned on a timeout or a cancel. On POSIX the descendants are reached through the child's own process group, so start it with `start_new_session=True`; a descendant that outlives an already-reaped child is not reached. `run_sandboxed_async` covers that case itself. |
 | `is_link_or_junction(path)`, `first_linked_ancestor(path)` | A symlink (or Windows junction) at `path`, or the first linked ancestor above it. |
 | `rmtree_force(path)` | Removes a tree, read-only files included; `True` when it is gone. Never raises. |
 | `file_lock(fd, *, exclusive=True, required=False, wait=True, timeout=None)` | An advisory lock for a `with` block. It raises rather than run the block unlocked, so call it from a worker thread when it may wait. |
 | `IS_WINDOWS`, `IS_MACOS`, `IS_LINUX`, `IS_POSIX` | The platform flags. |
+| `address_covers_loopback(address)` | Level 18. `True` when a listener bound to `address` answers a connect to `127.0.0.1`: `127.0.0.1` (also in its `::ffff:` spelling) and the wildcards `0.0.0.0`, `*` and `::`. `::1` answers `False`. It only reads the string you pass. |
+| `trusted_git_bin()` | Level 18. The `git` the Gateway itself runs, found only in the fixed system directories (and Git for Windows' install folders), never through `PATH`, or `None`. Treat `None` as "do not run git"; never fall back to a bare `"git"`. |
+| `trusted_system_bin(name)` | Level 18. `name` found only in the fixed system directories, never through `PATH`, or `None` (unavailable). For system tools such as `lsof` or `osascript`. |
+| `uv_executable()` | Level 18. The absolute path of a usable `uv` (the copy installed with Kiro Crew first, then an absolute `PATH` hit), or `None`: the `uv` the Gateway puts in an agent template's `{UV_BIN}`. |
+| `nvm_version_bin_dirs()` | Level 18. Every existing nvm Node version `bin` folder, newest first, from `~/.nvm` and the XDG config folder, as a tuple. |
+| `agent_template_host_values()` | Level 18. `{"{UV_BIN}": ..., "{HOST_PATH}": ..., "{PATH_SEP}": ...}`: what the Gateway renders for the agent-template placeholders that name no app, from the same function its renderer calls, with a value it cannot compute left out. `{APP_ROOT}` and `{APP_DATA}` are your own checkout and `ctx.data_dir`. |
+| `verified_download(url, dest, *, sha256, size)` | Level 20. In a spawned backend, the same call as [`ctx.verified_download`](#verified-download-ctxverified_download), into the data directory of the app the Gateway spawned (`KIROCREW_APP_NAME`). It takes no app name, and raises `LookupError` outside a spawned backend. |
+| `VerifiedDownloadError` | Level 20. Raised by the verified download when nothing was installed. An `OSError`. |
+| `vet_public_url(url)` | Level 14. The Gateway's check for a URL your backend is about to fetch: `http` or `https`, no user name or password, port 80 or 443, a host that is not a `.onion` or `.local` name, and every address the name resolves to public (an alternate or tunnel spelling of an address is unwrapped first). Returns the vetted URL, whose attributes are `url` (normalized, fragment stripped), `scheme`, `host` (for TLS and the `Host` header), `wire_host` (the name your HTTP client hands its resolver), `port`, `ip` (the first address), `addresses` (every approved address, in resolver order, without repeats) and `domain` (`host` without a leading `www.`); its class is not an SDK name, so read the attributes and never import it. Raises `UrlRejectedError` otherwise, and when the name does not resolve. It performs one DNS lookup and opens no connection, so call it from a worker thread, never on the event loop. It pins nothing: connect only to `.addresses`, through a resolver keyed on `.wire_host` that answers with them, because resolving the name again at connect time would dial an address the check never saw. A host below level 14 has the package without this name, so look it up with `getattr(sdk, "vet_public_url", None)` and refuse the URL when it is `None`. |
+| `UrlRejectedError` | Level 14. Raised by `vet_public_url`. `.code` is `"invalid_url"` (not an absolute `http(s)` URL, or one carrying credentials) or `"blocked_url"` (a well-formed URL the address, port or host rule refused, or one that did not resolve). |
+| `address_is_not_public(address)` | Level 14. `True` when an address you resolved yourself (a redirect hop, say) must be refused: anything that is not a globally reachable unicast address, an IPv4-mapped or 6to4 spelling included. A value that is not an IP literal also answers `True`. |
+| `sniff_raster_mime(head)`, `RASTER_SNIFF_BYTES` | Level 14. The raster type a file's leading bytes start with (`"image/png"`, `"image/jpeg"`, `"image/gif"`, `"image/webp"` or `"image/bmp"` today), or `None`. It decides from the bytes, never from a filename or a declared type: SVG is never an answer, and a RIFF file that is not WebP (a WAVE, say) is `None`. Pass at least `RASTER_SNIFF_BYTES` leading bytes; a longer buffer answers the same. The answer says what the bytes are, not what to accept: check it against your own allowlist, so a type the Gateway learns to sniff later does not widen what your app takes. On a gateway without it, refuse the file rather than trust its name. |
 
 The sandbox has no option to show a hidden directory or open a sealed one for
-writing: those choices are the Gateway's. None of these names needs a permission,
-because none of them adds reach. Your manifest declares nothing for them.
+writing (`extra_hidden_dirs` only hides more), the URL check has no option to allow
+another port or a private address, and the verified download has no option to follow a
+redirect to another host or skip its digest: those choices are the Gateway's. None of these names needs a permission, because none
+of them adds reach. Your manifest declares nothing for them.
 
 ### Lessons
 
@@ -2708,6 +3034,7 @@ POST /api/member-records/{slug}
 
 **Ownership for app callers** (a dashboard caller is unrestricted). The rule follows the request's app claim: an app token, and also an agent running in one of your app's sessions, whose internal calls carry your app's identity.
 - `POST /api/approvals/{id}/{action}` needs `permissions.sessionApproval`, exactly like `POST /api/chat/slots/{slot}/approve`: without it both answer 403 `session_approval_not_granted` to an app-token caller, even for your own slots. An agent running in your app's sessions that calls over the internal secret is NOT exempt on these routes: a bare internal-secret caller is refused 403 like a non-owner on both `POST /api/approvals/{id}/{action}` and `POST /api/chat/slots/{slot}/approve`. The one internal path still admitted is a cron script's attested `cron:` key on `set_approval_mode`'s `POST /api/chat/mode`; see `docs/system-specs/modules/app-kit-platform.md`. With the grant, the id resolves a request on a slot you own or on a local user session, and with `permissions.memberThreads` declared beside it also on a Bot's pinned DM thread (`member-<slug>`), the one member-mode session the grant can reach ([manifest-reference](manifest-reference.md#permissionsmemberthreads--a-bots-own-thread)). Request ids can recur across sessions, so an id pending on more than one session you may control is refused; name the session with the slot route instead (`resolve_approval(id, action, slot_id)`). A background approval (cron, autonudge, subagent, task runner) is never resolvable by an app.
+- `POST /api/autonudge`, `PATCH /api/autonudge/{id}`, `DELETE /api/autonudge/{id}` and `POST /api/autonudge/{id}/fire` need `permissions.chatSlots` and your app enabled, and reach only a loop on a slot you own: without the grant they answer 403 `dashboard_owner_required` with a `cause` (`chat_slots_not_declared`, `disabled`, `unavailable`), and a slot or loop you do not own answers the uniform 404 `slot_not_found`. They follow the same rules as `ctx.chat_slots.arm_nudge`: `gate` and `judge` answer 400 `unknown_field`, `max_runtime_secs` is 1 up to the owner's ceiling (the ceiling when left out on start), and disabling your app stops its loops. A stopped loop keeps its record, so `DELETE` it before you arm the same slot again (a second `POST` answers 409). Each decision is audited under `app:<your app>`. The read routes are unchanged.
 - `GET /api/approvals` lists only what the app could resolve. The list carries background approvals only, so for an app it is always empty. Read a slot's pending requests from its history instead.
 - `GET /api/sessions`, `GET /api/sessions/search`, `GET /api/sessions/{key}`, `GET /api/sessions/{key}/meta`, `DELETE /api/sessions/{key}` and `POST /api/sessions/summarize` reach only transcripts that record the calling app as their owner. `total` counts only those, search ranks only those, and summarize skips any other key as if it were missing (so `list_sessions` with `summarize` from your app's agent returns summaries for your transcripts only). A delete is also refused when a live slot holding the transcript belongs to someone else.
 - `DELETE /api/sessions` (bulk clear) and `GET /api/sessions/clearable/count` act on every closed transcript at once, so an app is always refused them.
@@ -3179,6 +3506,18 @@ for the other two codes. A route can also refuse an app token for its own reason
 after this check passes, for example `403 owner_only`; a `permissions.api` entry
 does not change those.
 
+A few host routes exist only for an app's page, and they answer only while an
+enabled app holds an approved `permissions.api` entry inside their namespace:
+`POST /api/project-scaffold/scan` and `POST /api/project-scaffold/create`, in
+`/api/project-scaffold`. Enabled means the owner turned the app on, the same rule your
+app token follows; a record that only reads enabled is not enough. Until then they
+answer every caller, the dashboard owner included, `403 app_not_enabled`. When the
+app reads enabled but the host has no record of the owner's enable, which an app
+enabled before version 0.12.1 can have, the `error` says so: turning the app off and on
+again fixes it. Declare the namespace itself, or an exact `=` entry per route: a broad
+entry such as `/api` or `/api/*` lets your token call the path, but it does not turn
+the routes on.
+
 ---
 
 ## Gateway REST API Endpoints
@@ -3218,7 +3557,7 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/apps` | List all installed apps, each with cached `update` state |
+| GET | `/api/apps` | List all installed apps, each with cached `update` state and, if declared, a `startup` row (`entry`, `state`, `reason`; `digest` only when admitted) |
 | GET | `/api/apps/registry` | List available apps from registry |
 | GET | `/api/apps/blob?repo=&path=&ref=` | Proxy images from a registry app's git repo |
 | POST | `/api/apps/install` | Install from local path (owner only) |
@@ -3234,7 +3573,7 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 | POST | `/api/apps/{name}/disable` | Disable app (owner only) |
 | POST | `/api/apps/{name}/dev` | Toggle dev mode (live reload) — body `{"enabled": bool}` |
 | POST | `/api/apps/{name}/open` | Launch app via openCommand (owner only) |
-| GET | `/apps/{name}/ui/{path}` | Serve app UI bundle files. `{path}` is a forward-slash relative path: one holding `..`, a backslash or a colon, or starting with `/`, answers 400 `invalid path` before any file-system call |
+| GET | `/apps/{name}/ui/{path}` | Serve app UI bundle files. A `startup:<digest>/` prefix (64 lower-case hex digits) requires a current matching startup approval and approved file bytes, otherwise 409 `app_startup_approval_required`. Relative imports inherit it. After stripping that prefix, `{path}` is a forward-slash relative path: one holding `..`, a backslash or a colon, or starting with `/`, answers 400 `invalid path` before any file-system call. Malformed prefixes return 400. Ordinary URLs retain their behavior |
 | * | `/apps/{name}/api/{path}` | Reverse proxy to app backend (HMAC-signed). An ordinary response is bounded at 30s total. A `text/event-stream` response has no total, but must emit an event or a `:` comment at least every 60s, or it is cut |
 
 "Owner only" routes answer 403 `owner_only` to a dashboard subject that is not

@@ -14,6 +14,7 @@ differs on Windows, and a platform-protected path cannot be created by a test.
 from __future__ import annotations
 
 import errno
+import functools
 import json
 import os
 import shutil
@@ -535,8 +536,16 @@ class TestTheRestagePassFailsClosedOnAnUnreadableDestination(object):
         staged_name = "wal.db"
         real = os.stat
         fired = {"n": 0}
+        # Resolved here, not inside the stand-in: resolving a path stats, and the
+        # stand-in is what a stat reaches.
+        from kiro_crew.staging import STAGING_DIRNAME
 
-        def _fn(path, *args, **kwargs):
+        staging_roots = {
+            os.path.join(str(home), STAGING_DIRNAME),
+            os.path.join(os.path.realpath(home), STAGING_DIRNAME),
+        }
+
+        def _fn(path, *args, _real=real, **kwargs):
             if not isinstance(path, int) and fired["n"] == 0:
                 try:
                     text = os.fsdecode(path)
@@ -550,12 +559,6 @@ class TestTheRestagePassFailsClosedOnAnUnreadableDestination(object):
                 # finish rather than resurfacing at the next pass that stats the same file
                 # -- which is what makes this able to tell the narrow catch from the broad
                 # one.
-                from kiro_crew.staging import STAGING_DIRNAME
-
-                staging_roots = {
-                    os.path.join(str(home), STAGING_DIRNAME),
-                    os.path.join(os.path.realpath(home), STAGING_DIRNAME),
-                }
                 staged = (
                     os.path.basename(text) == staged_name
                     # A real directory component: the walks ask through a descriptor with
@@ -567,9 +570,18 @@ class TestTheRestagePassFailsClosedOnAnUnreadableDestination(object):
                 if staged:
                     fired["n"] += 1
                     raise OSError(errno.EIO, "Input/output error", text)
-            return real(path, *args, **kwargs)
+            return _real(path, *args, **kwargs)
 
         monkeypatch.setattr(os, "stat", _fn)
+        # ``Path.lstat`` asks ``os.lstat`` itself from CPython 3.14 and ``os.stat``
+        # below it; the stand-in goes where this interpreter's ``Path.lstat`` asks.
+        real_lstat = os.lstat
+        asked: list[object] = []
+        with monkeypatch.context() as probe:
+            probe.setattr(os, "lstat", lambda *a, **k: (asked.append(a), real_lstat(*a, **k))[1])
+            home.lstat()
+        if asked:
+            monkeypatch.setattr(os, "lstat", functools.partial(_fn, _real=real_lstat))
         monkeypatch.setattr(pinned_fs, "supports_pinned_tree_walk", lambda: PINNED_TREE_WALK)
         out = tmp_path / "out"
         with pytest.raises(OSError) as caught:

@@ -557,6 +557,15 @@ class TestHandlers:
         )
         assert _body(stale_ok)["code"] == "instance_connect_failed"
 
+        # The status's own cause rides beside the generic code: the hub reads
+        # `chain_cycle` off this 502 body to take back a row the loop refused.
+        looped = connect_returning(
+            TunnelStatus("cd-1", TunnelState.ERROR, error="a loop", error_code="chain_cycle")
+        )
+        assert looped.status == 502
+        assert _body(looped)["error_code"] == "chain_cycle"
+        assert _body(looped)["code"] == "instance_connect_failed"
+
     def test_connect_missing_manager_and_unknown_id_carry_codes(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard import handlers_instances as handlers
 

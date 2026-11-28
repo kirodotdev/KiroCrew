@@ -22,7 +22,7 @@ from enum import Enum
 from typing import Any
 
 from kiro_crew import name_grant, permission_floor
-from kiro_crew.agent_sdk.drivers.acp_vocab import continue_timed_out_calls
+from kiro_crew.agent_sdk.drivers.acp_vocab import RefusalHopText, continue_timed_out_calls
 from kiro_crew.approval_mode_policy import session_mode_permitted
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.channel_account_check import session_after_account_check
@@ -99,16 +99,14 @@ _INBOX_POLL_SECS = 1.0
 # part of its turn; ``workflow_run`` and ``workflow_rerun_subtree`` run an
 # orchestration of agents, and ``workflow_author`` exists only to feed them;
 # ``task_run`` starts the autonomous task runner; ``register_hook`` opens a
-# dedicated agent session an external POST drives later; ``pod_up`` boots a
-# whole preview gateway as its own host process on its own port, which keeps
-# serving after the turn that started it has ended, and ``pod_restart`` starts
-# that gateway again.
+# dedicated session an external POST drives; ``pod_up`` boots a preview gateway;
+# the restart, API and provision verbs restart it, drive it and build it.
 #
 # The observe-and-tear-down verbs are deliberately ABSENT, and their absence is
 # the qualifier this invariant needs rather than an omission: ``spawn_list``,
 # ``spawn_status``, ``spawn_release``, ``workflow_status``, ``workflow_result``,
 # ``workflow_list``, ``workflow_cancel``, ``workflow_library_list``,
-# ``pod_ls``, ``pod_status`` and ``pod_down`` read or
+# ``pod_ls``, ``pod_status``, ``pod_provision_status`` and ``pod_down`` read or
 # end a context that already exists and start no turn.  ``spawn_status`` returns
 # a retained transcript, so how widely that read is scoped is a question about
 # read scope and not about this boundary.
@@ -124,6 +122,8 @@ CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS: tuple[str, ...] = (
     "register_hook",
     "pod_up",
     "pod_restart",
+    "pod_api",
+    "pod_provision_start",
 )
 
 # Direct-to-user messaging tools a channel agent may never invoke — channel
@@ -962,6 +962,20 @@ class ChannelManager:
 # ── Channel Agent Execution Loop ──
 
 
+def _session_agent_kwargs(agent_name: str) -> dict[str, Any]:
+    """``get_or_create``'s agent arguments: a crewmate (``default``) runs its template.
+
+    Passed raw, a crewmate name reached the skill view as an agent with no spec.
+    Blocking (config read): run it off the event loop.
+    """
+    if not agent_name:
+        return {"agent": None}
+    from kiro_crew.cli_chat import _resolve_cli_agent
+
+    kiro_agent, crew_agent, _model, _store = _resolve_cli_agent(KiroCrewConfig.load(), agent_name)
+    return {"agent": kiro_agent, "crew_agent": crew_agent}
+
+
 async def run_channel_agent(
     agent: ChannelAgent,
     channel: Channel,
@@ -978,7 +992,7 @@ async def run_channel_agent(
     try:
         client, _is_new, _resumed = await sessions.get_or_create(
             agent.session_key,
-            agent=agent.agent_name or None,
+            **await asyncio.to_thread(_session_agent_kwargs, agent.agent_name),
             approval_policy=agent.approval_policy.value,
         )
         # This lease is released only when the member dies, so a busy probe reading the
@@ -1176,7 +1190,7 @@ async def _reacquire_cleared_session(sessions: Any, agent: ChannelAgent) -> Any:
     try:
         client, _is_new, _resumed = await sessions.get_or_create(
             agent.session_key,
-            agent=agent.agent_name or None,
+            **await asyncio.to_thread(_session_agent_kwargs, agent.agent_name),
             approval_policy=agent.approval_policy.value,
         )
     except Exception:
@@ -1238,7 +1252,7 @@ async def _reset_busy_session(sessions: Any, agent: ChannelAgent) -> Any | None:
     try:
         client, _is_new, _resumed = await sessions.get_or_create(
             agent.session_key,
-            agent=agent.agent_name or None,
+            **await asyncio.to_thread(_session_agent_kwargs, agent.agent_name),
             approval_policy=agent.approval_policy.value,
         )
     except Exception:
@@ -1407,7 +1421,7 @@ async def _stream_task(
     from kiro_crew.security import redact_and_truncate
     from kiro_crew.sel import sel
 
-    chunks: list[str] = []
+    text, refusal = "", RefusalHopText()
     # Set once a tool call or a permission request arrived: a session lost after
     # that point is not replayed, because the tool may already have run.
     tool_seen = False
@@ -1421,8 +1435,9 @@ async def _stream_task(
         async for event in continue_timed_out_calls(
             lambda prompt: drop_echo(client.stream(prompt)), message
         ):
+            text = refusal.fold(event, text)
             if event.kind == EVENT_TEXT_CHUNK:
-                chunks.append(event.text)
+                text += event.text
 
             elif event.kind == EVENT_TOOL_CALL:
                 tool_seen = True
@@ -1907,7 +1922,7 @@ async def _stream_task(
             elif event.kind == EVENT_COMPLETE:
                 # A turn the backend never finished is not the agent's reply:
                 # the error branch below posts its notice instead of this text.
-                unfinished = unfinished_turn_error(event, "".join(chunks))
+                unfinished = unfinished_turn_error(event, text)
                 if unfinished is not None:
                     raise unfinished
                 break
@@ -1941,7 +1956,7 @@ async def _stream_task(
     from kiro_crew.messaging.driver import strip_steering_markers
     from kiro_crew.session_directive import strip_quoted_markers
 
-    full_text = strip_quoted_markers(strip_steering_markers("".join(chunks))).strip()
+    full_text = strip_quoted_markers(strip_steering_markers(text)).strip()
     if not full_text:
         return _STREAM_OK
     # Sanitize LLM output before posting

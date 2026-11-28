@@ -278,7 +278,7 @@ class TestDocumentedPerMessageBounds:
         root = Path(__file__).resolve().parents[1]
 
         source = (root / "src/kiro_crew/config/memory_sections.py").read_text(encoding="utf-8")
-        source_help = source.split("inject_lessons_per_turn: bool", 1)[1].split(
+        source_help = source.split("inject_lessons_per_turn: str", 1)[1].split(
             "inject_activity: bool", 1
         )[0]
         baseline = (root / "config-baseline.json").read_text(encoding="utf-8")
@@ -299,7 +299,7 @@ class TestDocumentedPerMessageBounds:
             "src/kiro_crew/docs/configuration.md", "`memory.inject_lessons_per_turn`"
         )
         config_spec_row = line_about(
-            "docs/system-specs/modules/config.md", "inject_lessons_per_turn: bool"
+            "docs/system-specs/modules/config.md", "inject_lessons_per_turn: str"
         )
         architecture_row = line_about(
             "docs/architecture/context-management.md",
@@ -325,7 +325,7 @@ class TestDocumentedPerMessageBounds:
 
 class TestSessionLifecycle:
     def test_off_by_default(self, builder, home) -> None:
-        assert KiroCrewConfig.load().memory.inject_lessons_per_turn is False
+        assert KiroCrewConfig.load().memory.inject_lessons_per_turn == "off"
 
         assert HEADER not in turn(builder, "flywheel telemetry canary")
 
@@ -474,6 +474,32 @@ class TestSessionLifecycle:
         rendered = turn(builder, message, user_text_range=(len(prefix), len(message)))
 
         assert HEADER in rendered and ROLLBACK in rendered
+
+    # An @prompt turn reports an empty span where the prompt body that replaced
+    # its text begins; that body is what ranks.
+    @pytest.mark.parametrize("empty_span", [False, True], ids=["user-span", "empty-span"])
+    def test_session_start_ranks_the_text_behind_a_runtime_prefix(
+        self, builder, store, home, monkeypatch: pytest.MonkeyPatch, empty_span
+    ) -> None:
+        # As on the per-message path above: a prefixed notice ranks neither the
+        # session-start memory nor its lessons.
+        prefix = "[Subagent failed] the flywheel telemetry canary job died\n\n"
+        ranked = "please list the open files"
+        message = prefix + ranked
+        span = (len(prefix), len(prefix) if empty_span else len(message))
+        lesson_queries: list[str] = []
+        real = store.get_lessons_context
+
+        def recording(*args, **kwargs):
+            lesson_queries.append(kwargs["query_text"])
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(store, "get_lessons_context", recording)
+        startup, _ = builder.build_message(message, True, "session-1", user_text_range=span)
+
+        assert "[Learned corrections" in startup
+        assert lesson_queries == [ranked]
+        assert builder.get_memory_for().get_context.call_args.kwargs["query"] == ranked
 
     def test_a_transform_hook_output_is_what_is_matched(self, builder, home) -> None:
         enable(home, inject_lessons_per_turn=True)
@@ -684,3 +710,175 @@ class TestCompactionReinjection:
 
         assert reinjected_lessons(rendered) == ""
         assert "flywheel telemetry canary" in rendered
+
+
+def make_builder(store: VectorMemoryStore, tmp_path: Path) -> ContextBuilder:
+    """A second builder over the same store, with empty per-session records."""
+    memory = MagicMock()
+    memory._memory_version = 1
+    memory.vector_store = store
+    memory.get_context.return_value = ""
+    memory.activity_index.return_value = ""
+    memory.get_activity_context.return_value = ""
+    context = ContextBuilder(
+        memory=MemoryStore(workspace=tmp_path / "workspace-2"),
+        skills=SkillsLoader(skills_path=tmp_path / "skills-2", install_builtins=False),
+        lessons=LessonStore(base_dir=tmp_path / "lessons-2"),
+    )
+    context.get_memory_for = lambda *_args, **_kwargs: memory  # type: ignore[method-assign]
+    return context
+
+
+class TestShadowMode:
+    """``shadow`` chooses what ``enforce`` would send, records it, and sends nothing."""
+
+    @pytest.mark.parametrize(
+        ("stored", "mode"),
+        [
+            (True, "enforce"),
+            (False, "off"),
+            ("shadow", "shadow"),
+            ("enforce", "enforce"),
+            ("on", "off"),
+            (1, "off"),
+        ],
+    )
+    def test_a_stored_value_reads_as_its_mode(self, home, stored, mode) -> None:
+        enable(home, inject_lessons_per_turn=stored)
+
+        assert KiroCrewConfig.load().memory.inject_lessons_per_turn == mode
+
+    def test_the_message_is_byte_identical_to_off(self, store, tmp_path, home) -> None:
+        messages = (
+            "flywheel telemetry canary",
+            "regenerate the protobuf gyroscope bindings",
+            "the flywheel telemetry again",
+            "nothing in particular here",
+        )
+        built: dict[str, list[str]] = {}
+        for mode in ("off", "shadow"):
+            enable(home, inject_lessons_per_turn=mode)
+            context = make_builder(store, tmp_path / mode)
+            built[mode] = [turn(context, text) for text in messages]
+
+        assert built["shadow"] == built["off"]
+        assert not any(HEADER in text for text in built["shadow"])
+
+    def test_shadow_keeps_its_own_record_so_enforce_later_sends(self, builder, home) -> None:
+        enable(home, inject_lessons_per_turn="shadow")
+        turn(builder, "flywheel telemetry canary")
+
+        assert not builder._lessons_shown
+        assert len(builder._lessons_shadow_shown) == 1
+
+        enable(home, inject_lessons_per_turn="enforce")
+        assert ROLLBACK in turn(builder, "flywheel telemetry canary")
+
+    def test_the_receipt_names_ids_size_and_provenance_never_text(
+        self, builder, store, home
+    ) -> None:
+        enable(home, inject_lessons_per_turn="shadow")
+        row = next(row for row in store.get_lessons() if ROLLBACK in row["value_json"])
+
+        with injection_receipts.collect() as first:
+            turn(builder, "flywheel telemetry canary")
+        with injection_receipts.collect() as again:
+            turn(builder, "the flywheel telemetry again")
+
+        stage = first[injection_receipts.INJECT_LESSONS_PER_TURN]
+        assert injection_receipts.TURN_LESSONS not in first
+        assert stage["mode"] == "shadow"
+        assert stage["would_add"] == [row["key"]]
+        assert stage["chars"] > len(ROLLBACK)
+        assert stage["lessons"] == [
+            {
+                "key": row["key"],
+                "tier": "unstated",
+                "source": row["source"],
+                "created_at": row["created_at"],
+            }
+        ]
+        assert "flywheel" not in json.dumps(first)
+        # What shadow chose once counts as shown for shadow: nothing again, but
+        # the turn is still counted.
+        assert again[injection_receipts.INJECT_LESSONS_PER_TURN]["would_add"] == []
+
+    def test_a_plain_string_row_reads_as_the_legacy_tier(self) -> None:
+        from kiro_crew.vector_memory_runtime.lessons import lesson_trace_facts
+
+        facts = lesson_trace_facts(
+            {"value_json": json.dumps("a rule"), "source": "user_explicit", "created_at": "t"}
+        )
+
+        assert facts == {"tier": "legacy", "source": "user_explicit", "created_at": "t"}
+
+    def _would_add(self, builder, text: str, **kwargs) -> list[str]:
+        with injection_receipts.collect() as sink:
+            turn(builder, text, **kwargs)
+        return sink[injection_receipts.INJECT_LESSONS_PER_TURN]["would_add"]
+
+    def test_a_lesson_in_the_startup_block_is_not_counted_again(self, builder, store, home) -> None:
+        enable(home, inject_lessons_per_turn="shadow")
+        startup, _ = builder.build_message("flywheel telemetry canary", True, "session-1")
+        assert ROLLBACK in startup
+
+        assert self._would_add(builder, "flywheel telemetry canary") == []
+        assert not builder._lessons_shown
+
+    def test_after_compaction_shadow_counts_the_lesson_again(self, builder, store, home) -> None:
+        enable(home, inject_lessons_per_turn="shadow")
+        key = next(row["key"] for row in store.get_lessons() if ROLLBACK in row["value_json"])
+
+        assert self._would_add(builder, "flywheel telemetry canary") == [key]
+        record = builder._lessons_shadow_shown[builder._cap_memo_key("session-1")]
+        assert record.sent
+
+        # The compaction re-injection resets the shadow record and starts it from
+        # the re-sent block, which carries the lesson, as enforce's record does.
+        again = self._would_add(builder, "flywheel telemetry canary", needs_reinjection=True)
+        record = builder._lessons_shadow_shown[builder._cap_memo_key("session-1")]
+
+        assert again == []
+        assert not record.sent and f"- {ROLLBACK}\n" in record.startup_block
+        assert not builder._lessons_shown
+
+    @pytest.mark.parametrize("kwargs", [{"blocks_reads": True}, {"minimal_context": True}])
+    def test_temporary_and_minimal_turns_record_nothing(self, builder, home, kwargs) -> None:
+        enable(home, inject_lessons_per_turn="shadow")
+
+        with injection_receipts.collect() as sink:
+            turn(builder, "flywheel telemetry canary", **kwargs)
+
+        assert injection_receipts.INJECT_LESSONS_PER_TURN not in sink
+        assert not builder._lessons_shadow_shown
+
+
+@pytest.mark.parametrize(("typed", "written"), [("true", "enforce"), ("false", "off")])
+def test_config_set_writes_the_mode_a_typed_bool_names(tmp_path: Path, typed, written) -> None:
+    """The setting was a bool: ``config set ... true|false`` still works, and writes the mode."""
+    import argparse
+    from unittest.mock import patch
+
+    from kiro_crew.cli_config import _config_cmd
+
+    config_dir = tmp_path / ".kirocrew"
+    config_dir.mkdir()
+    config_file = config_dir / "config.json"
+    config_file.write_text(json.dumps({"memory": {"inject_lessons_per_turn": "shadow"}}))
+    args = argparse.Namespace(
+        config_action="set",
+        key="memory.inject_lessons_per_turn",
+        value=typed,
+        file=None,
+        local=False,
+    )
+    with (
+        patch("kiro_crew.cli_config.config_path", return_value=config_file),
+        patch("kiro_crew.cli_config.config_local_path", return_value=config_dir / "x.json"),
+        patch("kiro_crew.config.loader.config_dir", return_value=config_dir),
+        patch("kiro_crew.cli_config.sel"),
+    ):
+        _config_cmd(args)
+
+    stored = json.loads(config_file.read_text(encoding="utf-8"))
+    assert stored["memory"]["inject_lessons_per_turn"] == written

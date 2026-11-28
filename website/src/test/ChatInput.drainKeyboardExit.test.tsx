@@ -15,11 +15,6 @@ import ChatInput from '../components/ChatInput'
 import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
 import { createAudioSample } from '../hooks/mic'
 
-vi.mock('../components/Strands', () => ({
-  __esModule: true,
-  default: () => <div data-testid="strands-stub" />,
-  strandsSupported: () => true,
-}))
 
 const sampleRef = { current: createAudioSample() }
 const base = { value: '', onChange: vi.fn(), onSend: vi.fn() }

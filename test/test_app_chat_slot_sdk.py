@@ -977,6 +977,7 @@ def test_the_maintenance_view_reads_saved_owners_and_uses_its_own_remove(monkeyp
 def test_arm_nudge_goes_through_the_shared_authorization_as_the_app(monkeypatch):
     service = _Service()
     _live(monkeypatch, service)
+    monkeypatch.setattr("kiro_crew.monitoring.limits.runtime_ceiling_secs", lambda: 7200)
     seen: list[dict[str, Any]] = []
 
     async def _authorize(**kwargs):
@@ -1007,6 +1008,7 @@ def test_arm_nudge_goes_through_the_shared_authorization_as_the_app(monkeypatch)
             "idle_secs": 120,
             "max_cycles": 60,
             "stop_sentinel_path": "/p/STOP",
+            "max_runtime_secs": 7200,
             "source": f"app:{APP}",
             "caller": "owner",
         }

@@ -391,11 +391,23 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
 
         task.add_done_callback(forget_owner)
     session_key = info.conversation_key or f"subagent:{info.id}"
+    # Read when this run's KAS session starts: it is held to its parent agent's denies,
+    # anchored where a parent that is itself a run has its session bound.
+    # Imported here because this body runs on the facade's globals.
+    from kiro_crew.agent_sdk.kas_subagent_runs import note_parent
+    from kiro_crew.subagent_manager.turn_session import _run_on
+
+    parent_key = info.parent_session_key or ""
     # Set by the reap-echo arm below: the run ended because a reap in
     # flight tore its runtime down, and that reap publishes the terminal
     # report once its kill has decided (see the ``finally``).
     reap_owns_report = False
     try:
+        # Inside the ``try``, so a failed read ends this run as any start error does.
+        # A parent past the key's cap is not recorded; a KAS session refuses it.
+        above = _run_on(self._manager, parent_key) if parent_key.startswith("subagent:") else None
+        bound = getattr(above, "_session_cwd", "")
+        note_parent(session_key, parent_key, bound if isinstance(bound, str) else "")
         # Capture the deadline once, when execution starts. A record that
         # unexpected-cancel recovery respawns keeps its nonzero value, so a
         # config reload between the two attempts cannot move it.

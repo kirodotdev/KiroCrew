@@ -518,6 +518,13 @@ _AUTH_FAILURE_MARKERS = (
 _GLAB_AUTH_FAILURE_MARKERS = _AUTH_FAILURE_MARKERS + ("401 unauthorized", "http 401")
 
 
+#: ``SourceProviderError.reason`` when GitHub answered that the number is not a
+#: pull request (an issue, or not used yet). ``gh`` says so only once the
+#: repository itself resolved, so it is never an access failure.
+NOT_A_CHANGE = "not_a_change"
+_GH_NOT_A_CHANGE_MARKER = "could not resolve to a pullrequest"
+
+
 def _provider_failure(executable: str, stderr: bytes, host: str = "") -> SourceProviderError:
     """The error for a failed provider call: redacted stderr plus a sign-in hint.
 
@@ -530,6 +537,8 @@ def _provider_failure(executable: str, stderr: bytes, host: str = "") -> SourceP
     """
     message = sanitize._safe_error(stderr)
     lowered = message.lower()
+    if executable == "gh" and _GH_NOT_A_CHANGE_MARKER in lowered:
+        return SourceProviderError(message, reason=NOT_A_CHANGE)
     markers = _GLAB_AUTH_FAILURE_MARKERS if executable == "glab" else _AUTH_FAILURE_MARKERS
     if not any(marker in lowered for marker in markers):
         return SourceProviderError(message)

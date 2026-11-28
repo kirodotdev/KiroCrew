@@ -485,6 +485,8 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
         app: str = "",
         manager=None,
         restore_pending: bool = False,
+        owners: dict[str, str] | None = None,
+        until=lambda _sent: True,
     ):
         replayed: list[list[str]] = []
         active = {"now": 0, "peak": 0}
@@ -531,6 +533,15 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
         state.folders_generation.return_value = 1
         state.tags_generation.return_value = 1
         restored = {name: MagicMock() for name in slots}
+        if owners is not None:
+            # Real owner readings, so the cut note's own owner re-check has one to
+            # compare against.
+            for name, slot in restored.items():
+                slot._app = owners.get(name, "")
+            monkeypatch.setattr(
+                dashboard_ws, "persisted_precap_readings", lambda *a, **k: (dict(owners), set())
+            )
+            state.get_slot.side_effect = lambda key: state._slots.get(key)
         # A tab reconnecting into the boot window: the restore has rebuilt no slot
         # yet, and finishes once the socket's frames are in.
         state._slots = {} if restore_pending else restored
@@ -571,7 +582,7 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
             def _record(self, payload: dict) -> None:
                 self.sent.append(payload)
                 # Done once every expected card has been sent to the socket.
-                if _drawn(self.sent) >= expect_ids:
+                if _drawn(self.sent) >= expect_ids and until(self.sent):
                     done.set()
                     if wake:
                         wake["event"].set()
@@ -835,3 +846,220 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
         assert busy, "the handler never asked whether the crew log is on"
         assert seen == [True], "the fold did not run in the request's context"
         assert _drawn(fake.sent) == {f"acp-0-0-child-{n}" for n in range(2)}
+
+
+def _cut_notes(sent: list[dict]) -> list[dict]:
+    return [f["data"] for f in sent if f.get("type") == "subagent_replay_truncated"]
+
+
+@pytest.fixture
+def ticking_clock():
+    """One millisecond per append, so which runs are the newest is the order written.
+
+    Set and restored the way ``_frozen_clock`` in the fold tests does: it is a
+    counter standing in for the store's stamp, not a wait.
+    """
+    from kiro_crew.crew_log import store
+
+    real = store.now_ms
+    start = real() - 60_000
+    ticks = iter(range(start, start + 10_000_000))
+    store.now_ms = lambda: next(ticks)
+    try:
+        yield
+    finally:
+        store.now_ms = real
+
+
+def _finished(handle: CrewLog, agent_id: str) -> None:
+    handle.append("subagent/spawned", {"agent_id": agent_id, "task": "t"}, src=GATEWAY)
+    handle.append("subagent/completed", {"agent_id": agent_id, "ms": 5}, src=GATEWAY)
+
+
+def _recorded_cuts(monkeypatch) -> list[dict]:
+    """The per-slot tally each fold read handed back to the replay."""
+    cuts: list[dict] = []
+    real_read = dashboard_ws.read_fold_subagent_records
+
+    def recording(pairs, **kwargs):
+        try:
+            return real_read(pairs, **kwargs)
+        finally:
+            cuts.append(dict(kwargs.get("cut") or {}))
+
+    monkeypatch.setattr(dashboard_ws, "read_fold_subagent_records", recording)
+    return cuts
+
+
+def _small_retain_limit(monkeypatch) -> int:
+    """Shrink the fold's retain limit on every owner: past the real one a unit is ~1k
+    records, which the product fold reads cold, over the CI read budget."""
+    from kiro_crew.crew_log import projection
+
+    monkeypatch.setattr(projection, "OPEN_RETAIN_LIMIT", 4)
+    return 4
+
+
+class TestTheDashboardIsToldWhatTheReplayCut:
+    """``subagent_replay_truncated``: the per-slot count the chip says out loud."""
+
+    _drive = TestTheHandlerReplaysOnlyWhatTheSocketViews._drive
+
+    def test_a_slot_past_the_cap_is_told_its_exact_cut(self, monkeypatch, caplog):
+        _unit("acp-0", "chat-0", children=55, turns=0)
+        frames = [{"type": "subscribe_subagents", "slots": ["chat-0"]}]
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.ws"):
+            _replayed, _peak, fake = self._drive(
+                monkeypatch,
+                frames,
+                ["chat-0"],
+                expect_units=set(),
+                expect_ids=set(),
+                owners={"chat-0": ""},
+                until=_cut_notes,
+            )
+        assert _cut_notes(fake.sent) == [{"slots": {"chat-0": {"n": 5, "at_least": False}}}]
+        assert "5 eligible run(s) past the 50 cap" in caplog.text
+
+    def test_two_slots_in_one_batch_each_get_their_own_cut(
+        self, monkeypatch, caplog, ticking_clock
+    ):
+        """Each slot holds 30 runs, within the cap on its own, and the shared cap
+        still cuts both; the two counts are the warning's total."""
+        first = _unit("acp-a", "chat-a", turns=0)
+        second = _unit("acp-b", "chat-b", turns=0)
+        for n in range(30):
+            _finished(first, f"a-{n}")
+            _finished(second, f"b-{n}")
+        frames = [{"type": "subscribe_subagents", "slots": ["chat-a", "chat-b"]}]
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.ws"):
+            _replayed, _peak, fake = self._drive(
+                monkeypatch,
+                frames,
+                ["chat-a", "chat-b"],
+                expect_units=set(),
+                expect_ids=set(),
+                owners={"chat-a": "", "chat-b": ""},
+                until=_cut_notes,
+            )
+        assert _cut_notes(fake.sent) == [
+            {
+                "slots": {
+                    "chat-a": {"n": 5, "at_least": False},
+                    "chat-b": {"n": 5, "at_least": False},
+                }
+            }
+        ]
+        assert "10 eligible run(s) past the 50 cap" in caplog.text
+
+    def test_a_batch_within_the_cap_sends_no_note(self, monkeypatch):
+        """Fifty runs over two slots: nothing is cut, so the replay has no note to send."""
+        _unit("acp-0", "chat-0", children=48, turns=0)
+        _unit("acp-1", "chat-1", children=2, turns=0)
+        cuts = _recorded_cuts(monkeypatch)
+        frames = [{"type": "subscribe_subagents", "slots": ["chat-0", "chat-1"]}]
+        _replayed, _peak, fake = self._drive(
+            monkeypatch,
+            frames,
+            ["chat-0", "chat-1"],
+            expect_units={"acp-0", "acp-1"},
+            owners={"chat-0": "", "chat-1": ""},
+        )
+        assert cuts == [{}]
+        assert _cut_notes(fake.sent) == []
+
+    def test_a_unit_past_the_folds_retain_limit_is_a_floor_at_no_cut(self, monkeypatch):
+        limit = _small_retain_limit(monkeypatch)
+
+        handle = _unit("acp-0", "chat-0", turns=0)
+        for n in range(limit + 1):
+            handle.append("subagent/spawned", {"agent_id": f"c-{n}", "task": "t"}, src=GATEWAY)
+        handle.append("subagent/completed", {"agent_id": "c-0", "ms": 5}, src=GATEWAY)
+        handle.append("subagent/completed", {"agent_id": f"c-{limit}", "ms": 5}, src=GATEWAY)
+        frames = [{"type": "subscribe_subagents", "slots": ["chat-0"]}]
+        _replayed, _peak, fake = self._drive(
+            monkeypatch,
+            frames,
+            ["chat-0"],
+            expect_units=set(),
+            expect_ids={"c-0"},
+            owners={"chat-0": ""},
+            until=_cut_notes,
+        )
+        assert _cut_notes(fake.sent) == [{"slots": {"chat-0": {"n": 0, "at_least": True}}}]
+
+    def test_an_app_socket_is_never_sent_the_note(self, monkeypatch, ticking_clock):
+        _unit("acp-0", "chat-0", children=55, turns=0)
+        _unit("acp-1", "chat-1", children=2, turns=0)
+        monkeypatch.setattr(
+            dashboard_ws, "visible_subagent_slot_keys", lambda *a, **k: {"chat-0", "chat-1"}
+        )
+        monkeypatch.setattr(
+            dashboard_ws,
+            "load_declared_events_for_connect",
+            lambda app: (True, frozenset({"subagent:user"})),
+        )
+        cuts = _recorded_cuts(monkeypatch)
+        frames = [{"type": "subscribe_subagents", "slots": ["chat-0", "chat-1"]}]
+        _replayed, _peak, fake = self._drive(
+            monkeypatch,
+            frames,
+            ["chat-0", "chat-1"],
+            expect_units={"acp-1"},
+            app="some-app",
+            owners={"chat-0": "", "chat-1": ""},
+        )
+        # Control: the cap did cut this socket's replay, so the note was withheld.
+        assert cuts == [{"chat-0": {"n": 7, "at_least": False}}]
+        assert _cut_notes(fake.sent) == []
+
+
+class TestTheNoteIsCheckedAgainstTheSlotAsItIsNow:
+    class _Socket:
+        def __init__(self) -> None:
+            self.sent: list[dict] = []
+
+        def get(self, _key, default=None):
+            return default
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+    @pytest.mark.asyncio
+    async def test_a_slot_closed_or_reowned_since_the_snapshot_is_left_out(self):
+        ws = self._Socket()
+        live = {"kept": SimpleNamespace(_app=""), "reowned": SimpleNamespace(_app="other-app")}
+        state = SimpleNamespace(get_slot=live.get, _owner_ws_clients=[ws])
+        cut = {key: {"n": 3, "at_least": False} for key in ("kept", "reowned", "closed")}
+        owners = {"kept": "", "reowned": "", "closed": ""}
+
+        await dashboard_ws.send_subagent_replay_truncated(ws, state, cut, owners)
+        assert ws.sent == [
+            {
+                "type": "subagent_replay_truncated",
+                "data": {"slots": {"kept": {"n": 3, "at_least": False}}},
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_frame_when_no_slot_is_left(self):
+        ws = self._Socket()
+        state = SimpleNamespace(get_slot={}.get, _owner_ws_clients=[ws])
+
+        cut = {"closed": {"n": 3, "at_least": True}}
+        await dashboard_ws.send_subagent_replay_truncated(ws, state, cut, {"closed": ""})
+        assert ws.sent == []
+
+
+def test_the_floor_flag_is_cached_with_the_rows(monkeypatch):
+    limit = _small_retain_limit(monkeypatch)
+
+    handle = _unit("acp-f", "chat-1", turns=0)
+    for n in range(limit + 1):
+        handle.append("subagent/spawned", {"agent_id": f"c-{n}", "task": "t"}, src=GATEWAY)
+    handle.append("subagent/completed", {"agent_id": f"c-{limit}", "ms": 5}, src=GATEWAY)
+    assert scope.UNIT_ROWS.rows_and_cap("acp-f")[2] is True
+    assert scope.UNIT_ROWS.rows_and_cap("acp-f")[2] is True
+    assert scope.UNIT_ROWS.folds == 1
+    # The plain accessor every other caller reads is unchanged in shape.
+    assert len(scope.UNIT_ROWS.rows("acp-f")) == 2

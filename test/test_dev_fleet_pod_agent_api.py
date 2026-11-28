@@ -26,6 +26,13 @@ from kiro_crew.apps.builtins.dev_fleet import agent_pod_api, agent_tools
 from kiro_crew.apps.manifest import AppManifest
 
 _POD_TOOLS = ("pod_up", "pod_restart", "pod_down", "pod_status", "pod_ls")
+#: Every declared tool: lifecycle, API call and the provision run.
+_ALL_POD_TOOLS = (
+    *_POD_TOOLS,
+    "pod_api",
+    "pod_provision_start",
+    "pod_provision_status",
+)
 
 
 def _declared() -> dict[str, dict[str, Any]]:
@@ -436,11 +443,36 @@ def _verb(
 def test_pod_tools_are_declared_with_a_verb_each() -> None:
     """A declaration with no verb advertises a tool that cannot run."""
     declared = _declared()
-    assert set(declared) == set(_POD_TOOLS) == set(agent_tools.TOOLS)
-    for name in _POD_TOOLS:
+    assert set(declared) == set(_ALL_POD_TOOLS) == set(agent_tools.TOOLS)
+    for name in _ALL_POD_TOOLS:
         decl = declared[name]["_decl"]
         assert decl.result == "text", name
         assert decl.max_result_chars == 60_000, name
+
+
+def test_lifecycle_declarations_stay_compatible_with_adopted_hosts() -> None:
+    """Adopted hosts keep a tool only when it equals the wheel copy.
+
+    These declarations change only together with an app-repository release.
+    """
+    import hashlib
+    from pathlib import Path
+
+    manifest = json.loads(
+        (Path(agent_pod_api.__file__).parent / "app.json").read_text(encoding="utf-8")
+    )
+    entries = {entry["name"]: entry for entry in manifest["agentTools"]["tools"]}
+    expected = {
+        "pod_up": "6930695aa1f9656c3d527cddfe97802545b577e1a6c3c638fe2cb19eedc71d51",
+        "pod_restart": "66715205213235cdf7fefade751ea7068456db4e325edc0e25c97fd9c8567cca",
+        "pod_down": "84543d0dbecbd1e5049fc96a01e30e1a2e5ba07f6e8559cb8ab70eb48a16b19f",
+        "pod_status": "67a8547b106ff56e42f46112cd72e43041519085db18fdbeaa930700b4a68872",
+        "pod_ls": "f33c729f38257745e1ddd450e28f3ca0133baeeafc7f198f5cd8e3054c34b552",
+    }
+    for name, digest in expected.items():
+        assert (
+            hashlib.sha256(json.dumps(entries[name], sort_keys=True).encode()).hexdigest() == digest
+        ), name
 
 
 def test_pod_tools_keep_the_core_validation_bounds() -> None:
@@ -477,6 +509,9 @@ def test_pod_tools_wait_as_long_as_the_core_tools_did() -> None:
         "pod_down": 120,
         "pod_status": 45,
         "pod_ls": 45,
+        "pod_api": 60,
+        "pod_provision_start": 60,
+        "pod_provision_status": 30,
     }
 
 
@@ -1032,7 +1067,7 @@ def test_the_shipped_declaration_is_read_as_first_party() -> None:
     rows = ("apps", ("dev-fleet", 0, 0))
     tools = app_agent_tools._scan(rows, frozenset({"dev-fleet"}))
     assert [(t.app, t.route, t.name) for t in tools] == [
-        ("dev-fleet", "agent-tools", name) for name in _POD_TOOLS
+        ("dev-fleet", "agent-tools", name) for name in _ALL_POD_TOOLS
     ]
     assert app_agent_tools._scan(rows, frozenset()) == ()
 
@@ -1043,11 +1078,11 @@ def test_the_pod_tools_keep_their_names_in_the_core_listing() -> None:
     from kiro_crew.mcp_tools import app_tools, build_tool_names
 
     shipped = {t.name for t in app_agent_tools.shipped_tools.__wrapped__() if t.app == "dev-fleet"}
-    assert shipped == set(_POD_TOOLS)
-    assert set(_POD_TOOLS) <= set(build_tool_names())
-    assert set(_POD_TOOLS) <= set(app_tools.HANDLERS)
+    assert shipped == set(_ALL_POD_TOOLS)
+    assert set(_ALL_POD_TOOLS) <= set(build_tool_names())
+    assert set(_ALL_POD_TOOLS) <= set(app_tools.HANDLERS)
     # No core domain declares them any more, so nothing in core keys a tool on this app.
-    assert not set(_POD_TOOLS) & app_tools._core_tool_names()
+    assert not set(_ALL_POD_TOOLS) & app_tools._core_tool_names()
 
 
 def test_adoption_no_longer_refuses_dev_fleet_on_a_core_tool_table() -> None:

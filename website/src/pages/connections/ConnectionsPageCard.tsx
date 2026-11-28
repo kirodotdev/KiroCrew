@@ -936,13 +936,13 @@ function ConnectionCard({
           createApp ? (
             <Trans
               i18nKey="pages.connectionsPage.needs_crew_sign_in_with_app_help"
-              values={{ provider: provider.name }}
+              values={{ provider: provider.name, tab: t('settings.tabs.agent.label') }}
               components={{ settingsLink: <Link to={settingsPath({ tab: 'agent' })} className="underline hover:text-accent" /> }}
             />
           ) : (
             <Trans
               i18nKey="pages.connectionsPage.needs_crew_sign_in_help"
-              values={{ provider: provider.name }}
+              values={{ provider: provider.name, tab: t('settings.tabs.agent.label') }}
               components={{ settingsLink: <Link to={settingsPath({ tab: 'agent' })} className="underline hover:text-accent" /> }}
             />
           )
@@ -1013,14 +1013,14 @@ function ConnectionCard({
             </span>
           )}
         </span>
-        <h3 className="m-0 min-w-0 flex-1 truncate text-[14px] font-semibold text-text-strong">
+        <h3 className="-m-1 min-w-0 flex-1 truncate p-1 text-[14px] font-semibold text-text-strong">
           {toggle ? (
             <button
               type="button"
               onClick={toggle.onToggle}
               aria-expanded={open}
               aria-controls={toggle.panelId}
-              className="inline-flex max-w-full items-center gap-1 border-none bg-transparent p-0 text-left font-semibold text-text-strong hover:text-accent"
+              className="inline-flex max-w-full items-center gap-1 border-none bg-transparent p-0 text-left font-semibold text-text-strong hover:text-accent focus-visible:rounded-md"
             >
               <span className="min-w-0 truncate">{provider.name}</span>
               <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden="true" />

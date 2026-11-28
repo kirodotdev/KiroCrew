@@ -1009,6 +1009,10 @@ class TerminalCoordinator(ManagerComponent):
                     # Shutdown the shared provider handle only
                     try:
                         if info._shared_provider:
+                            try:
+                                info._shared_provider.set_keep_transcript(True)
+                            except Exception:
+                                logger.debug("set_keep_transcript failed", exc_info=True)
                             await info._shared_provider.shutdown()
                     except Exception:
                         logger.debug(
@@ -1616,8 +1620,10 @@ class TerminalCoordinator(ManagerComponent):
         info._report_undelivered = True
         try:
             # Lazy: the dashboard layer must not be imported by a core module at
-            # import time.
+            # import time. ``clip_preview`` is imported here because an ``_impl``
+            # runs on the subagent module's globals.
             from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+            from kiro_crew.preview_text import clip_preview
 
             # The failure is queued into a SLOT, so the gate is whether the
             # parent has a tab — true for a channel-born parent whose session
@@ -1628,7 +1634,7 @@ class TerminalCoordinator(ManagerComponent):
                 return
 
             # Build failure message the LLM will see on next turn
-            task_preview = _redact((info.task or "")[:100])
+            task_preview = clip_preview(_redact(info.task or ""), 100)
             result_hint = ""
             if info.result_path:
                 try:

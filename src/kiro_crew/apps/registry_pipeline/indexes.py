@@ -71,7 +71,7 @@ from kiro_crew.apps.registry_pipeline.store_art import (
 )
 from kiro_crew.apps.registry_pipeline.subprocess_env import (
     _GIT_CLONE_LOCALE,
-    _git_network_env,
+    _git_network_step_env,
     _proxy_env_has_credentials,
     minimal_env,
 )
@@ -396,7 +396,7 @@ async def _fetch_external_registry_index(
                 fetch_log,
                 credential_target=credential_target,
                 clone_env=minimal_env(),
-                sandbox_mode=_context_clone_sandbox_mode(git_url),
+                sandbox_mode=await asyncio.to_thread(_context_clone_sandbox_mode, git_url),
                 gh_path=gh_path,
             )
             if err is not None:
@@ -433,13 +433,21 @@ async def _fetch_external_registry_index(
                 tmp_root,
             ]
             # An owner-configured registry row, never an index entry: ask for the
-            # ssh-agent socket and let wrap_argv re-judge it against the tier.
-            mode = _context_clone_sandbox_mode(git_url)
+            # ssh-agent socket and let wrap_argv re-judge it against the tier. The
+            # environment below takes the forward the wrap reports, not this request.
+            mode = await asyncio.to_thread(_context_clone_sandbox_mode, git_url)
+            forward_applied: list[bool] = []
             sandboxed_cmd, _ = await wrap_argv_async(
-                clone_cmd, mode=mode, forward_ssh_auth_sock=True, _prepare=wrap_argv
+                clone_cmd,
+                mode=mode,
+                forward_ssh_auth_sock=True,
+                forward_ssh_auth_sock_out=forward_applied,
+                _prepare=wrap_argv,
             )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
-            process_env = _git_network_env(minimal_env(), git_url)
+            process_env = await _git_network_step_env(
+                minimal_env(), git_url, forward_applied=forward_applied
+            )
             process_env["LC_ALL"] = _GIT_CLONE_LOCALE
             proc = await create_subprocess_limited(
                 *sandboxed_cmd,

@@ -1157,6 +1157,87 @@ class TestSpawnAdmissionGatePressureHold(_TestSpawnAdmissionGateHarness):
         assert outcomes == ["released", "held"]
         assert child_released is True and root_released is False
 
+    def test_a_dedicated_release_behind_a_held_shared_root_is_still_spaced(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A shared head skips the stagger; the dedicated start the hold passes on
+        to does not, so it waits out the interval since the last process launch."""
+        import time
+
+        from kiro_crew.subagent import SubagentInfo
+
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+        mgr._spawn_stagger_secs = 60.0
+
+        async def run() -> tuple[list[str], bool, bool]:
+            loop = asyncio.get_running_loop()
+            root = SubagentInfo(id="root", task="t", parent_session_key="sess-1")
+            root._admitted_shared = True
+            child = SubagentInfo(id="child", task="t", parent_session_key="subagent:busy")
+            for info in (root, child):
+                info._start_release = loop.create_future()
+                mgr._queue.append(
+                    {
+                        "_resume_id": info.id,
+                        "_startup_release": True,
+                        "_start_info": info,
+                        "parent_session_key": info.parent_session_key,
+                    }
+                )
+            mgr._last_spawn_ts = time.monotonic()
+            with self._gate_patches():
+                outcomes = [mgr._admission._release_admitted_start_impl()]
+                held_back = not child._start_release.done()
+                mgr._last_spawn_ts = 0.0
+                outcomes.append(mgr._admission._release_admitted_start_impl())
+            return outcomes, held_back, child._start_release.done()
+
+        outcomes, held_back, child_released = asyncio.run(run())
+        assert outcomes == ["held", "released"]
+        assert held_back is True and child_released is True
+
+    def test_approved_shared_starts_do_not_hold_their_own_release(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Approved shared starts waiting at the release gate are not in startup yet.
+
+        Counted there, a bulk grant that fills the in-startup bound holds every
+        release against the waiters themselves. A released one counts at once.
+        """
+        from kiro_crew.subagent import SubagentInfo
+
+        mgr = self._mgr()
+        self._level(monkeypatch, None)
+        mgr._session_start_concurrency = 1  # in-startup bound 2 x 1
+
+        async def run() -> tuple[list[str], int]:
+            loop = asyncio.get_running_loop()
+            for n in range(2):
+                info = SubagentInfo(id=f"shared{n}", task="t", parent_session_key="sess-1")
+                info._admitted_shared = True
+                info._start_release = loop.create_future()
+                mgr._agents[info.id] = info
+                mgr._queue.append(
+                    {
+                        "_resume_id": info.id,
+                        "_startup_release": True,
+                        "_start_info": info,
+                        "parent_session_key": info.parent_session_key,
+                    }
+                )
+            with self._gate_patches():
+                outcomes = [
+                    mgr._admission._release_admitted_start_impl(),
+                    mgr._admission._release_admitted_start_impl(),
+                ]
+            return outcomes, mgr._startup_population()
+
+        outcomes, in_startup = asyncio.run(run())
+        assert outcomes == ["released", "released"]
+        assert in_startup == 2
+
     def test_a_stopped_release_behind_a_held_root_is_retired(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

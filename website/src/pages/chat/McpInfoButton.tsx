@@ -7,7 +7,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { SESSION_DOT_CLASS } from './McpToolsPanel'
 
 import { i18nT } from '../../i18n/t'
-export default function McpInfoButton({ agent }: { agent?: string }) {
+export default function McpInfoButton({ agent, slot }: { agent?: string; slot?: string }) {
   const [open, setOpen] = useState(false)
   const btnRef = useRef<HTMLButtonElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
@@ -20,9 +20,10 @@ export default function McpInfoButton({ agent }: { agent?: string }) {
   // Same keys as ChatPage's MCP dropdown, so the two surfaces share one cache.
   // A refused read is `isError` — previously a failed fetch left the popover
   // on "None loaded", a claim about the session rather than about the request.
+  // `slot` names the chat whose live session's backend the server asks.
   const serversQ = useQuery<{ name: string; enabled?: boolean }[]>({
-    queryKey: ['mcp-servers', agent],
-    queryFn: () => api.mcpActive(agent || undefined),
+    queryKey: ['mcp-servers', agent, slot],
+    queryFn: () => api.mcpActive(agent || undefined, slot || undefined),
     enabled: open,
     staleTime: 0,
     retry: false,

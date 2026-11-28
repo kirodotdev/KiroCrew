@@ -12,7 +12,7 @@ export const {
   appWebOrigin, appWebOriginStatus,
   // Marker protocol. Naming an export the host does not provide is a load-time failure for the
   // whole app, so this list is checked against the protocol barrel by chatProtocolBoundary.test.ts.
-  parseOptions, deriveFollowUpOptions, extractSteeringAcks, stripPartialOptionMarker,
+  parseOptions, deriveFollowUpOptions, extractSteeringAcks, isStatusRow, stripPartialOptionMarker,
   // Chat surfaces and the transcript row registry.
   useChatSession, ChatPanel, ChatEmbed, ChatMessageList,
   // The dashboard's pull-request panel, behind the app's declared source paths (level 2).
@@ -30,8 +30,12 @@ export const {
   useBrowserMedia, BROWSER_MEDIA_PATH,
   // The app's browsing list; adding a site asks the owner in the dashboard's dialog (level 13).
   useBrowserSites,
+  // Keep the routed page running, hidden, while the app is busy (level 16).
+  useKeepAlive,
   // The live view of the app's own slot, take over and hand back, coordinates (level 11).
   BrowserView, useBrowserView, useBrowserCoords,
+  // The dashboard's project file tree, behind the app's declared tree read (level 19).
+  FileTree,
   defaultMessageRenderers, mergeRenderers, resolveRenderer, ToolCallPill, GROUPED_ROLES,
   // WS event scope prediction, so a subscription that will never be delivered warns at
   // development time instead of silently receiving nothing.

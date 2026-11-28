@@ -120,6 +120,7 @@ def build_session_context(
     served_model: str = "",
     conversation_reset: bool = False,
     native_documents: Mapping[str, str] | None = None,
+    _keeps_stored_context: bool | None = None,
 ) -> str:
     """Build context for a new session (memory + skills + history).
 
@@ -164,7 +165,8 @@ def build_session_context(
     Custom agents (non-kirocrew) skip workspace identity and get skills only
     when the injection plan says so. Critical rules and the dashboard tool nudges
     go to every agent unless it
-    sets ``includeCrewContext: false``. Memory, lessons and hooks go to all.
+    sets ``includeCrewContext: false``. Hooks go to all, and so do memory and
+    lessons unless the agent sets ``includeCrossSessionContext: false``.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew import session_head as _session_head
@@ -174,6 +176,17 @@ def build_session_context(
         execution_context, session_key, member, memory_store, blocks_reads
     )
     is_custom = bool(agent) and not is_kirocrew_default_agent(agent)
+    # ``includeCrossSessionContext: false`` on the agent's spec drops the memory and
+    # lessons groups before any builder below reads a store. The caller's
+    # ``context_groups`` is kept for the project group and for [CONTEXT SCOPE].
+    # ``build_message`` hands in its own reading of the spec, which also knows the
+    # template directory; a direct caller gets one taken here.
+    keeps_stored = (
+        _inclusion._agent_includes_cross_session_context(agent, project, session_key)
+        if _keeps_stored_context is None
+        else _keeps_stored_context
+    )
+    store_groups = _inclusion._spec_scoped_groups(keeps_stored, context_groups)
     # A harness that is not named is not assumed to be kiro-cli: the
     # essentials builder, the folder dedup and the ``is_cc`` gate all read
     # the value as given.
@@ -192,7 +205,7 @@ def build_session_context(
             project=project,
             workspace=workspace,
             blocks_reads=blocks_reads,
-            context_groups=context_groups,
+            context_groups=store_groups,
             member_template=execution_context.template_id if execution_context else "",
             steering_dirs=steering_dirs,
             desk_withheld=ctx._desk_withheld(execution_context, desk_member),
@@ -246,7 +259,11 @@ def build_session_context(
     )
     if is_custom:
         logger.info(
-            "Custom agent %r: injecting memory/lessons/rules, %s",
+            (
+                "Custom agent %r: injecting memory/lessons/rules, %s"
+                if keeps_stored
+                else "Custom agent %r: injecting rules, no memory/lessons (spec opt-out), %s"
+            ),
             agent,
             "injecting skills" if inject_skills else "skipping skills",
         )
@@ -322,7 +339,7 @@ def build_session_context(
     # surface's context build passes through. [CONTEXT SCOPE] below still reads
     # the caller's ``context_groups``: its "Your parent withheld" text is about
     # a parent's per-spawn choice, not the operator's standing config.
-    effective_groups = ctx._config_scoped_groups(context_groups, _cfg)
+    effective_groups = ctx._config_scoped_groups(store_groups, _cfg)
 
     from kiro_crew.crewmate_harness import crewmate_for_session
 
@@ -502,10 +519,11 @@ def build_session_context(
             append_required(_stop_notes)
     _mark("stop_notes")
 
-    # Memory and lessons go to ALL agents, custom included; temporary sessions
-    # skip memory reads. Store and workspace are separate arguments, not one
-    # key: they are separate namespaces, and one key would let store "acme" and
-    # workspace "acme" share a cache slot.
+    # Memory and lessons go to ALL agents, custom included, unless the agent's
+    # spec opted out (``store_groups`` above); temporary sessions skip memory
+    # reads. Store and workspace are separate arguments, not one key: they are
+    # separate namespaces, and one key would let store "acme" and workspace
+    # "acme" share a cache slot.
     from kiro_crew.member_essential_context import member_context_identity  # noqa: F811
 
     private = bool(
@@ -525,40 +543,27 @@ def build_session_context(
         if blocks_reads
         else _memory_provider.session_route(memory_store, session_key)
     )
-    provider_rules_index: int | None = None
-    if memory_route.replaces:
-        memory, member_vectors, activity_ranked = None, None, False
-        if not blocks_reads:
-            provider_rules_index = _memory_provider.replace_session_parts(
-                blocks,
-                memory_route,
-                memory_store=memory_store,
-                session_key=session_key,
-                execution_context=execution_context,
-                project=project,
-                query_text=query_text,
-                caps=caps,
-                include_memory=_inclusion._group_included(
-                    effective_groups, _inclusion.CONTEXT_GROUP_MEMORY
-                ),
-                include_lessons=_inclusion._group_included(
-                    effective_groups, _inclusion.CONTEXT_GROUP_LESSONS
-                ),
-            )
-    else:
-        memory, member_vectors, activity_ranked = _store_admission.session_memory_parts(
+    # Test recall's preview (``session_start_store_preview``) runs these same
+    # route helpers, so the two cannot take different branches.
+    memory, member_vectors, activity_ranked, provider_lesson_span = (
+        _store_admission.routed_memory_parts(
             self,
             blocks,
+            memory_route,
             private=private,
             blocks_reads=blocks_reads,
             effective_groups=effective_groups,
             workspace=workspace,
             memory_store=memory_store,
+            session_key=session_key,
+            execution_context=execution_context,
+            project=project,
             caps=caps,
             essentials=essentials,
             cfg=_cfg,
             query_text=query_text,
         )
+    )
     _mark("memory")
 
     # Skills. Three cases, in precedence order:
@@ -582,7 +587,11 @@ def build_session_context(
         for required_skill in required_skills:
             append_required(required_skill)
         if skills_ctx:
-            append_required(skills_ctx)
+            # The index is bounded by its own allowance (``caps.skills``, applied
+            # by the loader), not by the pool: a large skill library must not
+            # crowd the memory blocks out, and the memory blocks must not hide
+            # skill names. Pinned bodies above stay pooled, as before.
+            blocks.append_authored(skills_ctx)
     _mark("skills")
 
     # Lessons: injected for ALL agents (skipped for temporary sessions), gated
@@ -604,23 +613,20 @@ def build_session_context(
     )
     # V2 essential rules are query-free; V1 retains its query-ranked lessons.
     if memory_route.replaces:
-        lessons_part_index = provider_rules_index
-    elif (
-        memory_route.augments
-        and not blocks_reads
-        and _inclusion._group_included(effective_groups, _inclusion.CONTEXT_GROUP_MEMORY)
-    ):
-        # A read-only provider adds one background block after Crew's own blocks.
-        _memory_provider.augment_session_part(
-            blocks,
-            memory_route,
-            memory_store=memory_store,
-            session_key=session_key,
-            execution_context=execution_context,
-            project=project,
-            query_text=query_text,
-            caps=caps,
-        )
+        lessons_part_index = provider_lesson_span.rules_index
+    # A read-only provider adds one background block after Crew's own blocks.
+    _store_admission.augment_memory_part(
+        blocks,
+        memory_route,
+        blocks_reads=blocks_reads,
+        effective_groups=effective_groups,
+        memory_store=memory_store,
+        session_key=session_key,
+        execution_context=execution_context,
+        project=project,
+        caps=caps,
+        query_text=query_text,
+    )
     _mark("lessons")
 
     # Source snippets may exist only in this conversation's log, not in the
@@ -659,10 +665,12 @@ def build_session_context(
         renderer=lessons_renderer,
         part_index=lessons_part_index,
     )
-    if session_key and _cfg.memory.inject_lessons_per_turn:
+    if session_key and _cfg.memory.inject_lessons_per_turn != "off":
         # The block as sent, after any trim: per-message lessons skip what it holds.
         self._remember_startup_lessons(
-            session_key, parts[lessons_part_index] if lessons_part_index is not None else ""
+            session_key,
+            parts[lessons_part_index] if lessons_part_index is not None else "",
+            shadow=_cfg.memory.inject_lessons_per_turn == "shadow",
         )
 
     # Admit background as whole source blocks, never by slicing the joined

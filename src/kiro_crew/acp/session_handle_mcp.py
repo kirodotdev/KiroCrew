@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp._dispatch import classify_notification, classify_tool_call
 from kiro_crew.acp.client import _is_safe_oauth_url
+from kiro_crew.acp.kas_mcp_lazy_sign_in import REPLACES_LINK
 from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
 from kiro_crew.acp.mcp_reattempt import MAX_ATTEMPTS as REATTEMPT_MAX
 from kiro_crew.acp.mcp_reattempt import (
@@ -359,7 +360,8 @@ def _accept_oauth_request(self: AcpSessionHandle, msg: JsonRpcMessage) -> dict[s
     if not server_name:
         logger.warning("ACP: dropping MCP OAuth request with empty serverName")
         return None
-    if server_name in self._oauth_emitted_servers:
+    # A KAS mid-session link that replaces the one shown (kas_mcp_lazy_sign_in) passes.
+    if server_name in self._oauth_emitted_servers and params.get(REPLACES_LINK) is not True:
         logger.debug("ACP: dropping duplicate MCP OAuth request for %s", server_name)
         return None
     self._oauth_emitted_servers.add(server_name)
@@ -425,8 +427,8 @@ async def wait_mcp_ready(
     :data:`GOVERNANCE_API_FAILURE_REASON` says the host turned MCP off after
     its governance read failed. Undeclared, it arms a checkpoint
     :data:`GOVERNED_SETTLE_SECS` later: if by then the host has named none of
-    the required servers for this session, the start fails naming the transient
-    read. Any status entry or tag for a required server before then (the host re-read
+    the required servers for this session, the start fails, in words a person
+    can act on. Any status entry or tag for a required server before then (the host re-read
     and mounted them) keeps the ordinary wait, so a start that would have
     succeeded still does. Governed, the registry checkpoint decides as before.
     """
@@ -462,6 +464,7 @@ async def wait_mcp_ready(
             # Frames already queued are read first: one may name a server, or
             # be the runtime-death marker.
             if not readiness.seen:
+                logger.info("Session %s: MCP off on a failed governance read", self._session_id)
                 raise KasGovernanceOffError(_governance_off_message())
             governance_due = False
         remaining = (checkpoint if checkpoint is not None else wait.deadline) - now
@@ -557,10 +560,10 @@ class KasGovernanceOffError(AcpRuntimeError):
 
 def _governance_off_message() -> str:
     return (
-        "KAS managed MCP initialization failed: the host turned MCP off for this "
-        f"session after its governance read failed ({GOVERNANCE_API_FAILURE_REASON}) "
-        f"and reported none of the managed servers within {GOVERNED_SETTLE_SECS:g}s. "
-        "The read is transient: send the message again to start a new session."
+        "This chat could not start: Kiro could not read your organization's MCP "
+        "settings for the sign-in on this machine, so the tools this chat needs were "
+        "turned off. If sending again fails the same way, sign out of Kiro and sign in "
+        "again, or ask your organization's admin to check its MCP settings."
     )
 
 
@@ -791,7 +794,9 @@ class _QueueWait:
         return True
 
 
-async def wait_for_declared_mcp(self: AcpSessionHandle, timeout: float) -> tuple[str, ...]:
+async def wait_for_declared_mcp(
+    self: AcpSessionHandle, timeout: float, skip: tuple[str, ...] = ()
+) -> tuple[str, ...]:
     """Hold until every server the agent spec declares has reported; never raises.
 
     For an unattended run, before its first prompt. ``drain_init`` stops a
@@ -799,25 +804,28 @@ async def wait_for_declared_mcp(self: AcpSessionHandle, timeout: float) -> tuple
     booting when the prompt goes out, and that turn runs without its tools.
     Nobody is there to notice or retry, so this keeps draining init frames
     (exactly as ``drain_init`` handles them) until each declared server has
-    reported initialized, failed or awaiting authorization, or *timeout*
-    seconds pass. Returns the declared servers that are not ready, in spec
-    order; empty when all are.
+    reported initialized, failed or awaiting authorization, or the host said it
+    will not start it (disabled, dropped by its registry), or *timeout* seconds
+    pass. A server in *skip* is not waited for. Returns the declared servers
+    that are not ready, in spec order; empty when all are.
     """
-    await _drain_until_reported(self, self._mcp_report.declared, timeout)
+    waited = tuple(name for name in self._mcp_report.declared if name not in skip)
+    await _drain_until_reported(self, waited, timeout)
     return self._mcp_report.declared_not_ready()
 
 
 async def wait_mounted_mcp(self: AcpSessionHandle, names: tuple[str, ...], timeout: float) -> None:
-    """Best effort: hold the first prompt until each of *names* has reported, or *timeout*.
+    """Best effort: hold the first prompt until each of *names* has settled, or *timeout*.
 
     For the servers outside the required barrier (Connections, user servers), so
-    turn 1's catalog has their tools. Never fails the start: a server still
-    unreported at *timeout* is logged and the session starts without it. Runtime
-    death still raises.
+    turn 1's catalog has their tools. A server the host already settled
+    (disabled, dropped by a registry) ends the wait for it at once. Never fails
+    the start: a server still starting at *timeout* is logged and the session
+    starts without it. Runtime death still raises.
     """
     if await _drain_until_reported(self, names, timeout):
         raise AcpRuntimeDead("Runtime exited while waiting for mounted MCP servers")
-    late = self._mcp_report.unreported(names)
+    late = self._mcp_report.still_starting(names)
     if late:
         logger.info(
             "Session %s starts before MCP servers reported (%gs cap): %s",
@@ -825,6 +833,18 @@ async def wait_mounted_mcp(self: AcpSessionHandle, names: tuple[str, ...], timeo
             timeout,
             ", ".join(late),
         )
+
+
+async def wait_own_app_servers(
+    handle: AcpSessionHandle, names: tuple[str, ...], timeout: float
+) -> None:
+    """Best effort: hold a start for an app agent's own app servers, at most *timeout*.
+
+    As :func:`wait_mounted_mcp`, on its own bound and with no log line. Never
+    fails the start; runtime death still raises.
+    """
+    if await _drain_until_reported(handle, names, timeout):
+        raise AcpRuntimeDead("Runtime exited while waiting for the app's own MCP servers")
 
 
 #: Late servers the first-turn hold names in its log line; the rest are counted.
@@ -926,18 +946,21 @@ async def hold_untold_first_turn(handle: AcpSessionHandle, prompt_text: str = ""
 async def _drain_until_reported(
     handle: AcpSessionHandle, names: tuple[str, ...], timeout: float
 ) -> bool:
-    """Drain init frames until every one of *names* has reported; True if the runtime died.
+    """Drain init frames until none of *names* is still starting; True if the runtime died.
 
     The report is folded where a frame arrives, not here, so it can already
     name a server whose frame is still queued. The frames that are queued are
     consumed all the same: each may carry a sign-in request or a config update
     this start owes its session. Only the WAIT for more ends once every name
-    has reported.
+    has reported, or the report says it never will
+    (``McpSessionReport.still_starting``: host-disabled or dropped by a
+    registry), since no frame can change what is true of that one.
     """
     report = handle._mcp_report
     deadline = time.monotonic() + max(0.0, timeout)
     while True:
-        if not report.unreported(names):
+        pending = report.still_starting(names)
+        if not pending:
             if handle._queue.empty():
                 break
             msg = handle._queue.get_nowait()
@@ -1043,9 +1066,10 @@ def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, off
             and name not in self._mcp_sign_in_needed
             and name not in self._mcp_reattempt_waiting
         ):
-            if is_recoverable_auth_failure(server.get("errorMessage")):
+            error = server.get("errorMessage")
+            if is_recoverable_auth_failure(error) or is_start_timeout_failure(error):
                 self._mcp_reattempt_waiting.add(name)
-            elif is_sse_fallback_failure(server.get("errorMessage")):
+            elif is_sse_fallback_failure(error):
                 self._probe_mcp_sign_in(name)
     self._mcp_sign_in_needed &= present
     self._mcp_sign_in_wanted &= self._mcp_sign_in_needed
@@ -1225,8 +1249,12 @@ def text_names_mcp_server(text: str, name: str) -> bool:
     """Whether *text* names server *name* as a whole word, case-insensitive.
 
     Each alias from :func:`mcp_server_aliases` matches with any run of
-    separators between its words, and only between word boundaries, so
-    ``notion`` matches "sign in to Notion" and not "notional". A registry
+    separators between its words, or none, and only between word boundaries, so
+    ``notion`` matches "sign in to Notion" and not "notional", and ``acme-docs``
+    matches "AcmeDocs". A configured name that splits a compound word
+    (``work-flow``) is therefore also named by the glued word, which is accepted
+    because only a server already waiting for a sign-in and named in the
+    person's own message is offered. A registry
     provider whose slug is *name* adds its ``sign_in_words`` (``atlassian``:
     "jira", "confluence"), matched the same way. Pure.
     """
@@ -1235,7 +1263,7 @@ def text_names_mcp_server(text: str, name: str) -> bool:
     if not text or not name:
         return False
     for alias in (*mcp_server_aliases(name), *sign_in_words(name)):
-        pattern = r"[\s_.:/@-]+".join(re.escape(word) for word in alias.split(" "))
+        pattern = r"[\s_.:/@-]*".join(re.escape(word) for word in alias.split(" "))
         if re.search(rf"(?<![A-Za-z0-9]){pattern}(?![A-Za-z0-9])", text, re.IGNORECASE):
             return True
     return False
@@ -1255,8 +1283,9 @@ def want_mcp_sign_in_named(self: AcpSessionHandle, text: str) -> None:
     not asked for again, so a message naming it while its card is live
     starts no second one. Once that attempt ends (signed in, timed out, or
     left by the user), only a later message naming it offers it again.
-    The offer is made at the next offer point (turn start), where a turn
-    reads the link. At most ``BUCKET_CAP`` names are held.
+    The offer is made at the next offer point (turn start); its link reaches
+    the chat through the turn, or through the provider's consent hook when it
+    lands after the turn ended. At most ``BUCKET_CAP`` names are held.
 
     Called from ``_run_turn`` after the pre-turn drain with that turn's ask.
     The text is held for that turn (``_mcp_sign_in_ask``) and matched again
@@ -1315,8 +1344,10 @@ def _offer_mcp_sign_in(self: AcpSessionHandle) -> None:
     busy) leaves the server wanted, and the next offer point tries again.
 
     Called at turn start after the pre-turn drain, and from the dispatch
-    loop on a status snapshot: both have a reader for the link the engine
-    sends back. Never called during a session-start drain.
+    loop on a status snapshot: a turn reads the link the engine sends back
+    while it runs, and a dashboard chat's consent hook
+    (``AcpRuntime.set_mcp_consent_hook``) draws one that lands after it ended.
+    Never called during a session-start drain.
 
     The server's banner dedupe is cleared first: its earlier link is dead
     once a new sign-in starts, and the new link must not be dropped as a
@@ -1389,11 +1420,12 @@ def _note_mcp_call_disconnected(self: AcpSessionHandle, update: dict[str, Any]) 
 
 
 def _reattempt_failed_mcp_servers(self: AcpSessionHandle) -> None:
-    """Re-attempt servers that failed for want of a credential or dropped.
+    """Re-attempt servers that lacked a credential, ran out of time starting, or dropped.
 
     Called at turn start, beside the sign-in offer: by then the user or
-    the agent may have obtained the credential the server lacked, or
-    brought back what a dropped server's connection needed. Each
+    the agent may have obtained the credential the server lacked, a slow
+    start may finish in time, or what a dropped server's connection
+    needed may be back. Each
     waiting server is re-attempted at most ``REATTEMPT_MAX`` times per
     session, and at most ``BUCKET_CAP`` distinct servers are ever counted,
     so the budget holds however many names the engine reports. A healthy

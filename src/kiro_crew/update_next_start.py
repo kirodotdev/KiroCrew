@@ -297,6 +297,53 @@ def mark_applying() -> None:
         logger.debug("could not record the running apply", exc_info=True)
 
 
+def mark_handed_off(helper_pid: int) -> None:
+    """Record that this process handed its apply to *helper_pid* and is about to exit.
+
+    A Windows desktop install is replaced by its installer, which cannot run while
+    this process holds the install's files, so the starting gateway exits and a
+    detached helper installs and starts the gateway again. A restart waiter reads
+    this to keep waiting for the port instead of reporting that the replacement
+    died. The next start clears it (:func:`clear_applying`).
+    """
+    from kiro_crew.atomic_write import atomic_write
+
+    payload = {"pid": os.getpid(), "started": time.time(), "helper_pid": int(helper_pid)}
+    try:
+        atomic_write(_applying_path(), json.dumps(payload), restrict_to_owner=True)
+    except OSError:
+        logger.debug("could not record the hand-off", exc_info=True)
+
+
+def wall_clock() -> float:
+    """The clock the records here are stamped with, for a caller comparing against them."""
+    return time.time()
+
+
+def handed_off(pid: int | None, *, since: float | None = None, now: float | None = None) -> bool:
+    """Whether a start handed its apply to a helper and exited, within the bound.
+
+    The record names the process that wrote it. A waiter that started the
+    gateway through a launcher shim (``kirocrew.cmd``) holds the shim's pid, not
+    the gateway's, so *since* also accepts a record written after that moment.
+    """
+    try:
+        raw = json.loads(_applying_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(raw, dict) or "helper_pid" not in raw:
+        return False
+    started = raw.get("started")
+    if not isinstance(started, (int, float)) or isinstance(started, bool):
+        return False
+    current = time.time() if now is None else now
+    if not 0 <= current - started <= APPLY_BOUND_SECS + 60.0:
+        return False
+    if pid is not None and raw.get("pid") == pid:
+        return True
+    return since is not None and started >= since
+
+
 def clear_applying() -> None:
     """Drop the running-apply record."""
     try:
@@ -305,20 +352,27 @@ def clear_applying() -> None:
         pass
 
 
-def applying_started(pid: int, *, now: float | None = None) -> float | None:
+def applying_started(
+    pid: int | None, *, since: float | None = None, now: float | None = None
+) -> float | None:
     """When *pid* began applying an update, or ``None`` if it is not applying.
 
     A record older than the apply bound is stale: the apply child is killed at
-    that bound, so a process still marked after it is not applying.
+    that bound, so a process still marked after it is not applying. With
+    *since*, a record another pid wrote at or after that moment counts too: a
+    restart waiter that started the gateway through a launcher shim holds the
+    shim's pid, not the gateway's.
     """
     try:
         raw = json.loads(_applying_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(raw, dict) or raw.get("pid") != pid:
+    if not isinstance(raw, dict):
         return None
     started = raw.get("started")
     if not isinstance(started, (int, float)) or isinstance(started, bool):
+        return None
+    if raw.get("pid") != pid and (since is None or started < since):
         return None
     current = time.time() if now is None else now
     if current - started > APPLY_BOUND_SECS + 60.0:

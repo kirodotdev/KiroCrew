@@ -89,7 +89,10 @@ click uses) for a box magnified up to four times so small text is readable, and
 `max_dim` for the longest side in pixels (64 to 4096). Give at most one of
 `full`, `ref` and `region`. With none, the visible page is saved as before. An
 option that is not valid, or that conflicts with another, is skipped and named in
-a warning on the result, and the screenshot is still saved. The
+a warning on the result, and the screenshot is still saved. With `inline`
+set to true the agent also gets the picture in the same step instead of opening
+the file, at the cost of carrying it in the conversation from then on; the path
+is still returned, and without `inline` nothing changes. The
 same checks for passwords and filled fields apply to every form.
 
 A page can open a JavaScript dialog (an alert, a confirm, a prompt, or a
@@ -185,10 +188,13 @@ agent can run the browser engine's own three tools: `js` runs a piece of
 JavaScript in its tab and returns the value, `cdp` sends one Chrome DevTools
 Protocol command to its tab and returns the answer, and `http_get` fetches a
 public web address as plain HTTP, without the browser's cookies, and returns the
-page (a redirect comes back as its new address, which takes another step). Each one asks you every time, on its own card in the chat with
-**Allow** and **Deny**, whatever you have trusted (a site, all tools, or
-auto-approve) and even on the default agent, which runs other browser steps
-without asking. One Allow runs that one step. With no dashboard window open to
+page (a redirect comes back as its new address, which takes another step). Each one asks you on its own card in the chat with
+**Allow** and **Deny**, even on the default agent, which runs other browser steps
+without asking. `cdp` and `http_get` ask every time, whatever you have trusted (a
+site, all tools, or auto-approve). `js` runs without a card when you trust all
+tools or YOLO is on, and in the agent's current tab on a site you trusted for
+reading, clicking, typing and uploading; a page there that tells the agent to run a
+script can then make it run one without asking. One Allow runs that one step. With no dashboard window open to
 answer it, the step is not run. The card says what the step can do:
 `cdp` can read every site's cookies and control every tab. They work only on the agent's own tabs: naming one of your tabs is
 refused, and a DevTools command that would hand the browser a file on your computer is
@@ -212,7 +218,7 @@ screenshot) offers "Trust reading pages on" that site. A clicking, typing or
 upload step offers "Trust reading, clicking, typing and uploading on" it, which
 also covers reading. The
 agent is asked again for any other site, when it asks you a question, when it
-runs a series of steps on its own, for closing a tab, for `js`,
+runs a series of steps on its own, for closing a tab, for `js` in another tab, for
 `cdp` and `http_get`, and when the page has moved to another site since you
 trusted it. "Trust all tools
 for this session" is still there when you want it.

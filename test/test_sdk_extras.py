@@ -30,7 +30,7 @@ def _no_configured_index(_floor_monkeypatch):
     """No index from the host: no ``PIP_*`` index variable, and an empty ``pip config``."""
     for name in sdk_extras._PIP_INDEX_ENV:
         _floor_monkeypatch.delenv(name, raising=False)
-    _floor_monkeypatch.setattr(sdk_extras, "_pip_config_list", lambda: "")
+    _floor_monkeypatch.setattr(sdk_extras, "_pip_config_list", lambda *_: "")
 
 
 def test_the_leaf_is_sealed_in_every_fence_browser_harness_is() -> None:
@@ -828,7 +828,7 @@ def test_pip_config_supplies_the_index_only_when_the_environment_does_not(monkey
         "user.index-url='https://ignored.example/simple'\n"
         ":env:.index-url='https://env.example/simple'\n"
     )
-    monkeypatch.setattr(sdk_extras, "_pip_config_list", lambda: listing)
+    monkeypatch.setattr(sdk_extras, "_pip_config_list", lambda *_: listing)
     assert sdk_extras._configured_index_env() == {
         "PIP_INDEX_URL": "https://install.example/simple",
         "PIP_EXTRA_INDEX_URL": "https://a.example/simple https://b.example/simple",
@@ -843,7 +843,7 @@ def test_pip_config_supplies_the_index_only_when_the_environment_does_not(monkey
         "PIP_TRUSTED_HOST": "install.example",
     }
     monkeypatch.setattr(
-        sdk_extras, "_pip_config_list", lambda: "global.client-cert='/etc/pki/me.pem'\n"
+        sdk_extras, "_pip_config_list", lambda *_: "global.client-cert='/etc/pki/me.pem'\n"
     )
     assert sdk_extras._configured_index_env() == {
         "PIP_INDEX_URL": "https://env.example/simple",

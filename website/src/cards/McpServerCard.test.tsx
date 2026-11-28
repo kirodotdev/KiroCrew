@@ -1,7 +1,7 @@
 /**
  * The `mcp.server` card: an agent's ask to add, change or remove an MCP server.
  * Its title names the action and the server in the reader's language, its
- * buttons are Apply and Cancel, its reason row reads Why, and its options
+ * buttons are Apply (Add <server> to this project for a project add) and Cancel, its reason row reads Why, and its options
  * re-preview the card: Share this server with other chats and Bots (with Learn
  * more, offered only for a server that is safe to share, ticked on an add card)
  * and Restart open chats to use it.
@@ -57,6 +57,13 @@ describe('mcp.server card', () => {
     expect(spec.primary()).toBe('Apply')
     expect(spec.decline?.()).toBe('Cancel')
     expect(spec.reasonLabel?.()).toBe('Why')
+  })
+
+  it('names a project add button by what it adds where', () => {
+    const card = serverCard({
+      params: { ...params, target: 'project', project_folder: '/w/app', project_file: '.kiro/settings/mcp.json' },
+    })
+    expect(CARD_REGISTRY['mcp.server'].primary(card)).toBe('Add weather to this project')
   })
 
   it('draws the sharing offer as its option, not as a change line', () => {

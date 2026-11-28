@@ -108,6 +108,8 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         assert "If arming is refused outright" in prompt
         assert "drive that one round with `wait`" in prompt
         assert "autonudge_stop" in prompt
+        assert "Patrol with `monitor_start`, never with `wait`" in prompt
+        assert "a worker's report cannot wake a busy turn" in prompt
 
     def test_prompt_names_the_tools_it_expects_to_be_used(self, tmp_path, monkeypatch):
         """The charter mounts whole servers, so the prompt must name what it wants.
@@ -1073,8 +1075,8 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
     def test_pr_checks_seed_may_name_the_prepare_pr_skill_by_path(self):
         """A ``pr_checks`` seed can point the worker at kirocrew-prepare-pr's SKILL.md.
 
-        ``kirocrew-worker`` gets no per-message trigger matching (``build_message`` gates
-        it on ``not is_custom``), so however a seed is worded nothing auto-loads
+        ``kirocrew-worker`` matches triggers only over a list its conductor passed
+        (``session_create(skills=...)``), so a seed cannot rely on its wording to load
         ``kirocrew-prepare-pr`` in the worker session. The conductor naming the file is
         what makes the worker follow it. Pinned as an OPTIONAL hint, not a mandate: a user
         who does not want kirocrew-prepare-pr must not have it forced on every worker.
@@ -1128,6 +1130,7 @@ class TestAcceptEvaluatorInvariant:
         mod = _load_evaluator()
         seen = []
         mod._pr_is_draft = lambda pr, repo=None: False
+        mod._pr_head = lambda pr, repo=None: None
         mod._run = lambda argv, cwd=None: (seen.append((argv, cwd)), ("pass", "ok"))[1]
         verdict, _ = mod._evaluate(
             {"accept": {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}}
@@ -1336,6 +1339,8 @@ class TestDraftPullRequest:
         seen = []
 
         def _fake_run(argv, **kwargs):
+            if "headRefOid" in argv:  # the head probes: test_accept_eval_binding.py
+                return _proc(0, "a" * 40, "")
             seen.append(list(argv))
             return _proc(*script[len(seen) - 1])
 

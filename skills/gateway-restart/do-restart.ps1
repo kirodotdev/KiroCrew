@@ -1,4 +1,4 @@
-# Delayed gateway restart for Windows — run as a detached process via Start-Process.
+# Delayed gateway restart for Windows -- run as a detached process via Start-Process.
 # The sleep gives the calling session time to finish responding.
 # Usage (from agent):
 #   Start-Process -WindowStyle Hidden powershell -ArgumentList "-ExecutionPolicy", "Bypass", "-File", "<path>\do-restart.ps1", "-KirocrewBin", "<resolved-path-to-kirocrew.exe>", "-StatusFile", "<crew home>\logs\restart-status.<attempt-id>"
@@ -68,7 +68,7 @@ $LogFile = if ($attemptSpecific) { "$StatusFile.log" } else { Join-Path $logDir 
 
 Start-Sleep -Seconds $DelaySec
 
-# Resolve the binary — if a path was provided, verify it exists; otherwise fall back to PATH.
+# Resolve the binary -- if a path was provided, verify it exists; otherwise fall back to PATH.
 if ($KirocrewBin -ne "kirocrew" -and (Test-Path $KirocrewBin)) {
     $bin = $KirocrewBin
 } else {

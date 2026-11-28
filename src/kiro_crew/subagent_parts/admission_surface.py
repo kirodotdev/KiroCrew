@@ -122,10 +122,16 @@ def _in_startup(info: SubagentInfo) -> bool:
     stagger and in-startup checks a fresh spawn passes, so ``_startup_cap``
     holds through the flood without the parked agents ever counting.
     """
+    # A shared start counts before ``_exec_started`` once it is handed to its run
+    # (``_startup_before_exec``: at registration, or at its approval release): it
+    # does not stamp the stagger clock, so nothing else covers the step before its
+    # run begins, and a burst admitted in one pass would otherwise all pass the
+    # bound. One still parked at, or waiting for release from, the prompt does not.
+    begun = info._exec_started is not None or getattr(info, "_startup_before_exec", False)
     return (
         not info.done
         and not info._reap_started
-        and info._exec_started is not None
+        and begun
         and info.turns == 0
         and info._pid is None
         and info._first_stream_started is None
@@ -797,8 +803,10 @@ def _announce_rejection(self: SubagentManager, info: SubagentInfo) -> SubagentIn
     return self._admission._announce_rejection_impl(info)
 
 
-def _should_stagger_queue(self: SubagentManager, now: float) -> tuple[bool, bool]:
-    return self._admission._should_stagger_queue_impl(now)
+def _should_stagger_queue(
+    self: SubagentManager, now: float, *, shared: bool = False
+) -> tuple[bool, bool]:
+    return self._admission._should_stagger_queue_impl(now, shared=shared)
 
 
 def _memory_pressure_hold(self: SubagentManager, *, floor_gb: float | None = None) -> int | None:

@@ -176,6 +176,7 @@ def test_the_diagnosis_codes_the_troubleshooting_table_quotes_still_exist(doc_fl
         "ssh_client_missing",
         "ssm_unreachable",
         "ssm_target_missing",
+        "ssm_target_unresolved",
         "ssm_access_denied",
         "ssm_user_unknown",
         "remote_wrong_port",

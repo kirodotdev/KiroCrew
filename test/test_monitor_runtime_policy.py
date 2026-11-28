@@ -376,6 +376,8 @@ async def test_resume_without_a_budget_is_not_rechecked_but_a_supplied_one_is(
                 match_info={"loop_id": loop.id},
                 remote="test",
                 json=AsyncMock(return_value=body),
+                # The owner's request: no ``app`` key, so the owner gate applies.
+                get=lambda key, default=None: default,
             )
 
         response = await finished(

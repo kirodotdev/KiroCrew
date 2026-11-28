@@ -27,7 +27,7 @@ from host_isolation_floor_helpers import (
     _root,
 )
 
-from kiro_crew import cli
+from kiro_crew import cli, cli_log_files
 from kiro_crew.log_redaction import install_log_redaction
 
 # ── driving the floor's own between-test restores ─────────────────────────
@@ -497,6 +497,46 @@ class TestTheLogQueueListenerIsRestored:
         cli._setup_cli_logging("status", 1)
 
         assert cli._LOG_QUEUE_LISTENER is sentinel
+
+
+# ── the CLI's gateway.log append handlers ─────────────────────────────────────
+
+
+def test_the_file_handler_a_short_lived_command_attached_comes_off_and_nothing_else(
+    monkeypatch, tmp_path
+) -> None:
+    """``conftest._restore_cli_log_file_handlers``, one cycle of the real floor.
+
+    The handler comes from the real ``_setup_cli_logging``, as in the wild. Left on
+    ``kiro_crew`` it writes into a ``tmp_path`` deleted after the test, and every later
+    ``kiro_crew`` record prints ``--- Logging error ---`` to stderr.
+    """
+    monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: False)
+    kc = logging.getLogger("kiro_crew")
+    inherited = cli_log_files._AppendOnlyLogFileHandler(tmp_path / "inherited.log")
+    added_by_hand = logging.NullHandler()
+    kc.addHandler(inherited)
+    try:
+        cycle = _autouse_floor_generator("_restore_cli_log_file_handlers")()
+        next(cycle)  # the floor's setup: snapshot, taken with ``inherited`` attached
+
+        cli._setup_cli_logging("status", 1)
+        kc.addHandler(added_by_hand)
+        [attached] = [
+            h
+            for h in kc.handlers
+            if isinstance(h, cli_log_files._AppendOnlyLogFileHandler) and h is not inherited
+        ]
+
+        with pytest.raises(StopIteration):
+            next(cycle)  # the floor's teardown: the removal under test
+        assert attached not in kc.handlers, "the test's gateway.log handler is still attached"
+        assert inherited in kc.handlers, "a handler the test inherited was taken off"
+        assert added_by_hand in kc.handlers, "a handler of another class was taken off"
+    finally:
+        for handler in (inherited, added_by_hand):
+            kc.removeHandler(handler)
+            handler.close()
 
 
 class TestCliProcessEnvironmentIsRestored:

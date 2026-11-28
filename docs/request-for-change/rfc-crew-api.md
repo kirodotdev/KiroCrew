@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Crew API
 
-- Status: partial. A maintainer accepted the design on 2026-11-14, with open question Q7 decided. The first Owner-tier route is built: [#34104](https://github.com/kirodotdev/KiroCrew/pull/34104) serves `GET /v1/crew/owner/bots` (`src/kiro_crew/dashboard/routes/crew_api.py`), the twin of `GET /api/members`. [#39564](https://github.com/kirodotdev/KiroCrew/pull/39564), merged 2026-11-20, adds phase 1's local authorization: the four routes `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` and `/oauth/revoke` (`src/kiro_crew/dashboard/routes/local_authorization.py`), though no `/v1` route serves the token yet: a valid one sent from this machine is recognised and answered 403 `owner_only` on every `/v1` path (`crew_api_auth.refuse_app_credential`). [#39574](https://github.com/kirodotdev/KiroCrew/pull/39574) makes a `/v1/` path other than `POST /v1/chat/completions` take its credential from `Authorization: Bearer` and refuse `?token=` (`src/kiro_crew/dashboard/crew_api_auth.py`), and serves `GET /v1/models` for the owner. The rest is not built. This document changes no code.
+- Status: partial. A maintainer accepted the design on 2026-11-14, with open question Q7 decided. The first Owner-tier route is built: [#34104](https://github.com/kirodotdev/KiroCrew/pull/34104) serves `GET /v1/crew/owner/bots` (`src/kiro_crew/dashboard/routes/crew_api.py`), the twin of `GET /api/members`. [#39564](https://github.com/kirodotdev/KiroCrew/pull/39564), merged 2026-11-20, adds phase 1's local authorization: the four routes `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` and `/oauth/revoke` (`src/kiro_crew/dashboard/routes/local_authorization.py`), and one `/v1` route serves the token: a valid one sent from this machine reaches `GET /v1/models` and is answered 403 on every other Crew API path, by the route's row in the scope table (`crew_api_auth.judge_app_credential`). [#39574](https://github.com/kirodotdev/KiroCrew/pull/39574) makes a `/v1/` path other than `POST /v1/chat/completions` take its credential from `Authorization: Bearer` and refuse `?token=` (`src/kiro_crew/dashboard/crew_api_auth.py`), and serves `GET /v1/models` for the owner and for a local app credential. An app credential gets `200` with `{"object": "list", "data": []}` until a route lets an app run a Bot in its grant or an agent; its list comes only from the grant, without reading the owner's catalog. `GET /v1/crew/info` and `GET /v1/crew/capabilities` are served for the owner and for a local app credential (`src/kiro_crew/dashboard/crew_api_instance.py`): `info` answers the instance id, `form` `local` and the API version, the same to both, and `capabilities` reports every feature `false`, text input for each agent and the input size limit. An app credential's `agents` holds only what its grant can use, which is nothing today, and no caller gets a `quota`: quota is not built. `POST /v1/responses` is served for the machine owner (`src/kiro_crew/dashboard/crew_api_responses.py`): one turn in a conversation, answered as JSON or, with `stream: true`, as the stream events of the subset. A stopped turn ends its stream with `response.incomplete`, and the `Response` inside it carries `status: cancelled`, the status the JSON answer gives. Every other field of [the Responses subset](#33-the-responses-subset) that needs more than that (`background`, tools, the phase 2 fields) answers 422 `capability_unavailable`, the `Idempotency-Key` header is not read, and a turn that fair admission refuses is answered 200 with `status: failed`. `GET /v1/crew/owner/grants` is served for the machine owner (`src/kiro_crew/dashboard/crew_api_grant_requests.py`): it lists the grants made through local authorization. The same module serves the rest of the grant routes for the machine owner: `GET /v1/crew/owner/grant-requests`, `GET /v1/crew/owner/grant-requests/{request_id}`, `POST /v1/crew/owner/grant-requests/{request_id}/decision` and `DELETE /v1/crew/owner/grants/{grant_id}`. The three tool-approval routes are served for the machine owner too (`src/kiro_crew/dashboard/crew_api_approvals.py`): `GET /v1/crew/owner/approvals`, `GET /v1/crew/owner/approvals/{approval_id}` and `POST /v1/crew/owner/approvals/{approval_id}/decision`. `GET /v1/responses/{id}` and `GET /v1/responses/{id}/input_items` are served for the machine owner (`src/kiro_crew/dashboard/crew_api_response_reads.py`): a turn that ended is kept 30 days (`src/kiro_crew/dashboard/crew_api_response_records.py`) and read back as the `Response` it was answered with; `?stream=true` sends the stream events of a turn that was streamed again, and for a turn answered as JSON events made from that `Response`; a turn whose reply text or whose request text is larger than 1 MiB is not kept; a turn still running reads `in_progress`, and the rest of its stream cannot be followed; the retention setting is not built. Where these two routes differ from the contract's text, the difference is written in the OpenAPI as a proposed amendment that waits for a maintainer's sign-off. `GET /v1/crew/grant` is served to an app credential from local authorization (`src/kiro_crew/dashboard/crew_api_grant_self.py`): it reads its own grant's scopes and Bots, and the owner's own credential gets 404. Pause, throttle, entitlements and quota are not built, so `status` is always `active`. The token of a revoked grant is answered 401 `token_revoked` while the token is in date and the grant's record is kept. `GET /v1/crew/bots` is served (`src/kiro_crew/dashboard/crew_api_bots.py`): an app credential that holds `bots:read` or `bots:chat` lists the Bots of its own grant, and the machine owner lists every Bot, both paged with `after` and `limit`. `id` is the Bot's name, `avatar_url` is always null, `created_by_app` is left out, and `status` is `busy` while a turn runs in the Bot's own thread or a dashboard turn runs as the Bot: a `POST /v1/responses` or `POST /v1/chat/completions` turn with the Bot as `model`, a dashboard chat on the Bot, a session another session sends a message to, a task review. A scheduled run counts when the job runs one agent and selected the Bot as a member, also for a Bot that owns its own agent file and so runs its schedule on its worker. A webhook turn counts when it runs the agent its registration holds. An agent sequence, a job made from a worker session and a webhook request that names another agent read `idle`. The list still gives `idle` during a channel turn on the Bot ([#42996](https://github.com/kirodotdev/KiroCrew/issues/42996)); a subagent run, a workflow or task step and a Bot's worker session are not turns of the Bot. A grant keeps the member id of each Bot the owner gave, and an app is listed a Bot only while that Bot still holds it. A Bot with no member id is not listed to an app. On a new install the default agent has none, so it is not listed; `mate` and a Bot made in the dashboard or with the CLI have one and are listed. A Bot made later under the same name gets a new member id and is not listed; one made from the memory store the deleted Bot left behind holds that Bot's member id and is listed. The Bots of a grant made before this was kept are not listed to an app. The six conversation operations are served for the machine owner (`src/kiro_crew/dashboard/crew_api_conversations.py`, `src/kiro_crew/dashboard/crew_api_conversation_lists.py`): `POST /v1/conversations`, `GET /v1/conversations`, and the `GET`, `POST` and `DELETE` of `/v1/conversations/{id}` and `GET /v1/conversations/{id}/items`. Deleting a conversation deletes the stored responses of its turns, and is 409 `response_in_progress` while a turn runs in it. What the list holds and how it is ordered, what the history holds (a turn that did not complete included, its items `incomplete`), that an update replaces the metadata whole and does not renew retention, and what a delete removes are written in the OpenAPI as proposed amendments, 2026-11-26, that wait for a maintainer's sign-off. `POST /v1/responses` runs its turn in the conversation `conversation` names, in the one the turn `previous_response_id` names ran in, or in a new one; a conversation runs one turn at a time, and the `Response` names its conversation. A conversation is a record of its turns and is not a dashboard chat. The `Idempotency-Key` header is not read, `crew.latest_seq` and `needs_approval` are not reported, and no `conversation.created` event is sent: the event stream is not built. How a later turn is given the earlier ones, how large a conversation can grow (100 KiB of text, the limit one request's input already has) and how long it and the turns that ran in it are kept (30 days after its latest turn, the retention a stored response already has) are written in the OpenAPI as proposed amendments, 2026-11-26, that wait for a maintainer's sign-off. The rest is not built. This document changes no code.
 - Machine-readable contract: the OpenAPI 3.1 drafts in [`assets/crew-api/`](assets/crew-api/crew-public.yaml):
   `crew-public.yaml` (the Public tier), `crew-owner.yaml` (the Owner tier) and `components.yaml`
   (shared schemas). Both `openapi-spec-validator` and `@redocly/cli lint` pass on them with the
@@ -349,12 +349,13 @@ concurrency or wake limit was hit).
 |---|---|---|---|
 | 400 | `invalid_request_error` | `invalid_request` | Malformed field |
 | 400 | `invalid_request_error` | `unsupported_parameter`, `unsupported_tool_type` | A refused field or tool type |
+| 400 | `invalid_request_error` | `invalid_scope` | Owner tier only: the `scopes` of an approval on `POST /v1/crew/owner/grant-requests/{request_id}/decision` are empty, repeat a scope, or name a scope the app did not ask for |
 | 401 | `authentication_error` | `invalid_token` | Missing credential, or a bad signature or expiry. Refresh the token and retry once |
 | 401 | `authentication_error` | `token_revoked`, `third_party_disabled` | The grant was revoked, or the user turned off third-party access |
 | 401 | `authentication_error` | `stale_session_reauth` | Owner tier only: this first-party session signed in before an owner was configured; sign in again |
 | 403 | `permission_error` | `entitlement_required` | The app lacks the entitlement this capability needs; the body's `entitlement` names it. Checked before the scope |
 | 403 | `permission_error` | `insufficient_scope` | Missing scope. The user can grant it on the consent page |
-| 403 | `permission_error` | `owner_only` | A delegated, embed or local app credential called an Owner endpoint, or a Public endpoint currently restricted to the owner (`GET /v1/models`). A valid credential refused by the app API allowlist gets this permission error too, without a `WWW-Authenticate` challenge |
+| 403 | `permission_error` | `owner_only` | A delegated, embed or local app credential called an Owner endpoint, or a Public endpoint currently restricted to the owner (`POST /v1/responses`). A valid credential refused by the app API allowlist gets this permission error too, without a `WWW-Authenticate` challenge |
 | 403 | `permission_error` | `approval_requires_first_party` | A delegated credential tried to answer an approval |
 | 403 | `permission_error` | `tool_not_registered` | A tool in the request is not in the grant's manifest |
 | 403 | `permission_error` | `connector_definition_changed` | The app's manifest changed its tools or permissions and the user has not consented again. The grant is paused with `pause.by: reconsent` and returns only this code |
@@ -364,6 +365,7 @@ concurrency or wake limit was hit).
 | 405 | `invalid_request_error` | `method_not_supported` | A method this API does not support |
 | 409 | `conflict_error` | `response_in_progress` | The conversation already has a turn running |
 | 409 | `conflict_error` | `approval_already_resolved` | Someone answered first; the body's `final` carries the result |
+| 409 | `conflict_error` | `grant_request_already_resolved` | Owner tier only: the grant request named on `POST /v1/crew/owner/grant-requests/{request_id}/decision` was already answered |
 | 410 | `resync_required_error` | `resync_required` | The event cursor is stale or untrustworthy; the body carries `oldest_seq` and `latest_seq` |
 | 413 | `invalid_request_error` | `payload_too_large` | Input too large |
 | 422 | `invalid_request_error` | `idempotency_key_reused` | The same `Idempotency-Key` with a different body |
@@ -592,7 +594,7 @@ listed here so the count is not read as "everything the gateway exposes":
 | Local authorization: `GET /oauth/authorize`, `POST /oauth/token`, `POST /oauth/revoke`, `GET /.well-known/oauth-authorization-server` on the local gateway | A client on the same machine asks for a grant | Programs on the same machine; consent needs the host owner's credential through the Owner API | 1a | No OpenAPI; parameters follow OAuth 2.1 and RFC 8414 |
 | The owner's side of local authorization: `GET /v1/crew/owner/grant-requests`, `POST /v1/crew/owner/grant-requests/{request_id}/decision` (amendment, 2026-11-19) | The host owner lists the waiting grant requests and approves or denies one | Host-owner credential, including authenticated remote access; Shared Crew teammates and app credentials get 403 `owner_only`. Rule 5 of this RFC (the Owner tier is for the owner only) already requires this | 1a | In `crew-owner.yaml` (amendment) |
 | Reading one request and ending a local grant: `GET /v1/crew/owner/grant-requests/{request_id}`, `DELETE /v1/crew/owner/grants/{id}` for a grant made through local authorization (amendment, 2026-11-20, proposed) | The host owner reads how one request was answered and which grant it led to, and revokes that grant | Host-owner credential; Shared Crew teammates and app credentials get 403 `owner_only`, by rule 5 | 1a | In `crew-owner.yaml` (amendment) |
-| Tool approvals without a dashboard: `GET /v1/crew/owner/approvals`, `GET /v1/crew/owner/approvals/{approval_id}`, `POST /v1/crew/owner/approvals/{approval_id}/decision` (**proposed amendment, 2026-11-20, waiting for a maintainer's sign-off**) | The host owner lists tool approvals, reads one and answers one with `allow` or `deny`. Each request gets one `apr_` id that lives for the life of the gateway process; after a restart it is 404. Proposed, waiting for a maintainer's sign-off, where this differs from the States row of the Approvals table: when the turn that waited is cancelled, the approval reads `expired` with reason `timeout`, not `turn_cancelled`; when a Stop rejects a chat turn's own waiting prompt, it reads `denied`. Only one of the two approval paths records that a turn was cancelled, and reporting `turn_cancelled` on both needs a change to the shared `interaction_coordinator`, which a later PR makes. Proposed and not in this amendment: an approval record that survives a gateway restart, `allow_always`, an answer from a Shared Crew teammate, `expires_at`, the `final` field of the 409 body, and `conv_` ids (`conversation` is the session's key until the conversation operations exist) | Host-owner credential, including authenticated remote access; Shared Crew teammates, app credentials and loopback internal callers get 403 `owner_only` | 1a | In `crew-owner.yaml` (proposed amendment) |
+| Tool approvals without a dashboard: `GET /v1/crew/owner/approvals`, `GET /v1/crew/owner/approvals/{approval_id}`, `POST /v1/crew/owner/approvals/{approval_id}/decision` (amendment, 2026-11-20; accepted by a maintainer on 2026-11-24, as recorded in [#42226](https://github.com/kirodotdev/KiroCrew/issues/42226)) | The host owner lists tool approvals, reads one and answers one with `allow` or `deny`. Each request gets one `apr_` id. The id, its state, its times, why it expired (`expired_reason`) and its session are kept on disk; the tool's name, the reason the tool gave and its arguments are not (amendment, 2026-11-24; accepted by a maintainer on 2026-11-25, on [#41999](https://github.com/kirodotdev/KiroCrew/pull/41999#issuecomment-7154845995)). After a restart an old approval is still there to read. A row still `pending` on disk reads `expired` with reason `gateway_restart`, whether its request was still waiting or had ended without its ending being written. An ending written to the file keeps its state. Neither can be answered. A one-request `POST /v1/responses` turn is not recorded for restart recovery. `POST /api/restart` and Slack's `/kirocrew restart` record other chat slots with a running turn before closing sessions. `POST /api/restart` remains available on a headless gateway under its existing caller checks. Plain `kirocrew restart` uses the service manager or stops the gateway and starts a replacement; it does not write this record. `kirocrew restart --when-idle` checks and holds idle admission before using that same CLI restart path; it does not record running turns. `POST /api/update` arms an update for the next start without restarting the gateway. Scheduled update checks stage a managed-venv update or announce an update without restarting the gateway. On the next start, with or without a dashboard, the gateway reads and deletes the restart record it finds, and resumes only from a valid one no older than 30 minutes. It attempts to resume the recorded chats through Resume-all, subject to that path's eligibility checks and refusals. Without a valid record, this startup recovery path resumes no chats. If a resumed chat needs another tool approval, the first Owner route that observes it gives it a new `apr_` id. The old pending approval stays `expired` with reason `gateway_restart` and cannot be answered. The host owner finds the new approval through `GET /v1/crew/owner/approvals`, using its `conversation` query parameter to select the same session key returned in the approval's `conversation` response field. Where this differs from the States row of the Approvals table: when the turn that waited is cancelled, the approval reads `expired` with reason `timeout`, not `turn_cancelled`; when a Stop rejects a chat turn's own waiting prompt, it reads `denied`. Only one of the two approval paths records that a turn was cancelled, and reporting `turn_cancelled` on both needs a change to the shared `interaction_coordinator`, which a later PR makes. Proposed and not in this amendment: the Timeout row's limit of 4 minutes 30 seconds (these routes set no limit of their own; a request keeps the wait the gateway already gives it), an approval that stays answerable across a gateway restart, a pointer from an old approval to the request that asks again, `allow_always`, an answer from a Shared Crew teammate, `expires_at`, the `final` field of the 409 body, and `conv_` ids (`conversation` is the session's key until the conversation operations exist) | Host-owner credential, including authenticated remote access; Shared Crew teammates, app credentials and loopback internal callers get 403 `owner_only` | 1a | In `crew-owner.yaml` (amendment) |
 | Embed page: `GET /embed` and its sign-in routes | The embedded page where the user signs in and answers approvals; `/embed?approval=<id>` shows one approval | Reachable without a token; reads no conversation data | 2 | No OpenAPI yet |
 | Site connection: `GET /connect/start`, `GET /connect/callback` | Connects the user's account at an app's site when the app's MCP server needs it | Reachable without a token; accepts only a one-time code and `state` | 2 | No OpenAPI yet |
 | `POST /v1/chat/completions` | Frozen transition route | The owner and local apps | Exists today | Not specified here |
@@ -610,9 +612,10 @@ after the app asks. So `GET /oauth/authorize` never grants by itself:
 1. The first call records a grant request and answers that it waits: 202 with `request_id`,
    `user_code`, `expires_at` and `interval` for a program that accepts `application/json`, else a
    page that reloads.
-2. The owner approves or denies the request. With a dashboard this is the consent page; without
-   one it is an Owner route. The owner can narrow the requested scopes, never widen them. An app
-   credential cannot answer a request.
+2. The owner approves or denies the request through the Owner route
+   `POST /v1/crew/owner/grant-requests/{request_id}/decision`, with or without a dashboard. A
+   consent page in the dashboard is planned; no page answers a request today. The owner can
+   narrow the requested scopes, never widen them. An app credential cannot answer a request.
 3. The app asks again with `request_id` and the same parameters, no sooner than `interval`
    seconds. Once the owner answered, the gateway redirects to the app's loopback `redirect_uri`
    with a one-time code, or with `error=access_denied`.
@@ -631,11 +634,97 @@ accepted by a maintainer):
    and its code have expired, or for as long as the grant it led to exists; after that it is 404.
 2. A `GrantRequest` also carries `decided_at`, `decided_by` (the kind of caller, never a token),
    `granted_scopes` (only when approved) and `grant_id` (set once the app redeemed its code).
-   `requested_bots` is left out: `GET /oauth/authorize` has no parameter for a Bot range yet.
+   It carries `requested_bots` too: the Bot ids the app asked to use. The app sends the
+   repeated query parameter `bots` to `GET /oauth/authorize`, one Bot per occurrence,
+   for example `bots=dr.%20eggbot&bots=helper`. The app is expected to send the exact model
+   `id` from `GET /v1/models`, with no splitting. Values follow
+   `kiro_crew.members.is_dispatchable_member_name` and its `MEMBER_NAME_MAX_CHARS` length
+   limit; duplicates are refused with `invalid_request`. Asking checks format only and
+   never checks existence, so its answer does not disclose which Bots exist. Malformed
+   `bots` gives 400 `invalid_request` even with an invalid `scope`. Asking again requires
+   the same `bots` values in the same order. `MAX_REQUESTED_BOTS` is the chosen bound
+   for one request and one decision, set equal to `crew_teams.TEAM_MEMBERS_MAX` (500),
+   the largest Bot list the product keeps elsewhere. The request must fit aiohttp's
+   8190-byte request line. The decision body must fit 4 KiB (`_BODY_MAX`); a `bots` list
+   that does not fit gives 400 `invalid_request`, and the owner gives a shorter list.
+   The `bots` JSON array in the owner's
+   `POST /v1/crew/owner/grant-requests/{request_id}/decision` request body follows the same
+   name, length, duplicate and count rules. After the body's size, `decision` and `scopes`
+   form (each 400 `invalid_request`), the handler checks the request before any Bot check
+   (404 `not_found` if unknown or expired; 409 `grant_request_already_resolved` if answered),
+   then checks that the array is a subset of `requested_bots`, then reads the Bot roster.
+   Each name must be a Bot in that read. When an approval gives at least one Bot,
+   unreadable configuration or a degraded Bot roster gives 503 `instance_unavailable`
+   without recording a decision; an approval that gives none, and a deny, do not read
+   the roster. After a whole config file cannot be read or parsed, this refusal lasts
+   until the gateway restarts, even if the file is repaired, because the whole-config
+   degraded marker stays for the life of the process. A single `agents` entry dropped
+   by validation marks the roster degraded for that load, so even healthy Bots cannot
+   be approved from that read.
+   The request carries `granted_bots`, and the grant stores them as `bots` with
+   `mode: selected`. An app that omits the query parameter asks for no Bot; an approval
+   that omits the body field gives no Bot. Explicit `null` gives 400 `invalid_request`
+   ("bots must be a list of strings"). A deny ignores `bots`. Unlike `scopes`, a Bot is
+   never given by default. Records without Bot fields read as none. The grants list
+   returns the owner's recorded Bot selection; no route enforces it yet.
 3. `DELETE /v1/crew/owner/grants/{id}`, already in this RFC, is served for grants made through
    local authorization. Every token under the grant is refused from the next request. A second
    call answers the same 200 until the grant's own expiry, then 404. Such a grant has no outside
    issuer, so nothing is sent over the control channel.
+4. `GET /v1/crew/owner/grants`, already in this RFC, is served for grants made through local
+   authorization (amendment, 2026-11-24; proposed, to be accepted by a maintainer). It lists the
+   grants that work now, oldest first, paged with `after` and `limit`. A revoked or expired grant
+   is not listed, under any `status`; neither is one whose refresh token has run out unused,
+   because it can mint no token again. An `after` that names no grant in the list, one revoked
+   since the last page included, is 400 `invalid_request`; the caller starts again from the
+   first page. A row carries `id`, `object`, `kind` (`local`), `namespace`,
+   `client_id`, `app.name` (as the app reported it), `app.icon_url` (null), `scopes`, `bots`
+   (the owner's recorded selection), `status`, `created_at` (when the app redeemed its code and
+   the grant began, not when the owner approved) and `expires_at`, and no token. Last use, usage
+   and quota are not kept for such a grant and are left out.
+
+**Entry port: the Crew API for a reverse proxy on the same machine** (amendment, 2026-11-24;
+accepted by maintainer buluoray on 2026-11-24, on
+[#42027](https://github.com/kirodotdev/KiroCrew/pull/42027)).
+
+What it is. A headless gateway listens on loopback only, so a caller on another machine
+reaches it through a reverse proxy that the deployer runs on the gateway's machine.
+`dashboard.entry_port` names a second port for that proxy. It is `0`, off, by default. When set, the regular or
+headless gateway binds it on `127.0.0.1`, and on `[::1]` when the machine has an IPv6
+loopback; no setting changes the address. The API-only server does not open it. On
+Windows each entry listener has a listener guard (`dashboard/listener_guard.py`). When a
+guard cannot rebind its listener, the gateway closes the entry port, keeps serving on
+loopback, and reports a warning.
+The gateway does not start, configure or ship the proxy.
+
+Who can reach what through it:
+
+1. Registered Crew API routes only. Any other path is 404; a wrong method on a registered
+   route is 405.
+2. `Authorization: Bearer` only, verified by the same code as on the gateway's own port. A
+   cookie or a query token is not a credential there, and a request with no bearer is 401.
+3. No Owner route (`/v1/crew/owner/*`): 403. Approvals and grants are answered on the machine.
+4. An app token from local authorization is 401 on any other route, because that token is
+   honoured only on a request made directly from this machine.
+5. The proxy must send a `Host` that names loopback, else 400. A request that carries a header
+   which authenticates a process on this machine is 400.
+
+Arriving on the entry port gives a caller no identity or scope beyond its bearer. Two checks
+from the gateway's own port do not apply there. The tailnet login allowlist is not read,
+because no header from the proxy names a caller. The address pin does not tell `127.0.0.1`
+and `[::1]` apart, because both are the same proxy.
+
+Why the socket decides, and not a header. A proxy on the same machine connects from loopback,
+which is what a program on this machine looks like. A header that marks a request as forwarded
+is missing when the proxy is set up wrong, and the request then reads as local. So a request
+came through the entry because of the port it arrived on, which the gateway reads from its own
+socket. Such a request is never treated as a direct local request, whatever headers it carries
+or lacks, and no header from the proxy names the caller: the bearer does.
+
+The setting is changed in the config file or with `kirocrew config set`. The settings route,
+`PATCH /api/config/kirocrew`, does not change it.
+
+The Kiro relay is a separate path with its own rules and is outside this amendment.
 
 ### 9. Versioning and compatibility
 

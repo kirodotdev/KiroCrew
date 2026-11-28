@@ -16,7 +16,7 @@ import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-libra
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
-import { setUpdateProgress } from '../store/dashboardSlice'
+import { setUpdateProgress, sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import { initI18n } from '../i18n'
 import SttSettings from '../pages/settings/SttSettings'
 import { api } from '../api/client'
@@ -40,6 +40,8 @@ vi.mock('../api/client', () => ({
     awsConsent: vi.fn(),
     grantAwsConsent: vi.fn(),
   },
+  // The restart's onError checks `instanceof ApiError` before it reads the socket.
+  ApiError: class ApiError extends Error {},
 }))
 
 const mockApi = api as unknown as {
@@ -217,6 +219,27 @@ describe('SttSettings provider-aware install surface', () => {
     expect(await screen.findByText('Sessions did not drain in time.')).toBeTruthy()
     expect(screen.getByTestId('stt-restart-gateway')).not.toBeDisabled()
     act(() => { store.dispatch(setUpdateProgress(null)) })
+  })
+
+  it('a restart request lost while the socket is still connected shows the failure and frees the button', async () => {
+    // The gateway answers a restart before it restarts, so a failed request
+    // with this tab still connected means no restart is coming.
+    mockApi.restartGateway.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    store.dispatch(sseConnected())
+    try {
+      mount({
+        provider: 'transcribe',
+        prereqs: ["/opt/kirocrew/bin/python -m pip install 'boto3>=1.34,<2' 'amazon-transcribe>=0.6,<1'"],
+      })
+      await loaded()
+
+      fireEvent.click(screen.getByTestId('stt-restart-gateway'))
+      fireEvent.click(screen.getByTestId('stt-restart-gateway'))
+      expect(await screen.findByText('Restart failed')).toBeTruthy()
+      await waitFor(() => expect(screen.getByTestId('stt-restart-gateway')).not.toBeDisabled())
+    } finally {
+      store.dispatch(sseDisconnected(null))
+    }
   })
 
   it('offers the restart for the local provider too, which also needs the extra', async () => {

@@ -164,7 +164,7 @@ from kiro_crew.apps.registry import (
 from kiro_crew.apps.registry_pipeline.checkout import _HOOKS_NEUTRALIZER_ARGV
 from kiro_crew.apps.registry_pipeline.git_targets import _lfs_endpoint_pin_argv
 from kiro_crew.apps.registry_pipeline.subprocess_env import (
-    _git_network_env,
+    _git_network_step_env,
     _proxy_env_has_credentials,
 )
 from kiro_crew.apps.routes_art import handle_app_art_file, handle_blob_proxy
@@ -187,6 +187,7 @@ from kiro_crew.apps.routes_market_install import register_market_install_routes
 from kiro_crew.apps.routes_market_registry import register_market_registry_routes
 from kiro_crew.apps.routes_proxy import handle_app_api_proxy
 from kiro_crew.apps.routes_registry import (
+    handle_app_store_search,
     handle_registries,
     handle_registries_refresh,
     handle_registry,
@@ -225,6 +226,7 @@ from kiro_crew.pinned_fs import (
     open_in_pinned_parent,
     supports_pinned_walk,
 )
+from kiro_crew.platform import redact_via_context  # noqa: F401
 from kiro_crew.publish_governance import DEPLOY_WEB_PROVIDER_ID, publish_denied_reason
 from kiro_crew.sandbox import (
     app_backend_secret_mask_targets,
@@ -274,6 +276,7 @@ def register_app_routes(app: web.Application) -> None:
     # `registry` implicit ownership of /api/apps/registry/* -- see the
     # handler's docstring.
     app.router.add_post("/api/app-store/refresh", handle_registry_refresh)
+    app.router.add_get("/api/app-store/search", handle_app_store_search)
     app.router.add_post("/api/apps/registry/install", handle_registry_install)
     app.router.add_post("/api/apps/registry/install-stream", handle_registry_install_stream)
     app.router.add_post("/api/apps/install", handle_install_app)
@@ -302,6 +305,10 @@ def register_app_routes(app: web.Application) -> None:
     from kiro_crew.apps.browser_sites_routes import register_browser_sites_routes
 
     register_browser_sites_routes(app)
+    # The owner turning off one watch recipe's run-by-itself yes.
+    from kiro_crew.apps.browser_recipes_routes import register_browser_recipes_routes
+
+    register_browser_recipes_routes(app)
     app.router.add_delete("/api/apps/{name}/migrate-cleanup", handle_migrate_cleanup)
     app.router.add_get("/apps/{name}/ui/{path:.*}", handle_app_ui_file)
     app.router.add_get("/apps/{name}/art/{path:.*}", handle_app_art_file)
@@ -420,7 +427,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.apps.routes_bot_grants import (  # noqa: F401
         _not_installed,
-        _owner_denial,
         _view,
     )
     from kiro_crew.apps.routes_enable import (  # noqa: F401
@@ -437,6 +443,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.apps.routes_install import (  # noqa: F401
         _resync_app_crons_after_update,
+        _update_app,
     )
     from kiro_crew.apps.routes_kiro import (  # noqa: F401
         _KIRO_READ_CHUNK,
@@ -547,13 +554,25 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         invalidate_app_secret_cache,
     )
     from kiro_crew.apps.routes_registry import (  # noqa: F401
+        _STORE_SEARCH_DEFAULT,
+        _STORE_SEARCH_FIELDS,
+        _STORE_SEARCH_MAX,
+        _STORE_SEARCH_TEXT_MAX,
+        _STORE_SEARCH_USE_CASES_MAX,
         _announce_app_updates,
+        _clip_store_value,
         _derive_registry_name,
+        _discover_shows,
         _held_mcp_servers,
+        _hidden_builtin_names,
+        _reach_bot_chats,
         _reach_open_chats,
         _registry_fetch_failures,
         _resolve_app_update_notes,
+        _store_row_words,
+        _store_search_words,
         _write_registries_config,
+        search_store_rows,
     )
     from kiro_crew.apps.routes_static import (  # noqa: F401
         _ALLOWED_EXTENSIONS,
@@ -575,7 +594,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _deregister_crons_with_retry,
         _InProcessRequest,
         _run_uninstall,
+        _run_uninstall_fenced,
         uninstall_app_in_process,
+    )
+    from kiro_crew.apps.startup_modules import (  # noqa: F401
+        MODULE_SUFFIXES,
+        approved_module,
     )
     from kiro_crew.apps.teardown import (  # noqa: F401
         stop_app_hooks_for_uninstall,

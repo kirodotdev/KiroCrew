@@ -33,6 +33,7 @@ import {
   allModelsRefused,
   configuredModelRefused,
   isRefusedHostedDefault,
+  stillSendingSentence,
 } from './decisionsProviderQuery'
 import { i18nT } from '../../i18n/t'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
@@ -40,11 +41,11 @@ import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 /**
  * One point's own settings, on a lazy boundary.
  *
- * The CARD is mounted synchronously by `FeaturePreviewsSection`, because settings
- * search highlights a control by probing the DOM and gives up after 100 ms -- a deep
- * link that arrived while the card's chunk was in flight rang nothing. Only this
- * panel rides a boundary, and it can: nothing it draws is in the settings registry,
- * since every control in it takes its label from a map keyed by the SERVER's id.
+ * The CARD is mounted synchronously by `FeaturePreviewsSection`, so a settings
+ * search deep link finds its rows as soon as the tab opens rather than once the
+ * card's chunk arrives. Only this panel rides a boundary, and it can: nothing it
+ * draws is in the settings registry, since every control in it takes its label
+ * from a map keyed by the SERVER's id.
  *
  * The fallback reserves height rather than collapsing to nothing, so opening a row
  * does not make the list jump while the chunk arrives, and it is `aria-hidden`
@@ -183,7 +184,7 @@ export function DecisionsCard() {
   const qc = useQueryClient()
   // Whether settings search is pointing at a control inside the shared block. Read
   // here rather than in an effect: the disclosure has to be open on the FIRST paint,
-  // because the highlight hook probes the DOM and gives up.
+  // because the highlight hook finds the row inside a closed one and rings it unseen.
   const [searchParams] = useSearchParams()
   const highlightTarget = searchParams.get('highlight')
   const disclosureTargeted =
@@ -263,8 +264,13 @@ export function DecisionsCard() {
     mutationFn: (value: boolean) => api.saveDecisionsConsent(value, view.configuredEndpoint),
     // RETURNED, not just started: react-query holds a mutation pending only while
     // `onSettled` has an unresolved promise outstanding, and without the return the
-    // switch re-enabled while `checked` still read the pre-flip value.
-    onSettled: () => qc.invalidateQueries({ queryKey: ['decisionsConsent'] }),
+    // switch re-enabled while `checked` still read the pre-flip value. The provider
+    // read is refetched too: its `still_sending` holds only while consent stands.
+    onSettled: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: ['decisionsConsent'] }),
+        qc.invalidateQueries({ queryKey: DECISIONS_PROVIDER_QUERY_KEY }),
+      ]),
   })
   // A point's own egress scope, with `enabled` OMITTED: see the file comment.
   const scopeMut = useMutation({
@@ -467,6 +473,9 @@ export function DecisionsCard() {
   const configuredRefused = providerQ.data !== undefined && configuredModelRefused(providerQ.data)
   // Every model is refused, so "pick one below" would point at rows none can be picked.
   const allRefused = providerQ.data !== undefined && allModelsRefused(providerQ.data)
+  // The refusal is the dashboard surface's; these are the surfaces that still send,
+  // whichever rule refused it. The picker's saved-and-refused entry says it instead.
+  const stillSending = providerQ.data && !refusedDefault ? stillSendingSentence(providerQ.data) : null
   // The configured model is refused and no consent stands for it, so nothing leaves the
   // machine for it. With a recorded consent the egress disclosure stays: the refusal is
   // the dashboard surface's answer, and a surface the ceiling permits still sends.
@@ -520,6 +529,11 @@ export function DecisionsCard() {
               ? 'pages.developer.featurePreviewsTab.decisions_configured_blocked_consent'
               : 'pages.developer.featurePreviewsTab.decisions_configured_blocked',
           )}
+        </p>
+      )}
+      {view.supported && stillSending && (
+        <p className="text-[12px] text-warn m-0" data-testid="decisions-still-sending">
+          {stillSending}
         </p>
       )}
       {/* The egress fact carries body weight, not muted fine print: it is what a

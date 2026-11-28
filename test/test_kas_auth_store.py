@@ -8,12 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew.auth.store import (
-    REFRESH_MARGIN_SECS,
-    KasToken,
-    TokenStore,
-    TokenStoreError,
-)
+from kiro_crew.auth.store import REFRESH_MARGIN_SECS, KasToken, TokenStore, TokenStoreError
 
 
 def _token(identity: str = "social", *, expires_in: int = 3600, **overrides) -> KasToken:
@@ -215,12 +210,17 @@ def test_load_non_object_envelope_returns_none(tmp_path: Path):
     # must be treated as a corrupt store, not crash status with a 500.
     store = TokenStore(tmp_path)
     store.save(_token())
-    (tmp_path / "kas" / ".vault" / "secrets.enc").write_text("[1, 2, 3]")
+    vault = tmp_path / "kas" / ".vault"
+    (vault / "secrets.enc").write_text("[1, 2, 3]")
     assert store.load("social") is None
-    with pytest.raises(TokenStoreError):
-        store.save(_token())
+    # A sign-off over a store nothing can open still reports the failure...
     with pytest.raises(TokenStoreError):
         store.delete("social")
+    # ...while a new sign-in keeps the dead file aside and starts a new vault
+    # (test_kas_auth_store_lost_key.py).
+    store.save(_token())
+    assert store.load("social") is not None
+    assert [p.read_text() for p in vault.glob("secrets.enc.corrupt-*")] == ["[1, 2, 3]"]
 
 
 def test_load_malformed_token_json_returns_none(tmp_path: Path):

@@ -243,6 +243,7 @@ def _read_agent_spec(
     source: str = "list_agents",
     fence: Callable[[Path], bool] | None = None,
     admit_hardlinked: Callable[[str, bytes], bool] | None = None,
+    held: list[Path] | None = None,
 ) -> dict[str, Any] | None:
     """Parse an agent config file, or ``None`` when it is not usable.
 
@@ -286,6 +287,10 @@ def _read_agent_spec(
     :func:`kiro_crew.skills_discovery._builtin_app_file_admission` for a shipped
     built-in app's ``app.json`` and declared agent specs. Every other read
     refuses a hardlink.
+
+    *held*, when given, gets *path* appended when the read lost to another
+    program's handle on Windows past the retry: a present spec whose content,
+    and so the name it declares, could not be seen this time.
     """
     if path.name.startswith("._"):
         return None
@@ -392,12 +397,17 @@ def _read_agent_spec(
             level = logging.DEBUG
         logger.log(level, "Skipping agent config %r: %r", path, exc)
         return None
-    except PermissionError:
+    except PermissionError as exc:
         if platform_compat.IS_WINDOWS:
             # The spec is present but stayed locked past the retry budget: a
             # reader of this None would show its MCP servers as never
             # configured, so the miss is logged where an operator sees it.
             logger.warning("Skipping agent config %r: still locked by another process", path)
+            # A share-mode hold fails the open (32 ERROR_SHARING_VIOLATION, 33
+            # ERROR_LOCK_VIOLATION), a byte-range lock the read (no winerror). An
+            # ACL denial (5) refuses every reader alike, so it is not a hold.
+            if held is not None and getattr(exc, "winerror", None) in (32, 33, None):
+                held.append(path)
         else:
             logger.debug("Skipping unreadable agent config: %r", path)
         return None
@@ -647,6 +657,10 @@ class AmbiguousAgentSpecError(ValueError):
     paths disclose the account name and on-disk layout there. Empty when the
     raiser did not supply them; the message is then the only record.
 
+    A session start also raises it with no ``paths`` (:func:`held_spec_refusal`)
+    when a file it could not read because something held it open may be a second
+    claimant.
+
     ``agent`` is the declared name the files share, and ``packages`` maps each
     path to the package that installed it (``agent_spec_pins.spec_package``), or
     ``None``: the dashboard's chooser shows both. ``summaries`` maps each path to
@@ -810,6 +824,7 @@ def declared_spec_claim(
     fence: Callable[[Path], bool] | None = None,
     pins: Mapping[str, str] | None = None,
     parsed_rows: Sequence[tuple[dict[str, Any], Path]] | None = None,
+    held: list[Path] | None = None,
 ) -> DeclaredSpecClaim | None:
     """The one declared-name resolver, with ``agent.spec_pins`` applied.
 
@@ -831,6 +846,8 @@ def declared_spec_claim(
     :func:`parsed_agent_specs` cache to select without reopening unchanged files.
     They retain the snapshot's freshness and attribution contract. A consumer
     *fence* requires a fresh read and cannot be combined with cached rows.
+    *held* collects the files the walk's reads lost to a hold (:func:`_read_agent_spec`);
+    a file there may declare *agent_id* too. Cached *parsed_rows* never fill it.
     """
     if parsed_rows is not None and fence is not None:
         raise TypeError("parsed_rows and fence cannot be combined")
@@ -846,11 +863,16 @@ def declared_spec_claim(
     packages: dict[Path, str | None] = {}
     summaries: dict[Path, dict[str, Any]] = {}
     divergent = False
+    # Passed only when set: tests stand in for the reader with the narrower call shape.
+    held_kw: dict[str, Any] = {} if held is None else {"held": held}
     rows = (
         parsed_rows
         if parsed_rows is not None
         else (
-            (_read_agent_spec(path, operation=operation, source=source, fence=fence), path)
+            (
+                _read_agent_spec(path, operation=operation, source=source, fence=fence, **held_kw),
+                path,
+            )
             for path in iter_agent_spec_files(agents_dir)
         )
     )
@@ -920,6 +942,34 @@ def declared_spec_claim(
             redact_log_via_context(names),
         )
     return DeclaredSpecClaim(match_paths[0], match, tuple(match_paths), divergent, False)
+
+
+def held_spec_refusal(
+    agent_id: str,
+    claim: DeclaredSpecClaim | None,
+    held: Sequence[Path],
+    pins: Mapping[str, str] | None = None,
+) -> AmbiguousAgentSpecError | None:
+    """The refusal for a session start whose claim lost a read to a hold, or ``None``.
+
+    *claim* and *held* are one :func:`declared_spec_claim` walk's answer and the files
+    it found held. With a claimant found, a file held and no pin for *agent_id*, the
+    start is refused: the held file may be a second, differing claimant that a later
+    read sees. The error names each held file and the pin command for each readable
+    claimant, and carries no ``paths``, so no chooser card replaces its text: which
+    agent a held file declares is unknown. Any pin waives the check, and a start
+    that found no claimant keeps its own outcome.
+    """
+    from kiro_crew import agent_spec_pins
+
+    if claim is None or not held or agent_spec_pins.spec_pin_for(agent_id, pins) is not None:
+        return None
+    return AmbiguousAgentSpecError(
+        agent_spec_pins.held_spec_message(
+            agent_id, [str(path) for path in held], [path.name for path in claim.claimants]
+        ),
+        agent=agent_id,
+    )
 
 
 def iter_declared_specs(

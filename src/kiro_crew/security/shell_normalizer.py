@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import bisect
 import contextvars
+import math
 import os
 import re
 import shlex
@@ -107,6 +108,7 @@ from .shell_normalizer_walk import (  # noqa: F401  (also re-exported for import
     _resolved_word_view,
     _shell_join_continuations,
     _shell_quote_walk,
+    _split_brace_alternatives,
     _split_glued_operators,
     _split_push_command_segments,
     _split_shell_words,
@@ -182,6 +184,15 @@ def _program_basename(token: str) -> str:
     return os.path.basename(token.rstrip("/"))
 
 
+#: Each is four characters long: ``_strip_win_program_suffix`` cuts ``word[:-4]``.
+_WIN_PROGRAM_SUFFIXES = (".exe", ".cmd", ".bat")
+
+
+def _strip_win_program_suffix(word: str) -> str:
+    """*word* without a Windows ``.exe`` / ``.cmd`` / ``.bat`` suffix (``bash.exe`` is ``bash``)."""
+    return next((word[:-4] for s in _WIN_PROGRAM_SUFFIXES if word.endswith(s)), word)
+
+
 def _glob_could_expand_to(base: str, names: "tuple[str, ...] | frozenset[str]") -> bool:
     """True if *base* carries a shell glob that could expand to one of *names*.
 
@@ -239,23 +250,6 @@ def _brace_pairs(pattern: str) -> "dict[int, int]":
         elif ch == "}" and stack:
             pairs[stack.pop()] = j
     return pairs
-
-
-def _split_brace_alternatives(body: str) -> "list[str]":
-    """Split a brace body on its TOP-LEVEL commas (``a,{b,c},d`` -> 3 parts)."""
-    parts: list[str] = []
-    depth = 0
-    start = 0
-    for j, ch in enumerate(body):
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-        elif ch == "," and depth == 0:
-            parts.append(body[start:j])
-            start = j + 1
-    parts.append(body[start:])
-    return parts
 
 
 def _brace_group_regex(body: str, depth: int = 0, budget: "list[int] | None" = None) -> str:
@@ -393,10 +387,13 @@ def _pipes_into_evaluator(tokens: "list[str]") -> bool:
     for token in tokens:
         if "|" in token:
             seen_pipe = True
-        if seen_pipe and (
-            _program_basename(token) in _NESTED_SHELL_PROGRAMS
-            or _program_basename(token) in _NESTED_SHELL_VERBS
-            or _program_basename(token) == "xargs"
+        if not seen_pipe:
+            continue
+        base = _strip_win_program_suffix(_program_basename(token))
+        if (
+            base in _NESTED_SHELL_PROGRAMS
+            or base in _NESTED_SHELL_VERBS
+            or base == "xargs"
             or _is_shell_variable_reference(token)
         ):
             return True
@@ -1556,10 +1553,11 @@ def _nested_shell_payloads(
     first_shell: "int | None" = None
     for i, token in enumerate(tokens):
         base = _program_basename(token)
-        # A shell reached through a VARIABLE (``$SHELL -c '<payload>'``) runs the
-        # payload exactly as a named shell does.  The recognizer already used for the
-        # ``| $SHELL`` evaluator sink applies here too.
-        if base in _NESTED_SHELL_PROGRAMS or _is_shell_variable_reference(token):
+        # A shell reached through a VARIABLE (``$SHELL -c '<payload>'``) runs the payload
+        # exactly as a named shell does; the ``| $SHELL`` sink's recognizer applies here too.
+        # Only ``.exe`` is dropped: cmd.exe re-parses a ``.cmd`` / ``.bat`` shell's line.
+        is_shell = base.removesuffix(".exe") in _NESTED_SHELL_PROGRAMS
+        if is_shell or _is_shell_variable_reference(token):
             if first_shell is None:
                 # Recorded here, where the shell test has already been paid,
                 # so the every-carrier sweep below needs no second scan that
@@ -1649,7 +1647,7 @@ def _nested_shell_payloads(
         if "<<<" not in token:
             continue
         head, _, tail = token.partition("<<<")
-        if tail and _program_basename(head) in _NESTED_SHELL_PROGRAMS:
+        if tail and _program_basename(head).removesuffix(".exe") in _NESTED_SHELL_PROGRAMS:
             payloads.append(tail)
     # EVERY ``-c`` carrier past the first shell token is swept, not only the
     # first-stop one.  The stop tables above read one token per spelling class,
@@ -1793,8 +1791,9 @@ def _shell_payload_walk_uncached(
     finite.
     """
     out: list[tuple[str, list[str]]] = []
-    seen: set[tuple[str, bool]] = set()
+    seen: dict[tuple[str, bool], tuple[bool, bool, float]] = {}
     appended: set[tuple[str, tuple[str, ...]]] = set()
+    cut_rebuilds: dict[tuple[str, str], str] = {}  # each cut pipeline's rebuild, made once
     # The third field is whether this frame may perform the ``eval`` argument join.
     # A frame PRODUCED by a join may not, which is what bounds the walk: see
     # ``_nested_shell_payloads``. The fourth is the here-document SECOND reading --
@@ -1810,13 +1809,17 @@ def _shell_payload_walk_uncached(
     # is deduped. The single-reading cost of a command with no ``<<`` is unchanged.
     # The reset reading also carries each frame's text AS WRITTEN (``cased``), so its
     # bodies close on their tags with case, as bash closes them; None reads it lowered.
-    pending: "list[tuple[str, int, bool, bool, str | None]]" = [
-        (text_lower, len(text_lower) + 1, True, False, None)
+    # The sixth: does the frame cut out its xargs pipelines (a rebuild does not, its tail
+    # is the rest of a cut line). The seventh: how often it may be rebuilt again (a cut's
+    # rebuild, the pipes left in its pipeline). A join inherits both; ``seen`` keeps each
+    # text's most work asked (join, cut, rebuilds), and a text asked more is walked again.
+    pending: "list[tuple[str, int, bool, bool, str | None, bool, float]]" = [
+        (text_lower, len(text_lower) + 1, True, False, None, True, math.inf)
     ]
     if "<<" in text_lower:
-        pending.append((text_lower, len(text_lower) + 1, True, True, cased))
+        pending.append((text_lower, len(text_lower) + 1, True, True, cased, True, math.inf))
     while pending:
-        source, parent_len, allow_join, reset, source_cased = pending.pop()
+        source, parent_len, allow_join, reset, source_cased, cuts, rebuilds = pending.pop()
         if reset:
             marker = _HEREDOC_RESET.set(True)
             try:
@@ -1849,26 +1852,34 @@ def _shell_payload_walk_uncached(
         # continuation that bash keeps literal stays literal in the body too.
         joined_here: set[str] = set()
         nested = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
-        # A redirect before the ``-c`` operand hides the script from ``nested``.
-        from .shell_commands import redirect_hidden_payloads  # the reader imports this module
+        # A redirect before the ``-c`` operand hides the script from ``nested``, a chained
+        # command an xargs pipeline's words from its rebuild; the reader imports this module.
+        from .shell_commands import redirect_hidden_payloads, xargs_cut_rebuilds
 
         nested = list(nested) + redirect_hidden_payloads(source)
         # Single-quoted text is literal only in the caller's own command line: a
         # nested or decoded payload is read quote-blind.
         literal = literal_single_quotes and source == text_lower  # payloads are shorter
-        for payload in nested + _substitution_bodies(
-            _fold_line_continuations(source), raw_source=literal
-        ):
+        feeds_xargs = any(_program_basename(token) == "xargs" for token in tokens)
+        rebuilt = _xargs_reconstructed_command(tokens) if feeds_xargs else ""
+        cut = xargs_cut_rebuilds(source, cut_rebuilds) if feeds_xargs and cuts else []
+        bodies = nested + _substitution_bodies(_fold_line_continuations(source), raw_source=literal)
+        payloads = [(p, p != rebuilt, rebuilds - 1 if p == rebuilt else math.inf) for p in bodies]
+        for payload, payload_cuts, left in payloads + [(p, False, n) for p, n in cut if p]:
             # Descend through EVERY literal payload, to any depth.  Termination is
             # structural, not a cap: a payload is carried inside one token of its
             # parent, so it is strictly shorter than the parent's source text.
             # The dedup is per reading, so each reading walks every nested payload.
             payload = _decode_printf_escapes(payload)
-            if len(payload) >= parent_len or (payload, reset) in seen:
-                continue
-            seen.add((payload, reset))
+            joined = payload in joined_here
+            work = (payload_cuts and cuts, min(left, rebuilds)) if joined else (payload_cuts, left)
+            had = seen.get((payload, reset), (False, False, -1.0))
+            most = (had[0] or not joined, had[1] or work[0], max(had[2], work[1]))
+            if left < 0 or len(payload) >= parent_len or most == had:
+                continue  # left < 0: a cut pipeline's rebuild with no pipe left
+            seen[payload, reset] = most
             payload_cased = _cased_payload(source_cased, source, payload) if reset else None
-            pending.append((payload, len(source), payload not in joined_here, reset, payload_cased))
+            pending.append((payload, len(source), most[0], reset, payload_cased, *most[1:]))
     return out
 
 

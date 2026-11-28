@@ -67,7 +67,7 @@ from kiro_crew.apps.registry_pipeline.sources import (
 from kiro_crew.apps.registry_pipeline.store_art import _contained_join, _store_asset_path
 from kiro_crew.apps.registry_pipeline.subprocess_env import (
     _GIT_CLONE_LOCALE,
-    _git_network_env,
+    _git_network_step_env,
     _proxy_env_has_credentials,
     anonymous_git_env,
     minimal_env,
@@ -281,7 +281,7 @@ async def _fetch_app_manifest(
         # HTTP fetch and needs no agent.
         if owner_designated:
             clone_env = minimal_env()
-            sandbox_mode = _context_clone_sandbox_mode(git_url)
+            sandbox_mode = await asyncio.to_thread(_context_clone_sandbox_mode, git_url)
             _sel_credential_grant("fetch_app_manifest", git_url)
         else:
             clone_env = anonymous_git_env()
@@ -359,15 +359,19 @@ async def _fetch_app_manifest(
                 git_url,
                 tmp_root,
             ]
+            forward_applied: list[bool] = []
             sandboxed_cmd, _cleanup = await wrap_argv_async(
                 clone_cmd,
                 mode=sandbox_mode,
                 forward_ssh_auth_sock=owner_designated,
+                forward_ssh_auth_sock_out=forward_applied if owner_designated else None,
                 _prepare=wrap_argv,
             )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
-            transport_env = _git_network_env(
-                _git_transport_env(credential_target, git_url, clone_env), git_url
+            transport_env = await _git_network_step_env(
+                _git_transport_env(credential_target, git_url, clone_env),
+                git_url,
+                forward_applied=forward_applied,
             )
             transport_env["LC_ALL"] = _GIT_CLONE_LOCALE
             proc = await create_subprocess_limited(

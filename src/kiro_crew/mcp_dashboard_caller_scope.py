@@ -15,7 +15,7 @@ from kiro_crew.constants import CHANNEL_SESSION_NAMESPACES
 from kiro_crew.mcp_dashboard_references import _get_rows
 from kiro_crew.mcp_tools.table import ToolContext
 from kiro_crew.sel import sel
-from kiro_crew.validation import SLACK_THREAD_TS_RE
+from kiro_crew.validation_parts.input_bounds import SLACK_THREAD_TS_RE
 
 SERVER_NAME = "kirocrew-dashboard"
 

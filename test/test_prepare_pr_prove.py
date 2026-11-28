@@ -459,6 +459,62 @@ def test_an_option_like_base_cannot_suppress_the_diff(tmp_path: Path) -> None:
     assert r.returncode != EXIT_NOTHING_TO_PROVE, r.stdout + r.stderr
 
 
+def test_a_branch_name_base_reads_its_origin_copy(tmp_path: Path) -> None:
+    """``--base main`` diffs against ``origin/main``, as the other prepare-pr scripts read it.
+
+    The clone's local ``main`` sits one commit behind its remote, and that commit
+    adds a test file. The change under proof edits only a doc. Diffing against the
+    local branch would count the remote's test file as part of the change; diffing
+    against ``origin/main`` finds no test file at all. ``prove()`` runs in this
+    process and returns before it would start a pytest child.
+    """
+    upstream = _repo(tmp_path)
+    _git(upstream, "checkout", "-q", "main")
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", str(upstream), str(clone))
+    _git(clone, "config", "user.email", "prove@test")
+    _git(clone, "config", "user.name", "prove")
+    (upstream / "test_other.py").write_text("def test_other():\n    assert True\n")
+    _git(upstream, "add", "-A")
+    _git(upstream, "commit", "-qm", "main moves on")
+    _git(clone, "fetch", "-q", "origin")
+    _git(clone, "checkout", "-q", "-b", "feature", "origin/main")
+    (clone / "NOTES.md").write_text("notes\n")
+    _git(clone, "add", "-A")
+    _git(clone, "commit", "-qm", "docs only")
+
+    result = _load_prove().prove(clone, "main", per_hunk=False)
+
+    assert result["reason"] == "the change adds or edits no test file", result
+
+
+@pytest.mark.parametrize(
+    "spelling", ["HEAD", "HEAD~1", "main~1", "origin/main", "refs/heads/main", "commit-id"]
+)
+def test_only_an_exact_branch_name_is_read_from_origin(tmp_path: Path, spelling: str) -> None:
+    """Every other ``--base`` spelling reaches ``merge-base`` as given.
+
+    A clone has ``refs/remotes/origin/HEAD``, so a probe that evaluated ``~``
+    under the remote prefix would read ``HEAD~1`` as ``origin/HEAD~1``: the
+    parent of the remote's default branch, not of this branch's tip. The remote
+    branch gets a second commit so that such a parent exists.
+    """
+    upstream = _repo(tmp_path)
+    _git(upstream, "checkout", "-q", "main")
+    _git(upstream, "commit", "-q", "--allow-empty", "-m", "main moves on")
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", str(upstream), str(clone))
+    _git(clone, "config", "user.email", "prove@test")
+    _git(clone, "config", "user.name", "prove")
+    _git(clone, "commit", "-q", "--allow-empty", "-m", "local work")
+    prove = _load_prove()
+    if spelling == "commit-id":
+        spelling = prove._git_ok(["rev-parse", "HEAD~1"], clone).strip()
+
+    assert prove.resolve_base(clone, "main") == "refs/remotes/origin/main"
+    assert prove.resolve_base(clone, spelling) == spelling
+
+
 def test_importing_prove_leaves_no_bytecode_in_the_checkout(monkeypatch, tmp_path: Path) -> None:
     """``_load_prove`` must not write ``__pycache__`` into the skill tree.
 
@@ -661,3 +717,37 @@ def test_a_crlf_production_file_round_trips_through_the_revert(tmp_path: Path) -
 
     r = _run(repo)
     assert r.returncode == EXIT_PROVEN, r.stdout + r.stderr
+
+
+def test_the_default_base_is_the_remote_branch_even_beside_a_local_namesake(
+    tmp_path: Path,
+) -> None:
+    """A local branch named ``origin/main`` does not stand in for the remote base.
+
+    git resolves a short ``origin/main`` to ``refs/heads/origin/main`` before
+    ``refs/remotes/origin/main``. Here that local branch sits one commit behind the
+    remote, whose newer commit adds a test file, and the change under proof edits
+    only a doc. Diffing against the local namesake would count the remote's test
+    file as part of the change. ``prove()`` runs in this process and returns
+    before it would start a pytest child.
+    """
+    upstream = _repo(tmp_path)
+    _git(upstream, "checkout", "-q", "main")
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", str(upstream), str(clone))
+    _git(clone, "config", "user.email", "prove@test")
+    _git(clone, "config", "user.name", "prove")
+    (upstream / "test_other.py").write_text("def test_other():\n    assert True\n")
+    _git(upstream, "add", "-A")
+    _git(upstream, "commit", "-qm", "main moves on")
+    _git(clone, "fetch", "-q", "origin")
+    _git(clone, "branch", "origin/main", "main")
+    _git(clone, "checkout", "-q", "-b", "feature", "refs/remotes/origin/main")
+    (clone / "NOTES.md").write_text("notes\n")
+    _git(clone, "add", "-A")
+    _git(clone, "commit", "-qm", "docs only")
+    prove = _load_prove()
+
+    result = prove.prove(clone, prove.DEFAULT_BASE, per_hunk=False)
+
+    assert result["reason"] == "the change adds or edits no test file", result

@@ -11,7 +11,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { Provider } from 'react-redux'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { defaultScheduler, notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { installInitialResizeObserver } from './initialResizeObserver'
@@ -326,6 +326,189 @@ describe('CrewChatWindow', () => {
       contentHeight = 3200
       await landReply('third reply')
       expect(scroller().scrollTop).toBe(300)
+    })
+  })
+
+  // The scroller is not a live region: under one, every re-render of a row
+  // re-reads it, offscreen speaker headings included. The window's one region
+  // speaks a reply once it settles, an approval once, and the user's own
+  // message when sent.
+  describe('screen reader announcements', () => {
+    const scroller = () => screen.getByTestId('crew-window-dock').previousElementSibling as HTMLElement
+    /** The live regions outside the composer dock (the composer keeps its own)
+     *  and outside each row's copy-image status, which speaks only that action. */
+    const transcriptRegions = () => [...screen.getByTestId('crew-chat-window').querySelectorAll('[aria-live]')]
+      .filter(el => !screen.getByTestId('crew-window-dock').contains(el))
+      .filter(el => el.getAttribute('data-testid') !== 'message-context-image-copied-status')
+    const feed = () => FakeEventSource.all[FakeEventSource.all.length - 1]
+    const detailReads = () => mocks.crewPeerGet.mock.calls.filter(c => c[1] !== 'api/chat/slots?crew=all').length
+    /** The answer the latest detail read was given. */
+    const lastDetailAnswer = () => {
+      const calls = mocks.crewPeerGet.mock.calls
+      let at = calls.length - 1
+      while (at >= 0 && calls[at][1] === 'api/chat/slots?crew=all') at--
+      return mocks.crewPeerGet.mock.results[at]?.value
+    }
+    /** Each text the region takes, in order. */
+    const spokenBy = (region: Element) => {
+      const said: string[] = []
+      const mo = new MutationObserver(() => { if (region.textContent) said.push(region.textContent) })
+      mo.observe(region, { childList: true, characterData: true, subtree: true })
+      onTestFinished(() => mo.disconnect())
+      return said
+    }
+    const user = { role: 'user', content: 'hi', ts: 't1' }
+
+    it('keeps aria-live off the scroller and speaks a finished reply once', async () => {
+      slotRow = { ...slotRow, running: true }
+      detail = { running: true, messages: [user] }
+      renderWindow()
+      await screen.findByText('hi', {}, PEER_ROW_WAIT)
+      expect(scroller()).not.toHaveAttribute('aria-live')
+      const regions = transcriptRegions()
+      expect(regions).toHaveLength(1)
+      expect(scroller().contains(regions[0])).toBe(false)
+      const said = spokenBy(regions[0])
+
+      // A row that lands mid-turn is not the reply yet.
+      detail = { running: true, messages: [user, { role: 'assistant', content: 'Reading the file', ts: 't2' }] }
+      feed().emit('chat_message', { slot: 'k1' })
+      await screen.findByText('Reading the file', {}, PEER_ROW_WAIT)
+      expect(said).toEqual([])
+
+      // The slot frame that ends the turn lands before the re-read with the reply.
+      detail = { running: false, messages: [...(detail.messages as object[]), { role: 'assistant', content: 'All done', ts: 't3' }] }
+      act(() => feed().emit('slots', [{ ...slotRow, running: false }]))
+      await screen.findByText('All done', {}, PEER_ROW_WAIT)
+      await waitFor(() => expect(said).toEqual(['Kiro Crew: All done']))
+
+      // Reading the same transcript again says nothing new. The read and its
+      // answer run inside `act`, with the query's notifications on microtasks,
+      // so the render, the hook's effect and any text it sets are all flushed
+      // when it ends: the absence below is a real one.
+      notifyManager.setScheduler(queueMicrotask)
+      onTestFinished(() => notifyManager.setScheduler(defaultScheduler))
+      const reads = detailReads()
+      await act(async () => {
+        feed().emit('chat_message', { slot: 'k1' })
+        await vi.waitFor(() => expect(detailReads()).toBe(reads + 1), PEER_ROW_WAIT)
+        await lastDetailAnswer()
+      })
+      expect(said).toEqual(['Kiro Crew: All done'])
+    })
+
+    // A coordinator approval (a sub-agent's) writes no row, and the line the
+    // window shows for it sits in the scroller, which is no longer live.
+    it('speaks an approval only the crew\'s own dashboard can answer', async () => {
+      slotRow = { ...slotRow, running: true }
+      detail = { running: true, messages: [user] }
+      renderWindow()
+      await screen.findByText('hi', {}, PEER_ROW_WAIT)
+      const said = spokenBy(transcriptRegions()[0])
+      const pending = { origin: 'coordinator', request_id: 'spawn:1', request_instance: 'r1', tool: 'spawn', tool_purpose: 'Start a helper' }
+      act(() => feed().emit('slots', [{ ...slotRow, pending_approval_info: pending }]))
+      await screen.findByTestId('crew-window-approval-elsewhere')
+      await waitFor(() => expect(said).toEqual(['Kiro Crew is waiting for your approval: Start a helper']))
+    })
+
+    // A session that opened empty gives its first turn's request no earlier row
+    // to arm on, and one re-read can bring the user row and the request together.
+    it('speaks an approval that lands with the first row of a session that opened empty', async () => {
+      detail = { running: false, messages: [] }
+      renderWindow()
+      // Both first reads have answered: the rows (none) and the slot record (its title).
+      await screen.findByText('No messages yet.', {}, PEER_ROW_WAIT)
+      await screen.findByText('Build fix', {}, PEER_ROW_WAIT)
+      const said = spokenBy(transcriptRegions()[0])
+      detail = { running: true, messages: [{ role: 'user', content: 'ship it', ts: 't1' }, permissionRow('7')] }
+      feed().emit('chat_message', { slot: 'k1' })
+      await screen.findByText('ship it', {}, PEER_ROW_WAIT)
+      await waitFor(() => expect(said).toEqual(['Kiro Crew is waiting for your approval: shell']))
+    })
+
+    // The two first reads are independent: the slot record (with the approval)
+    // can land after the rows, and the window still opens without speaking.
+    it('opens silently on an approval that was already pending', async () => {
+      let releaseSlot = () => {}
+      const pendingSlot = { ...slotRow, running: true, pending_approval_info: { origin: 'coordinator', request_id: 'spawn:1', request_instance: 'r1', tool: 'spawn' } }
+      detail = { running: true, messages: [user] }
+      const slotAnswer = new Promise(resolve => { releaseSlot = () => resolve([pendingSlot]) })
+      mocks.crewPeerGet.mockImplementation((_id: string, path: string) => path === 'api/chat/slots?crew=all'
+        ? slotAnswer
+        : Promise.resolve(detail))
+      renderWindow()
+      await screen.findByText('hi', {}, PEER_ROW_WAIT)
+      const [region] = transcriptRegions()
+      const said = spokenBy(region)
+      // The slot record lands inside `act`, notifications on microtasks, so
+      // everything it causes is flushed before the absence is asserted.
+      notifyManager.setScheduler(queueMicrotask)
+      onTestFinished(() => notifyManager.setScheduler(defaultScheduler))
+      await act(async () => {
+        releaseSlot()
+        await slotAnswer
+      })
+      await screen.findByTestId('crew-window-approval-elsewhere')
+      expect(said).toEqual([])
+      expect(region.textContent).toBe('')
+    })
+
+    // The rows can also land after the slot record, and the reply the window
+    // opens on is still history.
+    it('opens without speaking the reply it loads when the rows land last', async () => {
+      let releaseRows = () => {}
+      const rowsAnswer = new Promise(resolve => { releaseRows = () => resolve(detail) })
+      mocks.crewPeerGet.mockImplementation((_id: string, path: string) => path === 'api/chat/slots?crew=all'
+        ? Promise.resolve([slotRow])
+        : path.endsWith('?limit=200') ? rowsAnswer : Promise.resolve(detail))
+      renderWindow()
+      // The header names the crew once the slot record has landed.
+      await screen.findByText('On devbox', {}, PEER_ROW_WAIT)
+      const [region] = transcriptRegions()
+      const said = spokenBy(region)
+      notifyManager.setScheduler(queueMicrotask)
+      onTestFinished(() => notifyManager.setScheduler(defaultScheduler))
+      await act(async () => {
+        releaseRows()
+        await rowsAnswer
+      })
+      await screen.findByText('hello', {}, PEER_ROW_WAIT)
+      expect(said).toEqual([])
+      expect(region.textContent).toBe('')
+    })
+
+    it('speaks the user\'s own message when the window sends it', async () => {
+      renderWindow()
+      const box = await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
+      await waitFor(() => expect(box).not.toBeDisabled())
+      const [region] = transcriptRegions()
+      fireEvent.change(box, { target: { value: 'check the logs' } })
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await waitFor(() => expect(region.textContent).toBe('You: check the logs'))
+    })
+
+    // A send before the slot record lands keeps the reply on screen as history.
+    it('speaks a send made before the slot record lands, never the reply already shown', async () => {
+      let releaseSlot = () => {}
+      const slotAnswer = new Promise(resolve => { releaseSlot = () => resolve([slotRow]) })
+      mocks.crewPeerGet.mockImplementation((_id: string, path: string) => path === 'api/chat/slots?crew=all'
+        ? slotAnswer
+        : Promise.resolve(detail))
+      renderWindow()
+      await screen.findByText('hello', {}, PEER_ROW_WAIT)
+      const box = await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
+      await waitFor(() => expect(box).not.toBeDisabled())
+      const said = spokenBy(transcriptRegions()[0])
+      fireEvent.change(box, { target: { value: 'check the logs' } })
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: 'check the logs', slot: 'k1' }]))
+      notifyManager.setScheduler(queueMicrotask)
+      onTestFinished(() => notifyManager.setScheduler(defaultScheduler))
+      await act(async () => {
+        releaseSlot()
+        await slotAnswer
+      })
+      await waitFor(() => expect(said).toEqual(['You: check the logs']))
     })
   })
 

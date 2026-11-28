@@ -47,6 +47,7 @@ from kiro_crew.crew_log import bus
 from kiro_crew.metrics import crew_log_health as clh
 from kiro_crew.metrics.recorder import MetricsRecorder
 from kiro_crew.metrics.schema import validate_name
+from kiro_crew.testing.module_table import patched_sys_modules
 
 # --------------------------------------------------------------------------- #
 # helpers
@@ -282,7 +283,7 @@ class TestSavepointWriteAtTheCallSite:
         # and not that attribute, so both bindings are restored here: the entry by
         # ``patch.dict``, the parent attribute by ``patch``. Restoring only one
         # leaves a duplicate module behind for every later test.
-        with patch.dict(sys.modules), patch("kiro_crew.metrics.crew_log_health", clh):
+        with patched_sys_modules(), patch("kiro_crew.metrics.crew_log_health", clh):
             sys.modules.pop("kiro_crew.metrics.crew_log_health", None)
             checkpoint._count_savepoint_write(kind="session", written=True, elapsed_ms=1.0)
         assert sys.modules["kiro_crew.metrics.crew_log_health"] is clh
@@ -569,7 +570,7 @@ class TestNoReaderEverImportsTheCrewLog:
         ],
     )
     def test_an_unloaded_source_is_absent_rather_than_imported(self, reader, module):
-        with patch.dict(sys.modules, {module: None}):
+        with patched_sys_modules({module: None}):
             assert getattr(clh, reader)() is None
 
     def test_no_reader_calls_import_module_or_a_bare_import(self):
@@ -766,7 +767,7 @@ class TestTheWritePathIsUntouched:
         calls: list = []
         try:
             bus.subscribe(bus.TREE_ADVANCED, lambda e: (_ for _ in ()).throw(RuntimeError("x")))
-            with patch.dict(sys.modules, {"kiro_crew.metrics.crew_log_health": None}):
+            with patched_sys_modules({"kiro_crew.metrics.crew_log_health": None}):
                 with patch.object(clh, "bus_subscriber_error", calls.append):
                     bus.publish(bus.TREE_ADVANCED, object())
         finally:

@@ -4,7 +4,9 @@
 stays its only import path and its only patch surface: nothing but ``kiro_crew.subagent``
 imports a module of this package at runtime, except ``manager.py``, which imports the
 ``*_surface`` modules its class binds and ``run_limits`` for its default arguments, and
-``kiro_crew.subagent_standalone``, which imports ``host_memory`` and ``spawn_allowlists``.
+``kiro_crew.subagent_standalone``, which imports ``host_memory`` and ``spawn_allowlists``,
+and on first use reads a few names from ``start_pricing``, ``run_output`` and
+``agent_policy`` for the spawn and host-headroom tools (its ``STANDALONE_READS``).
 
 Each owner holds definitions taken verbatim from the one-module file and keeps no state of
 its own. :func:`kiro_crew._facade_compose.compose` makes every function an owner defines -- its module functions and

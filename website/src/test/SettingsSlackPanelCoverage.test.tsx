@@ -417,6 +417,23 @@ describe('SlackPanel tracked channels editor', () => {
     })
   })
 
+  it('sends the removal of a channel the last save added', async () => {
+    const { save } = seed({ tracking_channels: ['C000KEEP'] })
+    await hydrated()
+    vi.mocked(api.getSlackConfig).mockResolvedValue(config({ tracking_channels: ['C000KEEP', 'C000NEW'] }))
+    fireEvent.change(trackInput(), { target: { value: 'C000NEW' } })
+    fireEvent.click(within(trackRow()).getByRole('button', { name: 'Add' }))
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ tracking_channels_add: ['C000NEW'] })
+    await screen.findByText('Saved.', undefined, { timeout: 5_000 })
+    fireEvent.click(within(trackRow()).getByRole('button', { name: 'Remove C000NEW' }))
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2))
+    expect(save.mock.calls[1][0]).toMatchObject({ tracking_channels_remove: ['C000NEW'] })
+    expect(save.mock.calls[1][0]).not.toHaveProperty('tracking_channels_add')
+  })
+
   it('sends no tracking edit when the list was not touched', async () => {
     const { save } = seed({ tracking_channels: ['C000KEEP'] })
     await hydrated()
@@ -463,6 +480,95 @@ describe('SlackPanel save payload', () => {
       show_in_session_list: false,
     })
     expect(await screen.findByText('Saved.', undefined, { timeout: 5_000 })).toBeInTheDocument()
+  })
+
+  it('keeps an owner ID edited while the save was in flight', async () => {
+    const { settle } = seed({}, { save: { pending: true } })
+    await hydrated()
+    // The refetch after the save answers a changed config (now connected)
+    // that still holds the owner ID loaded before the save.
+    vi.mocked(api.getSlackConfig).mockResolvedValue(config({ connected: true }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Show thinking' }))
+    fireEvent.click(saveBtn())
+    fireEvent.change(screen.getByPlaceholderText('U0123ABC456'), { target: { value: 'U0DURINGSAVE' } })
+    await act(async () => { settle(OK) })
+    await waitFor(() => expect(vi.mocked(api.getSlackConfig).mock.calls.length).toBeGreaterThan(1))
+    // A reseed would run in the effect of the render that shows Connected, and
+    // findBy flushes effects before it resolves.
+    await screen.findByText('Connected')
+    expect(screen.getByPlaceholderText('U0123ABC456')).toHaveValue('U0DURINGSAVE')
+  })
+
+  it('does not resend an owner ID the last save stored', async () => {
+    const { save } = seed()
+    await hydrated()
+    vi.mocked(api.getSlackConfig).mockResolvedValue(config({ owner_id: 'U000NEW' }))
+    fireEvent.change(screen.getByPlaceholderText('U0123ABC456'), { target: { value: 'U000NEW' } })
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ owner_id: 'U000NEW' })
+    await screen.findByText('Saved.', undefined, { timeout: 5_000 })
+    fireEvent.click(screen.getByRole('switch', { name: 'Show thinking' }))
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2))
+    expect(save.mock.calls[1][0]).not.toHaveProperty('owner_id')
+  })
+
+  it('keeps a bot token typed during the first token save in its editor', async () => {
+    const { settle } = seed({}, { save: { pending: true } })
+    await hydrated()
+    vi.mocked(api.getSlackConfig).mockResolvedValue(config({
+      connected: true,
+      bot_token_set: true,
+      app_token_set: true,
+      bot_token_preview: 'xoxb-••••1111',
+      app_token_preview: 'xapp-••••2222',
+    }))
+    fireEvent.change(screen.getByLabelText('Slack bot token'), { target: { value: 'xoxb-first' } })
+    fireEvent.change(screen.getByLabelText('Slack app token'), { target: { value: 'xapp-first' } })
+    fireEvent.click(saveBtn())
+    fireEvent.change(screen.getByLabelText('Slack bot token'), { target: { value: 'xoxb-second' } })
+    await act(async () => { settle(OK) })
+    // Both fields render from the refetch that shows Connected.
+    await screen.findByText('Connected')
+    expect(screen.getByLabelText('Slack bot token')).toHaveValue('xoxb-second')
+    // The app token it sent is cleared: that field shows its stored preview.
+    expect(screen.queryByLabelText('Slack app token')).not.toBeInTheDocument()
+    expect(screen.getByText('xapp-••••2222')).toBeInTheDocument()
+  })
+
+  it('collapses a replaced bot token to its preview while an app token typed during the save stays', async () => {
+    const { settle } = seed({ bot_token_set: true, bot_token_preview: 'xoxb-••••aaaa' }, { save: { pending: true } })
+    await hydrated()
+    vi.mocked(api.getSlackConfig).mockResolvedValue(config({
+      connected: true,
+      bot_token_set: true,
+      app_token_set: true,
+      bot_token_preview: 'xoxb-••••1111',
+      app_token_preview: 'xapp-••••2222',
+    }))
+    fireEvent.click(screen.getByRole('button', { name: 'Replace' }))
+    fireEvent.change(screen.getByLabelText('Slack bot token'), { target: { value: 'xoxb-replacement' } })
+    fireEvent.click(saveBtn())
+    fireEvent.change(screen.getByLabelText('Slack app token'), { target: { value: 'xapp-during' } })
+    await act(async () => { settle(OK) })
+    // Both fields render from the refetch that shows Connected.
+    await screen.findByText('Connected')
+    expect(screen.queryByLabelText('Slack bot token')).not.toBeInTheDocument()
+    expect(screen.getByText('xoxb-••••1111')).toBeInTheDocument()
+    expect(screen.getByLabelText('Slack app token')).toHaveValue('xapp-during')
+  })
+
+  it('shows the channel name in an unnamed folder once the save lands', async () => {
+    const { settle } = seed({}, { save: { pending: true } })
+    await hydrated()
+    vi.mocked(api.getSlackConfig).mockResolvedValue(config({ connected: true }))
+    fireEvent.click(screen.getByRole('switch', { name: 'File sessions in a different folder' }))
+    fireEvent.click(saveBtn())
+    await act(async () => { settle(OK) })
+    // A reseed from this refetch (no folder stored) would hide the field.
+    await screen.findByText('Connected')
+    expect(screen.getByPlaceholderText('Slack')).toHaveValue('Slack')
   })
 
   it('leaves the owner out of a save that did not edit it, so a claim confirmed meanwhile stays', async () => {

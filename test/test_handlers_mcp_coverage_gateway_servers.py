@@ -1788,7 +1788,7 @@ class TestMeasureDue:
             McpServerInfo(name="vault", command="bin", env={"TOKEN": "secret://token"}),
         ]
         monkeypatch.setattr(disc, "list_servers", lambda *a, **k: list(listed))
-        monkeypatch.setattr(disc, "_spawn_excluded", lambda: {"held"})
+        monkeypatch.setattr(disc, "_spawn_excluded", lambda _servers: {"held"})
         monkeypatch.setattr(mcp_mod, "_collect_server_rows", lambda: rows)
         monkeypatch.setattr(
             mcp_mod,

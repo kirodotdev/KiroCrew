@@ -7,7 +7,7 @@
  * when it does not. Sync issues and notices keep their own wording.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import { i18next } from '../i18n/all'
@@ -105,6 +105,18 @@ describe('publication badge label', () => {
       .toBe('Published — still rolling out')
   })
 
+  it('says "Expired" once the gateway says so, over a sync issue or a notice', () => {
+    const expired = { expires_at: '2026-11-20T00:00:00+00:00', expired: true }
+    expect(publicationBadgeLabel(pub(expired), 'Acme Drive')).toBe('Expired')
+    expect(publicationBadgeLabel(pub({ ...expired, last_error: 'boom' }), 'Acme Drive')).toBe('Expired')
+    expect(publicationBadgeLabel(pub({ ...expired, notice: 'x', notice_code: 'rolling_out' }))).toBe('Expired')
+  })
+
+  it('keeps its text for a dated publication that has not expired', () => {
+    expect(publicationBadgeLabel(pub({ expires_at: '2026-12-20T00:00:00+00:00', expired: false }), 'Acme Drive'))
+      .toBe('Published to Acme Drive (private)')
+  })
+
   it('uses the same wording as the detail page in each language', async () => {
     await i18next.changeLanguage('de')
     expect(publicationBadgeLabel(pub(), 'Acme Drive')).toBe('Veröffentlicht in Acme Drive (private)')
@@ -123,6 +135,17 @@ describe('publication badge on the card and the row', () => {
     providers([{ name: 'acme_drive', display_name: 'Acme Drive' }])
     renderRow()
     expect(await screen.findByLabelText('Published to Acme Drive (private)')).toBeTruthy()
+  })
+
+  it('the card and the row badge an expired publication "Expired", not in the ok tone', async () => {
+    providers([{ name: 'acme_drive', display_name: 'Acme Drive' }])
+    const expired = { ...art, publication: pub({ expires_at: '2026-11-20T00:00:00+00:00', expired: true }) } as unknown as Artifact
+    for (const view of [renderCard(expired), renderRow(expired)]) {
+      const icon = await within(view.container).findByLabelText('Expired')
+      expect(icon.querySelector('title')?.textContent).toBe('Expired')
+      expect(icon.getAttribute('class')).not.toMatch(/\btext-ok\b/)
+      view.unmount()
+    }
   })
 
   it('an unlisted provider keeps today\'s text', async () => {
@@ -199,6 +222,16 @@ describe('a publication sync error is shown through ErrorNotice', () => {
     expect(notice.textContent).toContain('destination conflict')
     fireEvent.click(notice)
     expect(onOpen).not.toHaveBeenCalled()
+  })
+
+  it('the card and the row show no stored sync error once the publication expired', async () => {
+    providers([])
+    const expired = { ...art, publication: pub({ last_error: 'destination conflict', expired: true }) } as unknown as Artifact
+    for (const view of [renderCard(expired), renderRow(expired)]) {
+      await within(view.container).findByLabelText('Expired')
+      expect(within(view.container).queryByTestId('publication-sync-error')).toBeNull()
+      view.unmount()
+    }
   })
 
   it('no error, no notice', async () => {

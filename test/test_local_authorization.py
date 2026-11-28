@@ -19,6 +19,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.atomic_write import fsync_dir
+from kiro_crew.crew_teams import TEAM_MEMBERS_MAX
 from kiro_crew.dashboard import local_authorization as la
 from kiro_crew.dashboard.routes import local_authorization as routes
 from kiro_crew.dashboard.token_auth_paths import _BYPASS_EXACT_METHODS, _exact_method_bypass
@@ -497,6 +498,37 @@ def test_requests_and_grants_store_the_namespace_and_only_digests(store, clock, 
         assert secret not in text
 
 
+def test_grants_lists_what_works_now_oldest_first_and_no_secret(store, clock, tmp_path):
+    first = _tokens(store, clock, ["conversations:read"])
+    # Approved but never redeemed: the owner said yes, and no grant exists yet.
+    store.decide(_pending(store), True, caller=SUBJECT)
+    clock.now += 10
+    second = _tokens(store, clock)
+    listed = store.grants()
+    assert [g["grant_id"] for g in listed] == [first["grant_id"], second["grant_id"]]
+    assert listed[0] == {
+        "grant_id": first["grant_id"],
+        "namespace": "default",
+        "client_id": "notely-desktop",
+        "client_name": listed[1]["client_name"],
+        "scopes": ["conversations:read"],
+        "bots": {"mode": "selected", "ids": []},
+        "status": "active",
+        "created_at": listed[0]["created_at"],
+        "expires_at": listed[0]["created_at"] + la.REFRESH_MAX_SECS,
+    }
+    assert all(isinstance(g[k], int) for g in listed for k in ("created_at", "expires_at"))
+
+    store.revoke_grant(first["grant_id"], caller=SUBJECT)
+    assert [g["grant_id"] for g in store.grants()] == [second["grant_id"]]
+    # Unused for the idle time, its refresh has run out: it can mint no token again,
+    # so it is not listed, well before the grant's own end.
+    clock.now += la.REFRESH_IDLE_SECS - 1
+    assert [g["grant_id"] for g in store.grants()] == [second["grant_id"]]
+    clock.now += 1
+    assert store.grants() == [] and la.REFRESH_IDLE_SECS < la.REFRESH_MAX_SECS
+
+
 def test_a_restart_keeps_grants_and_pending_requests(store, clock, tmp_path):
     tokens = _tokens(store, clock)
     waiting = _pending(store)
@@ -526,6 +558,93 @@ def test_an_unreadable_record_grants_nothing(store, clock, tmp_path):
     assert store.verify(tokens["access_token"]) is None
     with pytest.raises(ValueError):
         store.authorize(ASK)
+
+
+def _reclaimed(store: la.LocalAuthorization, token: str, **claims: Any) -> str:
+    """*token* with *claims* changed, signed with *store*'s own key."""
+    head, body, _ = token.split(".")
+    merged = {**json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))), **claims}
+    body = base64.urlsafe_b64encode(json.dumps(merged).encode()).rstrip(b"=").decode()
+    return f"{head}.{body}.{store._sign(f'{head}.{body}')}"
+
+
+def test_refused_as_names_a_reason_only_for_a_token_this_gateway_signed(store, clock, tmp_path):
+    tokens = _tokens(store, clock)
+    token, grant_id = tokens["access_token"], tokens["grant_id"]
+    assert store.refused_as(token) == ("", "")  # it verifies: there is nothing to explain
+    assert store.revoke_grant(grant_id, caller=SUBJECT) is True
+    assert store.verify(token) is None
+    assert store.refused_as(token) == (la.REVOKED, grant_id)
+
+    other = la.LocalAuthorization(tmp_path / "other" / "state.json", b"z" * 32, clock)
+    head, body, signature = token.split(".")
+    not_ours = [
+        "",
+        "a.b.c",
+        "é.é.é",
+        f"{head}.{body}",
+        f"{head}.{body}.",
+        f"{head}.{body}.{signature[:-2]}{'AA' if signature[-2:] != 'AA' else 'BB'}",
+        _reclaimed(other, token),
+        _reclaimed(other, token, exp=int(clock.now) - 10),
+    ]
+    for candidate in not_ours:
+        assert store.verify(candidate) is None, candidate
+        assert store.refused_as(candidate) == ("", ""), candidate
+
+
+def test_refused_as_reads_the_record_only_after_the_signature_and_the_expiry(
+    store, clock, tmp_path, monkeypatch
+):
+    tokens = _tokens(store, clock)
+    token = tokens["access_token"]
+    assert store.revoke_grant(tokens["grant_id"], caller=SUBJECT) is True
+    reads: list[int] = []
+    real_load = store._load
+    monkeypatch.setattr(store, "_load", lambda: reads.append(1) or real_load())
+    other = la.LocalAuthorization(tmp_path / "other" / "state.json", b"z" * 32, clock)
+    assert store.refused_as(_reclaimed(other, token)) == ("", "")
+    assert store.refused_as(token[:-2] + ("AA" if token[-2:] != "AA" else "BB")) == ("", "")
+    assert store.refused_as(_reclaimed(store, token, exp="soon")) == ("", "")
+    assert reads == []
+    assert store.refused_as(token) == (la.REVOKED, tokens["grant_id"])
+    assert reads == [1]
+    clock.now += la.ACCESS_TTL_SECS
+    assert store.refused_as(token) == (la.EXPIRED, tokens["grant_id"])
+    assert reads == [1]  # past its expiry: the grant is not looked at
+
+
+def test_refused_as_says_expired_before_revoked_and_nothing_once_the_record_is_gone(
+    store, clock, tmp_path
+):
+    tokens = _tokens(store, clock)
+    token, grant_id = tokens["access_token"], tokens["grant_id"]
+    # In date, and its grant has no record: no reason.
+    assert store.refused_as(_reclaimed(store, token, grant_id="grt_0000000000000000")) == ("", "")
+    clock.now += la.ACCESS_TTL_SECS - 1
+    assert store.refused_as(token) == ("", "")
+    clock.now += 1
+    assert store.refused_as(token) == (la.EXPIRED, grant_id)
+    assert store.revoke_grant(grant_id, caller=SUBJECT) is True
+    assert store.refused_as(token) == (la.EXPIRED, grant_id)
+
+    # In date, and its grant's record is revoked: revoked until the record's own end.
+    record = json.loads((tmp_path / "local-grants" / "state.json").read_text(encoding="utf-8"))
+    late = _reclaimed(
+        store, token, exp=int(record["grants"][grant_id]["expires_at"]) + la.ACCESS_TTL_SECS
+    )
+    assert store.refused_as(late) == (la.REVOKED, grant_id)
+    clock.now = record["grants"][grant_id]["expires_at"]
+    assert store.refused_as(late) == ("", "")
+    assert store.verify(late) is None
+
+
+def test_refused_as_gives_no_reason_when_the_record_cannot_be_read(store, clock, tmp_path):
+    tokens = _tokens(store, clock)
+    assert store.revoke_grant(tokens["grant_id"], caller=SUBJECT) is True
+    (tmp_path / "local-grants" / "state.json").write_text("{not json", encoding="utf-8")
+    assert store.refused_as(tokens["access_token"]) == ("", "")
+    assert store.verify(tokens["access_token"]) is None
 
 
 @pytest.mark.parametrize(
@@ -1073,3 +1192,167 @@ def test_token_auth_lets_through_one_method_per_route_and_no_owner_route():
         assert _BYPASS_EXACT_METHODS[path] == frozenset({method})
     assert not _exact_method_bypass("/oauth/authorize", "POST")
     assert not any(path.startswith("/v1/") for path in _BYPASS_EXACT_METHODS)
+
+
+# ── the Bots an app asks for, and the Bots the owner gives ───────────────────
+
+BOTS = ["scout", "planner"]
+BOTS_ASK = dict(ASK)
+
+
+def _redeemed(store, clock, ask, **decision) -> dict[str, Any]:
+    """The grant record of a request made with *ask* and approved with *decision*."""
+    kind, view = store.authorize(ask, BOTS)
+    assert kind == "created"
+    request_id = str(view["request_id"])
+    store.decide(request_id, True, caller=SUBJECT, **decision)
+    clock.now += la.POLL_INTERVAL_SECS
+    kind, location = store.authorize({**ask, "request_id": request_id}, BOTS)
+    assert kind == "redirect"
+    code = parse_qs(urlsplit(location).query)["code"][0]
+    tokens = store.exchange_code("notely-desktop", code, REDIRECT, VERIFIER, ISSUER)
+    return next(g for g in store.grants() if g["grant_id"] == tokens["grant_id"])
+
+
+def test_a_request_records_the_bots_the_app_asks_for(store):
+    kind, view = store.authorize(BOTS_ASK, BOTS)
+    assert kind == "created"
+    assert view["requested_bots"] == ["scout", "planner"]
+    assert store.request(view["request_id"])["requested_bots"] == ["scout", "planner"]
+    assert store.pending()[0]["requested_bots"] == ["scout", "planner"]
+
+
+def test_a_request_that_names_no_bot_asks_for_none(store):
+    _, view = store.authorize(ASK)
+    assert view["requested_bots"] == []
+
+
+@pytest.mark.parametrize(
+    "bots",
+    [
+        ["scout", "scout"],
+        ["sco\x1bt"],
+        ["x" * (la.MEMBER_NAME_MAX_CHARS + 1)],
+        [str(i) for i in range(TEAM_MEMBERS_MAX + 1)],
+    ],
+)
+def test_a_malformed_bots_parameter_is_refused_and_nothing_waits(store, bots):
+    with pytest.raises(la.AuthError) as refused:
+        store.authorize(ASK, bots)
+    assert refused.value.error == "invalid_request"
+    assert store.pending() == []
+
+
+def test_the_store_knows_no_roster_so_any_well_formed_bot_name_waits(store):
+    """Whether a Bot exists is checked when the owner decides, never when the app asks."""
+    kind, view = store.authorize(ASK, ["no-such-bot-anywhere"])
+    assert (kind, view["requested_bots"]) == ("created", ["no-such-bot-anywhere"])
+
+
+def test_asking_again_with_other_bots_is_refused(store, clock):
+    _, view = store.authorize(BOTS_ASK, BOTS)
+    clock.now += la.POLL_INTERVAL_SECS
+    with pytest.raises(la.AuthError) as refused:
+        store.authorize({**BOTS_ASK, "request_id": view["request_id"]}, ["scout"])
+    assert refused.value.error == "invalid_request"
+
+
+def test_an_approval_that_names_no_bot_gives_none(store, clock):
+    grant = _redeemed(store, clock, BOTS_ASK)
+    assert grant["bots"] == {"mode": "selected", "ids": []}
+
+
+def test_the_owner_gives_all_or_fewer_of_the_bots_asked_for(store, clock):
+    _, view = store.authorize(BOTS_ASK, BOTS)
+    answered = store.decide(view["request_id"], True, bots=["planner"], caller=SUBJECT)
+    assert answered["granted_bots"] == ["planner"]
+    assert store.request(view["request_id"])["granted_bots"] == ["planner"]
+    grant = _redeemed(store, clock, {**BOTS_ASK, "state": "second"}, bots=["scout", "planner"])
+    assert grant["bots"] == {"mode": "selected", "ids": ["scout", "planner"]}
+
+
+@pytest.mark.parametrize("bots", [["writer"], ["scout", "scout"], ["scout", "writer"]])
+def test_the_owner_cannot_give_a_bot_that_was_not_asked_for_or_one_twice(store, bots):
+    _, view = store.authorize(BOTS_ASK, BOTS)
+    with pytest.raises(la.BotsNotRequested):
+        store.decide(view["request_id"], True, bots=bots, caller=SUBJECT)
+    assert store.request(view["request_id"])["status"] == "pending"
+
+
+def test_a_denied_request_gives_no_bots(store):
+    _, view = store.authorize(BOTS_ASK, BOTS)
+    answered = store.decide(view["request_id"], False, caller=SUBJECT)
+    assert "granted_bots" not in answered
+
+
+def test_a_request_and_a_grant_recorded_without_bots_read_as_none(store, clock, tmp_path):
+    """A record written before requests carried Bots has no such key."""
+    tokens = _tokens(store, clock)
+    path = tmp_path / "local-grants" / "state.json"
+    state = json.loads(path.read_text(encoding="utf-8"))
+    for rec in state["requests"].values():
+        rec.pop("bots", None)
+        rec.pop("granted_bots", None)
+    for grant in state["grants"].values():
+        grant.pop("bots", None)
+    path.write_text(json.dumps(state), encoding="utf-8")
+    (grant,) = store.grants()
+    assert grant["grant_id"] == tokens["grant_id"]
+    assert grant["bots"] == {"mode": "selected", "ids": []}
+    (request_id,) = state["requests"]
+    view = store.request(request_id)
+    assert (view["requested_bots"], view["granted_bots"]) == ([], [])
+    # The app can still ask again about it, and still holds a working token.
+    assert store.verify(tokens["access_token"]) is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bots",
+    [
+        ["scout", "scout"],
+        ["sco\x1bt"],
+        ["x" * (la.MEMBER_NAME_MAX_CHARS + 1)],
+        [str(i) for i in range(TEAM_MEMBERS_MAX + 1)],
+    ],
+)
+async def test_malformed_repeated_bots_over_http_leave_nothing_waiting(client, store, bots):
+    params = list(ASK.items()) + [("bots", bot) for bot in bots]
+    answer = await client.get("/oauth/authorize", params=params)
+    assert answer.status == 400
+    assert (await answer.json())["error"] == "invalid_request"
+    assert store.pending() == []
+
+
+def test_asking_again_about_a_record_without_bots_asks_for_none(store, clock):
+    _, view = store.authorize(ASK)
+    state = store._load()
+    state["requests"][view["request_id"]].pop("bots")
+    store._save(state, clock.now)
+    clock.now += la.POLL_INTERVAL_SECS
+    kind, again = store.authorize({**ASK, "request_id": view["request_id"]})
+    assert kind == "pending" and again["requested_bots"] == []
+    with pytest.raises(la.AuthError) as refused:
+        store.authorize({**ASK, "request_id": view["request_id"]}, ["dr. eggbot"])
+    assert refused.value.error == "invalid_request"
+
+
+@pytest.mark.asyncio
+async def test_malformed_bots_with_invalid_scope_is_400_not_a_redirect(client, store):
+    response = await client.get(
+        "/oauth/authorize",
+        params={**ASK, "scope": "bogus", "bots": "sco\x1bt"},
+        allow_redirects=False,
+    )
+    assert response.status == 400
+    assert (await response.json())["error"] == "invalid_request"
+    assert "Location" not in response.headers
+    assert store.pending() == []
+
+
+def test_the_bot_count_bound_accepts_the_cap_and_refuses_one_more():
+    assert la.MAX_REQUESTED_BOTS == TEAM_MEMBERS_MAX == 500
+    bots = [str(i) for i in range(la.MAX_REQUESTED_BOTS)]
+    la.validate_bots(bots)
+    with pytest.raises(la.AuthError, match="bots is malformed"):
+        la.validate_bots([*bots, str(la.MAX_REQUESTED_BOTS)])

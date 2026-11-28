@@ -129,17 +129,34 @@ jobs:
           #     check-run POSTs, so nothing was published and no verdict is
           #     withheld. Report it and exit 0.
           # stderr is no longer discarded, so a failing query now says why.
-          if ! candidates="$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
-            | jq -rs --arg sha "$head_sha" --arg repo "$head_repo" --arg ref "$head_ref" '
-                [.[][]
-                  | select(.state == "open"
-                           and .head.repo.full_name == $repo
-                           and .head.ref == $ref
-                           and .head.sha == $sha)]
-              ')"; then
-            echo "::error::could not query open PRs while resolving $head_sha - the query itself failed; see the error above"
-            exit 1
+          # Ask for this head's own branch before walking every open PR:
+          # `head=<owner>:<ref>` is the list endpoint's own filter, so the answer is
+          # one page instead of one request per hundred open PRs. The filter only
+          # narrows what the match below reads; the match still decides. The owner
+          # and the branch name are the fork's to choose, so they are URL-encoded
+          # as one value and never spliced into the query. A filtered answer with
+          # no match falls through to the full walk, which also finds a PR whose
+          # head label differs from its head repository's owner.
+          head_filter=""
+          if [ -n "$head_repo" ] && [ -n "$head_ref" ]; then
+            head_filter="&head=$(jq -rn --arg v "${head_repo%%/*}:$head_ref" '$v | @uri')"
           fi
+          for head_param in "$head_filter" ""; do
+            if ! candidates="$(gh api "repos/$REPO/pulls?state=open${head_param}&per_page=100" --paginate \
+              | jq -rs --arg sha "$head_sha" --arg repo "$head_repo" --arg ref "$head_ref" '
+                  [.[][]
+                    | select(.state == "open"
+                             and .head.repo.full_name == $repo
+                             and .head.ref == $ref
+                             and .head.sha == $sha)]
+                ')"; then
+              echo "::error::could not query open PRs while resolving $head_sha - the query itself failed; see the error above"
+              exit 1
+            fi
+            [ "$(printf '%s' "$candidates" | jq -r 'length')" = "0" ] || break
+            [ -n "$head_param" ] || break
+            echo "No open PR matched this head on its own branch's page; walking every open PR."
+          done
           candidate_count="$(printf '%s' "$candidates" | jq -r 'length')"
           if [ "$candidate_count" -eq 0 ]; then
             echo "::notice::no open PR has head $head_sha on $head_repo:$head_ref - superseded or closed while CI was queued; nothing to evaluate"

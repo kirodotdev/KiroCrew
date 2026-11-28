@@ -98,7 +98,16 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     # without this check the overlap refusal would still land at spawn time,
     # after the bad folder was committed. Same helper, same message; off the
     # loop because it stats the runtime paths.
-    overlap = await asyncio.to_thread(voice_runtime_workspace_conflict, rp)
+    # Judged by the backend the spawn will pick (member-aware gate); a pin that
+    # cannot start keeps the strict answer.
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
+    from kiro_crew.dashboard.chat_handlers import _configured_backend_for_slot
+
+    try:
+        spawn_backend: str | None = await _configured_backend_for_slot(slot)
+    except CrewmateHarnessUnavailable:
+        spawn_backend = None
+    overlap = await asyncio.to_thread(voice_runtime_workspace_conflict, rp, backend=spawn_backend)
     if overlap is not None:
         return f"Error: {overlap}"
     slot.project = rp
@@ -616,8 +625,8 @@ async def _apply_chat_rename(
     has already admitted only a turn carrying the user-origin mark on a
     user-facing conversation that holds this slot.
 
-    The mark alone does not prove a person sent the turn (a script cron's
-    ``send_to_session`` carries it with actor ``cron``), so the slot checks also
+    The mark alone does not prove a person sent the turn (it is a flag a
+    dispatcher passes), so the slot checks also
     refuse, as ``not_user_turn``, a turn that fails any of main's own person
     checks: a person's actor (``producer_turn_actor`` in
     ``turn_gate._PERSON_ACTORS``), ``slot._turn_user_sent``, which the dashboard

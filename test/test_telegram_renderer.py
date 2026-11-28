@@ -25,6 +25,7 @@ from kiro_crew.messaging.renderer import (
     OutputEvent,
     session_provenance_tag,
 )
+from kiro_crew.messaging.steer_ack import find_steering_acks
 from kiro_crew.telegram import renderer as telegram_renderer
 from kiro_crew.telegram import renderer_live
 from kiro_crew.telegram.renderer import (
@@ -444,20 +445,13 @@ class TestRenderer:
         across_lines = "[STEERING is the feature I mean\n\nsee the [docs](x) for it"
         assert _strip_steering(across_lines) == across_lines
 
-    def test_a_dashed_steer_id_is_one_frame_to_both_patterns(self) -> None:
+    def test_a_dashed_steer_id_is_a_frame(self) -> None:
         """``messaging.driver`` accepts ``[0-9a-f-]+`` for the id, so a dashed id
-        is a real frame -- and the two patterns here have to agree about it.
-
-        ``_rotate_at_markers`` reads the summary at the offset the MARKER pattern
-        chose, so an id class the marker accepts and the summary does not leaves
-        the steer chip with no summary at all, which is the only new information
-        that chip carries.
-        """
+        is a real frame, and ``_rotate_at_markers`` gets its summary, the only new
+        information the steer chip carries."""
         text = "[STEERING steer-a180-ae7f: checked the job id] tail"
-        marker = telegram_renderer._STEER_MARKER_RE.search(text)
-        assert marker is not None
-        summary = telegram_renderer._STEER_SUMMARY_RE.match(text, marker.start())
-        assert summary is not None and summary.group(1) == "checked the job id"
+        (ack,) = find_steering_acks(text, unbalanced=False)
+        assert ack.summary.lstrip() == "checked the job id"
         assert _strip_steering(text) == "tail"
 
     def test_the_renderer_patterns_agree_with_the_driver_on_a_frame_corpus(self) -> None:
@@ -471,7 +465,6 @@ class TestRenderer:
         ]
         for frame in frames:
             assert messaging_driver._STEER_MARKER_RE.match(frame) is not None, frame
-            assert telegram_renderer._STEER_MARKER_RE.fullmatch(frame) is not None, frame
             assert _strip_steering(f"before {frame} after") == "before  after"
         not_frames = [
             "[STEERING]",
@@ -480,7 +473,7 @@ class TestRenderer:
         ]
         for frame in not_frames:
             assert messaging_driver._STEER_MARKER_RE.match(frame) is None, frame
-            assert telegram_renderer._STEER_MARKER_RE.search(frame) is None, frame
+            assert _strip_steering(f"before {frame} after") == f"before {frame} after", frame
 
     def _drive(self, events: list[OutputEvent]) -> FakeClient:
         cli = FakeClient()

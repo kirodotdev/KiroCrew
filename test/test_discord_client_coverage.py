@@ -1238,9 +1238,9 @@ class TestDispatchNormalization:
             username="zed",
         )
 
-    @pytest.mark.parametrize("kind", [1, 4, 5])
+    @pytest.mark.parametrize("kind", [1, 5])
     def test_unanswerable_interaction_types_are_ignored(self, kind: int) -> None:
-        """PING, autocomplete and modal submit are dropped at the boundary.
+        """PING and modal submit are dropped at the boundary.
 
         Each needs its own callback shape inside Discord's ~3s deadline, so
         forwarding one to a handler that cannot answer it would leave the user's

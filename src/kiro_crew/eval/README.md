@@ -73,7 +73,10 @@ kirocrew eval --dir ./evals --baseline eval_results/main.json --junit eval.xml
 ```
 
 A scenario's score is its share of passed assertions (the `assertions` field of the
-JSON summary, `passed/total`), or 1 or 0 when it has no assertions. `--baseline`
+JSON summary, `passed/total`), or 1 or 0 when it has no assertions. A turn that errors
+counts every assertion it would have checked as failed, so its scenario's score falls.
+A scenario that checked nothing because its only assertions are `judge` ones and
+`--judge` is off has no score (see [Assertion types](#assertion-types)). `--baseline`
 takes a file an earlier run wrote; `--max-drop` is the fall in a score, as a fraction
 from 0 to 1, that is still allowed (default `0`: any fall counts).
 
@@ -82,12 +85,15 @@ With a baseline, one line names each scenario whose score fell by more than
 exits 1. The baseline only adds to the exit code: every failed scenario still fails the
 run, as it does without one, so `--max-drop` decides which falls are named regressions,
 never whether a failure counts. A score alone cannot tell a known failure from a new
-one (a turn that errors records no assertion result, so a scenario can fail at an
-unchanged score), which is why the baseline never excuses a failure. A scenario in only
-one of the two runs is printed as `Not compared` and is never a regression.
+one, which is why the baseline never excuses a failure. A scenario this run ran but
+could not score, where the baseline has a score, is named too
+(`Regression: alpha: 1.00 -> not evaluated`). A scenario in only one of the two runs
+is printed as `Not compared` and is never a regression, so a run of a few scenarios
+can be gated on a saved run of all of them.
 
 `--junit PATH` writes one test case per scenario, with a failure for each failed
-scenario; a regression's failure carries its `score fell from ... to ...` line. The file
+scenario and a `<skipped>` for each one that checked nothing; a regression's failure
+carries its `score fell from ... to ...` (or `not evaluated; ...`) line. The file
 is written whether or not the run passes, through the same guard the benchmark reports
 use: a destination the sensitive-path check protects, or a link at the file name, is
 refused rather than written through.
@@ -126,6 +132,15 @@ own eval home, and scores them PASSED / FAILED / VOID (`tasks.py`, `arms.py`).
 | `lesson_application` | 2 | 2 | lesson_application | ~30s |
 | `context_accumulation` | 3 | 3 | context_accumulation, memory_recall | ~2 min |
 | `subagent_policy` | 1 | 1 | delegation_value, delegation_lifecycle | provider-dependent |
+| `guide_first` | 1 | 1 | guide_first | ~30s |
+
+## Guide first
+
+`kirocrew eval guide_first` asks one real where-is question about Kiro Crew
+("How do I turn off the recurring 'Goal / Needs you / Doing' message?") and
+passes only when the turn calls `find_ui` and then `guide_start`, the rule the
+agent and bot prompts state. A turn that reads the source and answers in words
+fails it.
 
 ## Delegation decisions
 
@@ -271,7 +286,7 @@ Scenarios are JSON files in `src/kiro_crew/eval/scenarios/`. Each defines sessio
 | `not_contains` | Response does not contain value |
 | `regex` | Response matches regex pattern |
 | `equals` | Response equals value exactly (trimmed) |
-| `judge` | Runs only with `--judge`; otherwise it is not scored. A separate LLM judge scores the response 1–5 against the assertion's `value`, else the scenario's top-level `judge_criteria`, else its `description`; it passes at a score of 3 or more (`LLMJudge` `pass_threshold` 3.0, no CLI override). An unparseable judge reply scores 0 and fails |
+| `judge` | Runs only with `--judge`; otherwise it is not checked. A turn, session or scenario whose only assertions are `judge` ones, and in which no turn errored, then reads `SKIP` (not evaluated), never `PASS`: the JSON summary records the count as `not_run` and marks the scenario `not_evaluated`, it is left out of the dimension rates, and it does not count as passed, so the run exits 1. A turn that also has other assertions is scored on those. A separate LLM judge scores the response 1–5 against the assertion's `value`, else the scenario's top-level `judge_criteria`, else its `description`; it passes at a score of 3 or more (`LLMJudge` `pass_threshold` 3.0, no CLI override). An unparseable judge reply scores 0 and fails |
 
 String-matching assertions are case-insensitive by default. Add `case_sensitive: true` to override.
 

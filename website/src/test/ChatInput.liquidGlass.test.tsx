@@ -145,11 +145,11 @@ describe('composer liquid glass', () => {
   })
 
   it('lets the follow-up chips keep their top and bottom hairline', () => {
-    // The chip row is overflow-x:auto, which makes overflow-y auto too, and the
-    // glass hairline is drawn 0.5px OUTSIDE each chip's box -- a row exactly one
-    // chip tall clipped it top and bottom. One pixel of padding, cancelled by
-    // the negative margin, lets the line through at the same row height.
-    expect(FOLLOW_UP_BAR_SRC).toMatch(/className=\{`flex \$\{CHIP_ROW_GAP\} overflow-x-auto items-end py-px -my-px`\}/)
+    // The chip row is overflow-x:auto, which makes overflow-y auto too, so a row
+    // exactly one chip tall clipped the glass hairline and the focus ring top and
+    // bottom. Block-axis padding, cancelled by the negative margin, leaves room
+    // at the same row height; the inline axis stays flush with the edge fades.
+    expect(FOLLOW_UP_BAR_SRC).toMatch(/className=\{`flex \$\{CHIP_ROW_GAP\} overflow-x-auto items-end py-1 -my-1`\}/)
   })
 
   it('gives every solidified pane the same 1px --border outline, unchanged on focus', () => {
@@ -167,7 +167,7 @@ describe('composer liquid glass', () => {
       // the glass BUTTONS (chips, memory chip, jump pill), so each block
       // re-asserts the global `:focus-visible` ring -- the app's existing one,
       // which those buttons already wear in glass mode.
-      expect(rule, String(block)).toContain('.liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:2px !important }')
+      expect(rule, String(block)).toContain('.liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:var(--lg-focus-offset, 2px) !important }')
     }
   })
 

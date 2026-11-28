@@ -43,6 +43,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_SERIAL_SESSION_STARTS,
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
+    METHOD_SESSION_RESUME,
     METHOD_SET_MODE,
     JsonRpcRequest,
 )
@@ -670,6 +671,7 @@ async def _send_and_await(
         "initialize": "initialize",
         METHOD_SESSION_NEW: "session_new",
         METHOD_SESSION_LOAD: "session_load",
+        METHOD_SESSION_RESUME: "session_load",
         METHOD_SET_MODE: "set_mode",
     }.get(method)
     started = time.monotonic()

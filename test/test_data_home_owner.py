@@ -133,10 +133,24 @@ def test_a_normal_account_is_never_refused(tmp_path):
     assert data_home_owner.root_run_refusal(_home(tmp_path), "gateway", ["gateway"]) == ""
 
 
-def test_root_in_roots_own_home_is_left_alone(monkeypatch):
+def test_root_in_roots_own_home_is_left_alone(tmp_path, monkeypatch):
     monkeypatch.setattr(data_home_owner.os, "geteuid", lambda: 0)
-    # The closest existing folder is "/", which root owns.
-    home = Path("/") / "kirocrew-test-absent" / "crew"
+    # The closest existing folder is root's. Its owner is stated here, not read off
+    # the host's "/", which a user namespace shows as the overflow uid 65534.
+    roots_folder = tmp_path / "roots-own"
+    roots_folder.mkdir()
+    home = roots_folder / "kirocrew-test-absent" / "crew"
+    real_stat = Path.stat
+
+    def _stat_owned_by_root(self, *args, **kwargs):
+        info = real_stat(self, *args, **kwargs)
+        if self == roots_folder:
+            fields = list(info)
+            fields[4] = 0  # st_uid
+            return os.stat_result(tuple(fields))
+        return info
+
+    monkeypatch.setattr(Path, "stat", _stat_owned_by_root)
     assert data_home_owner.root_run_refusal(home, "gateway", ["gateway"]) == ""
 
 

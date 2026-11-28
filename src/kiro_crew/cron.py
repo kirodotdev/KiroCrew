@@ -386,12 +386,12 @@ _RESTART_STOP_SECS = 5.0
 async def stop_cron_before_restart(crons: CronService | None) -> None:
     """Stop the gateway's cron service for a planned in-app restart. Never raises.
 
-    The dashboard Restart (and update apply), the gateway's update restart and
-    the Slack ``/kirocrew restart`` end in an exec or a hard exit, so the
+    The dashboard's ``_restart_gateway`` behind ``POST /api/restart`` and the
+    Slack ``/kirocrew restart`` end in an exec or a hard exit, so the
     gateway's ``_shutdown``, where ``stop()`` runs on a SIGTERM, never runs. A
     run in flight would end with the process image: no history row, no notice
     (``set_interrupt_alert``), and, as an exec keeps the pid, an in-flight marker
-    whose writer still reads as alive. Each of those restarts calls this past
+    whose writer still reads as alive. Each of those two restarts calls this past
     its last refusal and before its ``close_all()``, the order ``_shutdown``
     takes. Bounded by ``_RESTART_STOP_SECS``: a stop still running then is
     cancelled, not awaited, and the restart goes on. ``None`` is a no-op.
@@ -783,6 +783,7 @@ class CronService:
     attach_run_task = _run_registry.attach_run_task
     discard_finished_run = _run_registry.discard_finished_run
     running_since = _run_registry.running_since
+    run_waiting_until = _run_registry.run_waiting_until
     run_trigger = _run_registry.run_trigger
     set_refresh_callback = _run_registry.set_refresh_callback
     set_timeout_alert = _run_registry.set_timeout_alert

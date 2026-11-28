@@ -31,6 +31,7 @@ import { useAppSelector, useAppDispatch } from '../store'
 import { triggerRefresh } from '../store/dashboardSlice'
 import { SaveCreateLabel, scheduleLabel, scheduleMinutes } from '../utils/cronUtils'
 import { isPartlyBlocked } from '../utils/cronPartlyBlocked'
+import { runWaitingUntil } from '../utils/cronRunWait'
 import { isAutoPaused } from '../appRunState'
 import { useSortableTable } from '../hooks/useSortableTable'
 import { ResizableTableHead, SortableTableHead } from '../components/SortableHeader'
@@ -42,7 +43,7 @@ import { groupJobsByFolder, loadCollapsedFolders, saveCollapsedFolders } from '.
 import type { CronFolder } from '../utils/cronFolders'
 import CronFolderHeader from '../components/CronFolderHeader'
 import CronBatchActionsMenu from '../components/CronBatchActionsMenu'
-import { useScheduleBatchActions, BatchRunConfirmDialog } from './SchedulePageBatchActions'
+import { useScheduleBatchActions, BatchRunConfirmDialog, TelegramResultNotice } from './SchedulePageBatchActions'
 import ScheduleCrewmateRosterNotice from './ScheduleCrewmateRosterNotice'
 import { JobRunText } from './SchedulePageJobRunText'
 import CronRowActions from '../components/CronRowActions'
@@ -706,7 +707,7 @@ export default function SchedulePage() {
   }, [selectedIds, load])
   const confirmArmed = confirmText.trim().toLowerCase() === BULK_DELETE_TOKEN
 
-  const { batchBusy, runConfirmIds, runSkipped, batchMenuLayer, closeRunConfirm, closeBatchConfirm, applyBatch, onBatchAction } =
+  const { batchBusy, runConfirmIds, runSkipped, batchMenuLayer, closeRunConfirm, closeBatchConfirm, applyBatch, onBatchAction, sendToTelegram, telegramResult } =
     useScheduleBatchActions({ selectedJobs, running, load, setSelectedIds, setActionError, setBatchConfirm })
 
   // Open the create panel blank (from "Create your first job" / "Add Job").
@@ -944,6 +945,7 @@ export default function SchedulePage() {
                       await load()
                     }}
                     onNewFolder={handleNewFolder}
+                    onSendToTelegram={sendToTelegram}
                   />
                 </div>
               )}
@@ -984,6 +986,7 @@ export default function SchedulePage() {
             {actionError?.id === 'batch-action' && (
               <ErrorNotice className="mb-2" message={actionError.msg} askAgent testId="schedule-batch-action-error" />
             )}
+            {actionError?.id === 'batch-telegram' && <TelegramResultNotice failed={actionError.msg} result={telegramResult} />}
             {/* `table-fixed`: the column widths below are a CONTRACT, not a
                 hint. With auto layout a single long cell (an agent name, a cron
                 expression) widens the whole table past its container and the
@@ -1198,7 +1201,7 @@ export default function SchedulePage() {
                     without it. */}
                 <TableCell className="truncate" title={j.schedule}>{scheduleLabel(j)}{j.timezone && <span className="block truncate text-[11px] text-muted">{jobZoneCaption(j)}</span>}{j.strict_schedule && <span className="flex items-center gap-1 text-[11px] text-muted" title={i18nT('pages.schedulePage.enable_strict_schedule_no_jitter')} data-testid="schedule-strict-badge"><Clock size={11} className="shrink-0" aria-hidden="true" />{i18nT('pages.schedulePage.strict_badge')}</span>}</TableCell>
                 <TableCell className="align-top"><CollapsibleMessage message={j.script ? j.script : j.command ? j.command : j.safeMessage} /></TableCell>
-                <TableCell title={j.last_error ? '' : j.last_result || ''}><span className="block truncate">{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : isPartlyBlocked(j) ? <Badge variant="warn" title={`${i18nT('pages.schedulePage.partial_hint')}\n${j.last_error || ''}`}>{i18nT('pages.schedulePage.partial')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : isAutoPaused(j) ? <Badge variant="err" className="whitespace-normal max-w-full rounded-lg leading-tight">{i18nT('pages.membersPage.schedule_state_auto_paused', { count: j.consecutive_failures })}</Badge> : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}</span></TableCell>
+                <TableCell title={j.last_error ? '' : j.last_result || ''}><span className="block truncate">{runWaitingUntil(j) !== null ? <Badge variant="muted" title={i18nT('pages.schedulePage.waiting_to_start_hint')} data-testid="cron-waiting-badge">{i18nT('pages.schedulePage.waiting_to_start')}</Badge> : j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : isPartlyBlocked(j) ? <Badge variant="warn" title={`${i18nT('pages.schedulePage.partial_hint')}\n${j.last_error || ''}`}>{i18nT('pages.schedulePage.partial')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : isAutoPaused(j) ? <Badge variant="err" className="whitespace-normal max-w-full rounded-lg leading-tight">{i18nT('pages.membersPage.schedule_state_auto_paused', { count: j.consecutive_failures })}</Badge> : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}</span>{runWaitingUntil(j) !== null && <span className="block whitespace-normal text-[11px] leading-tight text-muted" data-testid="cron-waiting-starts-by">{i18nT('pages.schedulePage.starts_by', { time: fmtTime(runWaitingUntil(j)) })}</span>}</TableCell>
                 <TableCell className="text-muted">
                   <span className="block truncate">{fmtAgo(j.last_run_ts)}</span>
                   {/* Retry telemetry for the LAST run only: a job that needed
@@ -1264,7 +1267,7 @@ export default function SchedulePage() {
                   {jobsTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
                   <div className="flex items-center gap-1.5">
                     {j.is_running
-                      ? <span title={i18nT('pages.schedulePage.cancel_running_execution')}><Btn danger onClick={() => { if (!cancelling.has(j.id)) cancelRun(j.id) }} aria-disabled={cancelling.has(j.id) || undefined} aria-busy={cancelling.has(j.id) || undefined} className="relative aria-disabled:cursor-progress">{cancelling.has(j.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}<span className={cancelling.has(j.id) ? 'opacity-0' : undefined}>{i18nT('pages.schedulePage.cancel')}</span></Btn></span>
+                      ? <span title={runWaitingUntil(j) !== null ? i18nT('pages.schedulePage.cancel_waiting_run') : i18nT('pages.schedulePage.cancel_running_execution')}><Btn danger onClick={() => { if (!cancelling.has(j.id)) cancelRun(j.id) }} aria-disabled={cancelling.has(j.id) || undefined} aria-busy={cancelling.has(j.id) || undefined} className="relative aria-disabled:cursor-progress">{cancelling.has(j.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}<span className={cancelling.has(j.id) ? 'opacity-0' : undefined}>{i18nT('pages.schedulePage.cancel')}</span></Btn></span>
                       : <span title={j.enabled ? i18nT('pages.schedulePage.run_now_2') : i18nT('pages.schedulePage.resume_to_run')}><Btn onClick={() => { if (!running.has(j.id)) runNow(j.id) }} disabled={!j.enabled} aria-disabled={running.has(j.id) || undefined} aria-busy={running.has(j.id) || undefined} className="relative aria-disabled:cursor-progress" {...uiLocation('schedule.row-run')}>{running.has(j.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}<span className={running.has(j.id) ? 'opacity-0' : undefined}>{i18nT('pages.schedulePage.run')}</span></Btn></span>}
                     {/* The armed state must explain itself IN THE LABEL: the
                         `title` tooltip below is hover-only, so on touch it does
@@ -1395,7 +1398,7 @@ export default function SchedulePage() {
       />
 
       <Dialog open={batchConfirm} onOpenChange={next => { if (!next && !batchDeleting) closeBatchConfirm() }}>
-        <DialogContent maxWidth={460}>
+        <DialogContent maxWidth={460} onCloseAutoFocus={batchMenuLayer.onDialogCloseAutoFocus}>
           <DialogHeader>
             <Trash2 size={16} className="text-danger shrink-0" aria-hidden="true" />
             <DialogTitle>
@@ -1455,7 +1458,7 @@ export default function SchedulePage() {
         </DialogContent>
       </Dialog>
 
-      <BatchRunConfirmDialog ids={runConfirmIds} skipped={runSkipped} busy={batchBusy} onClose={closeRunConfirm} onConfirm={ids => void applyBatch('run', ids)} />
+      <BatchRunConfirmDialog ids={runConfirmIds} skipped={runSkipped} busy={batchBusy} onClose={closeRunConfirm} onCloseAutoFocus={batchMenuLayer.onDialogCloseAutoFocus} onConfirm={ids => void applyBatch('run', ids)} />
     </div>
   )
 }
@@ -1859,7 +1862,7 @@ function JobDetailDialog({ job, initialTab = 'details', prefill, prefillWrites, 
           </div>
         )}
         {detailTab === 'logs' && job ? (
-          <JobLogsView jobId={job.id} jobName={job.name} canHideIdle={!!job.script} isRunning={job.is_running} runningSince={job.running_since} cancelError={panelError} onCancel={async () => { setPanelError(null); try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed')) } }} />
+          <JobLogsView jobId={job.id} jobName={job.name} canHideIdle={!!job.script} isRunning={job.is_running} runningSince={job.running_since} waitingUntil={runWaitingUntil(job)} cancelError={panelError} onCancel={async () => { setPanelError(null); try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed')) } }} />
         ) : (
           <>
             {job && <TemplateUpdatedNotice job={job} />}

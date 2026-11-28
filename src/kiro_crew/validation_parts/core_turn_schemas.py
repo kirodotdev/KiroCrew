@@ -1,6 +1,6 @@
 """``kirocrew-core`` tool schemas a turn uses on its own conversation and workspace.
 
-Message edits, the skill catalog, ``kiro_cli_logs``, ``set_project``,
+Message edits, the skill catalog, the App Store search, ``kiro_cli_logs``, ``set_project``,
 ``reset_conversation``, ``chat_tag``, ``chat_rename``, ``suggest_followup`` with its git branch
 grammar, ``nothing_to_do`` and the ``workflow_*`` tools.
 
@@ -88,6 +88,14 @@ SKILL_FETCH_SCHEMA = ToolSchema(
     ],
 )
 
+APP_STORE_SEARCH_SCHEMA = ToolSchema(
+    tool_name="app_store_search",
+    fields=[
+        FieldSpec("query", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("limit", int),
+    ],
+)
+
 # kiro_cli_logs reads kiro-cli's own log files (never the fenced identity
 # stores) and returns a redacted tail. ``tail`` is a line count bounded by the
 # reader's own hard BYTE cap — the schema ceiling only guards against an absurd
@@ -165,14 +173,21 @@ def _validate_chat_tag(cleaned: dict[str, Any]) -> None:
 # a name like "Needs: review" is valid vocabulary — a charset gate here would
 # refuse handles the resolver could match, while admitting nothing an
 # attacker needs (authorization lives in the grants store, not the argv).
-# request_server names a server and where it comes from; the gateway resolves
-# the rest. Bounded here so a malformed call is a clean ValidationError.
+# request_server names a server and where it comes from, or carries a page
+# server's whole entry; the gateway resolves the rest and judges each combination.
+# Bounded here so a malformed call is a clean ValidationError. Declares every
+# property of the advertised inputSchema (``mcp_tools.catalog.server_request``):
+# ``source`` is for action 'add' only, so it is not required.
 REQUEST_SERVER_SCHEMA = ToolSchema(
     tool_name="request_server",
     fields=[
         FieldSpec("server", str, max_len=128),
-        FieldSpec("source", str, required=True, max_len=16),
+        FieldSpec("action", str, allowed=frozenset({"add", "change", "remove"})),
+        FieldSpec("source", str, max_len=16),
+        FieldSpec("entry", dict),
         FieldSpec("registry_id", str, max_len=200),
+        FieldSpec("uses_chat_folder", bool),
+        FieldSpec("target", str, allowed=frozenset({"crew", "kiro-cli", "project"})),
         FieldSpec("reason", str, max_len=500),
     ],
 )

@@ -356,11 +356,13 @@ the credential records of its `[REDACTED: credential]` placeholders, bounded as 
 chat row's are (`chat_utils.with_bounded_redaction_records`); a streamed delta, a
 notice and an answer the sidecar did not store carry none. The records come from
 the main chat's own credential pass (`_redact_segment_text`, through
-`chat_runner`): `_run_side_turn` stores that pass's text, which is `redact(raw)`
+`chat_runner`): `_run_side_turn` stores that pass's text, which is `redact()` of the
+marker-stripped answer
 (both splice one plan), the text it had without records, with the records beside
 it. The removed values are kept for the owner's
 reveal (`_commit_reveals`, scoped to the parent slot) only when the row is
-stored, before it is appended. The prompt-busy partial answer gets the same.
+stored, before it is appended. The prompt-busy partial answer gets the same credential pass and reveal rule, without
+the marker strip.
 Nothing is persisted.
 
 `message_id` names the `SideState.messages` row the frame announces: a question,
@@ -730,7 +732,11 @@ empty-output fallback and the footer
 `SideChat.tsx` from `GET /api/chat/side/tools`) say tools are unavailable there. Never
 `not is_claude_backend`: a harness joins by demonstrating that every tool call
 it serves either runs natively as a read or reaches `session/request_permission`,
-under a confinement the harness itself enforces.
+under a confinement the harness itself enforces. On every posture a finished reply loses
+each line that only quotes a directive tool's marker
+(`session_directive.strip_quoted_markers`) before it is redacted, stored and sent as
+the final frame: under the `REJECT_ALL` fallback the base agent's spec runs, and a
+directive tool it pre-grants runs without a permission request.
 
 **On claude the confinement is the session's own options.** claude-agent-acp
 reads no kiro agent spec, and its settings (the user's allow rules and default

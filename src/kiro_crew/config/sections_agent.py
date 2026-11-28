@@ -122,15 +122,17 @@ class AgentConfig:
             "Per-role models",
             "Optional per-task-class model overrides. Keys: 'background' "
             "(lite / heartbeat background workers), 'subagent' (spawned "
-            "sub-agents) and 'subagent_light' (sub-agents a spawn marks "
-            "light, while Light Sub-agent Tier is on). An empty value or 'auto' defers to the chat default "
+            "sub-agents), 'subagent_light' (sub-agents a spawn marks "
+            "light, while Light Sub-agent Tier is on) and 'optimizer' (Optimize "
+            "prompt, which runs on the 'background' model while this is unset). An empty value or 'auto' defers to the chat default "
             "(agent.model) and then to the provider default, so an unpinned "
             "role stays usable on every subscription tier. Pin a cheaper model "
             "here to run background / sub-agent work on it without changing the "
-            "interactive chat default. A 'subagent' pin runs each spawned "
-            "sub-agent in its own runtime (its own agent process and MCP "
-            "servers, about 0.55 GB of memory each) where it could otherwise "
-            "share the parent chat's.",
+            "interactive chat default. A 'subagent' pin still shares the parent "
+            "chat's runtime where its backend sets a model per session (kiro-cli "
+            "and codex) and no reasoning effort applies; elsewhere it runs each "
+            "spawned sub-agent in its own runtime (its own agent process and MCP "
+            "servers, about 0.55 GB of memory each).",
         ),
     )
     role_efforts: dict[str, str] = field(
@@ -138,12 +140,12 @@ class AgentConfig:
         metadata=_meta(
             "Per-role reasoning effort",
             "Optional per-task-class reasoning effort, paired with role_models "
-            "(keys: 'background', 'subagent', 'subagent_light'). Empty for a role inherits the chat "
-            "default (agent.reasoning_effort) and then the provider/model default. "
-            "Only applies on reasoning-capable models. Like a model pin, a "
-            "'subagent' effort runs each spawned sub-agent in its own runtime "
-            "(about 0.55 GB of memory each) where it could otherwise share the "
-            "parent chat's.",
+            "(keys: 'background', 'subagent', 'subagent_light', 'optimizer'). Empty for a role inherits the chat "
+            "default (agent.reasoning_effort) and then the provider/model default; "
+            "an empty 'optimizer' runs Optimize prompt at the 'background' effort. "
+            "Only applies on reasoning-capable models. A 'subagent' effort "
+            "runs each spawned sub-agent in its own runtime (about 0.55 GB of "
+            "memory each) where it could otherwise share the parent chat's.",
         ),
     )
     model_context_tokens: dict[str, int] = field(
@@ -255,9 +257,9 @@ class AgentConfig:
             "Counts only 'error' and 'timeout': a server asking for OAuth sign-in "
             "is working correctly and is never counted, and one success clears the "
             "count. The server stays mounted, but while its streak is at or over "
-            "this threshold MCP discovery stops spawning it for probes; the count "
-            "survives a gateway restart and holds until it is cleared (the "
-            "dashboard offers a one-click reset). 0 turns it off.",
+            "this threshold MCP discovery stops spawning it for probes; the count survives "
+            "a gateway restart and holds until it is cleared (the dashboard offers a "
+            "one-click reset) or the server's command, args, env or url changes. 0 turns it off.",
         ),
     )
     acp_backend: str = field(
@@ -635,6 +637,21 @@ class AgentConfig:
             enum=["auto", "strict", "off"],
         ),
     )
+    harness_sandbox: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Per-harness sandbox floor",
+            'Optional sandbox floor per harness, as {"<harness id>": "auto" or '
+            '"strict"}, for example {"antigravity": "auto"}. A session on a listed '
+            "harness starts at the stricter of agent.sandbox and its floor, with its "
+            "credential mask applied, so that harness runs in Kiro Crew's OS sandbox "
+            "while agent.sandbox stays 'off' for every other harness, cron and MCP "
+            "server. The floor only raises a tier. It is read only for the harnesses "
+            "that are refused while the sandbox is off; an entry for Kiro CLI, KAS or "
+            "Claude Code, 'off', or any other value sets no floor. Applies to sessions "
+            "started after the change. Empty by default.",
+        ),
+    )
     sandbox_allow_no_isolation: bool = field(
         default=False,
         metadata=_meta(
@@ -925,9 +942,13 @@ class AgentConfig:
             "Subagents reuse a shared ACP runtime instead of spawning a fresh "
             "backend process per subagent. Reduces startup from ~3-5s to ~200ms "
             "and memory from about 0.55 GB to near-zero per subagent. Default ON for the "
-            "eligible backends (kiro-cli and codex); every other ACP backend "
-            "ignores it and runs a dedicated process per subagent. Set false to "
-            "opt an eligible backend back onto per-subagent processes.",
+            "eligible backends (kiro-cli, codex and KAS; on KAS only when the "
+            "chat's own process can close a session and keep its record, runs "
+            "engine 0.66.104 or newer, and serves no other chat; the agent steps of a "
+            "workflow run started from a KAS chat share that chat's process the same "
+            "way); every other ACP "
+            "backend ignores it and runs a dedicated process per subagent. Set "
+            "false to opt an eligible backend back onto per-subagent processes.",
         ),
     )
     chat_runtime_sharing_max_sessions: int = field(
@@ -1050,7 +1071,9 @@ class AgentConfig:
             "While available memory is at or below resource_critical_gb, defer scheduled cron "
             "firings to the next tick, and TaskRunner steps and workflow ctx.agent() calls by "
             "admit_wait_secs, until memory frees. Background helper turns (titles, labels, "
-            "summaries, history consolidation) are skipped while it lasts. Subagent "
+            "summaries, history consolidation) are skipped while it lasts. Scheduled "
+            "auto-nudge prompt-loop ticks are held and re-checked every 30 seconds; the loop stays "
+            "on and spends no cycle, and a Fire now press still runs. Subagent "
             "spawns are not gated on this posture; they wait on spawn_min_memory_gb instead. "
             "Manually triggered cron runs and direct chat turns are never gated; an unreadable "
             "probe admits (fail-open). Set false to make the critical posture advisory-only "
@@ -1668,7 +1691,8 @@ class AgentConfig:
             "Delay between successive subagent spawns (initial fill and queued "
             "drain) to bound cold-start CPU/memory spikes. Starts stay "
             "serialized; the interval only decides how fast a wide fan-out "
-            "fills. Raise it if this "
+            "fills. Only a start that launches its own process waits on it or "
+            "resets it: one that shares its parent's runtime starts at once. Raise it if this "
             "host or the model provider is the bottleneck -- a spawn still has "
             "to leave spawn_min_memory_gb free after its start and clear the host "
             "budget, and the adaptive "
@@ -1705,9 +1729,9 @@ class AgentConfig:
             "agent.role_efforts.subagent_light for whichever of the two its call "
             "left unset; a model or effort the call names always wins. A spawn "
             "that names an agent, a crew or a backend is not changed. A pinned "
-            "model or effort starts the sub-agent in its own process, as any "
-            "per-spawn pin does. Off by default: with it off every spawn picks the "
-            "model and effort it always has.",
+            "model or effort decides whether the sub-agent shares its parent's "
+            "process the way any per-spawn pin does. Off by default: with it off "
+            "every spawn picks the model and effort it always has.",
         ),
     )
     subagent_light_lean_context: bool = field(

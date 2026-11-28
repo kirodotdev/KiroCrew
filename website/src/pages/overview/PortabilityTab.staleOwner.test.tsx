@@ -27,8 +27,8 @@ const exportButton = () =>
 const importButton = () =>
   screen.getByRole('button', { name: i18nT('pages.overview.portabilityTab.import') })
 
-/** Pick an archive through the real input, let the (non-owner-gated) preview
- *  accept it, then press Import — the import answer is *importReply*. */
+/** Pick an archive through the real input, let the preview accept it, then
+ *  press Import — the import answer is *importReply*. */
 async function runImport(importReply: Response) {
   fetchMock.mockImplementation((url: string) => Promise.resolve(
     url === '/api/portability/preview'

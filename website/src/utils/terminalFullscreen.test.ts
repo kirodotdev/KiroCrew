@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isFindChordKey, isTerminalFullscreenAllowed, mainStackingClass, terminalChord, findKeycap, fullscreenKeycap } from './terminalFullscreen'
+import { isFindChordKey, isTerminalFullscreenAllowed, mainStackingClass, terminalChord, findKeycap, fullscreenKeycap, fullscreenAriaKeyshortcuts } from './terminalFullscreen'
 
 describe('isFindChordKey', () => {
   it('matches the typed letter f, with or without Shift', () => {
@@ -88,5 +88,9 @@ describe('menu keycaps', () => {
   it('shows a fullscreen chord on macOS only', () => {
     expect(fullscreenKeycap(true)).toBe('⇧⌘F')
     expect(fullscreenKeycap(false)).toBeNull()
+  })
+  it('announces the fullscreen chord on macOS only', () => {
+    expect(fullscreenAriaKeyshortcuts(true)).toBe('Meta+Shift+F')
+    expect(fullscreenAriaKeyshortcuts(false)).toBeUndefined()
   })
 })

@@ -46,6 +46,8 @@ logger = logging.getLogger(__name__)
 #: A private thread (12) is never opened by ``auto_thread``, so it is never
 #: re-admitted as one.
 _AUTO_THREAD_TYPES = frozenset({10, 11})
+#: A forum (or media) channel's post is a public thread (11).
+_FORUM_POST_TYPE = 11
 
 
 def _coerce_snowflakes(value: object) -> frozenset[str] | None:
@@ -565,6 +567,18 @@ class DiscordTransport(MessagingTransport):
         operator removed from ``allowed_thread_ids`` on a live reload is
         refused too (checked before and after the lookup), so a revocation
         holds until the next restart.
+
+        The same lookup admits a **forum post**, which no other path can: a
+        post's messages carry the post's own thread id, never the forum's, and a
+        person opens it, not this bot. It is admitted (``forum_post_authorized``)
+        when it is a public thread, its parent is in ``allowed_channel_ids`` AND
+        Discord reports that parent as a forum or media channel, the post's
+        opener is on the user roster, and ``auto_thread`` is on (with it off an
+        allowed channel gets no reply, and a forum is no exception) -- the
+        opener and ``auto_thread`` re-read, with the others, after both
+        lookups. Once admitted it is held like a thread this bot opened: a live
+        reload keeps it, the next restart re-derives it, and removing its id
+        from ``allowed_thread_ids`` revokes it.
         """
         if not thread_id or thread_id in self._allowed_threads:
             return bool(thread_id)
@@ -574,20 +588,44 @@ class DiscordTransport(MessagingTransport):
         if not bot_user_id or not self._allowed_channels:
             return False
         origin = await self._client.thread_origin(thread_id)
+        if origin is None or origin.parent_id not in self._allowed_channels:
+            return False
+        if origin.owner_id == bot_user_id and origin.channel_type in _AUTO_THREAD_TYPES:
+            operation, outcome = "discord_transport.auto_thread", "thread_reauthorized"
+        elif (
+            # A forum post: the post IS the thread, and a person opens it, so
+            # the parent forum is the allowed channel and the opener must be
+            # an allowed user. A post an outsider opened stays refused even
+            # when an allowed user replies in it. The parent's TYPE is
+            # confirmed through Discord, so a person's thread under an allowed
+            # TEXT channel is refused as before. With ``auto_thread`` off an
+            # allowed channel gets no reply, and a forum's posts are no exception.
+            self._auto_thread
+            and origin.channel_type == _FORUM_POST_TYPE
+            and origin.owner_id in self._allowed
+            and await self._client.is_forum_channel(origin.parent_id)
+        ):
+            operation, outcome = "discord_transport.forum_post", "forum_post_authorized"
+        else:
+            return False
+        # Every roster is read again AFTER the last lookup, so a reload that
+        # removes the sender, the post's opener, the parent or the thread, or
+        # turns ``auto_thread`` off, while a call is in flight refuses the grant.
         if (
             thread_id in self._revoked_threads
             or caller not in self._allowed
-            or origin is None
-            or origin.channel_type not in _AUTO_THREAD_TYPES
-            or origin.owner_id != bot_user_id
             or origin.parent_id not in self._allowed_channels
+            or (
+                outcome == "forum_post_authorized"
+                and (origin.owner_id not in self._allowed or not self._auto_thread)
+            )
         ):
             return False
         self._allowed_threads.add(thread_id)
         sel().log_api_access(
             caller=caller or "unknown",
-            operation="discord_transport.auto_thread",
-            outcome="thread_reauthorized",
+            operation=operation,
+            outcome=outcome,
             source="discord",
             resources=f"channel={origin.parent_id},thread={thread_id}",
         )
@@ -720,6 +758,7 @@ class DiscordTransport(MessagingTransport):
             elif inbound.channel_id not in self._allowed_threads:
                 # Only an approved sender can cost a REST lookup here, so
                 # background chatter in unrelated threads stays network-free.
+                # This is also where a post in an allowed forum is admitted.
                 if inbound.user_id not in self._allowed:
                     return
                 if not await self.readmit_own_thread(inbound.channel_id, inbound.user_id):

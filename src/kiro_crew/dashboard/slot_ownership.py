@@ -8,9 +8,13 @@ therefore decided once for the whole family rather than by each handler.
 :func:`slot_ownership_middleware` decides it once, at the route, for every handler
 registered under the family, whatever the slot segment is called:
 
-* A caller with no app claim (the dashboard user, an internal-secret call with no
-  derived app) is untouched here. Handlers keep their own owner and identity
-  checks for those callers.
+* A dashboard session (a present, empty app claim) passes only as the owner or an
+  admitted Shared Crew teammate (``require_owner_for_dashboard_caller``); any other
+  dashboard session is refused ``403 owner_only``, on this family and on the routes
+  in :data:`PERSON_CHECKPOINT_ROUTES` (``POST /api/chat``, whose slot is in the
+  body). An internal-secret call with no
+  derived app (the claim absent) is untouched here. Handlers keep their own owner
+  and identity checks on top.
 * An app caller passes only when it is the slot's OWNER app,
   ``slot._app == request["app"]``, AND the slot still runs on its own session and
   writes its own transcript (:func:`app_owns_slot_session`). Identity is positive:
@@ -107,6 +111,29 @@ SLOT_ROUTE_POLICIES: dict[tuple[str, str], tuple[SlotRoutePolicy, str]] = {
         "and the transcript it loads",
     ),
 }
+
+#: Routes outside the per-slot family that act on a slot named in the body or the
+#: query, or on every slot, so the checkpoint decides a dashboard session on them
+#: too: a chat send runs a turn, or a slash command, on the slot it names; the
+#: reply threads read a Bot chat's threads and run its crewmate's turn; the bulk
+#: writes reset, archive or import chats. App callers are judged by the handler.
+PERSON_CHECKPOINT_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("POST", "/api/chat"),
+        # A named create reopens an existing chat and re-titles, re-files or
+        # re-binds it, so it acts on the owner's chat like the per-slot routes.
+        ("POST", "/api/chat/slots"),
+        ("GET", "/api/chat/threads"),
+        ("GET", "/api/chat/threads/{mid}"),
+        ("POST", "/api/chat/threads/{mid}/reply"),
+        # The bulk chat writes: each changes every chat, not one.
+        ("POST", "/api/chat/slots/model"),
+        ("POST", "/api/chat/slots/cleanup"),
+        ("GET", "/api/chat/slots/follow-default"),
+        ("POST", "/api/chat/slots/follow-default"),
+        ("POST", "/api/chat/slots/import"),
+    }
+)
 
 #: The SEL ``source`` every app-isolation decision is filed under, shared with the
 #: handler-level checks so one query finds all of them.
@@ -692,13 +719,36 @@ def checkpoint_slot_replaced(request: web.Request, slot: Any) -> bool:
     return request[CHECKPOINT_SLOT_KEY] is not slot
 
 
+def _canonical(request: web.Request) -> str:
+    """The canonical template of the route *request* matched, or ``""``."""
+    resource = request.match_info.route.resource
+    return resource.canonical if resource is not None else ""
+
+
 async def slot_route_denial(request: web.Request) -> web.Response | None:
     """Apply the checkpoint to *request*: the refusal to send, or None to proceed."""
     request_app = request.get("app", "")
     if not request_app:
-        return None
-    resource = request.match_info.route.resource
-    canonical = resource.canonical if resource is not None else ""
+        canonical = _canonical(request)
+        # aiohttp's ``add_get`` also answers HEAD, which runs the GET handler.
+        method = "GET" if request.method == "HEAD" else request.method
+        if "app" not in request or (
+            _route_decision(method, canonical) is None
+            and (method, canonical) not in PERSON_CHECKPOINT_ROUTES
+        ):
+            # An internal caller (no app claim) keeps its own controls, and a
+            # route outside the family is not this checkpoint's.
+            return None
+        # A dashboard session: the owner's chats are the owner's or a teammate's
+        # to act on. Another dashboard session holds the same empty app claim, so
+        # it is refused here, once for the whole family.
+        # Imported here: ``handlers._shared`` reaches back into this module.
+        from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+        return await require_owner_for_dashboard_caller(
+            request, f"slot_route {request.method} {canonical}"
+        )
+    canonical = _canonical(request)
     decision = _route_decision(request.method, canonical)
     if decision is None or decision[1] is SlotRoutePolicy.HANDLER:
         return None

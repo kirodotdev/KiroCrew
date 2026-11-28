@@ -8,8 +8,10 @@ config with that mark and drive the readers that parse it.
 from __future__ import annotations
 
 import codecs
+import errno
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ from kiro_crew.user_json import (
     load_user_json_object,
     loads_mcp_config,
     loads_user_json,
+    read_user_json_object,
     strip_utf8_bom,
 )
 
@@ -71,6 +74,26 @@ class TestLoadUserJsonObject:
         path = tmp_path / "mcp.json"
         _write_bom_json(path, ["a"])
         assert load_user_json_object(path) == {}
+
+    def test_a_file_it_cannot_stat_is_not_reported_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A parent directory without search permission fails every stat with EACCES.
+        path = tmp_path / "mcp.json"
+        path.write_text('{"mcpServers": {}}', encoding="utf-8")
+        denied = os.fspath(path)
+
+        def _refusing(real: Any) -> Any:
+            def probe(target: Any, *args: Any, **kwargs: Any) -> Any:
+                if isinstance(target, (str, os.PathLike)) and os.fspath(target) == denied:
+                    raise PermissionError(errno.EACCES, "Permission denied", denied)
+                return real(target, *args, **kwargs)
+
+            return probe
+
+        monkeypatch.setattr(os, "stat", _refusing(os.stat))
+        monkeypatch.setattr(os, "lstat", _refusing(os.lstat))
+        assert read_user_json_object(path) == ({}, False)
 
 
 class TestLoadMcpServers:

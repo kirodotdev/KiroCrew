@@ -26,7 +26,9 @@ Kiro Crew's own engine bundle (`kirocrew kas install`, see `agent.kas_bundle` in
 [Getting Started](getting-started.md) for the source install, the pip channel
 index, first-time setup, and connecting messaging channels. Already using
 kiro-cli? [Coming from kiro-cli](coming-from-kiro-cli.md) explains what carries
-over and what changes.
+over and what changes. Using Claude Code?
+[Coming from Claude Code](coming-from-claude-code.md) says what Kiro Crew adds
+around it.
 
 ## Core Capabilities
 
@@ -40,7 +42,7 @@ over and what changes.
 | [Task Runner](task-runner.md) | Autonomous multi-step execution from spec files: hand it a task, walk away |
 | [Research Lab](research-lab.md) | Autonomous multi-cycle research campaigns with scoping, adaptive agent execution, and exportable reports |
 | [Issue Radar Pipeline](issue-radar-pipeline.md) | Which step of automated triage every issue is sitting in, how long it has been there, and what each agent session cost |
-| [Apps](apps.md) | Twenty-one apps ship in the package: enable one from the App Store and it can bring its own pages, agents, skills, and MCP tools |
+| [Apps](apps.md) | Nineteen apps ship in the package: enable one from the App Store and it can bring its own pages, agents, skills, and MCP tools |
 | [Connections](connections.md) | MCP servers and OAuth'd services on one page: the curated provider catalogue, adding your own stdio or remote server, what a health badge means, and why a tool's name may differ |
 | [Dashboard](dashboard.md) | React web UI with multi-session chat, memory management, and live system metrics |
 | [Agent Questions](agent-questions.md) | Let an agent pause mid-turn and ask you a clickable multiple-choice question |
@@ -129,14 +131,16 @@ gracefully rather than failing the turn.
 - [Getting Started](getting-started.md): installation, first-time setup, running in the background
 - [Coming from kiro-cli](coming-from-kiro-cli.md): how Kiro Crew relates to kiro-cli, what
   carries over, why a chat behaves differently, and how to get CLI-style behaviour
+- [Coming from Claude Code](coming-from-claude-code.md): what Kiro Crew adds around
+  Claude Code, each piece in plain terms, and how to run Claude Code as the harness
 - [Configuration](configuration.md): config file reference, environment variables, sandbox
 - [Use Cases](use-cases.md): real-world workflows from the community
 - [Troubleshooting](troubleshooting.md): common issues and fixes
 - [Blocked commands and credential access](blocked-commands.md): why a command was
   refused, what the agent is told to do instead, and how to check your AWS or SSO
   credential setup
-- [Tool approvals](tool-approvals.md): auto-approve one MCP tool on KAS so it stops
-  asking, and the settings that look like they would but do not
+- [Tool approvals](tool-approvals.md): stop one MCP tool asking with Always allow,
+  and the settings that look like they would but do not
 - [Security model](security-model.md): the defense-in-depth layers, what each one
   protects against, where they deliberately stop, and whether the defaults fit a
   corporate host or only an isolated one

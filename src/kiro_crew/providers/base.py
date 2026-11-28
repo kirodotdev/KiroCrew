@@ -19,6 +19,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
     EVENT_ELICITATION_REQUEST,
+    EVENT_MODEL_FALLBACK,
     EVENT_PERMISSION_REQUEST,
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
@@ -112,6 +113,11 @@ class SessionMcpReport(Protocol):
     #: when all are usable. A turn's ``[MCP SERVERS]`` block and ``mcp_server_wait``
     #: read it.
     def not_ready(self) -> dict[str, tuple[str, ...]]: ...
+
+    #: The servers this session's host is not bringing up: failed, or still
+    #: starting more than *after_secs* after the session began. Another session
+    #: on the same host need not wait for them.
+    def given_up(self, after_secs: float) -> tuple[str, ...]: ...
 
     #: Record servers a config write changed that this running session will not
     #: load, so its ``restart_to_load`` names them until the next session. Returns
@@ -632,6 +638,15 @@ class LLMProvider(ABC):
         """
         return ""
 
+    def settings_withheld_reason(self, *, with_fix: bool = False) -> str:
+        """Why those tools are withheld, as one clause, or ``""`` when they are not.
+
+        A fact any reader may get, a model's prompt included. *with_fix* appends
+        what the person can do, for a surface only a person reads. May read a
+        file: call it off the event loop. Default: ``""``, nothing withheld.
+        """
+        return ""
+
     def touch_activity(self) -> None:
         """Refresh the RUNTIME's activity timestamp without I/O. Default no-op.
 
@@ -1139,6 +1154,13 @@ class LLMProvider(ABC):
         """
         return None
 
+    def set_mcp_consent_hook(self, hook: Callable[[dict[str, str]], bool]) -> None:
+        """Have *hook* given each MCP consent link that reaches this session between turns.
+
+        Only a KAS session receives a consent link this way; any other provider ignores this.
+        """
+        return None
+
     def mcp_sign_in_ended(self, server_name: str) -> bool:
         """Whether the MCP sign-in Crew started for *server_name* has already ended.
 
@@ -1157,12 +1179,15 @@ class LLMProvider(ABC):
         """
         return None
 
-    async def wait_for_declared_mcp(self, timeout: float) -> tuple[str, ...]:
+    async def wait_for_declared_mcp(
+        self, timeout: float, skip: tuple[str, ...] = ()
+    ) -> tuple[str, ...]:
         """Wait, at most *timeout* seconds, for the agent spec's MCP servers to report.
 
-        For an unattended run (webhook, cron) before its first prompt. Returns
-        the declared servers that are still not ready, empty when all are. A
-        provider that keeps no MCP report has nothing to wait for or name.
+        For an unattended run (webhook, cron) before its first prompt. The
+        servers in *skip* are not waited for. Returns the declared servers that
+        are still not ready, empty when all are. A provider that keeps no MCP
+        report has nothing to wait for or name.
         """
         return ()
 

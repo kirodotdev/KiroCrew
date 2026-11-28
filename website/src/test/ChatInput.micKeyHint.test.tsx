@@ -14,11 +14,6 @@ import { bindingAriaKeyshortcuts, type PttBinding } from '../lib/pushToTalk'
  * `useComposerVoice`), it says nothing about one.
  */
 
-vi.mock('../components/Strands', () => ({
-  __esModule: true,
-  default: () => <div data-testid="strands-stub" />,
-  strandsSupported: () => true,
-}))
 
 const voiceProps = {
   onVoiceToggle: vi.fn(),

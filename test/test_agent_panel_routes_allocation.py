@@ -144,10 +144,10 @@ def test_every_refusal_in_the_crew_resolver_audits_its_denial():
         for node in ast.walk(tree)
         if isinstance(node, ast.Return) and "json_response" in ast.dump(node)
     )
-    # Every refusal this resolver can return: internal secret, crew_panel off,
-    # restricted session, no dashboard slot, unresolved session, not a root session
-    # (the dynamic dashboard's own branch), no crew, bad slug.
-    assert refusals == 8, refusals
+    # Every refusal this resolver can return: internal secret, unattested session
+    # key, crew_panel off, restricted session, no dashboard slot, unresolved session,
+    # not a root session (the dynamic dashboard's own branch), no crew, bad slug.
+    assert refusals == 9, refusals
     assert audits(tree.body[0].body) == []
 
 

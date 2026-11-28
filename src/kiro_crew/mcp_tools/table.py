@@ -48,7 +48,7 @@ from kiro_crew.mcp_tools.dashboard_client import (
     LoopbackDashboardClient,
     restrict_routes,
 )
-from kiro_crew.validation import ToolSchema, validate_tool_args
+from kiro_crew.validation_parts.field_engine import ToolSchema, validate_tool_args
 
 Identity = Literal["attribution", "strict"]
 _IDENTITIES: frozenset[str] = frozenset({"attribution", "strict"})

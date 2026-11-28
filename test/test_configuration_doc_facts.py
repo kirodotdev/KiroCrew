@@ -83,3 +83,15 @@ def test_restore_window_row_names_the_settings_range_and_no_limit() -> None:
     row = _row("dashboard.restore_window_minutes")
     assert "0-1440" in row
     assert "`0` = no limit" in row
+
+
+def test_file_locations_names_the_file_the_mcp_servers_page_writes() -> None:
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.dashboard.handlers import mcp_config_files
+
+    written = mcp_config_files._kirocrew_mcp_json()
+    assert written == data_home() / written.name
+    section = _doc().split("## File Locations", 1)[1].split("\n## ", 1)[0]
+    row = _row(f"~/.kiro/crew/{written.name}")
+    assert row in section
+    assert "MCP Servers" in row

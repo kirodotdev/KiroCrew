@@ -24,6 +24,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("kiro_crew.skills")
 
+#: Wall-clock seconds one search may spend indexing changed bodies, and again on
+#: direct reads; bodies left over are reported as an incomplete answer.
+_BODY_WORK_BUDGET_SECS = 0.25
+
 
 class SkillSearchReport(NamedTuple):
     """One search's answer, and whether that answer may be missing matches.
@@ -102,7 +106,7 @@ def _body_matches(
         # A scoped query cannot evict the other agents' persistent entries.
         outcome = loader._search_index.sync(
             rows,
-            budget_seconds=0.25,
+            budget_seconds=_BODY_WORK_BUDGET_SECS,
             canonical_roots={
                 str(s.get("path", "")): str(s["mapping_root"])
                 for s in unconfined
@@ -128,7 +132,7 @@ def _body_matches(
         fallback += unconfined
     else:
         hits.update(indexed)
-    deadline = time.monotonic() + 0.25
+    deadline = time.monotonic() + _BODY_WORK_BUDGET_SECS
     for skill in fallback:
         if time.monotonic() >= deadline:
             incomplete = True
@@ -291,13 +295,15 @@ def resolve_dollar_skills(
     case-insensitive on the leaf.
 
     Security (per input-validation guidance): this is allowlist-only. The
-    token is *matched against* the vetted, already-enumerated skill set from
-    ``_iter()`` — no filesystem path is ever built from the raw token. A
-    token like ``$../../etc/passwd`` simply matches nothing. Content is loaded
-    through ``load_skill`` (which inherits ``_safe_name`` + ``validate_file_path``
-    + sensitive-path gating) and frontmatter is stripped before return.
+    token is *matched against* the vetted, already-enumerated skill set
+    ``scoped_skills()`` returns — no filesystem path is ever built from the raw
+    token. A token like ``$../../etc/passwd`` simply matches nothing. Content
+    is loaded through ``read_scoped_skill``, which reads an exact catalog key
+    (an ordinary row through ``load_skill``, with its ``_safe_name`` +
+    ``validate_file_path`` + sensitive-path gating), and frontmatter is
+    stripped before return.
 
-    Returns a list of ``(token, skill_name, stripped_body)`` tuples — one per
+    Returns a list of ``(token, key, stripped_body)`` tuples — one per
     distinct resolved skill, in first-appearance order, deduped, and capped at
     ``_MAX_DOLLAR_SKILLS``. Unknown tokens are silently skipped (left literal by
     the caller). Returns an empty list if *text* has no resolvable tokens.
@@ -321,7 +327,7 @@ def resolve_dollar_skills(
         if matched is None and "/" not in token:
             choices = leaves.get(token.casefold(), [])
             matched = choices[0] if len(choices) == 1 else None
-        if matched is None and token not in exact and not leaves.get(token.casefold()):
+        if matched is None and not leaves.get(token.casefold()):
             # A built-in that moved or was renamed keeps answering to its old
             # name (a saved hook's `$prepare-pr`, an AGENTS.md line), but only
             # when no installed skill holds that name -- an ambiguous leaf
@@ -347,7 +353,7 @@ def has_dollar_candidate(text: str) -> bool:
     an incidental ``$`` (e.g. ``$5``, ``$42``, ``$PATH``, a bare ``$``). The
     caller uses this to decide whether an empty ``resolve_dollar_skills``
     result is worth a ``not_found`` audit event — keeps the regex the single
-    source of truth instead of duplicating it in chat_runner.
+    source of truth instead of duplicating it in the caller.
 
     Note: the token charset is digit-led (so a skill like ``5whys`` works via
     ``$5whys``), which means a purely numeric ``$5`` *matches the regex*. A

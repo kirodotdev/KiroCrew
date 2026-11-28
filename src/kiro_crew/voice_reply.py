@@ -30,10 +30,11 @@ import tempfile
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew import aws_consent, platform_compat, speech_providers
+from kiro_crew import aws_consent, platform_compat, speech_providers, voice_reply_polly_text
 from kiro_crew.constants import md_link_destination, strip_control_comments
 from kiro_crew.deploy.engine import resolve_aws_bin
 from kiro_crew.emoji_list import STANDARD_EMOJIS
+from kiro_crew.kiro_cli_bundle import powershell_single_quoted
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import IS_MACOS, IS_WINDOWS, trusted_system_bin
 from kiro_crew.sandbox import (
@@ -246,6 +247,15 @@ OUTPUT_FORMAT = "mp3"
 #: Polly's Ogg/Opus output format, written on request (``ogg_opus=True``).
 OGG_OPUS_FORMAT = "ogg_opus"
 MAX_CHARS = 2900  # Polly SSML limit ~3000 chars, leave margin
+
+#: A Latin mark ends a sentence only before whitespace, so "3.5" stays whole.
+_LATIN_SENTENCE_ENDS = ".!?"
+#: CJK 。！？；, the Devanagari and Bengali danda ।॥, the Arabic question mark ؟ and
+#: the Urdu full stop ۔ never occur inside a word, so they need no following space.
+_SPACELESS_SENTENCE_ENDS = "。！？；।॥؟۔"
+_SENTENCE_SPLIT_RE = re.compile(
+    rf"(?<=[{re.escape(_LATIN_SENTENCE_ENDS)}])\s+|(?<=[{_SPACELESS_SENTENCE_ENDS}])\s*|\n+"
+)
 
 VALID_ENGINES = frozenset({"neural", "generative", "long-form", "standard"})
 _RATE_RE = re.compile(r"^\d{1,3}%$")
@@ -553,8 +563,9 @@ def text_to_ssml(
         return ""
     if len(clean) > MAX_CHARS:
         # Truncate at last sentence boundary before limit
-        trunc = clean[:MAX_CHARS].rsplit(".", 1)[0]
-        clean = (trunc or clean[:MAX_CHARS]) + "."
+        head = clean[:MAX_CHARS]
+        end = max(head.rfind(mark) for mark in _LATIN_SENTENCE_ENDS + _SPACELESS_SENTENCE_ENDS)
+        clean = head[: end + 1] if end > 0 else head + "."
     # Escape XML entities
     clean = clean.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     # Natural pauses
@@ -748,10 +759,10 @@ async def _synthesize_system(
     engine, bin_path = resolved
 
     # Coerced at the one consumer rather than at each config reader: the value
-    # arrives raw from config.json, where a hand-edited `"system_voice": []` is
-    # possible, and every engine here would break on it differently — SAPI's
-    # `_ps_quote` raises AttributeError, and the two argv engines raise TypeError
-    # inside the spawn. An unusable name degrades to the engine's own default.
+    # arrives raw from config.json, where a hand-edited `"system_voice": 7` is
+    # possible, and every engine here would break on it — SAPI's `_spill_text`
+    # raises TypeError, and so do the two argv engines inside the spawn. An
+    # unusable name degrades to the engine's own default.
     voice = voice if isinstance(voice, str) else ""
 
     path = await asyncio.to_thread(_new_wav_path)
@@ -838,7 +849,7 @@ def _sapi_encoded_command(out_path: str, text_path: str, voice_path: str, rate: 
     terminate the string.
     """
     select_voice = (
-        f"$v=[IO.File]::ReadAllText({_ps_quote(voice_path)},[Text.Encoding]::UTF8);"
+        f"$v=[IO.File]::ReadAllText({powershell_single_quoted(voice_path)},[Text.Encoding]::UTF8);"
         "$s.SelectVoice($v);"
         if voice_path
         else ""
@@ -846,7 +857,7 @@ def _sapi_encoded_command(out_path: str, text_path: str, voice_path: str, rate: 
     script = (
         "$ErrorActionPreference='Stop';"
         "Add-Type -AssemblyName System.Speech;"
-        f"$t=[IO.File]::ReadAllText({_ps_quote(text_path)},[Text.Encoding]::UTF8);"
+        f"$t=[IO.File]::ReadAllText({powershell_single_quoted(text_path)},[Text.Encoding]::UTF8);"
         "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer;"
         "try{"
         f"{select_voice}"
@@ -857,16 +868,11 @@ def _sapi_encoded_command(out_path: str, text_path: str, voice_path: str, rate: 
         "22050,"
         "[System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen,"
         "[System.Speech.AudioFormat.AudioChannel]::Mono);"
-        f"$s.SetOutputToWaveFile({_ps_quote(out_path)},$f);"
+        f"$s.SetOutputToWaveFile({powershell_single_quoted(out_path)},$f);"
         "$s.Speak($t);"
         "}finally{$s.Dispose()}"
     )
     return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-
-
-def _ps_quote(value: str) -> str:
-    """Return *value* as a PowerShell single-quoted literal."""
-    return "'" + value.replace("'", "''") + "'"
 
 
 # macOS `say -v '?'` pads the voice name with at least two spaces before the
@@ -1186,9 +1192,11 @@ async def _synthesize_polly(
     fd, path = tempfile.mkstemp(suffix=".ogg" if ogg_opus else ".mp3")
     os.close(fd)
     sandbox_cleanup: str | None = None
+    text_file: str | None = None  # the SSML file a .cmd launcher reads, else None
     succeeded = False
     try:
         try:
+            text_args, text_file = await voice_reply_polly_text.polly_text_args_async(aws_bin, ssml)
             cmd: list[str] = [aws_bin, "polly", "synthesize-speech"]
             if aws_profile:
                 cmd += ["--profile", aws_profile]
@@ -1203,16 +1211,13 @@ async def _synthesize_polly(
                 OGG_OPUS_FORMAT if ogg_opus else OUTPUT_FORMAT,
                 "--text-type",
                 "ssml" if ssml.startswith("<speak") else "text",
-                "--text",
-                ssml,
+                *text_args,
                 path,
             ]
-            # LLM-derived SSML is passed on the command line to the AWS CLI.
-            # Apply an OS-level sandbox (namespace on Linux / seatbelt on
-            # macOS) so a compromised CLI or model can't reach private
-            # filesystem areas. ``wrap_argv`` is a no-op on platforms without
-            # a backend and returns a cleanup path that we must unlink after
-            # the child exits.
+            # LLM-derived SSML is passed to the AWS CLI. Apply an OS-level
+            # sandbox (namespace on Linux / seatbelt on macOS) so a compromised
+            # CLI or model can't reach private filesystem areas. ``wrap_argv``
+            # returns a cleanup path that we must unlink after the child exits.
             cmd, sandbox_cleanup = await wrap_argv_async(cmd, mode="standard", _prepare=wrap_argv)
             cmd = cgroup_scope_argv(cmd)  # cgroup DoS ceiling
             proc = await create_subprocess_limited(
@@ -1324,13 +1329,14 @@ async def _synthesize_polly(
                 os.unlink(path)
             except OSError:
                 pass
-        # Clean up the sandbox launcher script / seatbelt profile spawned
-        # by wrap_argv (None on platforms without a sandbox backend).
-        if sandbox_cleanup:
-            try:
-                os.unlink(sandbox_cleanup)
-            except OSError:
-                pass
+        # The sandbox launcher script / seatbelt profile from wrap_argv, and the
+        # SSML file of a .cmd launcher (each None when there is none).
+        for leftover in (sandbox_cleanup, text_file):
+            if leftover:
+                try:
+                    os.unlink(leftover)
+                except OSError:
+                    pass
 
 
 async def upload_voice_to_slack(
@@ -1360,11 +1366,11 @@ async def upload_voice_to_slack(
 
 
 def split_sentences(text: str) -> list[str]:
-    """Split speakable text at Latin/CJK sentence and paragraph boundaries."""
+    """Split speakable text at sentence and paragraph boundaries in any supported script."""
     clean = strip_markdown(text)
     if not clean:
         return []
-    parts = re.split(r"(?<=[.!?])\s+|(?<=[。！？；])\s*|\n+", clean)
+    parts = _SENTENCE_SPLIT_RE.split(clean)
     return [s.strip() for s in parts if s.strip()]
 
 

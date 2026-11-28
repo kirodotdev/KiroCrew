@@ -19,6 +19,7 @@ from kiro_crew.messaging.display_safety import (
     redact_for_display,
 )
 from kiro_crew.messaging.renderer import _default_redactor, split_options_trailer
+from kiro_crew.messaging.steer_ack import strip_steering_acks
 
 
 def _display_safe(text: str) -> str:
@@ -122,21 +123,11 @@ def _extract_options(text: str) -> tuple[str, list[str]]:
 # instruction (and gets a steer-ack reaction), so the raw inline marker is just
 # redundant noise in the bubble.
 #
-# Matched by its GRAMMAR, ``steer-<id>`` required, like
-# ``messaging.driver._STEER_MARKER_RE`` and the dashboard parser
-# (``website/src/app-sdk/protocol/steering.ts``). A bare ``[STEERING`` would
-# delete prose that only mentions the word, and since ``[^\]]*`` crosses line
-# ends it would also eat everything up to the next ``]``.
-#
-# The id class is driver's ``[0-9a-f-]+`` and the SAME in both patterns: the
-# summary is matched at the marker's offset, so a narrower class there (one
-# without the dash, say) silently drops the summary from the chip.
-_STEER_MARKER_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f-]+(?:\s*:[^\]]*)?\]", re.IGNORECASE)
-# Same marker, capturing the ack SUMMARY kiro-cli embeds after "steer-<id>:".
-# The dashboard renders this summary as its "Steered — …" chip; we prefer it
-# for the Telegram chip too (the user's own words are already on screen as
-# their message — the summary is the only NEW information).
-_STEER_SUMMARY_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f-]+\s*:\s*([^\]]*)\]", re.IGNORECASE)
+# The frame's grammar (``steer-<id>`` required, so prose that only mentions the
+# word stays) and where it ends (the ``]`` that balances its ``[``, so a markdown
+# link in the summary stays inside it) come from ``messaging.steer_ack``. The
+# chip prefers the frame's summary: the user's own words are already on screen
+# as their message, and the summary is the only new information.
 
 
 def _strip_steering(text: str) -> str:
@@ -148,7 +139,7 @@ def _strip_steering(text: str) -> str:
     jarring show-then-vanish. Stripping the partial marker keeps the draft in
     sync with the final message.
     """
-    cleaned = _STEER_MARKER_RE.sub("", text)  # complete markers anywhere
+    cleaned = strip_steering_acks(text)  # complete markers anywhere
     cleaned = re.sub(r"\[STEERING\b[^\]]*$", "", cleaned)  # unclosed, still streaming
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)  # collapse gaps left behind
     return cleaned.strip()

@@ -197,6 +197,8 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "_MAX_BODY_BYTES",
         _BOUNDED_BY_DEFAULT,
     ),
+    # The owner's YOLO acknowledgement: one boolean, so 1 KB is far above any body.
+    "handlers/yolo_ack.py::api_yolo_ack_put": ("_MAX_JSON_BYTES", _BOUNDED_BY_DEFAULT),
     "messaging_api/agent_push.py::api_notification_agent_push": (
         "<default>",
         _BOUNDED_BY_DEFAULT,
@@ -491,6 +493,8 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # server config (PUT detail) and per-server toolOverrides maps (apply) do not.
     "handlers/mcp_probe.py::api_mcp_quarantine_clear": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_toggle": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # a folder, one of two file names, a server name and one server entry
+    "handlers/mcp_project_file.py::api_mcp_project_file": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_toggle_tool": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_toggle_all": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_remove": ("<default>", _BOUNDED_CONTROL_FIELDS),

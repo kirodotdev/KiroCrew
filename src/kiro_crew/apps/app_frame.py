@@ -572,7 +572,12 @@ const onLink = (e) => {
   if (raw.startsWith('#')) return;
   e.preventDefault();
   const url = webUrl(new URL(raw, a.baseURI || location.href).href);
-  if (url) { try { P.postMessage({ type: 'kirocrew-dashboard:open', url }, '*'); } catch (_) {} }
+  if (!url) return;
+  // tab: a middle or modified click asks for a new tab, so the dashboard does not
+  // open one of its own pages in place for it (as the widget shim marks it).
+  const m = { type: 'kirocrew-dashboard:open', url };
+  if (e.type === 'auxclick' || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) m.tab = true;
+  try { P.postMessage(m, '*'); } catch (_) {}
 };
 window.addEventListener('click', onLink);
 window.addEventListener('auxclick', onLink);

@@ -205,7 +205,7 @@ async def persist_tags_snapshot_unlocked(state: DashboardState) -> None:
 
 
 def _valid_color(value: str) -> str:
-    return value if _COLOR_RE.match(value) else _DEFAULT_COLOR
+    return value if _COLOR_RE.fullmatch(value) else _DEFAULT_COLOR
 
 
 def _tag_by_id(state: DashboardState, tag_id: str) -> dict | None:

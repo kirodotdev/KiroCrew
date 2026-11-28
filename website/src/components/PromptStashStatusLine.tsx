@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { i18nT } from '../i18n/t'
 import type { PromptStashState } from '../hooks/usePromptStash'
 import ErrorNotice from './ErrorNotice'
+import PromptStashPicker from './PromptStashPicker'
 
 /** A short status line directly under the draft it describes. */
 export default function PromptStashStatusLine({
@@ -121,17 +122,21 @@ export default function PromptStashStatusLine({
  *  to say. The inner span is keyed by the announcement sequence so a refusal
  *  repeated word for word (a second chord press at the cap) still replaces the
  *  text node, which is what makes the region speak it again. */
-export function PromptStashStatusRegion({ stash, chordLabel, touch, menuGlyph }: {
+export function PromptStashStatusRegion({ stash, chordLabel, touch, menuGlyph, onFocusInput }: {
   stash: PromptStashState
   chordLabel: string
   touch: boolean
   menuGlyph: string
+  /** Puts focus back in the message input after the list restores or closes on Escape. */
+  onFocusInput: () => void
 }) {
+  const { pickerEntries } = stash
   return (
     <>
       <span className="sr-only" aria-live="polite" aria-atomic="true" data-testid="prompt-stash-status">
         <span key={stash.announcementKey} data-testid="prompt-stash-status-text">{stash.announcement}</span>
       </span>
+      {pickerEntries && <PromptStashPicker stash={{ ...stash, pickerEntries }} touch={touch} onFocusInput={onFocusInput} />}
       {(stash.error || stash.notice || stash.count > 0) && (
         <PromptStashStatusLine
           error={stash.error}

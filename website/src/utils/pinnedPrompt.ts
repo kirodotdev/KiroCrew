@@ -1,6 +1,6 @@
 import type { ChatMessage } from '../types'
 import type { DisplayItem } from '../pages/chat/types'
-import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
+import { isSubagentCompletionMessage } from '../lib/subagentCompletion'
 import { mdImageDestToPath } from './fileTokens'
 import { pathBasename } from './pathBasename'
 import { type PasteBlock, expandAll } from './pasteTokens'
@@ -53,6 +53,19 @@ export const ROW_PAD_Y = 4
  * subsequent one uses the measured height.
  */
 export const DEFAULT_PINNED_CARD_H = 46.75
+
+/**
+ * Height of the sender's name above another person's card: the transcript
+ * byline's line (`leading-5`, 20px) plus the gap under it (`mb-0.5`, 2px), the
+ * values `SenderLine` in MessageByline draws with. The card measures its own
+ * byline and reports it inside its resting height; this is what the geometry
+ * uses where no card can be measured: the seed for a named card's resting
+ * height, and the hand-off of a row that shows no name of its own
+ * (`pinBylineLead` in usePinnedPrompt).
+ * shortcut: a fixed px value, off by the difference if the root font size is
+ * ever scaled; have the card report its byline height once that ships.
+ */
+export const PINNED_BYLINE_H = 22
 
 /**
  * Viewport Y of the hand-off line: the card's own resting TOP edge. A prompt pins
@@ -593,6 +606,8 @@ export interface PinnedPromptState {
   raw: string
   full: string
   images: string[]
+  /** The row's meta. Its author stamp decides which side the card is drawn on. */
+  meta?: Record<string, unknown> | null
   bodyBeyondPreview: boolean
   push: number
   bannerH: number
@@ -690,6 +705,7 @@ export function nextPinnedPromptState(
     raw,
     full,
     images,
+    meta,
     // By COMPARISON: a short multiline paste never clamps, so this flag is the
     // only thing that can reach its body.
     bodyBeyondPreview: full !== text,

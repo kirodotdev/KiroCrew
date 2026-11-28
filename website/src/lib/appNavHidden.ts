@@ -5,10 +5,13 @@
  * apps appear ("pinned") in the sidebar. Persistence stores the HIDDEN set
  * — a JSON string array of app nav ids under `mc-app-nav-hidden` — not the
  * visible set, so a newly installed app defaults to pinned with no
- * migration: an id absent from the list is visible.
+ * migration: an id absent from the list is visible. The same set holds
+ * Discover's own nav id (`apps`) while Settings > Display > View > "Show
+ * Discover in the sidebar" is off.
  *
- * Both writers/readers (LibraryPage tiles and the sidebar filter in
- * shell/nav/appRail.tsx)
+ * Every writer and reader (LibraryPage tiles, the app row menu, the Display
+ * settings, the sidebar filter in shell/nav/appRail.tsx and the shell's
+ * `discoverInRail`)
  * MUST go through this module so the contract lives in one place. Writes
  * dispatch `mc:app-nav-hidden-changed` on window because same-tab
  * localStorage writes do not fire the `storage` event — the sidebar

@@ -27,6 +27,7 @@ from kiro_crew.config.loader import (
     config_path,
 )
 from kiro_crew.dashboard.handlers.agents import api_agent_fork
+from kiro_crew.dashboard.side_readonly_spec import _home_relative
 
 
 @pytest.fixture(autouse=True)
@@ -693,8 +694,8 @@ async def test_fork_clears_a_stale_refresh_failure(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fork_ambiguous_refusal_names_the_claimant_files(tmp_path):
-    """Two files claiming the name: the 409 names both by file name inside
-    ~/.kiro/agents/, never the absolute path, and keeps its code."""
+    """Two files claiming the name: the 409 names both by the folder they were
+    found in and their file name, and keeps its code."""
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
     _write_template(agents_dir, "mytemplate")
@@ -708,9 +709,10 @@ async def test_fork_ambiguous_refusal_names_the_claimant_files(tmp_path):
 
     assert resp.status == 409
     body = json.loads(resp.text)
+    d = _home_relative(agents_dir)
     assert body == {
-        "error": "'mytemplate' matches more than one template file in ~/.kiro/agents/ "
-        "(SomePkg-mytemplate.json, mytemplate.json); rename one first.",
+        "error": "'mytemplate' matches more than one template file "
+        f"({d}/SomePkg-mytemplate.json, {d}/mytemplate.json); rename one first.",
         "code": "ambiguous_template_name",
     }
     assert not (agents_dir / "design-crew.json").exists()

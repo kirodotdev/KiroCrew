@@ -798,6 +798,21 @@ class TestDashboardPortSelection:
         assert ds.no_crons is True
 
     @pytest.mark.asyncio
+    async def test_ephemeral_port_is_the_reserved_one_whatever_the_runner_lists_first(self):
+        """Other listeners first on the runner: the port is still the gateway's own."""
+        orch = _prepared_orchestrator()
+        orch._port_override = "auto"
+        runner = SimpleNamespace(
+            app={"served_port": 54321},
+            addresses=[("127.0.0.1", 8443), ("::1", 8443, 0, 0), ("127.0.0.1", 54321)],
+        )
+        ds = _mock_dashboard_state()
+        with patch.object(gw, "LessonStore", MagicMock()):
+            with patch.object(gw, "start_dashboard", AsyncMock(return_value=(runner, ds))):
+                await orch._init_dashboard()
+        assert orch._dashboard_port == 54321
+
+    @pytest.mark.asyncio
     async def test_literal_port_override_is_used_verbatim(self):
         orch = _prepared_orchestrator()
         orch._port_override = "8123"
@@ -1379,6 +1394,86 @@ class TestNotifyNudgeExpired:
         assert orch._notify_nudge_expired(loop) is True
         assert ds.notify.call_args.args[1] == "Monitoring loop hit its cycle cap"
 
+    @pytest.mark.parametrize(
+        ("stop", "pending", "expected_title"),
+        [
+            (
+                {"max_runtime_secs": 60, "created_ts": 1.0, "stopped_reason": "runtime_budget"},
+                "",
+                "Monitoring loop spent its time budget",
+            ),
+            (
+                {"max_cycles": 4, "cycle_count": 4, "stopped_reason": "cycle_cap"},
+                "",
+                "Monitoring loop hit its cycle cap",
+            ),
+            (
+                {"stopped_reason": CONSECUTIVE_FAILURE_REASON},
+                "",
+                "Monitoring loop stopped — its cycles kept failing",
+            ),
+            (
+                {"max_cycles": 4, "cycle_count": 4, "stopped_reason": "cycle_cap"},
+                "success",
+                "Monitoring loop finished — what it was watching is done",
+            ),
+        ],
+    )
+    def test_a_stop_notice_names_the_pull_request_its_loop_watched(
+        self, stop, pending, expected_title
+    ):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        loop = NudgeLoop(
+            id="loop-named-subject",
+            slot_key="chat-5",
+            message="watch https://github.com/acme/widgets/pull/42 until green",
+            gate=True,
+            monitor=MonitorState(
+                kind="gh-pr",
+                target="acme/widgets#42",
+                objective="watch until green",
+                created_ts=0.0,
+                terminal_pending=pending,
+            ),
+            **stop,
+        )
+
+        assert orch._notify_nudge_expired(loop) is True
+
+        title, body, _meta, _priority = _monitor_notice(ds)
+        assert title == expected_title
+        assert body.endswith("\n\nacme/widgets#42")
+
+    def test_a_gated_loop_notice_redacts_a_credential_in_its_subject(self):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        subject = "acme/" + _NOTICE_TOKEN + "#7"
+        loop = NudgeLoop(
+            id="loop-credential-subject",
+            slot_key="chat-6",
+            message="watch https://github.com/acme/" + _NOTICE_TOKEN + "/pull/7",
+            max_runtime_secs=60,
+            created_ts=1.0,
+            stopped_reason="runtime_budget",
+            gate=True,
+            monitor=MonitorState(
+                kind="gh-pr",
+                target=subject,
+                objective="watch until green",
+                created_ts=0.0,
+            ),
+        )
+
+        assert orch._notify_nudge_expired(loop) is True
+
+        _title, body, _meta, _priority = _monitor_notice(ds)
+        assert subject not in body
+        assert "ghp_" not in body
+        assert "REDACTED" in body
+
     def test_a_terminal_subject_outranks_the_wall_clock_budget(self):
         """Terminal outranks EVERY early-stop reading, not just the cap.
 
@@ -1487,6 +1582,45 @@ class TestNotifyNudgeExpired:
         assert expected_body in body
         # The merge lands in the feed only; closed-unmerged still rings.
         assert priority == ("passive" if (pending or delivered) == "success" else None)
+
+    @pytest.mark.parametrize(
+        ("outcome", "expected_title", "priority"),
+        [
+            ("success", "Patrol finished — every task was accepted", "passive"),
+            ("blocked", "Patrol finished — some tasks were not accepted", None),
+        ],
+    )
+    def test_a_finished_work_ledger_patrol_names_tasks_not_a_pull_request(
+        self, outcome, expected_title, priority
+    ):
+        from kiro_crew.autonudge import MONITOR_TERMINAL_REASON
+        from kiro_crew.monitoring.models import MonitorOutcome
+
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        loop = NudgeLoop(
+            id=f"loop-ledger-{outcome}",
+            slot_key="chat-ledger",
+            message="patrol the work ledger",
+            cycle_count=3,
+            stopped_reason=MONITOR_TERMINAL_REASON,
+            gate=True,
+            monitor=MonitorState(
+                kind="work-ledger",
+                target="chat-ledger",
+                objective="patrol the work ledger",
+                created_ts=0.0,
+                outcome=MonitorOutcome(outcome),
+            ),
+        )
+
+        assert orch._notify_nudge_expired(loop) is True
+
+        title, body, _meta, got_priority = _monitor_notice(ds)
+        assert title == expected_title
+        assert "pull request" not in body.lower()
+        assert got_priority == priority
 
     def test_a_legacy_cap_with_no_owed_turn_still_reports_the_cap(self):
         orch = _make_orchestrator()

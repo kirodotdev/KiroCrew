@@ -552,6 +552,57 @@ Authoring a compiled (edition) theme end to end — CSS specificity against the
 core palette, module resolution, typechecking — is covered in
 [extension-seams § Authoring an edition](extension-seams.md#authoring-an-edition-the-build-pitfalls).
 
+## Adopted apps' utilities
+
+A former built-in that installs from its own repository
+([app-kit-platform § 33](../../docs/system-specs/modules/app-kit-platform.md#33-former-built-in-adoption))
+ships a UI bundle with no stylesheet. Its Tailwind classes resolve against this
+dashboard's compiled sheet, and that sheet holds only the utilities `src/index.css`
+finds in its `@source` scan of `src/`. While core still carries the app's wheel
+copy under `src/apps/<name>/`, the copy is what keeps those utilities compiled.
+Deleting it would drop every one that nothing else in core uses, and the adopted
+app would render unstyled on every host, including a host that runs a pin no
+later release can replace.
+
+`src/tailwind-adopted-app-classes.css` is the seam that keeps them. Each line is
+one `@source inline("<class>");`, and `index.css` imports the file in its
+Tailwind header, so the sheet emits every listed class whether or not any file
+under `src/` uses it. The file is generated: `npm run gen:adopted-app-classes`
+(`scripts/gen-adopted-app-classes.mjs`, networked) reads every row of
+`src/kiro_crew/apps/adoption-pins.json` and scans
+
+- the pinned tree's `ui/src/`, read out of the row's codeload archive once its
+  SHA-256 matches `archiveSha256`. This is the source of the bundle a host runs,
+  so it still answers after the copy is gone, and it covers an app whose copy
+  never lived under `src/apps/<name>/`;
+- the wheel copy under `src/apps/<name>/`, while one exists.
+
+Test files are skipped in both, and a candidate is kept only when Tailwind emits
+a rule for it, asked through the phantom-classes gate's oracle
+(`emittedClasses` in `scripts/check-phantom-classes.mjs`). Core names no app
+here: the pin table is the only input.
+
+- **Append-only.** A class stays once it is listed, even when no scan finds it
+  any more: the copy it came from may be gone, and a host may still run the pin
+  that uses it. The generator never removes a line; never remove one by hand.
+- **Regenerate when the pin table changes.** The file records the pin commits it
+  was generated against, so a pin PR runs `npm run gen:adopted-app-classes` and
+  commits the result.
+- **What it costs.** The sheet grows only by the listed classes nothing else in
+  `src/` uses; every other line compiles to a rule the sheet already holds.
+
+`src/test/adoptedAppClassSafelist.test.ts` fails when a pinned app's wheel copy
+uses a utility the list lacks, when the list drops a class the base branch held
+(read through `I18N_BASE_REF`, which the unit-test job sets), when the recorded
+commits differ from the pin table, when a listed class stops emitting a rule
+(a Tailwind upgrade that drops a utility an adopted bundle uses), or when
+`index.css` stops importing the file.
+
+Out of scope: CSS that is not a Tailwind utility, such as a stylesheet an app
+imports itself or a plain class a core partial defines. The long-term path for an
+adopted app's styling is a stylesheet the app ships with its bundle; this list
+keeps the existing pins styled until then.
+
 ## Checkers
 
 Two are blocking, in the `eslint src/ --max-warnings 0` CI gate through

@@ -15,7 +15,10 @@ import logging
 
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers._shared import (
+    require_owner_dashboard_request,
+    require_owner_for_dashboard_caller,
+)
 from kiro_crew.executors import discovery_executor
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
 
@@ -181,11 +184,15 @@ async def api_security_stats(_request: web.Request) -> web.Response:
     )
 
 
-async def api_security_posture(_request: web.Request) -> web.Response:
+async def api_security_posture(request: web.Request) -> web.Response:
     """GET /api/security/posture — expandable detail behind each posture count.
 
     Read-only and posture-only: control definitions and derived counts, never
     credential material, governance rule contents, or user data. See
-    ``security_posture`` for the disclosure contract.
+    ``security_posture`` for the disclosure contract. Still the owner's (or a
+    teammate's) view: which controls are off is a map for an attacker.
     """
+    denied = await require_owner_for_dashboard_caller(request, "security.posture")
+    if denied is not None:
+        return denied
     return web.json_response(await build_posture_snapshot_async())

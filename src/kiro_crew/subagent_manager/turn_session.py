@@ -72,6 +72,21 @@ def _run_on(manager: Any, key: str) -> SubagentInfo | None:
     return max(runs, key=lambda run: (not run.done, run.started)) if runs else None
 
 
+def _parent_provider(manager: Any, parent_key: str) -> Any:
+    """The live provider of the session at *parent_key*, or ``None``.
+
+    A sub-agent parent on a shared runtime keeps its session on its run
+    (``_shared_provider``), outside the session registry; any other parent is
+    in the registry.
+    """
+    if not parent_key:
+        return None
+    run = _run_on(manager, parent_key) if parent_key.startswith("subagent:") else None
+    if run is not None and not run.done and run._session_sharing and run._shared_provider:
+        return run._shared_provider
+    return manager._sessions.get_provider(parent_key)
+
+
 def _approval_lineage(
     self: RunEventCoordinator, parent_key: str, revocation: int
 ) -> tuple[tuple[str, int], ...] | None:
@@ -301,6 +316,7 @@ async def acquire_session(
                 exc,
             )
             info._session_sharing = False
+            info._shared_slot_reserved = False
             info._shared_provider = None
             use_session_sharing = False
             # Admitted at the shared price; the process this launches was
@@ -358,6 +374,7 @@ async def acquire_session(
         # teardown to the shared arm. The old attempt's teardown, which read
         # it, has finished before this one runs.
         info._session_sharing = False
+        info._shared_slot_reserved = False
         info._shared_provider = None
 
         def _claim():
@@ -379,8 +396,11 @@ async def acquire_session(
     if is_new:
         # A spawn prompts the moment its session opens, and nobody reconnects a
         # slow server mid-run: hold the first prompt (bounded) for the agent
-        # spec's servers, as every other unattended run does.
-        await wait_for_declared_mcp(client, UNATTENDED_MCP_WAIT_SECS)
+        # spec's servers, as every other unattended run does. Not for one the
+        # parent's session on this host has given up on (failed, or hung): a
+        # dead server would cost every spawn the whole bound.
+        parent = _parent_provider(self._manager, info.parent_session_key)
+        await wait_for_declared_mcp(client, UNATTENDED_MCP_WAIT_SECS, seen_by=parent)
     return client, is_new, _resumed, is_cc, use_session_sharing
 
 

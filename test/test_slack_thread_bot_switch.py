@@ -60,6 +60,14 @@ def bots(monkeypatch, tmp_path):
 
 
 @pytest.fixture()
+def first_crewmate(bots):
+    """The ``bots`` config plus the first crewmate, never renamed. ``default`` is stock."""
+    cfg = live.snapshot()
+    cfg.agents["mate"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+    return cfg
+
+
+@pytest.fixture()
 def audit(monkeypatch):
     monkeypatch.setattr(_handler, "_owner_id", _OWNER)
     monkeypatch.setattr(_handler, "_hydrated_sessions", set())
@@ -485,7 +493,7 @@ class TestBotList:
 
     def test_the_list_says_which_bot_the_thread_is_on(self, bots, audit):
         slack, _sessions = _run(_first("!bot research"), _reply("!bot"))
-        assert "This thread runs as Bot *research*." in _posts(slack)[-1]
+        assert "This thread runs as Bot *Research Bot*." in _posts(slack)[-1]
 
     def test_an_unknown_name_is_an_error_that_lists_the_bots(self, bots, audit):
         slack, sessions = _run(_first("!bot nope"), _reply("hello"))
@@ -506,26 +514,31 @@ class TestBotList:
         assert _posts(slack)[0].startswith("❌ Unknown Bot `kirocrew`.")
 
 
-class TestBotSwitchIsOwnerOnly:
-    def test_a_shared_user_is_refused_and_the_thread_is_unchanged(self, bots, audit):
+class TestBotSwitchIsForAllowedUsers:
+    def test_a_stranger_is_refused_and_the_thread_is_unchanged(self, bots, audit):
         slack, sessions = _run(_first("!bot research", user_id=_SHARED), _reply("hello"))
 
-        assert "⛔ Owner-only command." in _posts(slack)
+        assert "⛔ Not authorized." in _posts(slack)
         assert _KEY not in _handler._thread_agents
         assert sessions.removed == []
         assert "crew_agent" not in sessions.calls[0][1]
         audit.log_api_access.assert_any_call(
             caller=_SHARED,
-            operation="slack.owner_command",
+            operation="slack.allowed_command",
             outcome="denied",
             source="slack",
             resources="!bot",
             error="unauthorized sender",
         )
 
-    def test_a_shared_user_cannot_list_the_bots_either(self, bots, audit):
+    def test_a_stranger_cannot_list_the_bots_either(self, bots, audit):
         slack, _sessions = _run(_first("!bot", user_id=_SHARED))
-        assert _posts(slack) == ["⛔ Owner-only command."]
+        assert _posts(slack) == ["⛔ Not authorized."]
+
+    def test_a_shared_user_may_list_the_bots(self, bots, audit, monkeypatch):
+        monkeypatch.setattr(_handler, "is_shared_user", lambda user: user == _SHARED)
+        slack, _sessions = _run(_first("!bot", user_id=_SHARED))
+        assert _posts(slack)[0].startswith("Crew Bots: ")
 
 
 class TestLinkedThread:
@@ -641,3 +654,66 @@ class TestSlashBot:
 
     def test_help_lists_it(self):
         assert "bot" in events_slash.SLASH_REGISTRY
+
+
+class TestDashboardNames:
+    """The list names Bots as the dashboard's Bots page does (``agent_files.member_label``)."""
+
+    def test_the_first_crewmate_reads_bot_and_default_is_not_listed(self, first_crewmate, audit):
+        slack, _sessions = _run(_first("!bot"))
+
+        [post] = _posts(slack)
+        assert "`mate` (Bot)" in post
+        assert "`default`" not in post
+        assert "`web-frontend`" in post and "`research` (Research Bot)" in post
+
+    def test_the_refusal_and_the_slash_command_print_the_same_list(self, first_crewmate, audit):
+        slack, _sessions = _run(_first("!bot nope"))
+        [listed] = asyncio.run(_slash("bot"))
+        [slash_error] = asyncio.run(_slash("bot nope"))
+
+        for text in (_posts(slack)[0], listed, slash_error):
+            assert "`mate` (Bot)" in text and "`default`" not in text
+
+    def test_the_label_names_the_first_crewmate_in_any_case(self, first_crewmate, audit):
+        _slack, sessions = _run(_first("!bot Bot"), _reply("hello"))
+
+        assert sessions.calls[0][1]["crew_agent"] == "mate"
+        assert channel_crew.resolve_bot_name("bot") == "mate"
+
+    def test_a_name_a_person_chose_beats_the_stand_in_label(self, first_crewmate):
+        first_crewmate.agents["helper"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", display_name="Bot"
+        )
+        assert channel_crew.resolve_bot_name("bot") == "helper"
+
+    def test_a_renamed_first_crewmate_goes_by_its_new_name_only(self, first_crewmate):
+        first_crewmate.agents["mate"].display_name = "Mia"
+
+        assert channel_crew.resolve_bot_name("mia") == "mate"
+        assert channel_crew.resolve_bot_name("bot") is None
+        assert "`mate` (Mia)" in channel_crew.bots_text()
+
+    @pytest.mark.parametrize(
+        ("typed", "shown"),
+        [("mate", "Bot"), ("research", "Research Bot"), ("web-frontend", "web-frontend")],
+    )
+    def test_a_reply_that_names_one_bot_uses_the_dashboard_name(
+        self, first_crewmate, audit, typed, shown
+    ):
+        slack, _sessions = _run(_first(f"!bot {typed}"), _reply("!bot"))
+
+        switched, listed = _posts(slack)
+        assert f"🤖 This thread now runs as Bot *{shown}*." in switched
+        assert listed.startswith(f"This thread runs as Bot *{shown}*.\n")
+        assert f"`{typed}`" in listed
+
+    def test_a_name_a_bot_gave_itself_cannot_page_the_channel(self, first_crewmate, audit):
+        # ``update_self`` lets a Bot choose its display name; Slack reads ``<!channel>``
+        # in message text as a broadcast, so the label is escaped at the Slack seam.
+        first_crewmate.agents["mate"].display_name = "<!channel>"
+        slack, _sessions = _run(_first("!bot mate"), _reply("!bot"))
+
+        assert all("<!channel>" not in post for post in _posts(slack))
+        assert "Bot *&lt;!channel&gt;*." in _posts(slack)[0]
+        assert "`mate` (&lt;!channel&gt;)" in _posts(slack)[1]

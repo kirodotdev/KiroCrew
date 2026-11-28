@@ -96,8 +96,11 @@ export function createUpdatesEndpoints({ post, del, j, jfetch: fetch }: ClientTr
     // `offered`: the version the clicked button named. The gateway reads it only
     // to tell an upgrade click from a channel-move click; it arms its own fresh
     // verdict either way.
-    armUpdate: (offered?: string) => post('/api/update/arm', offered ? { offered } : undefined).then(j) as Promise<{ ok?: boolean; armed?: boolean; request_id?: string; version?: string; version_display?: string; expires_in?: number; approve_command?: string; error?: string; code?: string }>,
-    armStatus: () => fetch('/api/update/arm').then(j) as Promise<{ armed: boolean; managed_by?: string; request_id?: string; version?: string; requested_by?: string; armed_at?: number; expires_in?: number; approve_command?: string }>,
+    // A newer release of this build's own channel installs with the click itself:
+    // the answer is then `status: "applying"` (or `"armed"` for the next start on
+    // a gateway that runs from the stable link) and carries no approve command.
+    armUpdate: (offered?: string) => post('/api/update/arm', offered ? { offered } : undefined).then(j) as Promise<{ ok?: boolean; status?: 'applying' | 'armed'; armed?: boolean; request_id?: string; version?: string; version_display?: string; expires_in?: number; approve_command?: string; error?: string; code?: string }>,
+    armStatus: () => fetch('/api/update/arm').then(j) as Promise<{ armed: boolean; managed_by?: string; request_id?: string; version?: string; version_display?: string; requested_by?: string; armed_at?: number; expires_in?: number; approve_command?: string }>,
     // Decline a packaged-app update request. Removes a nudge, grants nothing.
     dismissUpdateArm: (requestId: string) => del(`/api/update/arm?request_id=${encodeURIComponent(requestId)}`).then(j) as Promise<{ ok?: boolean; armed?: boolean; dismissed?: boolean }>,
     cancelUpdate: () => post('/api/update/cancel').then(j),

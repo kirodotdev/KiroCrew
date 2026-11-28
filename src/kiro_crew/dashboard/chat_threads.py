@@ -71,6 +71,7 @@ from kiro_crew.llm_helpers import (
 from kiro_crew.members import DM_SLOT_MODE
 from kiro_crew.security import StreamRedactor, redact
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import strip_quoted_markers
 from kiro_crew.shared_crew.admission_gate import actor_budget
 from kiro_crew.shared_crew.turn_gate import capacity_note, initiated_by, run_admitted
 from kiro_crew.start_priority import StartPriority
@@ -506,7 +507,7 @@ def _resolve_slot(
 def _valid_mid(mid: str) -> bool:
     """A minted row id (``mint_row_mid``) and nothing else -- the one shape a
     thread key may have, at the route and in the store alike."""
-    return bool(THREAD_MID_RE.match(mid or ""))
+    return bool(THREAD_MID_RE.fullmatch(mid or ""))
 
 
 async def _read_threads(
@@ -619,7 +620,7 @@ async def api_chat_thread_reply(request: web.Request) -> web.Response:
         )
     reply_id = body.get("reply_id")
     if reply_id is not None and not (
-        isinstance(reply_id, str) and THREAD_REPLY_ID_RE.match(reply_id)
+        isinstance(reply_id, str) and THREAD_REPLY_ID_RE.fullmatch(reply_id)
     ):
         return web.json_response(
             {"error": "invalid reply_id", "code": "invalid_reply_id"}, status=400
@@ -1194,17 +1195,20 @@ async def _thread_turn_body(
         try:
             # The main chat's credential pass: the text is ``redact(raw)`` byte for
             # byte (both splice one plan), with the record each placeholder needs.
+            # A line that only quotes a directive tool's marker is protocol, not the answer.
             response_text, redactions, reveals = _redact_answer(
                 slot,
-                await stream_and_collect(
-                    provider,
-                    message,
-                    approval_policy=approval_policy,
-                    hooks=hooks,
-                    session_key=session_key,
-                    agent=slot_agent or "kirocrew",
-                    app=slot._app or "",
-                    on_chunk=_on_chunk,
+                strip_quoted_markers(
+                    await stream_and_collect(
+                        provider,
+                        message,
+                        approval_policy=approval_policy,
+                        hooks=hooks,
+                        session_key=session_key,
+                        agent=slot_agent or "kirocrew",
+                        app=slot._app or "",
+                        on_chunk=_on_chunk,
+                    )
                 ),
             )
         except PromptBusyExhaustedError:

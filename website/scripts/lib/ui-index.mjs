@@ -50,7 +50,9 @@ import {
   GUIDE_DENY_IDS,
   guidePlanFor,
 } from './ui-index-guide.mjs'
+import { APP_PAGE_PREFIX, BUILTIN_APP_ARM } from './ui-index-apps.mjs'
 // Every name the owners serve callers, re-exported: import them from here.
+export { APP_PAGE_PREFIX, appPagesFromManifests, BUILTIN_APP_ARM } from './ui-index-apps.mjs'
 export {
   collectKeyMap,
   collectNavItemPaths,
@@ -105,7 +107,7 @@ export {
 export const SCHEMA_VERSION = 1
 
 /** Prefixes owned by generated locations; a registered id may not use them. */
-const RESERVED_PREFIXES = ['page.', 'tab.', 'settings.', 'setting:']
+const RESERVED_PREFIXES = ['page.', 'tab.', 'settings.', 'setting:', APP_PAGE_PREFIX]
 const LOCATION_ID_RE = /^[a-z0-9]+(?:[.-][a-z0-9]+)+$/
 /** What the auto tier covers, said in the full index's scope and the auto artifact's. */
 export const AUTO_SCOPE = 'auto-indexed controls (label and page proven from source, exact place and prerequisites unknown)'
@@ -235,6 +237,8 @@ export function buildUiIndex(inputs) {
     locations.set(loc.id, loc)
   }
   const sourceKey = (s) => (s.key !== undefined ? s.key : `${LITERAL_PREFIX}${s.literal}`)
+  /** `key` when the English catalog holds exactly `text` under it, else `text` as a literal. */
+  const catalogKeyFor = (key, text) => (key && english[key] === text ? key : `${LITERAL_PREFIX}${text}`)
 
   // Pages ------------------------------------------------------------------
   const previewRequires = (flag, origin) => {
@@ -312,6 +316,42 @@ export function buildUiIndex(inputs) {
   }
   for (const k of Object.keys(legacy)) {
     if (!inputs.extraPages.some((p) => p.key === k)) errors.push(`LEGACY_PAGE_CANONICAL names unknown extra page '${k}'`)
+  }
+  // Pages of the apps that ship in the package (`appPages`, read from their
+  // manifests by ui-index-apps.mjs): a rail row while the app is on. A page
+  // whose route a core page already has is left to that page.
+  const pageRoutes = new Set([...locations.values()].flatMap((l) => l.placements.map((p) => p.route)))
+  const appPageRoutes = new Set()
+  const hasAppArm = routeTable.some((r) => r.path === BUILTIN_APP_ARM)
+  for (const a of inputs.appPages ?? []) {
+    if (pageRoutes.has(a.route) || surfaceIds.has(a.app)) continue
+    const where = `app page '${a.id}' (${a.rel})`
+    if (!hasAppArm) {
+      errors.push(`${where}: the route table has no '${BUILTIN_APP_ARM}' arm to serve '${a.route}'`)
+      continue
+    }
+    const hit = matchRoute(routeTable, a.route)
+    if (hit) {
+      errors.push(`${where}: route '${a.route}' lands on the dashboard's own '${hit.path}' route, not '${BUILTIN_APP_ARM}'`)
+      continue
+    }
+    surfaceIds.add(a.app)
+    appPageRoutes.add(`/${a.route.split('?')[0].split('/').filter(Boolean)[0] ?? ''}`)
+    addLocation({
+      id: a.id,
+      kind: 'page',
+      // The rail shows a built-in app's localised copy, so its catalog key is the
+      // label wherever the catalog holds the manifest's own words; otherwise the
+      // manifest text, which the rail shows as is.
+      label_key: catalogKeyFor(a.labelKey, a.label),
+      // The app's name searches its page too, when the rail label is shorter.
+      ...(a.appLabel !== a.label ? { alias_keys: [catalogKeyFor(a.appLabelKey, a.appLabel)] } : {}),
+      app: a.appLabel,
+      placements: [{
+        surface_id: a.app, route: a.route, parent_ids: [], entry_kind: 'rail',
+        requires: [{ kind: 'condition', id: 'app_enabled' }],
+      }],
+    }, 'app page')
   }
 
   // Tabs -------------------------------------------------------------------
@@ -446,7 +486,7 @@ export function buildUiIndex(inputs) {
 
   // Every route a location hands out must be one the router renders ------------
   if (!Array.isArray(inputs.routes) || inputs.routes.length === 0) errors.push('no route table: pass the routes read from App.tsx')
-  const appRoutes = new Set(inputs.surfaces.filter((s) => s.appOnly).map((s) => pathOf(s.route)))
+  const appRoutes = new Set([...inputs.surfaces.filter((s) => s.appOnly).map((s) => pathOf(s.route)), ...appPageRoutes])
   const checkRoute = (url, where) => {
     if (typeof url !== 'string' || !url.startsWith('/')) {
       errors.push(`${where}: route '${url ?? ''}' is empty or not an absolute path`)
@@ -732,7 +772,19 @@ export function buildUiIndex(inputs) {
       errors.push(`SEARCH_TERMS names registered location '${id}'; put its terms in its descriptor`)
       continue
     }
+    if (id.startsWith('setting:') && terms && typeof terms === 'object' && Object.hasOwn(terms, 'en')) {
+      errors.push(`SEARCH_TERMS '${id}' lists English terms; a setting's English words live in settingsKeywords.ts`)
+      continue
+    }
     termSources.push([id, terms, 'SEARCH_TERMS'])
+  }
+  // English words a descriptor or SEARCH_TERMS already gives some location:
+  // that curated choice keeps the word.
+  const claimed = new Set(termSources.flatMap(([, t]) => (Array.isArray(t?.en) ? t.en : [])).filter((w) => typeof w === 'string').map(foldTerm))
+  for (const [id, en] of settingTermsFromKeywords(inputs, locations, claimed, errors)) {
+    const i = termSources.findIndex(([tid]) => tid === id)
+    if (i >= 0) termSources[i] = [id, { en, ...termSources[i][1] }, 'SEARCH_TERMS + settingsKeywords.ts']
+    else termSources.push([id, { en }, 'settingsKeywords.ts'])
   }
   for (const [id, terms, origin] of termSources) {
     const loc = locations.get(id)
@@ -765,7 +817,7 @@ export function buildUiIndex(inputs) {
         continue
       }
       const v = cat[key]
-      if (typeof v === 'string' && v.trim()) out[key] = v.replaceAll('{{productName}}', inputs.productName)
+      if (typeof v === 'string' && v.trim()) out[key] = searchableLabel(v, inputs.productName)
       else if (locale !== 'en') (missing[locale] ??= []).push(key)
     }
     labels[locale] = out
@@ -987,9 +1039,120 @@ function buildAutoLocations(inputs, locations, errors, addLocation) {
 const MAX_TERMS_PER_LOCALE = 16
 const MAX_TERM_CHARS = 60
 
+/**
+ * A catalog value as the index stores and searches it: the product name filled
+ * in, and any other placeholder left out. That one is a value only the running
+ * dashboard knows (the top-bar search button's `{{shortcut}}`), so find_ui
+ * searches the words around it, never the placeholder's own name.
+ */
+function searchableLabel(text, productName) {
+  const filled = text.replaceAll('{{productName}}', productName)
+  return /\{\{\w+\}\}/.test(filled) ? filled.replace(/\{\{\w+\}\}/g, '').trim() : filled
+}
+
 /** Approximates the search's normalization (NFKC, casefold, punctuation as space). */
 function foldTerm(text) {
   return text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ').trim()
+}
+
+/**
+ * Each setting's English search terms, from the command palette's list
+ * (settingsKeywords.ts), so one list feeds both searches. The palette matches
+ * literally and keeps spellings that differ only in punctuation ("auto update",
+ * "auto-update"); find_ui folds them, so only the first is kept. A one-word
+ * entry stays palette-only (see below) unless GUIDE_ONE_WORD_TERMS
+ * (`inputs.guideOneWords`) names it for that setting; every word it names
+ * must be in the setting's palette list. A word that
+ * only repeats this setting's label is left out (the label is searched
+ * already), and so is a word that is another location's English name or one of
+ * its curated search terms (`claimed`): there it would tie with that location
+ * and point at the wrong place. A word that is a whole-word run inside another
+ * location's English label or alias ("bot token" inside "Discord bot token")
+ * is left out too when it is at least 60% of that label's words, so find_ui
+ * shows the tie instead of picking this setting; words GUIDE_ONE_WORD_TERMS
+ * names skip only that last check.
+ */
+function settingTermsFromKeywords(inputs, locations, claimed, errors) {
+  const en = inputs.catalogs.en ?? {}
+  const formsOf = (loc) => [loc.label_key, ...(loc.alias_keys ?? [])]
+    .map((k) => (k.startsWith(LITERAL_PREFIX) ? k.slice(LITERAL_PREFIX.length) : en[k]))
+    .filter((v) => typeof v === 'string')
+    .map((v) => foldTerm(searchableLabel(v, inputs.productName)))
+  const namedBy = new Map()
+  for (const loc of locations.values()) {
+    for (const f of formsOf(loc)) (namedBy.get(f) ?? namedBy.set(f, new Set()).get(f)).add(loc.id)
+  }
+  // True when `folded` is a whole-word run inside another location's English
+  // label or alias ("bot token" inside "Discord bot token") that find_ui
+  // would answer with that location. find_ui drops a match that explains less
+  // than 60% of the label (_MIN_COVERAGE in ui_index_match.py), so a phrase
+  // inside a long label ("amazon polly" in "AWS Profile (Amazon Polly)") finds
+  // nothing there and stays this setting's term.
+  // shortcut: counts every word, where find_ui skips stopwords; mirror its
+  // stopwords here if a needed term is dropped or a tie is missed.
+  const inOtherName = (folded, ownId) => {
+    const needle = ` ${folded} `
+    const words = folded.split(' ').length
+    for (const [form, ids] of namedBy) {
+      if (![...ids].some((id) => id !== ownId) || !` ${form} `.includes(needle)) continue
+      if (words / form.split(' ').length >= 0.6) return true
+    }
+    return false
+  }
+  const keepOneWord = new Map()
+  for (const [settingId, words] of Object.entries(inputs.guideOneWords ?? {})) {
+    if (!locations.has(`setting:${settingId}`)) {
+      errors.push(`GUIDE_ONE_WORD_TERMS names unknown setting '${settingId}'`)
+      continue
+    }
+    const listed = new Set((inputs.settingKeywords?.[settingId] ?? []).filter((w) => typeof w === 'string').map(foldTerm))
+    const keep = new Set()
+    for (const w of Array.isArray(words) ? words : [words]) {
+      if (typeof w !== 'string' || !listed.has(foldTerm(w))) {
+        errors.push(`GUIDE_ONE_WORD_TERMS '${settingId}': '${w}' is not in its SETTINGS_KEYWORDS list`)
+        continue
+      }
+      keep.add(foldTerm(w))
+    }
+    keepOneWord.set(settingId, keep)
+  }
+  const out = new Map()
+  for (const [settingId, words] of Object.entries(inputs.settingKeywords ?? {})) {
+    const id = `setting:${settingId}`
+    const loc = locations.get(id)
+    if (!loc) {
+      errors.push(`settingsKeywords.ts names unknown setting '${settingId}'`)
+      continue
+    }
+    if (!Array.isArray(words)) {
+      errors.push(`settingsKeywords.ts '${settingId}': words must be a list`)
+      continue
+    }
+    const seen = new Set()
+    const kept = []
+    for (const w of words) {
+      if (typeof w !== 'string' || !foldTerm(w)) {
+        kept.push(w) // validateTerms reports it
+        continue
+      }
+      const folded = foldTerm(w)
+      // One word, hyphenated or not ("apps", "per-app"), is a typeahead
+      // fragment: find_ui answers a whole one-word term with confidence, so a
+      // bare question would land here, unless GUIDE_ONE_WORD_TERMS keeps it.
+      const handPicked = keepOneWord.get(settingId)?.has(folded)
+      const oneWord = !/\s/.test(w.trim()) && !handPicked
+      if (oneWord || seen.has(folded) || namedBy.has(folded) || claimed.has(folded)) continue
+      // Part of another location's name: find_ui would answer it with this
+      // setting alone and hide the location it names. GUIDE_ONE_WORD_TERMS
+      // words are chosen by hand and skip this check (Theme's "colors" vs
+      // "Sidebar Colors").
+      if (!handPicked && inOtherName(folded, id)) continue
+      seen.add(folded)
+      kept.push(w)
+    }
+    if (kept.length) out.set(id, kept)
+  }
+  return out
 }
 
 /**
@@ -1021,7 +1184,7 @@ function validateTerms(id, terms, origin, loc, inputs, errors) {
       [loc.label_key, ...(loc.alias_keys ?? [])]
         .map((k) => (k.startsWith(LITERAL_PREFIX) ? k.slice(LITERAL_PREFIX.length) : cat[k]))
         .filter((v) => typeof v === 'string')
-        .map((v) => foldTerm(v.replaceAll('{{productName}}', inputs.productName))),
+        .map((v) => foldTerm(searchableLabel(v, inputs.productName))),
     )
     const seen = new Set()
     const kept = []

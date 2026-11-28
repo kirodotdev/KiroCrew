@@ -12,6 +12,22 @@
       "legacyNav": {
         "route": "/personal-shopper",
         "icon": "ShoppingBag"
+      },
+      "deletedCopy": {
+        "permissions": {
+          "api": [
+            "/api/apps/personal-shopper",
+            "/api/apps/personal-shopper/*"
+          ],
+          "storage": true,
+          "network": true
+        },
+        "grants": {
+          "api": [
+            "/api/apps/personal-shopper",
+            "/api/apps/personal-shopper/*"
+          ]
+        }
       }
     },
     {
@@ -56,11 +72,11 @@
     {
       "name": "pptx-maker",
       "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-pptx-maker",
-      "commit": "f189ef631db6fea2c8331d6080f24d340963f2e6",
-      "version": "0.3.4",
-      "treeSha256": "409e75595ee8e75f3a3cb8dba664f5a568771f177a0865de067975e4eca78bc3",
-      "archiveSha256": "0605507264ba24052bdcec135f4f141e3d9681dab3d645b78c8181548e97fbd1",
-      "minAppSdkLevel": 1,
+      "commit": "b5b54b0a0574af13f208df8a6424a3dc4d114485",
+      "version": "0.3.5",
+      "treeSha256": "d279ec97d4350d6c5ec92afa82859a99b53a12c232ad226dee4c731a65af1aca",
+      "archiveSha256": "d30a4ed14f1ab2e65c08bd1b62a288093b1aae24ed98103e4e1a1851a653a378",
+      "minAppSdkLevel": 14,
       "legacyNav": {
         "route": "/pptx-maker",
         "icon": "Presentation"
@@ -160,11 +176,11 @@
     {
       "name": "meetings",
       "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-meetings",
-      "commit": "a1e710690930abc025f051a97e20fe9db502d7f7",
-      "version": "0.1.3",
-      "treeSha256": "3bb25cb8eb58fbc0373c5c5a61df768cdf43c0ebfef0c6f6444b181003b202e4",
-      "archiveSha256": "7514bb05c9924e2610cba97ac8b12bf46a7d85ec9b5534a15bc9421482fce30c",
-      "minAppSdkLevel": 7,
+      "commit": "8de3b7b631ce9221aa6b2e745029513425f818dd",
+      "version": "0.1.4",
+      "treeSha256": "8a0ed67bccc9624e874569c90f545189afc1ca83a9e6e9f7792c2ef766af5a9e",
+      "archiveSha256": "5082d2fcab5db742973aad3e8c5ecf27db8c69ac74a8e75f50048601a3246ab6",
+      "minAppSdkLevel": 14,
       "legacyNav": {
         "route": "/meetings",
         "icon": "CalendarClock"
@@ -181,6 +197,24 @@
       "legacyNav": {
         "route": "/project-scaffolder",
         "icon": "FolderPlus"
+      },
+      "deletedCopy": {
+        "permissions": {
+          "api": [
+            "/api/project-scaffold",
+            "/api/browse-dirs",
+            "/api/recent-projects",
+            "/api/favorite-projects"
+          ]
+        },
+        "grants": {
+          "api": [
+            "/api/project-scaffold",
+            "/api/browse-dirs",
+            "/api/recent-projects",
+            "/api/favorite-projects"
+          ]
+        }
       }
     },
     {

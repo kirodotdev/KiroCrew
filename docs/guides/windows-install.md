@@ -601,10 +601,13 @@ would freeze chat/heartbeat, so it takes the lock if free and otherwise fails
 immediately. **Off the loop** (cron, home migration, app backends) it polls up
 to a generous `_LOCK_TIMEOUT_SECS` ceiling — long enough to wait out a
 legitimately long holder such as a data-home migration, rather than racing it,
-yet bounded so a truly stuck/permission-denied fd still fails. Either way, if
-the lock cannot be taken the acquire **fails closed**: it raises rather than
-entering the critical section unserialized, since proceeding lock-less is the
-exact fail-open that loses writes. Non-blocking `try_acquire_lock` already used
+yet bounded so a truly stuck/permission-denied fd still fails. Only `EACCES`
+and `EDEADLOCK`, what a held byte reports, are retried; any other errno (a
+closed fd's `EBADF`, a pipe's `EINVAL`) is about the fd itself and raises at
+once with that errno. Either way, if the lock cannot be taken the acquire
+**fails closed**: it raises rather than entering the critical section
+unserialized, since proceeding lock-less is the exact fail-open that loses
+writes. Non-blocking `try_acquire_lock` already used
 `LK_NBLCK` and is unchanged.
 
 ### The ceiling is not Windows-only
@@ -909,6 +912,47 @@ What this does **not** give you is supervision. `kirocrew service install` has
 no Windows backend: it prints that service management is supported only on
 systemd and launchd. A gateway started this way stops when you sign out or close
 its window, does not start at boot, and is not restarted if it exits.
+
+### Updating a gateway that runs without the desktop app
+
+A gateway started this way checks the same release feed the desktop app reads
+and offers the update in Settings > About and in `kirocrew update`. Nothing
+installs while it runs:
+
+- **From the dashboard:** choose Update, then Restart. The restart verifies the
+  signed installer (the feed's sha512, a valid Authenticode signature from the
+  publisher the app pins, and a release feed offering a version newer than the
+  one running), stops the gateway, installs the new version silently into the
+  app's folder in the scope the app was installed in (all users or just you),
+  and starts the gateway again on the same port. If the installer's own record
+  of that folder is missing from the registry (rare; reinstalling the app once
+  repairs it), the installer may put the new version in a subfolder or the
+  default folder instead.
+  `kirocrew restart` returns as soon as the installer takes over; the gateway
+  answers again a few minutes later. Close other shells that run the bundled
+  `kirocrew.cmd` first: the install waits for them.
+- **From a shell:** run `kirocrew update` (the bundled shim). With the gateway
+  running it verifies the release and arms it for the next `kirocrew restart`;
+  with no gateway running it installs at once. `kirocrew stop` also installs an
+  armed update, and leaves the gateway stopped.
+
+While the desktop app itself is running on the host, none of this installs
+anything: the app runs the gateway then and updates itself, so `kirocrew update`
+points you at the app's own updater instead.
+
+It follows the update channel you chose in the desktop app's Settings > About
+(stable unless you picked insider), read from the app's settings for the same
+Windows account; a channel your organization's policy requires wins. Change the
+channel in the app: the dashboard of a gateway running without it does not.
+
+An install whose updates someone else manages (it carries an `EXTERNALLY-MANAGED`
+marker, beside the app or built into it) is not updated this way either: update it
+the way its owner provides.
+
+An install made for all users needs the gateway to run as an administrator to
+update it. Any failed check leaves the old version in place: the dashboard
+shows the reason, `kirocrew update` exits non-zero, and the installer's own log
+is `desktop-update.log` in the data home.
 
 ## Troubleshooting
 

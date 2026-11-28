@@ -50,9 +50,12 @@ def state(tmp_path, monkeypatch):
 @web.middleware
 async def _dashboard_user(request, handler):
     # Production's token middleware marks every authenticated request; the
-    # bulk route refuses one without the marker.
+    # bulk route refuses one without the marker. The caller is the owner: the
+    # local owner's subject, which the per-slot owner gate admits.
     if "app" not in request:
         request["app"] = ""
+    if not request.get("user"):
+        request["user"] = "local-app"
     return await handler(request)
 
 

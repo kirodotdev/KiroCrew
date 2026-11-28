@@ -15,6 +15,7 @@ root's parent, which the fixtures own.
 
 from __future__ import annotations
 
+import math
 import os
 import threading
 from contextlib import closing
@@ -23,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import skill_search_index as skill_search_index_module
+from kiro_crew.skill_runtime import search as search_module
 from kiro_crew.skill_search_index import (
     SKILL_SEARCH_INDEX_FILENAME,
     SkillSearchIndex,
@@ -60,6 +62,21 @@ def small_ceiling(monkeypatch):
     """
     monkeypatch.setattr(skill_search_index_module, "_MAX_INDEXED_BODY_BYTES", 2_000)
     return 2_000
+
+
+@pytest.fixture(autouse=True)
+def _no_wall_clock_budget_on_body_work(_floor_monkeypatch):
+    """A search here indexes and reads every body it needs, however loaded the host is.
+
+    The shipped budget is wall-clock seconds, so on a busy worker the same five reads
+    can outrun it and a test sees a partial answer. The tests that ARE about the
+    budget pass ``budget_seconds`` to ``sync`` themselves, which this leaves alone.
+    """
+    _floor_monkeypatch.setattr(
+        search_module,
+        "_BODY_WORK_BUDGET_SECS",
+        math.inf,  # flake-ok: removes the wall-clock budget rather than setting a short one
+    )
 
 
 class TestBodyIndex:

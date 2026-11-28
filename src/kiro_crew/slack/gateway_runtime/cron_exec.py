@@ -1,4 +1,4 @@
-"""Run a command or script cron job and deliver what a script returns.
+"""Run a command or script cron job and deliver what it returns.
 
 Both arms hold the overlap guard for their run and release it in one ``finally``,
 after abandoning the claim hand-off; both pass the fire-time governance gate and the
@@ -136,6 +136,9 @@ async def _cron_run_command(self: GatewayOrchestrator, job: CronJob) -> str | No
             await self._alert_cron_failure(job, gate_reason, denied=True)
             return None
         cmd_timeout = job.timeout or 300
+        # Read once, as the script arm does: the output goes to the channel the
+        # run launched with, not to a pin edited while the command ran.
+        run_dest = (job.channel_type, job.target_id)
         # Queue wait is NOT charged to cmd_timeout: see
         # run_in_cron_pool.  The timeout here is a backstop only --
         # run_command_sandboxed already enforces cmd_timeout on the
@@ -259,6 +262,14 @@ async def _cron_run_command(self: GatewayOrchestrator, job: CronJob) -> str | No
                 code = None
             await self._alert_cron_failure(
                 job, reason, exit_code=code if isinstance(code, int) else None
+            )
+        else:
+            # The scheduler drops this return value, so a clean exit's stdout
+            # reaches anyone only through this call: the bell and the channel the
+            # run launched with, nothing when silent. Never the origin chat: a row
+            # there starts an agent turn, and a command job is the no-LLM kind.
+            await self._deliver_script_result(
+                job, job.last_result or "", pin=run_dest, to_session=False
             )
         return job.last_result
     except CronQueueTimeout as exc:
@@ -459,16 +470,21 @@ async def _deliver_script_result(
     *,
     remove: bool = False,
     pin: tuple[str, str] | None = None,
+    to_session: bool = True,
 ) -> None:
-    """Deliver a script cron result to its origin session and its pin. Optionally remove the job.
+    """Deliver a script or command cron result to its origin session and its pin.
 
-    *pin* is the ``(channel_type, target_id)`` the run launched with.
+    Optionally remove the job.
+
+    *pin* is the ``(channel_type, target_id)`` the run launched with. With
+    *to_session* False the dashboard leg is the bell even when the job has an
+    origin session, so no agent turn starts.
     """
     delivered = False
     # `result_ts` names the stored result the note carries (`message` is it).
     note_meta = {"job_id": job.id, "result_ts": job.last_result_ts}
     try:
-        if message and not job.silent and self.dashboard_state and job.session_key:
+        if message and not job.silent and self.dashboard_state and job.session_key and to_session:
             slot_key = job.session_key.removeprefix("dashboard:")
             slot = self.dashboard_state.get_slot(slot_key)
             if slot is None:
@@ -574,6 +590,8 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
     handoff = _ClaimHandoff()
     # Set at launch, below; a failure before it has no run output to route.
     run_dest: tuple[str, str] | None = None
+    # The failure the run itself reported, raised to reach the error arm below.
+    reported_failure: RuntimeError | None = None
     try:
         try:
             sel().log_tool_invocation(
@@ -798,7 +816,8 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
                 # Schedule page shows something to approve; the run itself is
                 # still recorded as the failure below.
                 await resurface_stale_grant(self.cron_svc, job.id, run_pin)
-            raise RuntimeError(err)
+            reported_failure = RuntimeError(err)
+            raise reported_failure
     except CronQueueTimeout as exc:
         # Pool starvation, not a broken script: every worker was
         # busy for the whole budget so this never ran a line.  The
@@ -954,8 +973,11 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
         # The reason a script cron dies is often environmental (a
         # startup RuntimeError, a missing dependency) and identical on
         # every fire, so it read as an idle job rather than a broken
-        # one until this alert carried the reason out.
-        await self._alert_cron_failure(job, f"{type(exc).__name__}: {exc}", pin=run_dest)
+        # one until this alert carried the reason out. A failure the run
+        # reported (an exit code, the script's own exception) is told in its
+        # own words: the RuntimeError carrying it here is not the script's.
+        detail = str(exc) if exc is reported_failure else f"{type(exc).__name__}: {exc}"
+        await self._alert_cron_failure(job, detail, pin=run_dest)
         return None
     finally:
         # Abandon BEFORE releasing the overlap guard, and do it here

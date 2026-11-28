@@ -14,7 +14,9 @@ Most tests build their own throwaway tree under ``tmp_path``. Three classes read
 real checkout on purpose, anchored through ``_REPO_ROOT``: ``TestShippedBaseline``
 (the committed backlog is the artifact under test), ``TestEntryPointDocs`` (the
 router files have to actually be there), and ``TestNoHostSideEffects``'s self-test
-case (the gate's own probes build their own temporary trees). Nothing writes outside
+case (the gate's own probes build their own temporary trees). One dead-identifier test
+loads the real Crew API generator to pin the spec and page directories it pairs.
+Nothing writes outside
 ``tmp_path``.
 """
 
@@ -373,6 +375,17 @@ class TestDeadIdentifier:
         _write(tree, "docs/ok.md", "# Ok\n\nRouted through `vanished_handler`.\n")
         assert "vanished_handler" in _tokens(tree, gate.CHECK_DEAD_IDENTIFIER)
 
+    def test_a_name_repeated_in_one_doc_is_one_finding_per_doc(self, tree: Path) -> None:
+        _write(tree, "src/kiro_crew/real.py", "a = 1\n")
+        body = "Routed through `vanished_handler`, then `vanished_handler` again.\n"
+        _write(tree, "docs/ok.md", f"# Ok\n\n{body}\nAnd `vanished_handler`.\n")
+        _write(tree, "docs/other.md", f"# Other\n\n{body}")
+        findings = gate.run(tree)
+        assert sorted((f.path, f.token) for f in findings.advisories) == [
+            ("docs/ok.md", "vanished_handler"),
+            ("docs/other.md", "vanished_handler"),
+        ]
+
     def test_is_advisory_unless_strict(self, tree: Path) -> None:
         _write(tree, "src/kiro_crew/real.py", "a = 1\n")
         _write(tree, "docs/ok.md", "# Ok\n\nRouted through `vanished_handler`.\n")
@@ -471,6 +484,77 @@ class TestDeadIdentifier:
         _write(tree, "src/kiro_crew/real.py", "a = 1\n")
         _write(tree, "docs/ok.md", body)
         assert "vanished_handler" in _tokens(tree, gate.CHECK_DEAD_IDENTIFIER)
+
+    def test_a_spec_defined_name_is_live_on_the_pages_rendered_from_that_spec_only(
+        self, tree: Path
+    ) -> None:
+        doc_prefix, spec_dir = "docs/reference/crew-api/", "docs/request-for-change/assets/crew-api"
+        _write(tree, "src/kiro_crew/real.py", "a = 1\n")
+        _write(tree, f"{spec_dir}/components.yaml", "code:\n  enum: [grant_paused_for_now]\n")
+        _write(
+            tree,
+            f"{doc_prefix}owner-grants.md",
+            "# Grants\n\nRefused with `grant_paused_for_now` or `vanished_handler`.\n",
+        )
+        _write(tree, "docs/ok.md", "# Ok\n\nRefused with `grant_paused_for_now`.\n")
+        findings = gate.run(tree)
+        assert {(f.path, f.token) for f in findings.advisories} == {
+            (f"{doc_prefix}owner-grants.md", "vanished_handler"),
+            ("docs/ok.md", "grant_paused_for_now"),
+        }
+
+    def test_the_spec_rendered_pair_is_where_the_generator_reads_and_writes(self) -> None:
+        # A moved spec or output directory would silently turn every planned
+        # endpoint's names back into dead-identifier noise.
+        script = _REPO_ROOT / "scripts" / "generate_crew_api_reference.py"
+        spec = importlib.util.spec_from_file_location("generate_crew_api_reference", script)
+        assert spec and spec.loader
+        generator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(generator)
+        rendered = (
+            f"{generator.OUT_DIR.relative_to(generator._REPO_ROOT).as_posix()}/",
+            generator.SPEC_DIR.relative_to(generator._REPO_ROOT).as_posix(),
+        )
+        assert rendered in gate._IDENT_SPEC_RENDERED_DOCS
+
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            "docs/decisions/2026-01-01-a-name-was-kept.md",
+            "docs/decisions/README.md",
+            "CHANGELOG.md",
+            "docs/system-specs/common/testing-sweep-findings.md",
+        ],
+    )
+    def test_a_history_record_keeps_its_old_names_but_not_its_paths(
+        self, tree: Path, rel: str
+    ) -> None:
+        # A record describes a past state; a rename since cannot be followed there.
+        _write(tree, "src/kiro_crew/real.py", "a = 1\n")
+        _write(tree, rel, "# Record\n\nKept `vanished_handler` in `src/kiro_crew/ghost.py`.\n")
+        assert rel not in {f.path for f in gate.run(tree).advisories}
+        assert "src/kiro_crew/ghost.py" in _tokens(tree, gate.CHECK_PATH_EXISTS)
+
+    def test_a_doc_beside_a_history_record_is_still_checked(self, tree: Path) -> None:
+        _write(tree, "src/kiro_crew/real.py", "a = 1\n")
+        _write(tree, "docs/decisions-guide.md", "# Guide\n\nUses `vanished_handler`.\n")
+        _write(tree, "docs/CHANGELOG-notes.md", "# Notes\n\nUses `other_vanished_handler`.\n")
+        assert {(f.path, f.token) for f in gate.run(tree).advisories} == {
+            ("docs/decisions-guide.md", "vanished_handler"),
+            ("docs/CHANGELOG-notes.md", "other_vanished_handler"),
+        }
+
+    def test_silent_for_an_angle_bracket_placeholder_and_only_that_spelling(
+        self, tree: Path
+    ) -> None:
+        _write(tree, "src/kiro_crew/real.py", "a = 1\n")
+        _write(tree, "docs/ok.md", "# Ok\n\nSend `123:<ApplicationName>:prod`.\n")
+        _write(tree, "docs/bare.md", "# Bare\n\nCalls `ApplicationName` itself.\n")
+        _write(tree, "docs/both.md", "# Both\n\nRun `<VanishedHandler> VanishedHandler`.\n")
+        assert {(f.path, f.token) for f in gate.run(tree).advisories} == {
+            ("docs/bare.md", "ApplicationName"),
+            ("docs/both.md", "VanishedHandler"),
+        }
 
     def test_silent_for_a_curated_external_name_and_only_that_name(self, tree: Path) -> None:
         _write(tree, "src/kiro_crew/real.py", "a = 1\n")

@@ -58,7 +58,8 @@ A candidate qualifies only if **all three** hold:
    later round.
 2. **Assertable** — you can name its completion condition *now*, as one of the
    evaluator's kinds: `pr_checks` or `pr_merged` (always with `repo` as
-   `owner/name`), `edition_check`, `file` or `human_approval`. There is
+   `owner/name`), `edition_check`, `file`, `git_commit` (a local branch
+   carries a commit past `base`) or `human_approval`. There is
    deliberately no "run this command" kind; never invent a condition. Read
    `<this skill's dir>/references/work-items.md` before you write an
    acceptance, and `references/acceptance-kinds.md` before a kind new to this goal.
@@ -180,6 +181,13 @@ bind an existing session to a new item (Patrol step 4), read
 **Seed details.** Before you write a seed that carries a file the person gave
 you, opens a pull request, goes to an agent other than `kirocrew-worker`, or
 covers a large multi-phase item, read `<this skill's dir>/references/dispatch.md`.
+
+**Trigger skills (optional).** When the item should load a skill on its own wording
+(a PR or CR procedure, for one), pass `skills: ["<key>", ...]` to `work_dispatch`:
+only those keys can trigger in the worker, and only while `skills.max_triggered` is above 0.
+The list makes a key eligible to trigger and loads nothing by itself: a listed skill
+loads on a turn whose wording matches its triggers. When the first turn needs the
+skill, word the seed to match its triggers or name it with `$<key>`.
 
 **A seed MUST name the observable outcome or invariant that makes the work
 correct.** A `pr_checks` acceptance verifies only that the delivered PR's checks
@@ -426,7 +434,9 @@ alone). A `pending_overdue` item is never asked: `references/rare-cases.md` give
    cycle after the user answers picks the answer up and resumes the item.
 
 On one of the two signals, end the patrol as your prompt's patrol rules say:
-ONE final report, then `autonudge_stop` in a later step. Before that final
+ONE final report in the turn that closes the last item, and the gateway ends
+the loop once that turn is over (a user's stop with items open still needs
+`autonudge_stop` in a later step). Before that final
 report, `session_close` each one whose item is
 terminal, and leave open any child still holding a pending human question or
 driving an unmerged PR (Patrol step 4).

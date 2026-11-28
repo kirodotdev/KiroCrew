@@ -119,11 +119,16 @@ def _read_ledger() -> dict[str, Any]:
 
 
 def _write_ledger(data: dict[str, Any]) -> None:
-    from kiro_crew.atomic_write import atomic_write
+    """Rewrite the ledger in place; every caller holds ``mate_ledger_lock.ledger_lock``.
+
+    A running Linux sandbox bind-mounts the ledger read-only, and a rename over it
+    would detach that seal, so the record keeps its inode.
+    """
+    from kiro_crew.atomic_write import rewrite_in_place
 
     path = _ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(path, json.dumps(data, indent=2) + "\n", restrict_to_owner=True)
+    rewrite_in_place(path, json.dumps(data, indent=2) + "\n", restrict_to_owner=True)
 
 
 def _names(data: dict[str, Any]) -> set[str]:
@@ -1278,12 +1283,14 @@ def migrate_existing_crewmates(
     del work_dir
     report = MigrationReport()
     repair_partial_platform_servers()
+    from kiro_crew.mate_held_rescope import rescope_held_limits
     from kiro_crew.mate_mount_repair import restore_withheld_mounts
     from kiro_crew.mate_policy_repair import restore_dropped_policy
 
     # Before the moves, so only a Bot an earlier start moved is read.
     restore_withheld_mounts(cfg)
     restore_dropped_policy(cfg)
+    rescope_held_limits()
     try:
         cfg = cfg or KiroCrewConfig.load()
         paths_mod.mate_agents_dir().mkdir(parents=True, exist_ok=True)

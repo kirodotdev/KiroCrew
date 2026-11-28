@@ -253,6 +253,35 @@ def test_slides_over_the_chunk_cap_keep_the_last_slide():
     assert chunks[-1]["section_title"] == "Slide 58"
 
 
+def _deck_text(bodies: list[str]) -> str:
+    # The slide reader joins "## Slide N" blocks with a blank line.
+    return "\n\n".join(f"## Slide {n}\n{body}" for n, body in enumerate(bodies, 1))
+
+
+def test_a_slide_cites_the_last_line_of_its_text():
+    text = _deck_text(["first a\nfirst b", "second a\nsecond b\nsecond c"])
+    chunks = HeadingAwareChunker().chunk_slides(text)
+    assert [(c["line_start"], c["line_end"]) for c in chunks] == [(1, 3), (5, 8)]
+    source = text.split("\n")
+    for c in chunks:
+        assert source[c["line_end"] - 1] == c["content"].split("\n")[-1]
+
+
+def test_a_slide_followed_by_another_keeps_the_range_it_had():
+    chunks = HeadingAwareChunker().chunk_slides(_deck_text(["a\nb", "c"]))
+    assert (chunks[0]["line_start"], chunks[0]["line_end"]) == (1, 3)
+
+
+def test_a_slide_with_no_text_ends_on_its_own_marker():
+    chunks = HeadingAwareChunker().chunk_slides("## Slide 1\n## Slide 2\nbody")
+    assert [(c["line_start"], c["line_end"]) for c in chunks] == [(1, 1), (2, 3)]
+
+
+def test_text_before_the_first_slide_ends_on_its_last_text_line():
+    chunks = HeadingAwareChunker().chunk_slides("intro\nmore\n\n## Slide 1\nbody")
+    assert [(c["line_start"], c["line_end"]) for c in chunks] == [(1, 2), (4, 5)]
+
+
 @pytest.mark.parametrize("heading", ["#", "# ", "##\t"])
 def test_an_empty_heading_does_not_take_the_next_line_as_its_title(heading):
     text = f"{heading}\nFirst paragraph under it\n"
@@ -267,3 +296,129 @@ def test_a_hash_tag_line_stays_body_text():
     assert [c["section_title"] for c in chunks] == ["Notes"]
     assert "#tag" in chunks[0]["content"]
     assert "####### seven" in chunks[0]["content"]
+
+
+class _CopyCounter(str):
+    """A str that counts the characters its slices and splits copy."""
+
+    def __new__(cls, value: str, counter: list[int]):
+        self = super().__new__(cls, value)
+        self.counter = counter
+        return self
+
+    def __getitem__(self, key):
+        out = str.__getitem__(self, key)
+        if isinstance(key, slice):
+            self.counter[0] += len(out)
+        return out
+
+    def split(self, *args, **kwargs):
+        self.counter[0] += len(self)
+        return str.split(self, *args, **kwargs)
+
+
+def test_a_heading_dense_document_is_not_copied_once_per_heading():
+    """Each section's first line comes from the pass that found it, not a prefix slice.
+
+    Counting copied characters, rather than timing, keeps the check
+    deterministic: a prefix slice per heading copies about half the document
+    each time, so the total grows with the square of the heading count.
+    """
+    doc = "".join(f"## h{i}\nbody line {i}\n" for i in range(2000))
+    counter = [0]
+    chunks = HeadingAwareChunker().chunk_markdown(_CopyCounter(doc, counter))
+    assert chunks
+    assert counter[0] <= 8 * len(doc)
+
+
+_OVERSIZED = (
+    "## Small\nfew words\n## Big\n"
+    + "alpha beta gamma delta epsilon.\n\n" * 6
+    + "## Tail\nlast words\n"
+)
+
+_FIXED_DOCUMENTS = {
+    "fenced": ("intro\n# Top\n```\n# not a heading\n```\n## Sub\nbody\n", 800),
+    "empty headings": ("#\nfirst\n## \nsecond\n## Named\nthird\n", 3),
+    "tags": ("# Notes\n#tag\nmore text\n####### seven\n## Next\nend\n", 6),
+    "preamble": ("opening line\nsecond line\n## H1\nbody one\n## H2\nbody two\n", 5),
+    "oversized": (_OVERSIZED, 12),
+    "oversized after a preamble": ("lead in\n\n" + _OVERSIZED, 12),
+    "over the chunk cap": ("".join(f"## h{i}\nbody {i}\n" for i in range(200)), 3),
+}
+
+# (chunk count, first three, last three) of (section_title, line_start,
+# line_end, len(content)), taken from main before the change: nothing may move.
+_FIXED_EXPECTED: dict[str, tuple] = {
+    "empty headings": (
+        3,
+        [(None, 1, 2, 7), (None, 3, 4, 10), ("Named", 5, 6, 14)],
+        [(None, 1, 2, 7), (None, 3, 4, 10), ("Named", 5, 6, 14)],
+    ),
+    "fenced": (1, [("Top", 1, 7, 48)], [("Top", 1, 7, 48)]),
+    "over the chunk cap": (
+        50,
+        [("h0", 1, 4, 25), ("h2", 5, 8, 25), ("h4", 9, 12, 25)],
+        [("h94", 189, 192, 29), ("h96", 193, 196, 29), ("h98", 197, 200, 29)],
+    ),
+    "oversized": (
+        8,
+        [("Small", 1, 2, 18), ("Big", 3, 4, 38), ("Big", 6, 6, 31)],
+        [("Big", 12, 12, 31), ("Big", 14, 14, 31), ("Tail", 16, 17, 18)],
+    ),
+    "oversized after a preamble": (
+        8,
+        [("Small", 1, 4, 26), ("Big", 5, 6, 38), ("Big", 8, 8, 31)],
+        [("Big", 14, 14, 31), ("Big", 16, 16, 31), ("Tail", 18, 19, 18)],
+    ),
+    "preamble": (
+        3,
+        [(None, 1, 2, 24), ("H1", 3, 4, 14), ("H2", 5, 6, 14)],
+        [(None, 1, 2, 24), ("H1", 3, 4, 14), ("H2", 5, 6, 14)],
+    ),
+    "tags": (
+        3,
+        [("Notes", 1, 3, 22), ("Notes", 4, 4, 13), ("Next", 5, 6, 11)],
+        [("Notes", 1, 3, 22), ("Notes", 4, 4, 13), ("Next", 5, 6, 11)],
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_FIXED_DOCUMENTS))
+def test_chunk_lists_of_fixed_documents_are_unchanged(name):
+    text, target = _FIXED_DOCUMENTS[name]
+    chunks = HeadingAwareChunker(target_size=target).chunk_markdown(text)
+    got = [(c["section_title"], c["line_start"], c["line_end"], len(c["content"])) for c in chunks]
+    assert (len(got), got[:3], got[-3:]) == _FIXED_EXPECTED[name]
+
+
+_PREAMBLE_DOC = "\n\n\nintro line one\nintro line two\n# Heading\nbody a b c d e f g\n"
+
+
+def test_opening_text_after_blank_lines_cites_the_line_it_is_on():
+    chunks = HeadingAwareChunker().chunk_markdown(_PREAMBLE_DOC)
+    assert chunks[0]["content"].startswith("intro line one")
+    assert chunks[0]["line_start"] == _source_line_of(_PREAMBLE_DOC, "intro line one") == 4
+    assert chunks[0]["line_end"] == _source_line_of(_PREAMBLE_DOC, "body a b")
+
+
+def test_opening_text_alone_in_a_chunk_cites_its_own_lines():
+    chunks = HeadingAwareChunker(target_size=5).chunk_markdown(_PREAMBLE_DOC)
+    assert [(c["section_title"], c["line_start"]) for c in chunks][:1] == [(None, 4)]
+
+
+def test_opening_text_that_is_a_chunk_by_itself_ends_on_its_own_last_line():
+    chunks = HeadingAwareChunker(target_size=10).chunk_markdown(_PREAMBLE_DOC)
+    assert [(c["section_title"], c["line_start"], c["line_end"]) for c in chunks][:1] == [
+        (None, 4, 5)
+    ]
+
+
+def test_opening_text_with_no_blank_lines_before_it_starts_on_line_one():
+    chunks = HeadingAwareChunker().chunk_markdown("intro line one\n# Heading\nbody\n")
+    assert chunks[0]["line_start"] == 1
+
+
+def test_a_markdown_file_with_no_opening_text_starts_on_its_first_heading():
+    chunks = HeadingAwareChunker().chunk_markdown("\n\n# Heading\nbody a b c\n")
+    assert chunks[0]["line_start"] == 3

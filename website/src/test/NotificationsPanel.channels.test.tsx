@@ -90,6 +90,15 @@ describe('NotificationsPanel channels section', () => {
     expect(screen.queryByText('relay')).toBeNull()
   })
 
+  it('names the update channel for the product, so it reads apart from App updates', async () => {
+    mockChannels.mockResolvedValue({ channels: [
+      { channel: 'system.update', source: 'system', registered: true, default_priority: 'default', protected: false, settings: {} },
+    ] })
+    renderPanel()
+    expect(await screen.findByText('Kiro Crew updates')).toBeTruthy()
+    expect(screen.queryByText('update')).toBeNull()
+  })
+
   it('keeps only the mute consequence under the Sources heading; what the section is sits in its tip', async () => {
     renderPanel()
     await waitFor(() => expect(screen.getByText('cron')).toBeTruthy())

@@ -71,12 +71,23 @@ _WRITE_TIMEOUT_SECS = 15.0
 #: Read of the current serve config. Local, so the read path's ceiling is right.
 _READ_TIMEOUT_SECS = 5.0
 
-#: The HTTPS port ``tailscale serve`` fronts. 443 is Tailscale's own default for
-#: ``serve`` and the reason the derived origin carries no port component — a
-#: browser omits ``:443`` from ``Origin``, so ``build_allowed_origins`` adds a
-#: bare ``https://<name>``. Changing this would silently stop the origin from
-#: matching, so it is pinned here rather than parameterised.
+#: The default HTTPS port ``tailscale serve`` fronts, Tailscale's own default for
+#: ``serve``. Every function here takes the port as ``https_port`` (the
+#: ``dashboard.tailscale.https_port`` setting), apart from the gateway port the
+#: handler proxies to; the trusted origin carries it when it is not 443.
 SERVE_HTTPS_PORT = 443
+
+
+def configured_https_port() -> int:
+    """``dashboard.tailscale.https_port`` as configured now; the default when unreadable."""
+    from kiro_crew.config import KiroCrewConfig
+
+    try:
+        return KiroCrewConfig.load().dashboard.tailscale.https_port
+    except Exception:
+        logger.debug("tailnet serve: config unreadable; using the default port", exc_info=True)
+        return SERVE_HTTPS_PORT
+
 
 #: The mount our handler lives at. ``publish`` passes no ``--set-path``, and
 #: upstream defaults the mount to ``/`` in that case (``serve_v2.go`` →
@@ -140,15 +151,15 @@ class ServeState:
     served here and it is not ours, so a blind withdrawal could delete a mapping
     the operator set up by hand.
 
-    ``port_free`` narrows ``configured`` to the one port this module manages:
+    ``port_free`` narrows ``configured`` to the one HTTPS port being asked about:
     ``True`` means the status document provably holds no configuration for
-    ``SERVE_HTTPS_PORT`` — either no serve config exists at all, or every
+    that port — either no serve config exists at all, or every
     configured mapping names some *other* port — so publishing replaces nothing.
     ``False`` means the port carries some configuration (ours or a stranger's);
     ``None`` means we could not determine it, which the write guards treat
     exactly like ``False``. The field exists because ``configured`` alone made
     a machine whose only serve mapping sits on port 80 indistinguishable from
-    one whose 443 is genuinely occupied, and both were refused.
+    one whose HTTPS port is genuinely occupied, and both were refused.
     """
 
     published: bool | None
@@ -318,7 +329,7 @@ def _port_scoped_subtrees(node: Any, port: int) -> list[Any]:
     ``"*:443"``) wherever they appear, instead of hardcoding container names this
     code has never seen in a real document. What it does assume is that a mapping
     on 443 records 443 in a key somewhere — which holds for anything we published,
-    since :func:`publish` passes ``--https=443``.
+    since :func:`publish` passes ``--https=<port>``.
 
     When that assumption does not hold the result is an empty list, which the
     caller turns into ``unknown`` and therefore a REFUSED withdrawal. That is the
@@ -428,8 +439,8 @@ def _mount_subtrees(node: Any, mount: str) -> list[Any]:
     return found
 
 
-def serve_state(port: int) -> ServeState:
-    """Whether the dashboard on *port* is currently published via serve."""
+def serve_state(port: int, *, https_port: int = SERVE_HTTPS_PORT) -> ServeState:
+    """Whether serve's handler on *https_port* is the dashboard on gateway *port*."""
     rc, out, err = _run(["serve", "status", "--json"], _READ_TIMEOUT_SECS)
     if rc == -1:
         return ServeState(
@@ -477,40 +488,39 @@ def serve_state(port: int) -> ServeState:
     # 8443 while something else holds 443, and the withdrawal then removes the
     # other thing.
     #
-    # Mount: within 443, "is our target somewhere under here" answers yes when
+    # Mount: within the port, "is our target somewhere under here" answers yes when
     # ours is at `/foo` and a stranger's handler is at `/` — the mount we
     # actually remove. So the question is narrowed to exactly what withdrawal
-    # touches: is the handler at SERVE_MOUNT, on SERVE_HTTPS_PORT, ours?
-    scoped = _port_scoped_subtrees(doc, SERVE_HTTPS_PORT)
+    # touches: is the handler at SERVE_MOUNT, on https_port, ours?
+    scoped = _port_scoped_subtrees(doc, https_port)
     if not scoped:
         # No key names our port. When the document demonstrably keys mappings by
         # port (see _has_port_shaped_keys), that absence is a determination, not
         # an unknown: everything serve holds sits on other ports, and the write
         # guards may treat our port as free without endangering any of it. This
         # is the dev-machine case — another project published on port 80 must
-        # not read as "something is on 443". A document with no port-shaped keys
+        # not read as "something is on our port". A document with no port-shaped keys
         # anywhere stays unknown, because the assumption a determination needs
         # (mappings record their port in a key) has no evidence in it.
         if _has_port_shaped_keys(doc):
             return ServeState(
                 False,
                 True,
-                f"Serve is configured for other ports only; nothing is on port "
-                f"{SERVE_HTTPS_PORT}.",
+                f"Serve is configured for other ports only; nothing is on port {https_port}.",
                 port_free=True,
             )
         return ServeState(
             None,
             True,
             f"Serve is configured, but this build could not identify what is on "
-            f"port {SERVE_HTTPS_PORT}.",
+            f"port {https_port}.",
         )
     mounts = [m for sub in scoped for m in _mount_subtrees(sub, SERVE_MOUNT)]
     if not mounts:
         return ServeState(
             None,
             True,
-            f"Serve is configured on port {SERVE_HTTPS_PORT}, but this build could "
+            f"Serve is configured on port {https_port}, but this build could "
             f"not identify the handler at {SERVE_MOUNT}.",
             port_free=False,
         )
@@ -518,29 +528,29 @@ def serve_state(port: int) -> ServeState:
         return ServeState(
             True,
             True,
-            f"Serve is proxying {SERVE_HTTPS_PORT}{SERVE_MOUNT} to the dashboard "
+            f"Serve is proxying {https_port}{SERVE_MOUNT} to the dashboard "
             f"on port {port}.",
             port_free=False,
         )
     return ServeState(
         False,
         True,
-        f"Serve is configured on {SERVE_HTTPS_PORT}{SERVE_MOUNT}, but not for "
+        f"Serve is configured on {https_port}{SERVE_MOUNT}, but not for "
         f"this dashboard.",
         port_free=False,
     )
 
 
-def manual_publish_command(port: int) -> str:
-    """The ``tailscale serve`` command that publishes the dashboard on *port*.
+def manual_publish_command(port: int, *, https_port: int = SERVE_HTTPS_PORT) -> str:
+    """The ``tailscale serve`` command that publishes gateway *port* on *https_port*.
 
     The same write :func:`publish` runs, spelled for an operator to run by hand
     when this process cannot or will not run it.
     """
-    return f"tailscale serve --bg --https={SERVE_HTTPS_PORT} http://127.0.0.1:{port}"
+    return f"tailscale serve --bg --https={https_port} http://127.0.0.1:{port}"
 
 
-def _no_cli_result(port: int) -> ServeResult:
+def _no_cli_result(port: int, https_port: int) -> ServeResult:
     """``publish``'s refusal when no CLI can run, naming a refused one if present.
 
     A Tailscale install the planted-binary check refuses is not a missing one:
@@ -554,8 +564,8 @@ def _no_cli_result(port: int) -> ServeResult:
             False,
             "no_cli",
             f"{refused} Nothing was published. Publish the dashboard yourself with "
-            f"`{manual_publish_command(port)}`, then set dashboard.url to its "
-            "address and restart the gateway.",
+            f"`{manual_publish_command(port, https_port=https_port)}`, then set "
+            "dashboard.url to its address and restart the gateway.",
         )
     return ServeResult(
         False,
@@ -580,10 +590,12 @@ def policy_refusal(*, audit_tool: str) -> ServeResult | None:
     return ServeResult(False, "policy_off", f"{POLICY_OFF_DETAIL} Nothing was published.")
 
 
-def publish(port: int, *, audit_tool: str = "tailnet_publish") -> ServeResult:
+def publish(
+    port: int, *, https_port: int = SERVE_HTTPS_PORT, audit_tool: str = "tailnet_publish"
+) -> ServeResult:
     """Publish the dashboard on this machine's tailnet over HTTPS.
 
-    Runs ``tailscale serve --bg --https=<443> http://127.0.0.1:<port>``. The
+    Runs ``tailscale serve --bg --https=<https_port> http://127.0.0.1:<port>``. The
     upstream target is **loopback on purpose**: serve runs on this same host, so
     nothing needs to listen on a non-loopback interface, and the gateway's bind
     is left exactly as it was. Publishing does not widen the socket — it hands the
@@ -608,7 +620,7 @@ def publish(port: int, *, audit_tool: str = "tailnet_publish") -> ServeResult:
             "(capabilities.tailnet_origin). Nothing was published.",
         )
     # Symmetric to the withdrawal guard, and needed for the same reason: `serve
-    # --bg --https=443 <target>` REPLACES whatever handler sits at that mount, so
+    # --bg --https=<port> <target>` REPLACES whatever handler sits at that mount, so
     # publishing over an operator's own service loses their configuration exactly as
     # a port-wide `off` would have deleted it. Guarding only the removal side was an
     # asymmetry, not a decision.
@@ -616,7 +628,7 @@ def publish(port: int, *, audit_tool: str = "tailnet_publish") -> ServeResult:
     # No binary at all: say so before the occupancy guard, or "tailscale is not
     # installed" would be reported as "could not confirm the mount is free".
     if _cli_path() is None:
-        return _no_cli_result(port)
+        return _no_cli_result(port, https_port)
     # Proceed ONLY when OUR PORT is explicitly free or the mount is already ours.
     # Anything else — including a state we could not determine — refuses, because the
     # costs are not symmetric: overwriting destroys configuration the operator
@@ -630,22 +642,22 @@ def publish(port: int, *, audit_tool: str = "tailnet_publish") -> ServeResult:
     # error — does not hold for a **timeout**: the status read has a 5s ceiling and the
     # write 15s, so a daemon slow enough to time out the read can still accept the
     # write, and then replace an existing handler. "No answer" is not "no daemon".
-    state = serve_state(port)
+    state = serve_state(port, https_port=https_port)
     if not (state.published is True or state.port_free is True):
         return ServeResult(
             False,
             "not_ours",
             f"{state.detail} Refusing to publish, because `tailscale serve` would "
-            f"REPLACE whatever is at {SERVE_HTTPS_PORT}{SERVE_MOUNT} and this check "
+            f"REPLACE whatever is at {https_port}{SERVE_MOUNT} and this check "
             f"could not confirm it is free or already this dashboard. If you are "
-            f"sure, run `{manual_publish_command(port)}` yourself.",
+            f"sure, run `{manual_publish_command(port, https_port=https_port)}` yourself.",
         )
     rc, out, err = _run(
-        ["serve", "--bg", f"--https={SERVE_HTTPS_PORT}", f"http://127.0.0.1:{port}"],
+        ["serve", "--bg", f"--https={https_port}", f"http://127.0.0.1:{port}"],
         _WRITE_TIMEOUT_SECS,
     )
     if rc == -1:
-        return _no_cli_result(port)
+        return _no_cli_result(port, https_port)
     if rc == -2:
         # The most common way to land here is a Serve-disabled tailnet: the CLI
         # prints the enablement URL to stdout and then blocks waiting for the
@@ -686,11 +698,13 @@ def publish(port: int, *, audit_tool: str = "tailnet_publish") -> ServeResult:
         True,
         "ok",
         f"The dashboard is published on this machine's tailnet over HTTPS "
-        f"(port {SERVE_HTTPS_PORT} → 127.0.0.1:{port}).",
+        f"(port {https_port} → 127.0.0.1:{port}).",
     )
 
 
-def revoke_if_governance_now_pins_off(port: int) -> None:
+def revoke_if_governance_now_pins_off(
+    port: int, *, startup_https_port: int = SERVE_HTTPS_PORT
+) -> None:
     """Withdraw a published tailnet origin when the ceiling has come to forbid it.
 
     Registered as a post-install hook on the central-distribution refresher, because the
@@ -706,18 +720,27 @@ def revoke_if_governance_now_pins_off(port: int) -> None:
     hand is never touched — the same ownership test :func:`unpublish` makes, for the same
     reason. Best-effort and never raises: it runs on the refresher thread, and a
     withdrawal that fails must not stop an installed ceiling being reported as installed.
+
+    It covers the configured ``dashboard.tailscale.https_port`` and, until a restart
+    makes them equal, the *startup_https_port* the running gateway's origin carries.
     """
     # A PURE read first, with no ``audit_tool``: this runs on every confirming poll, and
     # ``is_governance_pinned_off``'s own contract is that auditing a mere inspection appends
     # HMAC-chained SEL rows at a multiple of the decisions that actually govern anything.
     if not is_governance_pinned_off():
         return
-    state = serve_state(port)
-    if state.published is not True:
-        # False (not ours) or None (could not tell). Neither is a mandate to remove
-        # something: the first is someone else's mapping, the second is the
-        # checked-but-never-ran case this module already refuses to render as a result.
-        return
+    for https_port in dict.fromkeys((configured_https_port(), startup_https_port)):
+        if serve_state(port, https_port=https_port).published is True:
+            _revoke(port, https_port)
+
+
+def _revoke(port: int, https_port: int) -> None:
+    """Withdraw serve's handler on *https_port*, which :func:`serve_state` found ours.
+
+    Not-ours (``False``) and could-not-tell (``None``) never reach here: the first is
+    someone else's mapping, the second the checked-but-never-ran case this module
+    refuses to render as a result.
+    """
     # Now that there IS something to withdraw, ask again THROUGH the audited seam. This is
     # the decision that does something, and it needs a forensic record more than a
     # human-driven one does: nobody typed it, so the SEL row is the only place a reviewer
@@ -730,7 +753,7 @@ def revoke_if_governance_now_pins_off(port: int) -> None:
         "the security policy now pins capabilities.tailnet_origin off; withdrawing this "
         "host's published dashboard origin"
     )
-    result = unpublish(port, audit_tool="tailnet_governance_revoke")
+    result = unpublish(port, https_port=https_port, audit_tool="tailnet_governance_revoke")
     if not result.ok:
         logger.error(
             "could not withdraw the published tailnet origin after a policy tightening "
@@ -739,8 +762,10 @@ def revoke_if_governance_now_pins_off(port: int) -> None:
         )
 
 
-def unpublish(port: int, *, audit_tool: str = "tailnet_unpublish") -> ServeResult:
-    """Stop serving the dashboard on the tailnet — **only if 443 is ours**.
+def unpublish(
+    port: int, *, https_port: int = SERVE_HTTPS_PORT, audit_tool: str = "tailnet_unpublish"
+) -> ServeResult:
+    """Stop serving the dashboard on the tailnet — **only if *https_port* is ours**.
 
     Narrow in two ways, both enforced rather than merely documented.
 
@@ -752,8 +777,8 @@ def unpublish(port: int, *, audit_tool: str = "tailnet_unpublish") -> ServeResul
     handler we created.
 
     **Ownership is decided for that mount, not for the port.** ``serve_state`` must
-    confirm the handler at ``SERVE_MOUNT`` on ``SERVE_HTTPS_PORT`` is this
-    dashboard; "ours is somewhere under 443" can be true while a stranger's handler
+    confirm the handler at ``SERVE_MOUNT`` on *https_port* is this
+    dashboard; "ours is somewhere under this port" can be true while a stranger's handler
     sits at the mount actually being removed.
 
     An **undetermined** state refuses too, and that is the deliberate half. This
@@ -770,7 +795,7 @@ def unpublish(port: int, *, audit_tool: str = "tailnet_unpublish") -> ServeResul
     it down — a fail-closed control failing open in effect.
     """
     del audit_tool  # accepted for call-site symmetry; withdrawal is never gated
-    state = serve_state(port)
+    state = serve_state(port, https_port=https_port)
     if state.published is False and state.configured is False:
         # Idempotent no-op: nothing is served at all, so there is nothing to
         # withdraw and nothing to endanger. Reported as success because the
@@ -786,7 +811,7 @@ def unpublish(port: int, *, audit_tool: str = "tailnet_unpublish") -> ServeResul
         return ServeResult(
             True,
             "ok",
-            f"Nothing is published on port {SERVE_HTTPS_PORT} — serve's "
+            f"Nothing is published on port {https_port} — serve's "
             f"configuration is for other ports only, and it is left alone.",
         )
     if state.published is not True:
@@ -794,15 +819,15 @@ def unpublish(port: int, *, audit_tool: str = "tailnet_unpublish") -> ServeResul
             False,
             "not_ours",
             f"{state.detail} Refusing to withdraw, because this check could not "
-            f"confirm that {SERVE_HTTPS_PORT}{SERVE_MOUNT} is this dashboard. If "
-            f"you are sure, run `tailscale serve --https {SERVE_HTTPS_PORT} "
+            f"confirm that {https_port}{SERVE_MOUNT} is this dashboard. If "
+            f"you are sure, run `tailscale serve --https {https_port} "
             f"--set-path={SERVE_MOUNT} off` yourself.",
         )
     rc, out, err = _run(
         [
             "serve",
             "--https",
-            str(SERVE_HTTPS_PORT),
+            str(https_port),
             f"--set-path={SERVE_MOUNT}",
             "off",
         ],

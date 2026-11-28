@@ -113,7 +113,7 @@ def read_pool(
 
     ``rss`` holds only the classes where at least one live backend gave a
     reading. A pid with no reading (it died between the snapshot and the read, or
-    the platform has no subtree probe -- macOS and Windows) adds 0 and is
+    its tree could not be measured) adds 0 and is
     skipped, and a class where NO backend could be read is left out: a gap,
     never a fake zero. A class with no live backend reports a true 0.
     """

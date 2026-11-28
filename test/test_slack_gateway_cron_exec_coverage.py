@@ -31,6 +31,7 @@ from kiro_crew.cron import CronStoreBusy
 from kiro_crew.dashboard import chat_persistence
 from kiro_crew.dashboard.chat_utils import CRON_NOTIFICATION_KIND
 from kiro_crew.slack import gateway as gw
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import async_wait_until
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
@@ -702,13 +703,20 @@ class TestTheVetIsAnAccountedBudgetTerm:
         "kind,runner",
         [("command", "run_command_sandboxed"), ("script", "run_script_sandboxed")],
     )
-    async def test_the_guard_outlives_a_payload_started_after_a_slow_vet(self, kind, runner):
+    async def test_the_guard_outlives_a_payload_started_after_a_slow_vet(
+        self, kind, runner, manual_clock: ManualClock, monkeypatch: pytest.MonkeyPatch
+    ):
         """The guard must still be held when the payload finishes.
 
         Otherwise the next fire can run the same command concurrently. Both call sites
         are covered; the script site's default timeout is 30s against 300s and its vet
         also reads the body, so it is the tighter one.
+
+        The vet's bound is read off the gateway's clock, which the vet advances by
+        exactly ``vet_secs``: a runner stall inside the real sleep cannot carry the
+        measured vet past its bound and refuse the payload.
         """
+        manual_clock.install(monkeypatch, gw)
         orch = _make_orchestrator()
         job = _job(
             **{kind: "probes.py:check" if kind == "script" else "curl example.com"},
@@ -733,6 +741,7 @@ class TestTheVetIsAnAccountedBudgetTerm:
             calls.append(1)
             if len(calls) > 1:  # the CLAIM-time call; fire-time stays instant
                 time.sleep(vet_secs)
+                manual_clock.advance(vet_secs)
             return ""
 
         def _payload(*_args: Any, **_kwargs: Any) -> dict[str, str]:

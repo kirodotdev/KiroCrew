@@ -122,6 +122,8 @@ class TestCommandSpec:
             "compact",
             "model",
             "agent",
+            "temporary",
+            "incognito",
             "status",
             "sessions",
             "bot",
@@ -173,16 +175,21 @@ class TestApplicationCommandPayload:
             "sessions",
             "agent",
             "bot",
+            "model",
         }
 
     @pytest.mark.parametrize(
-        "name,option", [("sessions", "query"), ("agent", "name"), ("bot", "name")]
+        "name,option",
+        [("sessions", "query"), ("agent", "name"), ("bot", "name"), ("model", "name")],
     )
-    def test_free_text_options(self, name: str, option: str) -> None:
+    def test_free_text_options_with_type_ahead(self, name: str, option: str) -> None:
+        # Discord refuses a row carrying both a fixed choice list and
+        # autocomplete, so the matches come only from the autocomplete answer.
         (opt,) = _rows_by_name()[name]["options"]
         assert opt["name"] == option
         assert opt["type"] == _OPTION_STRING
         assert opt["required"] is False
+        assert opt["autocomplete"] is True
         assert "choices" not in opt
 
     def test_every_option_is_locally_valid(self) -> None:

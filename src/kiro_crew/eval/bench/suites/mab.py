@@ -22,7 +22,11 @@ from ..errors import BenchRefusal
 from ..item_corpus import BenchItem, ItemCorpus, ItemQuery, ItemUnit, unit_id_of
 from . import SuiteInfo
 
-_FACT = re.compile(r"^\s*(\d+)\.\s+(.+?)\s*$")
+# The capture ends on a non-space, so the trailing ``\s*`` is the only reader
+# of the whitespace after it: a lazy capture beside ``\s*$`` rescanned that run
+# once per captured character. A tail of whitespace alone still yields the one
+# character the lazy form took, so every match is unchanged.
+_FACT = re.compile(r"^\s*(\d+)\.\s+(\S(?:.*\S)?|[^\S\n](?=\n*\Z))\s*$")
 CHUNK_CHARS = 2_000
 #: Variant -> (spec key, the ``metadata.source`` prefix of the rows it takes).
 VARIANTS = {

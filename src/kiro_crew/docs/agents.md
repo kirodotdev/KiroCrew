@@ -80,6 +80,16 @@ closed instead, turn off **Settings → Chat → Side panel → Auto-Open Board 
 Panel** (on by default). Conductor mode used to be a Feature Preview; a switch for
 it saved from then is ignored.
 
+A link can open a new chat with a prompt waiting in its composer:
+`<dashboard>/chat?new=1&prefill=<URL-encoded prompt>`. Add `&conductor=1` to open
+that chat in conductor mode, on whichever agent `agent.crew_mode_agent` names, or
+`&bot=<name>` to open it on one of your own Bots instead (a name that is not one
+of your Bots is refused rather than opened on another agent). If the dashboard
+tries to turn conductor mode on and is refused, the chat still opens as a plain
+chat and says so. The prompt is never
+sent for you: you read it and press Enter. A bookmark, a browser userscript or an
+issue page can build these links.
+
 The LTS edition does not offer conductor mode:
 
 - no conductor mode switch, welcome, filter, Board tab or crew member breadcrumb;
@@ -204,6 +214,41 @@ To add, turn on or turn off an MCP server, use **MCP Servers**
 opens that page with `find_ui` or a guide, or offers an MCP card through
 `propose_change`. It does not tell you to hand-edit `kirocrew.json` or run
 `jq`/`sed` on it.
+
+An agent cannot write `~/.kiro/settings/mcp.json` itself: its file tools
+refuse the file and the agent sandbox holds it read-only. To add a server there,
+the agent's `request_server` card takes `target: "kiro-cli"`, and the card names
+the file it also writes. A `/mcp add` or `/mcp remove` you type in a dashboard
+chat never reaches the harness: Kiro Crew reads it, on every harness, in
+kiro-cli's flag spelling, and shows the same MCP server card, filled in. Nothing
+changes until you apply the card. A command the card cannot carry, or one sent
+from a messaging channel, gets one reply that links the MCP Servers page.
+`kiro-cli mcp add` in your own terminal is not affected.
+
+The same holds for a project's own MCP files, `.kiro/settings/mcp.json` and
+`.mcp.json`, in any folder. The agent asks with `request_server` instead, and the
+card adds the server to Kiro Crew's own list. To add it only to the chat's own
+folder, the card takes `target: "project"`, names the file and the command, and
+its button reads **Add** and the server's name **to this project**. Only a Kiro chat whose agent sets
+`includeMcpJson` gets that card (the default agent does not), and it writes
+`.kiro/settings/mcp.json`. In any other chat Kiro Crew cannot be sure the file
+loads, so the agent is told to use Kiro Crew's own list instead. On Linux, the sandbox seals only a file that already exists when the chat
+starts.
+
+A server in a folder's project MCP file starts only after you allow that
+launch in that folder. A server you have not allowed there, or whose launch
+changed, is held back when a chat starts, and the chat shows a card with the
+file, the launch and what changed. **Allow** the server **in this folder**
+records it and restarts the open chats; **Skip for this chat** keeps it held,
+and the next chat in that folder asks again. A server the project card above
+added is already allowed. A server name Kiro Crew cannot pass on to the agent
+stops the chat in that folder from starting: rename the server in the file,
+then start a new chat.
+
+An agent cannot write an installed app's `app.json` either
+(`~/.kiro/crew/apps/<name>/app.json`): its file tools refuse it and the
+sandbox holds it read-only. Only installing or updating the app changes it, and an
+agent that needs a server asks with `request_server`.
 
 If a server's tools are missing from sessions, check that tab first. A server
 whose program is not found on this computer is dropped from the spec at the

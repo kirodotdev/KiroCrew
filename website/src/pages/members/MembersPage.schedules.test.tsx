@@ -96,8 +96,10 @@ vi.mock('../../components/MarkdownPanel', () => ({ default: () => null }))
 vi.mock('../../components/ArtifactPanel', () => ({ default: () => null }))
 vi.mock('../../components/WebPreviewPanel', () => ({ default: () => null }))
 vi.mock('../../components/McpAppFrame', () => ({ default: () => null }))
-vi.mock('../../components/CliPanel', () => ({
+vi.mock('../../components/LazyCliPanel', () => ({
   default: () => null,
+}))
+vi.mock('../../components/terminalSessions', () => ({
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
 }))
@@ -955,7 +957,7 @@ describe('MembersPage Profile card — Memory tile', () => {
     })
     navigateSpy.mockClear()
     fireEvent.click(tile)
-    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/settings/overview?view=memory&store=member-radar'))
+    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/settings/memory?store=member-radar'))
   })
 
   it('stays a readout for a mate on the shared store', async () => {

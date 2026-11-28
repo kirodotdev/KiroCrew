@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { onTestFinished } from 'vitest'
 import { renderWithProviders } from '../test/helpers'
-import KasLoginGate, { KasLoginEmbedded } from './KasLoginGate'
+import KasLoginGate, { KasLoginEmbedded, SignInBackContext } from './KasLoginGate'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { COMPANY_SIGN_IN_URL_KEY } from '../utils/companySignIn'
@@ -389,7 +389,7 @@ describe('KasLoginGate', () => {
     )
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
     await screen.findByTestId('kas-login-user-code')
-    await waitFor(() => expect(kasLoginPoll).toHaveBeenCalledWith('login-1'))
+    await waitFor(() => expect(kasLoginPoll).toHaveBeenCalledWith('login-1', undefined))
 
     // Another tab or the CLI finished a sign-in: the next status read says so.
     kasLoginStatus.mockResolvedValue({
@@ -420,7 +420,7 @@ describe('KasLoginGate', () => {
     )
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
     await screen.findByTestId('kas-login-user-code')
-    await waitFor(() => expect(kasLoginPoll).toHaveBeenCalledWith('login-1'))
+    await waitFor(() => expect(kasLoginPoll).toHaveBeenCalledWith('login-1', undefined))
 
     kasLoginCancel.mockRejectedValueOnce(new Error('network down'))
     kasLoginStatus.mockResolvedValue({
@@ -814,7 +814,7 @@ describe('KasLoginGate', () => {
     expect(openSpy).not.toHaveBeenCalled()
   })
 
-  it('in card chrome the code screen opens the page by one button and goes back by an icon', async () => {
+  it('in card chrome the code screen opens the page by one button, copies only the link, and goes back by text', async () => {
     renderWithProviders(<KasLoginEmbedded />)
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
     expect(await screen.findByTestId('kas-login-user-code')).toHaveTextContent('ABCD-EFGH')
@@ -822,10 +822,38 @@ describe('KasLoginGate', () => {
       'href',
       'https://app.kiro.dev/account/device?user_code=ABCD-EFGH',
     )
+    // With no host drawing them, the screen keeps its heading and hint.
+    expect(screen.getByRole('heading', { name: 'Finish in your browser' })).toBeInTheDocument()
+    expect(screen.getByTestId('kas-login-code-heading')).toHaveTextContent('Check the page shows this code')
+    // The code is compared by eye, never typed: Copy link, no copy-code control.
+    expect(screen.getByRole('button', { name: 'Copy link' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Copy code' })).toBeNull()
     expect(screen.getByTestId('kas-login-code-expiry')).toHaveTextContent('Waiting… code expires')
     // The back control returns to the choices.
-    fireEvent.click(screen.getByRole('button', { name: 'Use a different sign-in' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Use another way' }))
     expect(await screen.findByRole('button', { name: 'Continue with Google' })).toBeInTheDocument()
+  })
+
+  it.each([
+    ['the dialog (host header says "Sign in to Kiro")', false, true],
+    ['Settings (host draws the step heading itself)', true, false],
+  ])('hosted in %s, the one code screen hands its back to the host and draws its heading only when the host does not', async (_label, ownsHeading, headingShown) => {
+    const set = vi.fn()
+    renderWithProviders(
+      <SignInBackContext.Provider value={{ set, ownsHeading }}>
+        <KasLoginEmbedded />
+      </SignInBackContext.Provider>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    await screen.findByTestId('kas-login-user-code')
+    expect(screen.queryByRole('heading', { name: 'Finish in your browser' }) !== null).toBe(headingShown)
+    expect(screen.queryByTestId('kas-login-code-heading') !== null).toBe(headingShown)
+    // The host draws the way back, so the screen has none of its own.
+    expect(screen.queryByRole('button', { name: 'Use another way' })).toBeNull()
+    await waitFor(() => expect(set).toHaveBeenCalledWith(expect.objectContaining({ disabled: false })))
+    // Both hosts get the same layout otherwise.
+    expect(screen.getByRole('button', { name: 'Copy link' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Copy code' })).toBeNull()
   })
 
   it('loopback shape: Google opens the portal tab and shows the browser-wait screen', async () => {

@@ -28,7 +28,8 @@ from collections.abc import Callable
 from ..trust_patterns import ENV_ASSIGNMENT_RE
 from . import rm_floor as _rm
 from . import shell_normalizer as _shell
-from .denied_rules import BUILTIN_DENIED_RULES
+from .denied_rules import _SHELL_TITLE_PREFIX, BUILTIN_DENIED_RULES
+from .shell_normalizer import _strip_win_program_suffix
 
 #: Programs that run another command from their arguments, as
 #: ``wrapper -> (options that take a value, positional words before the command)``:
@@ -40,7 +41,7 @@ _WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
     "sudo": (
         frozenset(
             {
-                *("-u", "-g", "-C", "-h", "-p", "-U", "-r", "-t", "-D", "-R"),
+                *("-u", "-g", "-C", "-h", "-p", "-U", "-r", "-t", "-T", "-D", "-R"),
                 *("--user", "--group", "--close-from", "--host", "--prompt"),
                 *("--other-user", "--role", "--type", "--chdir", "--chroot"),
             }
@@ -50,7 +51,7 @@ _WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
     "doas": (frozenset({"-u", "-C"}), 0),
     "pkexec": (frozenset({"--user"}), 0),
     "runuser": (frozenset({"-u", "-g", "-G", "--user", "--group"}), 0),
-    "env": (frozenset({"-u", "-C", "--unset", "--chdir"}), 0),
+    "env": (frozenset({"-u", "-U", "-C", "--unset", "--chdir"}), 0),
     "command": (frozenset(), 0),
     "builtin": (frozenset(), 0),
     "exec": (frozenset({"-a"}), 0),
@@ -70,7 +71,7 @@ _WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
     "xargs": (
         frozenset(
             {
-                *("-I", "-n", "-P", "-L", "-s", "-d", "-E", "-a"),
+                *("-I", "-n", "-P", "-L", "-s", "-S", "-d", "-E", "-a"),
                 *("--max-args", "--max-procs", "--max-lines", "--max-chars"),
                 *("--delimiter", "--arg-file", "--process-slot-var"),
             }
@@ -277,10 +278,6 @@ def _program_args(tokens: "list[str]") -> "tuple[str, list[str]] | None":
     return _shell._program_basename(tokens[i]), tokens[i + 1 :]
 
 
-def _strip_win_program_suffix(word: str) -> str:
-    return next((word[:-4] for s in (".exe", ".cmd", ".bat") if word.endswith(s)), word)
-
-
 def _cmd_line_args(args: "list[str]") -> "list[str] | None":
     """The words after ``/c`` or ``/k`` in a ``cmd`` argv, past other ``/x`` switches.
 
@@ -373,7 +370,9 @@ def _split_commands(tokens: "list[str]", glue_split: bool = False) -> "list[list
     return [*out, *(sub for argv in out for sub in _find_exec_argvs(argv))]
 
 
-def _executed_program_indices(tokens: "list[str]", cased: "list[str] | None" = None) -> "set[int]":
+def _executed_program_indices(
+    tokens: "list[str]", cased: "list[str] | None" = None, glue_split: bool = False
+) -> "set[int]":
     """Indices in *tokens* that bash runs as a program, wrappers and ``VAR=x`` stepped over.
 
     One per command and per ``case`` arm body: program position, or the program a wrapper in
@@ -382,17 +381,19 @@ def _executed_program_indices(tokens: "list[str]", cased: "list[str] | None" = N
     program position is a ``case`` arm pattern (``s*)``) or a subshell close,
     not a program.  ``find -exec`` commands are not marked (their words keep no
     index).  *cased* is *tokens* in the case they were written in, read for the
-    wrapper option words (see :func:`_program_index`).
+    wrapper option words (see :func:`_program_index`).  *glue_split* is
+    forwarded to :func:`_split_commands_indexed` and :func:`_case_arm_pattern_indices`.
     """
     executed: set[int] = set()
-    case_patterns, arm_bodies = _case_arm_pattern_indices(tokens)
-    for command in _split_commands_indexed(tokens):
+    case_patterns, arm_bodies = _case_arm_pattern_indices(tokens, glue_split)
+    lowered = [] if cased is None else [original.lower() for original in cased]
+    for command in _split_commands_indexed(tokens, glue_split):
         command = _without_redirections(command)
         words = [word for _, word in command]
         # A word cut off a glued separator (``-H;``) keeps its lowered reading.
         options = None
         if cased is not None:
-            options = [cased[j] if cased[j].lower() == word else word for j, word in command]
+            options = [cased[j] if lowered[j] == word else word for j, word in command]
         # A case arm body's first word (``x) s?h …``, or ``x) >f s?h``) starts a command too.
         bodies = [
             k
@@ -509,7 +510,9 @@ def _without_redirections(command: "list[tuple[int, str]]") -> "list[tuple[int, 
     return out
 
 
-def _case_arm_pattern_indices(tokens: "list[str]") -> "tuple[set[int], set[int]]":
+def _case_arm_pattern_indices(
+    tokens: "list[str]", glue_split: bool = False
+) -> "tuple[set[int], set[int]]":
     """Indices in *tokens* that sit in a ``case`` arm's pattern list, and the
     index of each arm body's first word.
 
@@ -525,14 +528,28 @@ def _case_arm_pattern_indices(tokens: "list[str]") -> "tuple[set[int], set[int]]
     ``id;;``) are read off the token. Only a ``case`` in command position opens
     one (``echo case in x`` does not): a command's first word, a word after a
     :data:`_COMPOUND_OPENERS` word in command position, or an arm body's first word.
+    With *glue_split*, each word is read as its :func:`_expand_glued_boundaries`
+    pieces, each keeping the word's index.
     """
     patterns: set[int] = set()
     bodies: set[int] = set()
     stack: list[str] = []  # per open case: "await_in", "pattern" or "body"
-    starts = {command[0][0] for command in _split_commands_indexed(tokens)}
+    commands = _split_commands_indexed(tokens, glue_split)
+    starts = {command[0][0] for command in commands}
+    # A word whose first piece an earlier command runs into: only its pieces
+    # after a glued operator start a command (``echo case;true`` opens none).
+    joined = {b for command in commands for (a, _), (b, _) in zip(command, command[1:]) if a < b}
     program_position = False
-    for i, tok in enumerate(tokens):
-        here, program_position = program_position or i in starts, False
+    # Read once per word, not once per piece the glue split cuts from it.
+    fall_through = {i for i, whole in enumerate(tokens) if ";&" in whole}
+    pieces = (
+        (i, k, piece)
+        for i, whole in enumerate(tokens)
+        for k, piece in enumerate(_expand_glued_boundaries(whole) if glue_split else [whole])
+    )
+    for i, k, tok in pieces:
+        here = program_position or i in starts and (k > 0 or i not in joined)
+        program_position = False
         if tok.rstrip(";&| ") == "esac":
             if stack:
                 stack.pop()
@@ -553,9 +570,10 @@ def _case_arm_pattern_indices(tokens: "list[str]") -> "tuple[set[int], set[int]]
                     stack[-1] = "body"
                     program_position = True
                     bodies.add(i + 1)
-        elif state == "body" and (";;" in tok or ";&" in tok):
+        elif state == "body" and (";;" in tok or ";&" in tok or tok == ";" and i in fall_through):
             # ``;;``, ``;;&`` and ``;&`` (fall through) each end an arm, so the
-            # next word opens the next arm's pattern list.
+            # next word opens the next arm's pattern list. The glue split cuts
+            # ``;&`` into ``;`` and ``&``.
             stack[-1] = "pattern"
     return patterns, bodies
 
@@ -724,10 +742,51 @@ def _writes_raw_disk(_program: str, args: "list[str]") -> bool:
     return any(arg.startswith(_RAW_DISK_OUTPUTS) for arg in args)
 
 
+#: The AWS CLI's global options that take a value; the value is never a rule word.
+_AWS_VALUED_OPTIONS = frozenset(
+    {
+        *("--profile", "--region", "--output", "--endpoint-url", "--query", "--color"),
+        *("--ca-bundle", "--cli-read-timeout", "--cli-connect-timeout", "--cli-binary-format"),
+    }
+)
+
+
+def _words(args: "list[str]") -> "list[str] | None":
+    """The lower-cased non-option words, past a valued option's value; ``None`` on help."""
+    low = [arg.lower() for arg in args]
+    words = [
+        a for a, b in zip(low, ["", *low]) if a and a[0] != "-" and b not in _AWS_VALUED_OPTIONS
+    ]
+    return None if {"--help", "-h"} & set(low) or words[-1:] == ["help"] else words
+
+
+def _after(words: "list[str] | None", *path: str) -> "list[str] | None":
+    """The words after *path* when *words* starts with it, else ``None``."""
+    return words[len(path) :] if words is not None and words[: len(path)] == [*path] else None
+
+
+def _runs_subcommand(*path: str) -> "Callable[[str, list[str]], bool]":
+    """The first non-option words are *path*."""
+    return lambda _program, args: _after(_words(args), *path) is not None
+
+
+def _gets_a_secret(_program: str, args: "list[str]") -> bool:
+    """``aws configure get`` of a key whose last dotted part names a secret."""
+    key = (_after(_words(args), "configure", "get") or [""])[0].rsplit(".", 1)[-1]
+    return any(word in key for word in ("secret", "session_token", "security_token"))
+
+
 #: rule id -> (the program it is about, the test on that program's arguments).
 _PREDICATES: dict[str, tuple[str, Callable[[str, list[str]], bool]]] = {
     "local-destructive-chmod-777": ("chmod", _is_mode_777),
     "local-destructive-dd-of-device": ("dd", _writes_raw_disk),
+    # Commands whose output is a credential.
+    "credential-exfil-aws-configure-export-credentials": (
+        "aws",
+        _runs_subcommand("configure", "export-credentials"),
+    ),
+    "credential-exfil-aws-configure-get-secret": ("aws", _gets_a_secret),
+    "credential-exfil-ada-credentials-print": ("ada", _runs_subcommand("credentials", "print")),
     **{
         f"local-destructive-{verb}-{root.strip('/')}": (verb, _changes_system_dir(root))
         for verb in ("chmod", "chown")
@@ -779,8 +838,15 @@ def argv_rule_hit(command: str, enabled_patterns: "set[str] | frozenset[str]") -
         and not any(_COULD_NAME[program].search(command) for program in wanted)
     ):
         return None
+    # kiro-cli's ``Running: <command>`` title gets the verdict of the command it shows.
+    if command[: len(_SHELL_TITLE_PREFIX)].lower() == _SHELL_TITLE_PREFIX:
+        command = command[len(_SHELL_TITLE_PREFIX) :]
     try:
-        commands = [(p, a) for p, a in _commands(command) if p in wanted]
+        commands = [
+            (name, a)
+            for p, a in _commands(command)
+            if (name := _strip_win_program_suffix(p.lower())) in wanted
+        ]
     except Exception:  # noqa: BLE001 - an unreadable command is not refused here
         return None
     for rule_id, pattern in ARGV_RULE_BY_ID.items():

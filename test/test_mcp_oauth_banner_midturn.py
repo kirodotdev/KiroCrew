@@ -1,6 +1,6 @@
 """The mid-turn ``mcp_oauth`` arm tags carded providers like the init drain does.
 
-The turn-start sign-in offer re-requests every unauthorized server, so a
+kiro-cli retries a signed-out server's sign-in on every turn, so a
 provider with a Connections card (Linear, Notion, ...) reaches
 ``_on_mcp_oauth_request`` on every turn of every session. Without the
 ``card_owned`` tag the chat renders its banner each time, beside the card that
@@ -9,6 +9,7 @@ already shows the same Authorize action.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -208,3 +209,126 @@ async def test_lookup_failure_fails_open_mid_turn(tmp_path, monkeypatch):
 
 def _owned(slot: _ChatSlot) -> list[bool]:
     return [bool(m["meta"].get("card_owned")) for m in slot.messages]
+
+
+# ── a consent link that reaches the chat between turns ────────────────────────
+
+
+class _GatewayState(_State):
+    def __init__(self, slot: _ChatSlot, client) -> None:
+        super().__init__()
+        self._background_tasks: set = set()
+        self._slots = {slot.key: slot}
+        self.serving = client
+        self.sessions = SimpleNamespace(get_provider=lambda _key: self.serving)
+
+
+class _IdleClient(_Client):
+    def set_mcp_consent_hook(self, hook):
+        self.consent_hook = hook
+
+
+async def _between_turns(slot: _ChatSlot, server_name: str):
+    """Install the chat's consent hook and hand it one link, as the provider does."""
+    from kiro_crew.dashboard.chat_runner import _watch_mcp_consent_between_turns
+    from kiro_crew.testing.wait import finished
+
+    client = _IdleClient()
+    state = _GatewayState(slot, client)
+    _watch_mcp_consent_between_turns(state, slot, client)
+    request = {"serverName": server_name, "oauthUrl": _event(server_name).oauth_url}
+    assert client.consent_hook(request) is True
+    await finished(asyncio.gather(*state._background_tasks), "the between-turns draw")
+    return state, client
+
+
+@pytest.mark.asyncio
+async def test_a_link_between_turns_is_drawn_as_the_same_authorize_banner(tmp_path, monkeypatch):
+    """No turn is reading, so the chat draws the link itself: one live Authorize
+    row, stamped with the child it is redeemable against, and withdrawn when the
+    engine later says the attempt ended."""
+    _own(tmp_path, monkeypatch, {"acme-docs": {"url": "https://mcp.acme.example/mcp"}})
+    slot = _ChatSlot("s1")
+    _state, client = await _between_turns(slot, "acme-docs")
+    assert [m["role"] for m in slot.messages] == ["mcp_oauth"]
+    meta = slot.messages[0]["meta"]
+    assert meta["oauth_url"] == _event("acme-docs").oauth_url
+    assert meta["child"] == "child-1"
+    assert "card_owned" not in meta
+    client.end_attempt("acme-docs")
+    ended = slot.messages[0]["meta"]
+    assert (ended["expired"], ended["expired_reason"]) == (True, "attempt_ended")
+
+
+@pytest.mark.asyncio
+async def test_a_link_between_turns_whose_attempt_already_ended_arrives_withdrawn(
+    tmp_path, monkeypatch
+):
+    _own(tmp_path, monkeypatch, {})
+    slot = _ChatSlot("s1")
+    from kiro_crew.dashboard.chat_runner import _watch_mcp_consent_between_turns
+
+    client = _IdleClient()
+    state = _GatewayState(slot, client)
+    client.ended = {"acme-docs"}
+    _watch_mcp_consent_between_turns(state, slot, client)
+    client.consent_hook({"serverName": "acme-docs", "oauthUrl": _event("acme-docs").oauth_url})
+    await asyncio.gather(*state._background_tasks)
+    assert slot.messages[0]["meta"]["expired_reason"] == "attempt_ended"
+
+
+@pytest.mark.asyncio
+async def test_a_between_turns_draw_that_fails_is_logged_not_raised(tmp_path, monkeypatch, caplog):
+    from kiro_crew.dashboard import chat_runner
+
+    _own(tmp_path, monkeypatch, {})
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("draw failed")
+
+    monkeypatch.setattr(chat_runner, "_emit_mcp_oauth_request", broken)
+    slot = _ChatSlot("s1")
+    client = _IdleClient()
+    state = _GatewayState(slot, client)
+    chat_runner._watch_mcp_consent_between_turns(state, slot, client)
+    assert client.consent_hook({"serverName": "x", "oauthUrl": _event("x").oauth_url}) is True
+    tasks = list(state._background_tasks)
+    # The task's own done callbacks, the log included, run before gather's.
+    await asyncio.gather(*tasks, return_exceptions=True)
+    assert "Background task failed" in caplog.text
+    assert slot.messages == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gone", ["session-reset", "chat-closed"])
+async def test_a_between_turns_draw_whose_chat_went_away_meanwhile_draws_nothing(
+    tmp_path, monkeypatch, gone
+):
+    """A reload resets the idle session (or the chat closes) while the draw awaits
+    discovery: no turn holds the session, so the torn-down session's banner and
+    report must not come back."""
+    from kiro_crew.dashboard import chat_runner
+    from kiro_crew.testing.wait import finished
+
+    _own(tmp_path, monkeypatch, {})
+    discovering, release = asyncio.Event(), asyncio.Event()
+
+    async def held(_server_name, _oauth_url):
+        discovering.set()
+        await release.wait()
+
+    monkeypatch.setattr(chat_runner, "_approve_discovered_mcp_oauth_endpoint", held)
+    slot = _ChatSlot("s1")
+    client = _IdleClient()
+    state = _GatewayState(slot, client)
+    chat_runner._watch_mcp_consent_between_turns(state, slot, client)
+    client.consent_hook({"serverName": "acme-docs", "oauthUrl": _event("acme-docs").oauth_url})
+    await finished(discovering.wait(), "the draw reaching discovery")
+    if gone == "session-reset":
+        state.serving = None
+    else:
+        state._slots.clear()
+    release.set()
+    await finished(asyncio.gather(*state._background_tasks), "the between-turns draw")
+    assert slot.messages == []
+    assert state.broadcasts == []

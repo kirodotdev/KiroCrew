@@ -34,6 +34,7 @@ import {
   registerBuiltinComponents,
   type LazyComponent,
 } from './builtinRegistry'
+import { wheelCopyDrift } from '../test/shippedWheelCopies'
 
 /**
  * The import factory React.lazy was handed. Reaching for `_payload` is the only
@@ -54,7 +55,8 @@ const CORE_ROUTES = Object.keys(BUILTIN_COMPONENT_REGISTRY)
 
 describe('BUILTIN_COMPONENT_REGISTRY', () => {
   it('registers every builtin under a single plain path segment', () => {
-    expect(CORE_ROUTES.length).toBeGreaterThan(15)
+    const appIds = CORE_ROUTES.map((route) => BUILTIN_COMPONENT_REGISTRY[route].appId)
+    expect(wheelCopyDrift(appIds), 'a page for every shipped wheel copy').toEqual({ added: [], dropped: [] })
     for (const route of CORE_ROUTES) {
       expect(route).toMatch(/^\/[A-Za-z0-9][A-Za-z0-9._~-]*$/)
     }
@@ -62,7 +64,7 @@ describe('BUILTIN_COMPONENT_REGISTRY', () => {
 
   // One case per route, not one loop in one test: a cold CI runner pays Vite's
   // transform cost for whichever route's subtree lands first, and a single case
-  // carrying all 21 modules puts that whole bill against ONE per-test timeout.
+  // carrying every module puts that whole bill against ONE per-test timeout.
   // Timeout raised past the 15s default because the bill is runner-speed-bound,
   // not assertion-bound — locally every case is comfortably sub-2s.
   it.each(CORE_ROUTES)(

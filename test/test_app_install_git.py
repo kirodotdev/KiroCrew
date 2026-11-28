@@ -81,6 +81,29 @@ def _stub_clone(monkeypatch, layout, calls: list | None = None, branch: str = "m
     monkeypatch.setattr(git_install, "_cloned_head", lambda _checkout: ("a" * 40, branch))
 
 
+class _FakeClone:
+    """A ``Popen`` stand-in whose ``wait`` answers from *outcomes* in turn."""
+
+    pid = 4242
+
+    def __init__(self, outcomes: list, events: list) -> None:
+        self._outcomes = outcomes
+        self._events = events
+
+    def wait(self, timeout=None):
+        self._events.append(("wait", timeout))
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+def _stub_popen(monkeypatch, outcomes: list, events: list | None = None) -> _FakeClone:
+    proc = _FakeClone(outcomes, [] if events is None else events)
+    monkeypatch.setattr(git_install.subprocess, "Popen", lambda *_a, **_k: proc)
+    return proc
+
+
 def _root_entries(home: Path) -> set[str]:
     root = home / git_install.GIT_CHECKOUTS_DIRNAME
     return {p.name for p in root.iterdir()} if root.exists() else set()
@@ -223,20 +246,56 @@ class TestCloneCommand:
     def test_a_failed_clone_says_to_check_the_operators_own_git(
         self, tmp_path, monkeypatch
     ) -> None:
-        monkeypatch.setattr(
-            git_install.subprocess,
-            "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 128),
-        )
+        _stub_popen(monkeypatch, [128])
         with pytest.raises(GitInstallError, match=r"exit 128.*`git clone`"):
             git_install._run_clone(URL, tmp_path / "dest", None)
 
-    def test_a_hung_clone_is_stopped(self, tmp_path, monkeypatch) -> None:
-        def hang(argv, **kwargs):
-            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
-
-        monkeypatch.setattr(git_install.subprocess, "run", hang)
+    def test_a_hung_clone_has_its_tree_ended_and_waited_for(self, tmp_path, monkeypatch) -> None:
+        events: list = []
+        proc = _stub_popen(monkeypatch, [subprocess.TimeoutExpired("git", 600), -9], events)
+        monkeypatch.setattr(git_install, "kill_popen_tree", lambda p: events.append(("tree", p)))
         with pytest.raises(GitInstallError, match="did not finish"):
+            git_install._run_clone(URL, tmp_path / "dest", None)
+        assert events == [
+            ("wait", git_install.CLONE_TIMEOUT_S),
+            ("tree", proc),
+            ("wait", git_install._CLONE_EXIT_WAIT_S),
+        ]
+
+    def test_a_clone_that_outlives_the_first_wait_is_killed_again(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        events: list = []
+        expired = subprocess.TimeoutExpired("git", 10)
+        proc = _stub_popen(
+            monkeypatch, [subprocess.TimeoutExpired("git", 600), expired, -9], events
+        )
+        monkeypatch.setattr(git_install, "kill_popen_tree", lambda p: events.append(("tree", p)))
+        with pytest.raises(GitInstallError, match=r"10 minutes$"):
+            git_install._run_clone(URL, tmp_path / "dest", None)
+        assert events.count(("tree", proc)) == 2
+
+    def test_a_clone_that_never_exits_is_named_in_the_error(self, tmp_path, monkeypatch) -> None:
+        expired = subprocess.TimeoutExpired("git", 10)
+        _stub_popen(monkeypatch, [subprocess.TimeoutExpired("git", 600), expired, expired])
+        monkeypatch.setattr(git_install, "kill_popen_tree", lambda p: None)
+        with pytest.raises(GitInstallError, match=r"did not finish.*pid 4242\) is still running"):
+            git_install._run_clone(URL, tmp_path / "dest", None)
+
+    def test_an_interrupted_clone_has_its_tree_ended(self, tmp_path, monkeypatch) -> None:
+        events: list = []
+        proc = _stub_popen(monkeypatch, [KeyboardInterrupt(), -2], events)
+        monkeypatch.setattr(git_install, "kill_popen_tree", lambda p: events.append(("tree", p)))
+        with pytest.raises(KeyboardInterrupt):
+            git_install._run_clone(URL, tmp_path / "dest", None)
+        assert ("tree", proc) in events
+
+    def test_a_missing_git_binary_says_git_is_needed(self, tmp_path, monkeypatch) -> None:
+        def missing(*_a, **_k):
+            raise FileNotFoundError("git")
+
+        monkeypatch.setattr(git_install.subprocess, "Popen", missing)
+        with pytest.raises(GitInstallError, match="needs git"):
             git_install._run_clone(URL, tmp_path / "dest", None)
 
 
@@ -363,6 +422,22 @@ class TestFetch:
         with pytest.raises(GitInstallError, match="exit 128"):
             fetch_app_from_git(URL)
         assert _root_entries(home) == set()
+
+    def test_a_clone_that_cannot_be_removed_is_named_in_the_refusal(
+        self, home, monkeypatch
+    ) -> None:
+        def fail(dest: Path) -> None:
+            raise GitInstallError("git clone did not finish within 10 minutes")
+
+        _stub_clone(monkeypatch, fail)
+        monkeypatch.setattr(git_install, "rmtree_force", lambda _path: False)
+        with pytest.raises(GitInstallError) as raised:
+            fetch_app_from_git(URL)
+        (left,) = _root_entries(home)
+        assert "did not finish" in str(raised.value)
+        assert f"{home / git_install.GIT_CHECKOUTS_DIRNAME / left} could not be removed" in str(
+            raised.value
+        )
 
     def test_an_invalid_app_name_leaves_nothing(self, home, monkeypatch) -> None:
         _stub_clone(monkeypatch, lambda dest: _write_app(dest, name="../escape"))

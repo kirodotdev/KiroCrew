@@ -11,8 +11,10 @@ tuned per signal.
 
 Tiers, first match wins
 -----------------------
-    A  always run: the guard tier, a changed test file, or any `select` fall-back
-       (which puts every test file in A and makes the verdict `full`)
+    A  always run: the guard tier, a changed test file, a test file that reads
+       a changed prose doc or frontend file (`ci_test_data_readers.py`), or any
+       `select` fall-back (which puts every test file in A and makes the
+       verdict `full`)
     B  the map links it to a changed file reached by at most `narrow_reach_max`
        test files (for a file with a `functions` table, the test files that
        ran the functions the diff touches: `ci_test_map.py`, "Function level")
@@ -28,8 +30,11 @@ Tiers, first match wins
 
 The bundle is a schema-1 test map (`ci_test_map.py`), plain or gzip, as `build`
 or `bundle` writes it; `tests`, `files`, `functions` and `cochange` are the
-tables read. A missing table never makes a file skippable: the files that would
-be G are held in F instead, and without `functions` (or with `--name-status`)
+tables read. Missing data never makes a file skippable: with a table missing,
+the files that would be G are held in F instead, and so is every test file the
+`tests` table has no entry for, whose links the map cannot know (a file newer
+than the map, or one its run recorded no node from: the bundle's `unrecorded`
+table tells the two apart). Without `functions` (or with `--name-status`)
 every link is file-level. An optional `guard` table (`[test file]`,
 `leaf_test_scope.corpus_gates` run when the bundle was built) spares the live
 guard scan, which costs seconds; without it the scan runs. A test the diff adds
@@ -44,14 +49,36 @@ The verdict (`--out`)
      "verdict": "select" | "full", "reason": str | null,
      "tiers": {"A": [test file, ...], ..., "G": [...]},
      "would_skip": [test file, ...], "would_run_share": float,
-     "windows": {"verdict", "reason", "run": [test file, ...], "would_run_share"}}
+     "covered": {status letter: rows, "added_test": test files},
+     "unknown": {"new": files, "never_runs": files, "held": files},
+     "windows": {"verdict", "reason", "run": [test file, ...], "would_run_share"},
+     "timings": {"load": s, "readers": s, "score": s, "modified_py": count}}
+
+`timings` says where a scored diff's time went, in seconds: `load` reading and
+checking the bundle, `readers` the scans for the tests that read a changed doc
+or frontend path, `score` all of the scoring, those two included; and
+`modified_py`, the modified `.py` files of the diff. A diff that was not scored
+has none. Nothing reads them to decide anything.
+
+`covered` counts, by git status letter (`A` added, `D` deleted, `M` modified,
+`R` renamed), the changed docs and frontend paths whose readers took the place
+of a fall-back; it is empty when the diff has none and under `full`. A miss can
+then be split by the status that let the diff be narrowed.
+
+`unknown` counts the test files of the checkout the map has no entry for: `new`
+since the map, `never_runs` for those its run recorded no node from, and `held`
+for how many of both this verdict kept out of the skipped tier (the others had
+a signal of their own). It is empty when the diff was not scored.
 
 The `windows` block is the Windows test set for the same diff, from the same
 tiers (`scripts/ci_test_selection_windows.py`); it is `full` whenever this
 verdict is.
 
-`would_run_share` weighs each test file by its node-id count in the map (1 for a
-file the map lacks). The test tree is read from the checkout, so a `--head` that
+`would_run_share` weighs each test file by its node-id count in the map. A file
+newer than the map weighs the map's mean count per file and a file the map's
+run recorded no node from weighs nothing (`ci_test_map.node_weights`); a share
+written before this weighed each such file 1, so it reads a little lower for
+the same diff. The test tree is read from the checkout, so a `--head` that
 is not the checked-out commit, no bundle, an unreadable one, a table of the wrong
 shape, an exception or `--timeout` (unfinished work is abandoned, not awaited) gives
 verdict `full` with the reason. Exit 0 always, but 2 for bad arguments.
@@ -66,6 +93,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,7 +101,8 @@ from typing import Any, TypeVar
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
-import ci_test_map as ctm  # noqa: E402  (path set immediately above)
+import ci_test_data_readers as data_readers  # noqa: E402  (path set immediately above)
+import ci_test_map as ctm  # noqa: E402
 import ci_test_os_tables as ost  # noqa: E402
 import ci_test_selection_windows as windows  # noqa: E402
 
@@ -144,6 +173,9 @@ def check_tables(bundle: Mapping[str, Any]) -> None:
     guard = bundle.get("guard", [])
     if not isinstance(guard, list) or not all(isinstance(t, str) for t in guard):
         raise ValueError("bundle table `guard` is not [test file]")
+    unrecorded = bundle.get(ctm.UNRECORDED, [])
+    if not isinstance(unrecorded, list) or not all(isinstance(t, str) for t in unrecorded):
+        raise ValueError(f"bundle table `{ctm.UNRECORDED}` is not [test file]")
 
 
 def module_name(path: str) -> str | None:
@@ -318,27 +350,37 @@ def score(
     narrow_reach_max: int,
     grep: Callable[[list[str]], set[str]],
     functions: Mapping[str, set[str] | None] | None = None,
+    rule: ctm.DataRule | None = None,
 ) -> dict[str, Any]:
     """Tier every test file of `universe` for one diff; the verdict without base/head.
 
     `functions` is `ci_test_map.changed_functions` of the diff, when it has a base
-    and a head."""
+    and a head; `rule` names the readers of its docs and frontend paths, which
+    then give no other signal."""
     tables = {t: bundle[t] for t in TABLES if isinstance(bundle.get(t), dict)}
     missing = [t for t in TABLES if t not in tables]
     counts: Mapping[str, int] = tables.get("tests", {})
-    tests = sorted(set(universe) | set(guard))
+    listed = bundle.get(ctm.UNRECORDED)
+    unrecorded = listed if isinstance(listed, list) else []
     test_map = {
         "tests": counts,
         "files": tables.get("files", {}),
         "functions": bundle.get("functions", {}),
     }
-    fallback = ctm.select(changes, test_map, guard)
+    fallback = ctm.select(changes, test_map, guard, rule=rule)
+    changes, covered = ctm.data_rows(changes, rule)
+    tests = sorted(set(universe) | set(guard) | set(fallback.readers))
+    # With no `tests` table nothing says which files the map knows; all are held below.
+    unknown = ctm.unknown_tests(tests if "tests" in tables else (), counts, unrecorded)
+    absent = {**{kind: len(files) for kind, files in unknown.items()}, "held": 0}
     if fallback.full:
         return _verdict(
             {t: tests if t == "A" else [] for t in TIERS},
             [],
             counts,
             "fallback: " + "; ".join(fallback.reasons),
+            unknown=absent,
+            unrecorded=unrecorded,
         )
 
     paths = [p for _status, ps in changes for p in ps[-1:]]
@@ -357,8 +399,9 @@ def score(
 
     tiers: dict[str, list[str]] = {t: [] for t in TIERS}
     held: set[str] = set()
+    always = set(fallback.readers)
     for test in tests:
-        if test in changed_tests or test in guard:
+        if test in changed_tests or test in guard or test in always:
             tier = "A"
         elif test in narrow:
             tier = "B"
@@ -370,28 +413,47 @@ def score(
             tier = "E"
         elif test in cochange or any(_in_package(test, pkg) for pkg in packages):
             tier = "F"
-        elif missing:
+        elif missing or test not in counts:
+            # No data is never a reason to skip: a table is missing, or the map
+            # has no entry for this test file, so it cannot say what the file runs.
             tier = "F"
             held.add(test)
         else:
             tier = "G"
         tiers[tier].append(test)
-    skip = sorted(t for tier in skippable for t in tiers[tier] if t not in held)
-    return _verdict(tiers, skip, counts, None)
+    # A signal of its own does not make an unknown file skippable either: the tier
+    # it lands in was measured on files whose links the map knows.
+    absent_tests = {t for kind in unknown.values() for t in kind}
+    spared = held | absent_tests
+    skip = sorted(t for tier in skippable for t in tiers[tier] if t not in spared)
+    allowed = {**ctm.covered_statuses(covered), **ctm.added_tests(changes)}
+    in_skippable = {t for tier in skippable for t in tiers[tier]}
+    absent["held"] = len(absent_tests & (held | in_skippable))
+    return _verdict(tiers, skip, counts, None, allowed, unknown=absent, unrecorded=unrecorded)
 
 
 def _verdict(
-    tiers: dict[str, list[str]], skip: list[str], counts: Mapping[str, int], reason: str | None
+    tiers: dict[str, list[str]],
+    skip: list[str],
+    counts: Mapping[str, int],
+    reason: str | None,
+    covered: dict[str, int] | None = None,
+    *,
+    unknown: dict[str, int] | None = None,
+    unrecorded: Iterable[str] = (),
 ) -> dict[str, Any]:
     everything = [t for tier in TIERS for t in tiers[tier]]
-    total = sum(counts.get(t, 1) for t in everything)
-    skipped = sum(counts.get(t, 1) for t in skip)
+    weigh = ctm.node_weights(counts, unrecorded)
+    total = sum(weigh(t) for t in everything)
+    skipped = sum(weigh(t) for t in skip)
     return {
         "verdict": "full" if reason else "select",
         "reason": reason,
         "tiers": tiers,
         "would_skip": skip,
         "would_run_share": 1.0 if not total else (total - skipped) / total,
+        "covered": covered or {},
+        "unknown": unknown or {},
     }
 
 
@@ -402,6 +464,8 @@ def full_verdict(reason: str) -> dict[str, Any]:
         "tiers": {t: [] for t in TIERS},
         "would_skip": [],
         "would_run_share": 1.0,
+        "covered": {},
+        "unknown": {},
     }
 
 
@@ -434,12 +498,15 @@ def bounded(work: Callable[[], T], timeout: float) -> T:
 
 def _score_args(args: argparse.Namespace, grep: Grep) -> tuple[dict[str, Any], dict[str, Any]]:
     """`(base, head and bundle_commit, the verdict body)` for one diff."""
+    started = time.monotonic()
     root = Path(args.root).resolve()
     meta: dict[str, Any] = {"base": None, "head": None}
     for key in meta:
         if getattr(args, key):
             meta[key] = rev_parse(getattr(args, key), root)
+    loading = time.monotonic()
     bundle = load_bundle(Path(args.bundle))
+    loaded = time.monotonic() - loading
     skippable, narrow_reach_max = load_rates(Path(args.rates))
     if meta["head"]:
         check_checkout(meta["head"], root)
@@ -451,6 +518,7 @@ def _score_args(args: argparse.Namespace, grep: Grep) -> tuple[dict[str, Any], d
         functions = ctm.changed_functions(meta["base"], meta["head"], changes, bundle, root)
     universe = git_test_files(root)
     guard = bundle["guard"] if "guard" in bundle else ctm.guard_tier(root)
+    rule = data_readers.DataRule(root)
 
     def tiered(
         diff: list[tuple[str, list[str]]],
@@ -469,15 +537,24 @@ def _score_args(args: argparse.Namespace, grep: Grep) -> tuple[dict[str, Any], d
             narrow_reach_max=narrow_reach_max,
             grep=named,
             functions=touched,
+            rule=rule,
         )
 
     body = tiered(changes, functions)
     try:
         body["windows"] = _windows_block(
-            changes, body, bundle, (universe, guard), meta, root, tiered
+            changes, body, bundle, (universe, guard), meta, root, tiered, rule
         )
     except Exception as exc:  # noqa: BLE001  (its failure is a `full` Windows verdict)
         body["windows"] = windows.full(f"error: {type(exc).__name__}: {exc}")
+    body["timings"] = {
+        "load": round(loaded, 2),
+        "readers": round(rule.seconds, 2),
+        "score": round(time.monotonic() - started, 2),
+        "modified_py": sum(
+            1 for status, paths in changes if status == "M" and paths[-1].endswith(".py")
+        ),
+    }
     return {**meta, "bundle_commit": bundle.get("commit") or None}, body
 
 
@@ -489,10 +566,12 @@ def _windows_block(
     meta: Mapping[str, Any],
     root: Path,
     tiered: Callable[..., dict[str, Any]],
+    rule: ctm.DataRule | None = None,
 ) -> dict[str, Any]:
     """The verdict's `windows` block; what it reads from the tree is read only for `select`.
 
-    `tests` is the test files of the checkout and the guard tier the diff was scored with.
+    `tests` is the test files of the checkout and the guard tier the diff was scored
+    with, `rule` the one that named the readers of its docs and frontend paths.
 
     A part of the diff is tiered without a second search of the test tree: a
     test file that names one of its modules names a module of the whole diff,
@@ -501,6 +580,8 @@ def _windows_block(
     if body["verdict"] != "select":
         return windows.full(f"linux_full: {body['reason']}")
     base, head = meta["base"], meta["head"]
+    counts = bundle.get("tests") if isinstance(bundle.get("tests"), dict) else {}
+    data = [path for _status, paths in ctm.data_rows(changes, rule)[1] for path in paths]
     named = {test for tier in windows.RUN_TIERS for test in body["tiers"][tier]}
     ignore = root / ost.COLLECT_IGNORE
     return windows.block(
@@ -513,6 +594,8 @@ def _windows_block(
         ignored=ost.collect_ignored(root) if ignore.is_file() else set(),
         at=windows.commit_time(head, root) if head else datetime.now(timezone.utc),
         score=lambda part: tiered(part, within=named),
+        readers=rule.tests(data) if rule is not None and data else (),
+        unknown=[t for kind in ctm.unknown_tests(tests[0], counts, ()).values() for t in kind],
     )
 
 
@@ -527,9 +610,15 @@ def run(args: argparse.Namespace, grep: Grep = git_grep) -> dict[str, Any]:
         resolved, body = bounded(lambda: _score_args(args, grep), args.timeout)
         meta.update(resolved)
     except Exception as exc:  # noqa: BLE001  (the scorer never fails a job)
-        body = full_verdict(f"{type(exc).__name__}: {exc}")
-        body["windows"] = windows.full(f"linux_full: {body['reason']}")
+        return unscored(meta, f"{type(exc).__name__}: {exc}")
     return {"schema": SCHEMA, **meta, **body}
+
+
+def unscored(meta: Mapping[str, Any], reason: str) -> dict[str, Any]:
+    """The whole verdict for a diff that was not scored: `full` on both systems, and why."""
+    body = full_verdict(reason)
+    body["windows"] = windows.full(f"linux_full: {reason}")
+    return {"schema": SCHEMA, "bundle_commit": None, **meta, **body}
 
 
 def main(argv: list[str] | None = None) -> int:

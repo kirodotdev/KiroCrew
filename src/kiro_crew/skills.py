@@ -455,6 +455,9 @@ class SkillsLoader:
             int,
             tuple[list[tuple[str, Path, str | None]], tuple[frozenset[str], frozenset[str]], list],
         ] = {}
+        #: ``(path, fingerprint) -> resolves into a shipped root``; see
+        #: ``skills_selection._is_user_authored``.
+        self._shipped_root_memo: dict[tuple[str, str], bool] = {}
         # (canonical key, allowed) pairs already audited, so the enforcement
         # record is written on first use rather than once per message.
         self._audited_projects: set[tuple[str, bool]] = set()
@@ -1265,6 +1268,7 @@ class SkillsLoader:
         *,
         discovery_only: bool = False,
         required_parts_out: list[str] | None = None,
+        index_counts_out: dict[str, int] | None = None,
     ) -> str:
         """Build a bounded directory over the agent's resolved available set.
 
@@ -1281,6 +1285,7 @@ class SkillsLoader:
             project_body_budget,
             discovery_only=discovery_only,
             required_parts_out=required_parts_out,
+            index_counts_out=index_counts_out,
         )
 
     def _legacy_context(
