@@ -12,7 +12,8 @@ path that is not in the base commit, a tree, a name ``git show`` refuses as
 ambiguous (a glob character, or a file of that name in the work tree), a name with
 a line break (the batch input is one name a line; NUL-terminated input needs git
 2.38), and every read after the batch process gave an answer this reader does not
-know. ``git cat-file --batch`` with ``<rev>:<path>`` names is in git since 1.5.6.
+know. ``git cat-file --batch`` with ``<rev>:<path>`` names is in git since 1.5.6. The reader
+never asks git to follow symbolic links, the one mode whose answers take two lines.
 
 A name that is not an object is answered in one line, and the process stays in step:
 ``<name> missing``, ``<name> ambiguous``, and from a newer git ``<id> submodule`` for
@@ -33,7 +34,7 @@ _Resolve = Callable[["list[str]"], "tuple[list[str], Optional[tuple[int, str, st
 # The header of an object that was found: its name, its type and its size in bytes.
 _FOUND = re.compile(rb"^[0-9a-f]{40,64} ([a-z]+) ([0-9]+)\n$")
 # The one line git prints, after its id, for a submodule entry it cannot read.
-_SUBMODULE = re.compile(rb"^[0-9a-f]{40,64} submodule\n$")
+_SUBMODULE = re.compile(rb"[0-9a-f]{40,64} submodule\n")
 # ``git show`` reads an argument with one of these as a pathspec and refuses it as ambiguous.
 _GLOB_SPECIAL = frozenset("*?[\\")
 _LINE_BREAKS = frozenset("\n\r")
@@ -103,7 +104,7 @@ class BaseFiles:
             if found is None:
                 not_an_object = (
                     header in (asked + b" missing\n", asked + b" ambiguous\n")
-                    or _SUBMODULE.match(header) is not None
+                    or _SUBMODULE.fullmatch(header) is not None
                 )
                 if not not_an_object:
                     self.close()

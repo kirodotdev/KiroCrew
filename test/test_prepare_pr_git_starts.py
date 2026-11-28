@@ -481,6 +481,55 @@ def test_a_reader_whose_git_must_not_run_hands_back_the_refusal(tmp_path: Path) 
     assert [args[:2] for args in asked] == [["git", "show"], ["git", "show"]]
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        b"some other line\n",
+        b"a" * 40 + b":other.md missing\n",
+        b"a" * 40 + b":odd.md missing \n",
+        b"a" * 40 + b":odd.md  missing\n",
+        b"a" * 40 + b":odd.md ambiguous again\n",
+        b"1" * 40 + b" submodule extra\n",
+        b"1" * 39 + b" submodule\n",
+        b"x" + b"1" * 40 + b" submodule\n",
+        b"1" * 40 + b" submodules\n",
+        b"dangling 6\n",
+        b"",
+    ],
+    ids=[
+        "another-line",
+        "missing-for-another-name",
+        "missing-with-a-trailing-space",
+        "missing-after-two-spaces",
+        "ambiguous-with-more-words",
+        "submodule-with-more-words",
+        "submodule-after-a-short-id",
+        "submodule-after-a-longer-word",
+        "submodules",
+        "the-first-of-two-lines-git-prints-when-following-symlinks",
+        "the-process-ended",
+    ],
+)
+def test_only_the_exact_one_line_answers_keep_the_batch(line: bytes, tmp_path: Path) -> None:
+    """A line that is close to a known answer is not one: the batch ends and git show answers."""
+    sha = "a" * 40
+    shown: list[str] = []
+
+    def run(args: list[str], cwd: str | None = None) -> tuple[int, str, str]:
+        shown.append(args[2].partition(":")[2])
+        return 128, "", "git show said so"
+
+    # After the line, an object that would answer the next name if the reader read on.
+    batch = _ScriptedBatch(line + b"2" * 40 + b" blob 3\nhi\n\n" if line else b"")
+    reader = local_review._base_files.BaseFiles(run, lambda args: (args, None), str(tmp_path))
+    reader._process = batch
+    assert reader.show(sha, "odd.md") == (128, "", "git show said so")
+    assert batch.waited == 1
+    # Nothing that was left in the pipe answers a later name.
+    assert reader.show(sha, "plain.md") == (128, "", "git show said so")
+    assert shown == ["odd.md", "plain.md"]
+
+
 WORKFLOWS = ROOT / ".github" / "workflows"
 PROMPTS = ROOT / ".github" / "review-prompts"
 
