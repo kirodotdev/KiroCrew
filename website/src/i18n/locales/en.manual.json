@@ -9398,7 +9398,9 @@
       "jobs_table": "Scheduled jobs",
       "waiting_starts_by": "Waiting, starts by {{time}}",
       "waiting_to_start_hint": "This run has not started yet. A repeating job starts at a random time after its scheduled time, so that jobs do not all start at once.",
-      "cancel_waiting_run": "Cancel this run before it starts"
+      "cancel_waiting_run": "Cancel this run before it starts",
+      "waiting_to_start": "Waiting",
+      "starts_by": "Starts by {{time}}"
     },
     "servicesTab": {
       "channels": "Messaging Channels",

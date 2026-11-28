@@ -19939,7 +19939,9 @@
       "late_save_unconfirmed": "La programación “{{job}}” puede haberse guardado o no — el servidor no lo confirmó.",
       "waiting_starts_by": "En espera, empieza como máximo a las {{time}}",
       "waiting_to_start_hint": "Esta ejecución aún no ha empezado. Un trabajo periódico empieza en un momento aleatorio después de su hora programada, para que no empiecen todos a la vez.",
-      "cancel_waiting_run": "Cancelar esta ejecución antes de que empiece"
+      "cancel_waiting_run": "Cancelar esta ejecución antes de que empiece",
+      "waiting_to_start": "En espera",
+      "starts_by": "Empieza como máximo a las {{time}}"
     },
     "servicesTab": {
       "channels": "Plataformas de chat",

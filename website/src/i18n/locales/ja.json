@@ -18885,7 +18885,9 @@
       "late_save_unconfirmed": "スケジュール「{{job}}」が保存されたかどうかは不明です — サーバーが確認していません。",
       "waiting_starts_by": "待機中、{{time}}までに開始",
       "waiting_to_start_hint": "この実行はまだ開始されていません。繰り返しジョブは、すべてのジョブが同時に開始しないよう、予定時刻の後のランダムな時刻に開始します。",
-      "cancel_waiting_run": "開始前にこの実行をキャンセル"
+      "cancel_waiting_run": "開始前にこの実行をキャンセル",
+      "waiting_to_start": "待機中",
+      "starts_by": "{{time}}までに開始"
     },
     "servicesTab": {
       "channels": "チャットプラットフォーム",

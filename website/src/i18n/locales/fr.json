@@ -19939,7 +19939,9 @@
       "late_save_unconfirmed": "La planification « {{job}} » a peut-être été enregistrée, ou pas — le serveur ne l'a pas confirmé.",
       "waiting_starts_by": "En attente, démarrage au plus tard à {{time}}",
       "waiting_to_start_hint": "Cette exécution n’a pas encore commencé. Une tâche récurrente démarre à un moment aléatoire après son heure planifiée, afin que les tâches ne démarrent pas toutes en même temps.",
-      "cancel_waiting_run": "Annuler cette exécution avant son démarrage"
+      "cancel_waiting_run": "Annuler cette exécution avant son démarrage",
+      "waiting_to_start": "En attente",
+      "starts_by": "Démarrage au plus tard à {{time}}"
     },
     "servicesTab": {
       "channels": "Plateformes de chat",

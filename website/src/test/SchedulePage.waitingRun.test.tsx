@@ -72,7 +72,7 @@ describe('SchedulePage Status column, a run waiting to start', () => {
     vi.clearAllMocks()
   })
 
-  it('shows "Waiting, starts by <time>", not "Running", and keeps Cancel', async () => {
+  it('shows "Waiting" and the time the run starts, not "Running", and keeps Cancel', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api).crons.mockResolvedValue({
       jobs: [mkJob({ name: 'Daily digest', is_running: true, running_since: 1_770_000_000, waiting_until: STARTS_AT })],
@@ -82,7 +82,8 @@ describe('SchedulePage Status column, a run waiting to start', () => {
     await waitFor(() => expect(screen.getByText('Daily digest')).toBeInTheDocument())
 
     const row = rowOf('Daily digest')
-    expect(within(row).getByText(WAITING)).toHaveAttribute('title', HINT)
+    expect(within(row).getByText('Waiting')).toHaveAttribute('title', HINT)
+    expect(within(row).getByText(`Starts by ${fmtTime(STARTS_AT)}`)).toBeInTheDocument()
     expect(within(row).queryByText('Running')).not.toBeInTheDocument()
     const cancel = within(row).getByRole('button', { name: 'Cancel' })
     expect(cancel.closest('[title]')).toHaveAttribute('title', 'Cancel this run before it starts')
@@ -100,6 +101,7 @@ describe('SchedulePage Status column, a run waiting to start', () => {
     const row = rowOf('Daily digest')
     expect(within(row).getByText('Running')).toBeInTheDocument()
     expect(within(row).queryByTestId('cron-waiting-badge')).not.toBeInTheDocument()
+    expect(within(row).queryByTestId('cron-waiting-starts-by')).not.toBeInTheDocument()
     const cancel = within(row).getByRole('button', { name: 'Cancel' })
     expect(cancel.closest('[title]')).toHaveAttribute('title', 'Cancel running execution')
   })

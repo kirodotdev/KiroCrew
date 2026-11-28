@@ -18885,7 +18885,9 @@
       "late_save_unconfirmed": "‘{{job}}’ 스케줄이 저장되었는지 알 수 없습니다 — 서버가 확인하지 않았습니다.",
       "waiting_starts_by": "대기 중, {{time}}까지 시작",
       "waiting_to_start_hint": "이 실행은 아직 시작되지 않았습니다. 반복 작업은 모든 작업이 동시에 시작되지 않도록 예약된 시간 이후의 임의 시점에 시작됩니다.",
-      "cancel_waiting_run": "시작 전에 이 실행 취소"
+      "cancel_waiting_run": "시작 전에 이 실행 취소",
+      "waiting_to_start": "대기 중",
+      "starts_by": "{{time}}까지 시작"
     },
     "servicesTab": {
       "channels": "채팅 플랫폼",

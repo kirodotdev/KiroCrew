@@ -19412,7 +19412,9 @@
       "late_save_unconfirmed": "Der Zeitplan „{{job}}“ wurde vielleicht gespeichert, vielleicht nicht — der Server hat es nicht bestätigt.",
       "waiting_starts_by": "Wartet, startet bis {{time}}",
       "waiting_to_start_hint": "Diese Ausführung hat noch nicht begonnen. Ein wiederkehrender Job startet zu einem zufälligen Zeitpunkt nach seiner geplanten Zeit, damit nicht alle Jobs gleichzeitig starten.",
-      "cancel_waiting_run": "Diese Ausführung vor dem Start abbrechen"
+      "cancel_waiting_run": "Diese Ausführung vor dem Start abbrechen",
+      "waiting_to_start": "Wartet",
+      "starts_by": "Startet bis {{time}}"
     },
     "servicesTab": {
       "channels": "Chat-Plattformen",

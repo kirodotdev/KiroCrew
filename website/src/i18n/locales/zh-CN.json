@@ -18885,7 +18885,9 @@
       "late_save_unconfirmed": "定时任务“{{job}}”可能已保存，也可能没有 — 服务器未确认。",
       "waiting_starts_by": "等待中，最晚 {{time}} 开始",
       "waiting_to_start_hint": "此次运行尚未开始。重复任务会在计划时间之后的随机时刻开始，以免所有任务同时开始。",
-      "cancel_waiting_run": "在开始前取消此次运行"
+      "cancel_waiting_run": "在开始前取消此次运行",
+      "waiting_to_start": "等待中",
+      "starts_by": "最晚 {{time}} 开始"
     },
     "servicesTab": {
       "channels": "聊天平台",
