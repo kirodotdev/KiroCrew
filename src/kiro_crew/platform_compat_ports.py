@@ -51,21 +51,27 @@ def _linux_tcp_peer_pid(server: tuple[str, int], client: tuple[str, int]) -> int
         return _normalized_tcp_endpoint((str(ipaddress.ip_address(packed)), int(port, 16)))
 
     inodes: set[str] = set()
-    for table in ("tcp", "tcp6"):
-        try:
-            lines = Path(f"/proc/net/{table}").read_text(encoding="ascii").splitlines()[1:]
-        except FileNotFoundError:
-            continue  # IPv6 can be disabled on the host.
-        for line in lines:
-            fields = line.split()
-            if len(fields) < 10 or fields[3] != "01":
-                continue
+    # The kernel serves the table a page per read and resumes each page by position
+    # inside a hash bucket, so a socket closing between two reads can make one pass
+    # skip a live row: a pass that finds no matching row reads the table again.
+    for _pass in range(3):
+        if inodes:
+            break
+        for table in ("tcp", "tcp6"):
             try:
-                if endpoint(fields[1]) == client and endpoint(fields[2]) == server:
-                    if fields[9].isdigit() and int(fields[9]) > 0:
-                        inodes.add(fields[9])
-            except ValueError:
-                continue  # Non-loopback rows cannot identify this caller.
+                lines = Path(f"/proc/net/{table}").read_text(encoding="ascii").splitlines()[1:]
+            except FileNotFoundError:
+                continue  # IPv6 can be disabled on the host.
+            for line in lines:
+                fields = line.split()
+                if len(fields) < 10 or fields[3] != "01":
+                    continue
+                try:
+                    if endpoint(fields[1]) == client and endpoint(fields[2]) == server:
+                        if fields[9].isdigit() and int(fields[9]) > 0:
+                            inodes.add(fields[9])
+                except ValueError:
+                    continue  # Non-loopback rows cannot identify this caller.
     if len(inodes) != 1:
         return None
     target = f"socket:[{next(iter(inodes))}]"
@@ -674,27 +680,30 @@ def process_owns_loopback_listener(
         return None if owners is None else pid in owners
     if IS_LINUX:
         root = proc_root if proc_root is not None else Path("/proc")
-        listener_inodes = _linux_loopback_listener_inodes(port, root, any_address=any_address)
-        if listener_inodes is None:
-            return None
-        if not listener_inodes:
-            return False
-        try:
-            descriptors = list((root / str(pid) / "fd").iterdir())
-        except OSError:
-            return None
-        readable = 0
-        for descriptor in descriptors:
-            try:
-                target = os.readlink(descriptor)
-            except OSError:
+        # A ``/proc/net/tcp`` pass can skip a live row (see ``_linux_tcp_peer_pid``), so
+        # a pass that finds no LISTEN socket *pid* holds reads the table again.
+        for _pass in range(3):
+            listener_inodes = _linux_loopback_listener_inodes(port, root, any_address=any_address)
+            if listener_inodes is None:
+                return None
+            if not listener_inodes:
                 continue
-            readable += 1
-            if target.startswith("socket:[") and target.endswith("]"):
-                if target[8:-1] in listener_inodes:
-                    return True
-        if descriptors and readable == 0:
-            return None
+            try:
+                descriptors = list((root / str(pid) / "fd").iterdir())
+            except OSError:
+                return None
+            readable = 0
+            for descriptor in descriptors:
+                try:
+                    target = os.readlink(descriptor)
+                except OSError:
+                    continue
+                readable += 1
+                if target.startswith("socket:[") and target.endswith("]"):
+                    if target[8:-1] in listener_inodes:
+                        return True
+            if descriptors and readable == 0:
+                return None
         return False
 
     if not IS_POSIX:
