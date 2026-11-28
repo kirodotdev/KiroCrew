@@ -1,0 +1,3 @@
++40
+The ssh-to-self floor reads a nested shell payload and a backtick body the way bash
+runs them one quoting level down. It only adds refusals.

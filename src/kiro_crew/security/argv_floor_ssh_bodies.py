@@ -155,13 +155,53 @@ def _substitution_reaches_self(text_lower: str, raw_text: "str | None" = None) -
             fresh = [p for p in nested if (p, None, False) not in seen]
             seen.update((p, None, False) for p in fresh)
             work += [(p, None, False, p not in joined_here) for p in fresh]
+            # One quoting level down, a payload read from double quotes runs with its
+            # escaped openers live (``eval "echo \$(...)"``), and no frame walk judges it:
+            # read the text again with each escaped ``$(`` or backtick opener inside double
+            # quotes unescaped, as bash hands it on. Single-quoted and ANSI-C text keeps its
+            # backslashes, and so does a heredoc body, blanked out of the walk as in
+            # ``_live_substitutions``.
+            if "\\$(" in text or "\\`" in text:
+                scan = text
+                docs = read_commands(text, heredocs=True) if "<<" in text else []
+                for doc in [doc for cmd in docs for doc in cmd.heredocs]:
+                    blank = "".join(c if c == "\n" else " " for c in text[doc.start : doc.end])
+                    scan = scan[: doc.start] + blank + scan[doc.end :]
+                down = "".join(
+                    (
+                        step.char
+                        if step.state == 2
+                        and (step.text == "\\`" or scan.startswith("\\$(", step.offset))
+                        else text[step.offset : step.offset + len(step.text)]
+                    )
+                    for step in _iter_shell_chars(scan)
+                )
+                joined_down: set[str] = set()
+                for p in _nested_shell_payloads(
+                    _self_tokens(down), allow_join=allow_join, joined_out=joined_down
+                ):
+                    # As in a body, the text a ``cat`` prints from a quoted heredoc is data.
+                    cut = _without_quoted_heredoc_text(p)
+                    if p not in nested and (cut, None, True) not in seen:
+                        seen.add((cut, None, True))
+                        work.append((cut, None, True, p not in joined_down))
         message = bool(subs) and _is_message_line(text, [(s, e) for s, e, _b in subs])
-        for (_start, _end, body), (_s, _e, cased_body) in zip(subs, written):
+        for (start, _end, body), (_s, _e, cased_body) in zip(subs, written):
             body = _without_quoted_heredoc_text(body, message)
             kept = None if cased is None else _without_quoted_heredoc_text(cased_body, message)
-            if (body, kept, True) not in seen:
-                seen.add((body, kept, True))
-                work.append((body, kept, True, True))
+            bodies = [(body, kept)]
+            if text[start] == "`" and "\\" in body:
+                # Bash removes the backslash before ``$``, a backtick or ``\`` in a
+                # backtick body before it reads the body, wherever it sits there.
+                unescaped = [
+                    "\\".join(p.replace("\\$", "$").replace("\\`", "`") for p in t.split("\\\\"))
+                    for t in (body, kept or "")
+                ]
+                bodies.append((unescaped[0], None if kept is None else unescaped[1]))
+            for item in bodies:
+                if (*item, True) not in seen:
+                    seen.add((*item, True))
+                    work.append((*item, True, True))
     return False
 
 
