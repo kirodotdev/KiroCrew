@@ -3,21 +3,28 @@
 ``FakeRelay`` serves ``/v1/host`` on loopback port 0. It answers the upgrade with a
 plain 401 unless the ``Authorization: Bearer`` token is one it accepts, and hands
 each accepted connection to the test as a ``FakeHostLeg`` the test scripts frame by
-frame. ``FakeCrew`` stands in for the Crew's own web server. ``fixture`` loads a
+frame. Like the real relay, the leg puts a person's access token on every
+``request`` and ``ws-upgrade`` frame it sends, signed by :data:`ACCESS_ISSUER`
+for the frame's ``user``, and ``make_client`` checks it with the real verifier. ``FakeCrew`` stands in for the Crew's own web server. ``fixture`` loads a
 copied fixture from ``test/fixtures/relay_protocol_v1``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import json
 import random
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from aiohttp import WSMsgType, web
 from aiohttp.test_utils import TestServer
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
 from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
 from kiro_crew.dashboard.kiro_relay.ingress import (
@@ -26,6 +33,7 @@ from kiro_crew.dashboard.kiro_relay.ingress import (
     relay_ingress_middleware,
 )
 from kiro_crew.dashboard.relay_headers import relay_header_strip_middleware
+from kiro_crew.relay_client.access_token import AccessScope, AccessTokenVerifier
 from kiro_crew.relay_client.client import RelayClient
 from kiro_crew.relay_client.connection import RelayTimings
 from kiro_crew.relay_client.ingress import LoopbackIngress
@@ -39,7 +47,28 @@ from kiro_crew.relay_client.token_source import (
 from kiro_crew.testing.wait import await_until
 
 FIXTURES = Path(__file__).parent / "fixtures" / "relay_protocol_v1"
-TOKEN = "eyJ0eXAiOiJraXJvLXJlbGF5LWhvc3Qrand0In0.eyJ0ZXN0IjoxfQ.c2ln"
+ISSUER = "https://issuer.example"
+REGION = "us-east-1"
+ENDPOINT = "k7qm3x2vtzr4hbn6cwapfe5dj3"
+
+
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _b64_json(value: Dict[str, Any]) -> str:
+    return _b64(json.dumps(value, separators=(",", ":")).encode())
+
+
+#: The host token the fake relay accepts. The client reads its claims, never its
+#: signature: they name what a person's access token for this Crew must name.
+TOKEN = ".".join(
+    (
+        _b64_json({"typ": "kiro-relay-host+jwt"}),
+        _b64_json({"iss": ISSUER, "rgn": REGION, "ep": ENDPOINT, "kind": "personal"}),
+        "c2ln",
+    )
+)
 #: The owner the request fixtures name, so a personal Crew honours them.
 OWNER = "u-0001.example-owner"
 CONTRACT = "Kiro Relay protocol v1"
@@ -124,6 +153,58 @@ class RecordingSleep:
         await asyncio.sleep(0)
 
 
+class AccessIssuer:
+    """Signs a person's access token for the Crew :data:`TOKEN` names, as Kiro does."""
+
+    KID = "test-key-1"
+
+    def __init__(self) -> None:
+        self._key = ec.generate_private_key(ec.SECP256R1())
+
+    def token(self, user: str, *, kind: str = "personal") -> str:
+        now = time.time()
+        head = {"alg": "ES256", "typ": "kiro-relay-access+jwt", "kid": self.KID}
+        body = {
+            "iss": ISSUER,
+            "aud": "kiro-relay/access",
+            "sub": user,
+            "kind": kind,
+            "ep": ENDPOINT,
+            "rgn": REGION,
+            "iat": now,
+            "nbf": now,
+            "exp": now + 300,
+        }
+        signing_input = f"{_b64_json(head)}.{_b64_json(body)}"
+        r, s = decode_dss_signature(
+            self._key.sign(signing_input.encode(), ec.ECDSA(hashes.SHA256()))
+        )
+        return f"{signing_input}.{_b64(r.to_bytes(32, 'big') + s.to_bytes(32, 'big'))}"
+
+    async def fetch(self, url: str) -> bytes:
+        assert url == ISSUER + "/.well-known/jwks.json", url
+        numbers = self._key.public_key().public_numbers()
+        key = {
+            "kty": "EC",
+            "crv": "P-256",
+            "alg": "ES256",
+            "use": "sig",
+            "kid": self.KID,
+            "x": _b64(numbers.x.to_bytes(32, "big")),
+            "y": _b64(numbers.y.to_bytes(32, "big")),
+        }
+        return json.dumps({"keys": [key]}).encode()
+
+    def verifier(self) -> AccessTokenVerifier:
+        return AccessTokenVerifier(fetch=self.fetch)
+
+
+#: The one issuer the fake relay's frames and ``make_client``'s verifier share.
+ACCESS_ISSUER = AccessIssuer()
+#: What :data:`TOKEN`'s claims name, for a test that binds an ingress itself.
+ACCESS_SCOPE = AccessScope(issuer=ISSUER, region=REGION, endpoint_id=ENDPOINT, crew_kind="personal")
+
+
 #: The host token a :class:`MoveTokenSource` hands out for a move's dial alone.
 MOVE_TOKEN = TOKEN + "-move"
 
@@ -179,7 +260,19 @@ class FakeHostLeg:
         assert frame["type"] == kind, f"expected {kind}, got {frame}"
         return frame
 
-    async def send(self, frame: Dict[str, Any]) -> None:
+    async def send(self, frame: Dict[str, Any], *, with_access_token: bool = True) -> None:
+        """Send *frame*; a ``request`` or ``ws-upgrade`` gains the person's access token.
+
+        *with_access_token* false sends the frame as given, as a relay that names a
+        caller with no proof would.
+        """
+        if (
+            with_access_token
+            and frame.get("type") in ("request", "ws-upgrade")
+            and "accessToken" not in frame
+            and isinstance(frame.get("user"), str)
+        ):
+            frame = {**frame, "accessToken": ACCESS_ISSUER.token(frame["user"])}
         await self.ws.send_str(json.dumps(frame))
 
     async def handshake(self, ready: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -398,7 +491,11 @@ def make_client(
     else:
         port, gateway = crew, RelayIngress(enabled=True)
     ingress = LoopbackIngress(
-        "127.0.0.1", port, gateway=gateway, max_ws_message_bytes=WS_MESSAGE_MAX_BYTES
+        "127.0.0.1",
+        port,
+        gateway=gateway,
+        max_ws_message_bytes=WS_MESSAGE_MAX_BYTES,
+        verifier=ACCESS_ISSUER.verifier(),
     )
     kwargs: Dict[str, Any] = {}
     if sleep is not None:

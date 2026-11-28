@@ -299,8 +299,9 @@ def is_display_name(value: object) -> TypeGuard[str]:
 def _check_access_token(frame: Dict[str, Any], sid: int) -> None:
     """Refuse an ``accessToken`` that is present but not a string.
 
-    Optional while the relay does not send it on every frame. Its contents are
-    checked before the caller is stamped (``relay_client.access_token``).
+    A frame without one still parses: the ingress refuses that request alone, so
+    the viewer hears why and the connection's other streams go on. Its contents
+    are checked before the caller is stamped (``relay_client.access_token``).
     """
     if "accessToken" in frame and not isinstance(frame["accessToken"], str):
         raise FrameError(ERR_INVALID_MESSAGE, "accessToken must be a string", stream_id=sid)

@@ -15,7 +15,7 @@ from typing import Any, Dict, List
 import pytest
 from aiohttp import WSMsgType, web
 from aiohttp.test_utils import TestServer
-from relay_client_helpers import OWNER
+from relay_client_helpers import ACCESS_ISSUER, ACCESS_SCOPE, OWNER
 
 from kiro_crew.dashboard.kiro_relay.caller import RELAY_REMOTE, published_relay_caller
 from kiro_crew.dashboard.kiro_relay.ingress import (
@@ -117,13 +117,21 @@ def _handoff(gateway: _Gateway) -> LoopbackIngress:
         gateway.port,
         gateway=gateway.ingress,
         max_ws_message_bytes=WS_MESSAGE_MAX_BYTES,
+        verifier=ACCESS_ISSUER.verifier(),
     )
-    ingress.bind_host(crew_kind="personal", owner_user_id=OWNER)
+    ingress.bind_host(crew_kind="personal", owner_user_id=OWNER, access_scope=ACCESS_SCOPE)
     return ingress
 
 
 def _get(path: str) -> RelayedRequest:
-    return RelayedRequest(method="GET", path=path, query="", headers=(), user=OWNER)
+    return RelayedRequest(
+        method="GET",
+        path=path,
+        query="",
+        headers=(),
+        user=OWNER,
+        access_token=ACCESS_ISSUER.token(OWNER),
+    )
 
 
 @pytest.mark.parametrize(
@@ -156,7 +164,14 @@ async def test_a_relayed_websocket_passes_the_host_check_on_a_non_default_loopba
         ingress = _handoff(gateway)
         try:
             ws = await ingress.open_websocket(
-                RelayedWebSocket(path="/ws", query="", protocols=(), headers=(), user=OWNER)
+                RelayedWebSocket(
+                    path="/ws",
+                    query="",
+                    protocols=(),
+                    headers=(),
+                    user=OWNER,
+                    access_token=ACCESS_ISSUER.token(OWNER),
+                )
             )
             await ws.send("ping")
             assert await ws.receive() == "ping"

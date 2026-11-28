@@ -3,9 +3,8 @@
 A frame that carries ``accessToken`` is handed over only when the token is an
 ES256 token from the issuer this Crew's host token names, for this Crew's endpoint,
 Region and kind, inside its time window, and for the frame's own user; the stamp
-then names the verified ``sub``. Any failed check refuses the request before it
-reaches the gateway. A frame with no token is still handed over as the relay named
-it, and counted, until the relay sends the token on every frame.
+then names the verified ``sub``. A frame with no token, or any failed check,
+refuses the request before it reaches the gateway.
 """
 
 from __future__ import annotations
@@ -416,7 +415,7 @@ async def test_a_verified_teammate_is_a_teammate_and_the_owner_is_the_owner() ->
         (TEAMMATE, RelayCallerKind.TEAMMATE),
         (OWNER, RelayCallerKind.OWNER),
     ]
-    assert team.tokenless_frames == personal.tokenless_frames == 0
+    assert team.refused_tokens == personal.refused_tokens == 0
 
 
 async def test_a_tampered_token_never_reaches_the_gateway() -> None:
@@ -470,39 +469,32 @@ async def test_a_token_with_no_scope_to_check_it_against_is_refused() -> None:
     assert gateway.seen == []
 
 
-async def test_a_tokenless_frame_passes_as_named_and_is_counted(
-    caplog: pytest.LogCaptureFixture,
+@pytest.mark.parametrize(
+    ("kind", "user", "owner"),
+    [("team", TEAMMATE, ""), ("personal", OWNER, OWNER)],
+    ids=["team", "personal-owner"],
+)
+async def test_a_frame_with_no_token_never_reaches_the_gateway(
+    kind: str, user: str, owner: str, caplog: pytest.LogCaptureFixture
 ) -> None:
+    """The relay's word alone is not enough, even when it names a personal Crew's owner."""
     issuer = _Issuer()
     caplog.set_level(logging.WARNING, logger="kiro_crew.relay_client.ingress")
     async with _Gateway() as gateway:
-        ingress = gateway.handoff(issuer, kind="team")
+        ingress = gateway.handoff(issuer, kind=kind, owner=owner)
         try:
-            for _ in range(3):
-                assert await _status(ingress, _get(TEAMMATE)) == 200
-            ws = await ingress.open_websocket(
-                RelayedWebSocket(path="/ws", query="", protocols=(), headers=(), user=TEAMMATE)
-            )
-            await ws.send("ping")
-            assert await ws.receive() == "ping"
-            await ws.close(1000)
-        finally:
-            await ingress.aclose()
-    assert [(c.kiro_user_id, c.kind) for c in gateway.seen] == [
-        (TEAMMATE, RelayCallerKind.TEAMMATE)
-    ] * 4
-    assert ingress.tokenless_frames == 4
-    assert issuer.fetched == []
-    warnings = [r for r in caplog.records if "relay_access_check=absent" in r.getMessage()]
-    assert len(warnings) == 1
-
-
-async def test_a_tokenless_frame_for_another_user_on_a_personal_crew_is_still_refused() -> None:
-    issuer = _Issuer()
-    async with _Gateway() as gateway:
-        ingress = gateway.handoff(issuer, kind="personal", owner=OWNER)
-        try:
-            assert await _status(ingress, _get(TEAMMATE)) == 403
+            with pytest.raises(IngressForbidden, match="missing"):
+                await ingress.open_http(_get(user), None)
+            with pytest.raises(IngressForbidden, match="missing"):
+                await ingress.open_websocket(
+                    RelayedWebSocket(path="/ws", query="", protocols=(), headers=(), user=user)
+                )
         finally:
             await ingress.aclose()
     assert gateway.seen == []
+    assert ingress.refused_tokens == 2
+    assert issuer.fetched == []
+    warnings = [
+        r.getMessage() for r in caplog.records if r.name == "kiro_crew.relay_client.ingress"
+    ]
+    assert warnings == ["relay_access_check=refused reason=missing refused=1"]
