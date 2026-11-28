@@ -531,7 +531,8 @@ def _self_protection_floor_hit(
     The one dispatcher of every self-protection argv floor, in evaluation order: the
     row-backed floors first, each run only while its pattern is in *floor_enabled*,
     then the ungated subcommand floors, whose hit carries no pattern. *raw_text* is
-    the command as submitted, for the credential-mint, ssh and git/tar predicates. ``None`` for
+    the command as submitted, for the credential-mint, kill, ssh and git/tar
+    predicates. ``None`` for
     *floor_enabled* runs every row-backed floor.  A floor refusing *lower* because a
     command it carries was refused on re-entry (``_reentered_floor_hit``) reports
     that inner hit, so the refusal names the row that matched.
@@ -559,12 +560,15 @@ def _self_protection_floor_hit(
             # lower-casing every other predicate reads.  The git/tar predicate too:
             # tar's ``L`` takes a value and ``l`` does not.  So does the ssh one: a
             # wrapper's option words keep their case there (``sudo -H`` is not
-            # ``sudo -h``).
+            # ``sudo -h``).  And the kill one: it reads ``git grep`` options, which
+            # git parses with case (``-F``/``-E`` are flags, ``-f``/``-e`` take a
+            # value), to find a pager that kills the product.
             hit = (
                 predicate(lower, raw_text=raw_text)
                 if predicate
                 in (
                     _argv._is_credential_mint,
+                    _argv._is_self_kill,
                     _argv._reaches_self_over_ssh,
                     _argv._is_git_tar_to_self,
                 )
@@ -929,10 +933,13 @@ def is_denied(
         # The kill floor derives its matched target's offsets so the diagnostic
         # points at the token, not the whole command.  Offsets index ``lower`` and
         # the diagnostic renders ``tool_name``, so a width-changing lowercase
-        # (``İ`` U+0130 -> two) drops to the whole-command span.
+        # (``İ`` U+0130 -> two) drops to the whole-command span.  The kill check
+        # reads the command AS SUBMITTED (``raw_text``): ``git grep`` options git
+        # parses with case do not survive the lower-casing every other predicate
+        # reads.
         span: "tuple[int, int] | None" = None
         if rule_id == "self-protection-kill":
-            span = _argv._self_kill_span(lower)
+            span = _argv._self_kill_span(lower, raw_text=tool_name)
             if span is not None and len(lower) != len(tool_name):
                 span = None
         # A row-backed hit reports the rule's own pattern, exactly as the regex

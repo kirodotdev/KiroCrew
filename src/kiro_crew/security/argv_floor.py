@@ -301,7 +301,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _is_self_restart,
         _is_self_skills_authority_retire,
         _is_self_update,
-        _kill_prefix_keeps_anchor,
         _matches_self_subcommand,
         _operands_lead_with,
         _powershell_assignment,
@@ -443,6 +442,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     from kiro_crew.atomic_write import on_event_loop as _event_loop_running  # noqa: F401
     from kiro_crew.security import argv_rules as _argv_rules  # noqa: F401
     from kiro_crew.security import shell_normalizer as _shell_normalizer  # noqa: F401
+    from kiro_crew.security.argv_rules import _kill_prefix_keeps_anchor  # noqa: F401
     from kiro_crew.security.denied_rules import (  # noqa: F401
         _GIT_PUBLISH_UNGATED,
     )

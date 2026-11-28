@@ -1,0 +1,14 @@
++647
+The self-kill floor's `git grep` pager read, in `argv_rules` beside the kill-prefix
+helper it moves there from `argv_floor_self` (#34098 forms 2 to 5): the last `-O` and
+its `--no-` form with option parsing stopping where git's parse-options stops (`--`,
+`--end-of-options`, a lone `-`, the first non-option word, but not grep's dash-less
+`(` / `)`), the last `core.pager` / `pager.grep` from `-c` (a `pager.grep` number read
+as git reads a boolean), and `GIT_PAGER` / `PAGER` before `git` unless `-P` turns
+paging off, plus the floor's own pass over literal last-wins array and scalar
+assignments and `unset`. grep's own pager is not read where git starts none: `-q`
+without `-O`, a max count git reads as 0, `--cached` with `-O`, or an option after
+the first non-option word, unless `-p` or a true `pager.grep` makes git page first.
+Measured: the net line change of this diff under `src/kiro_crew/security/*.py`. It
+adds no cap and refuses nothing for a value it cannot read; an expansion longer than
+the text read is left unread.

@@ -18,6 +18,10 @@ Each rule keeps its catalog row, so the row's toggle and its SEL ``rule_id``
 are unchanged; only its pattern stops being run as a regex
 (:data:`ARGV_RULE_PATTERNS`, stripped from the regex tier like the git-publish
 rows).
+
+The module also holds two readers the self-kill floor (``argv_floor_self``) uses,
+in their own section below: the bare-``kill`` anchor rule for a glued
+substitution, and the pager a ``git grep`` names on its own command line.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from collections.abc import Callable
 
 from ..trust_patterns import ENV_ASSIGNMENT_RE
 from . import rm_floor as _rm
+from . import shell_commands as _shell_commands
 from . import shell_normalizer as _shell
 from .denied_rules import BUILTIN_DENIED_RULES
 from .shell_normalizer import _strip_win_program_suffix
@@ -808,3 +813,649 @@ def argv_rule_hit(command: str, enabled_patterns: "set[str] | frozenset[str]") -
         if any(p == program and test(p, args) for p, args in commands):
             return rule_id
     return None
+
+
+# ── Readers the self-kill floor (``argv_floor_self``) uses ──
+# The bare-``kill`` anchor rule for a glued substitution, and the ``git grep`` pager.
+# ``git grep -O<cmd>`` (and the other places git takes its pager from) runs ``<cmd>``
+# on the matching files, so a pager that kills the product is a self-kill no argv
+# position shows; ``argv_floor_self._self_kill_span`` asks its kill check about each
+# pager :func:`_git_grep_pager_kills` finds. Scope is the pager a ``git grep`` names on
+# its own command line, and nothing wider: the last ``-O`` / ``--open-files-in-pager=``
+# among grep's own arguments (including a literal array the same line set and expands
+# with ``"${a[@]}"``), the ``core.pager`` / ``pager.grep`` of a ``-c`` on that line, and
+# the ``GIT_PAGER`` / ``PAGER`` assigned before ``git`` on that line. A command keeps
+# the verdict it has without this read unless the read finds a pager that kills the
+# product: a value this read cannot see (an environment variable set by an earlier
+# statement, a non-literal array, a config file, an alias, a here-document,
+# ``find -exec``) is not read, and the command is not refused for it. Nor is an
+# array expansion longer than the text read, or a pager no shorter than the
+# submitted command, so the read's work stays in step with the text's length.
+
+
+def _kill_prefix_keeps_anchor(words: "list[tuple[str, bool]]", word: "list[str]") -> bool:
+    """True when a glued substitution must NOT cost the word its kill anchor.
+
+    ``kill$(B)`` runs the program ``kill`` whenever B expands to NOTHING at
+    runtime -- ``$(:)``, ``$(true)``, any silent command -- which no static
+    scan can decide, so the anchor decision fails toward detection: a FIRST
+    word whose pre-glue prefix is exactly ``kill`` keeps its anchor
+    (bash-measured: ``kill$(:) $(pgrep -f <name>)`` kills).  Only the first
+    word, because the program position is what makes
+    the prefix a program: ``echo kill$(printf x) $(pgrep -f <name>)`` hands
+    every ``kill...`` word to echo as data, and eating the anchor there is
+    what keeps that spelling allowed.  The glued word's OWN body sits at the
+    anchor's index, inside the forward bound, so ``kill$(pgrep -f <name>)``
+    -- whose program is ``kill<pids>``, not ``kill`` -- still attributes
+    nothing from its glue.
+    """
+    return not words and _shell._program_basename("".join(word)) == "kill"
+
+
+#: git's global options (before the subcommand) whose value is the NEXT word, so that
+#: word is skipped rather than read as the subcommand.
+_GIT_GLOBAL_VALUE_OPTIONS = frozenset(
+    {
+        *("-C", "-c", "--git-dir", "--work-tree", "--namespace"),
+        *("--super-prefix", "--config-env", "--attr-source"),
+    }
+)
+#: git's global options that, written bare, print or show something and exit
+#: without running the subcommand after them.
+_GIT_GLOBAL_EXIT_OPTIONS = frozenset({"--exec-path", "--version", "--help", "-v", "-h"})
+#: The words git reads as boolean false (case-insensitive, matched whole; an empty
+#: value too) and as boolean true. Any other value is read as a number, if it is one.
+_GIT_FALSE = frozenset({"false", "no", "off", ""})
+_GIT_TRUE = frozenset({"true", "yes", "on"})
+#: The unit suffixes git's number parser takes (case-insensitive), as multipliers.
+_GIT_UNITS = {"": 1, "k": 1 << 10, "m": 1 << 20, "g": 1 << 30}
+
+
+def _git_bool(value: str) -> "bool | None":
+    """git's ``git_parse_maybe_bool`` reading of *value*: a boolean word, else a
+    number (non-zero is true), else None (git then reads the value as a command).
+    """
+    folded = value.lower()
+    if folded in _GIT_FALSE or folded in _GIT_TRUE:
+        return folded in _GIT_TRUE
+    number = _git_int(folded)
+    return None if number is None else number != 0
+
+
+def _git_int(value: str) -> "int | None":
+    """*value* as ``git_parse_int`` reads it, else None (git refuses it).
+
+    ``strtoimax`` with base 0 (leading whitespace, a sign, ``0x`` hex or a
+    leading-zero octal), then an optional ``k`` / ``m`` / ``g`` unit, within ``int``
+    range, all case-insensitive. A number with more than 20 significant digits is
+    out of that range in any base, so it is never converted.
+    """
+    text = value.lower().lstrip(" \t\n\v\f\r")
+    sign = -1 if text[:1] == "-" else 1
+    if text[:1] in ("+", "-") and text:
+        text = text[1:]
+    if text[:2] == "0x" and text[2:3] and text[2] in "0123456789abcdef":
+        base, digits_at, allowed = 16, 2, "0123456789abcdef"
+    else:
+        base, digits_at = (8, 0) if text[:1] == "0" else (10, 0)
+        allowed = "01234567" if base == 8 else "0123456789"
+    end = digits_at
+    while end < len(text) and text[end] in allowed:
+        end += 1
+    digits = text[digits_at:end]
+    factor = _GIT_UNITS.get(text[end:])
+    if not digits or factor is None or len(digits.lstrip("0")) > 20:
+        return None
+    number = sign * int(digits, base) * factor
+    return number if -(1 << 31) <= number < (1 << 31) else None
+
+
+#: ``git grep`` short options that take a VALUE (``builtin/grep.c``): a pattern
+#: (``-e``), a file (``-f``), a count (``-m``) or a context size (``-A``/``-B``/
+#: ``-C``). In a cluster the rest of the word is that value, else it is the next
+#: word, so either way it is never a pager. Case-sensitive: ``-E`` and ``-F`` are
+#: flags that take none.
+_GIT_GREP_VALUE_SHORT = frozenset("efmABC")
+#: The long options of the same kind. git also accepts a unique prefix of a long
+#: name, so a word is matched as a prefix of one of these.
+_GIT_GREP_VALUE_LONG = (
+    "--regexp",
+    "--file",
+    "--max-count",
+    "--max-depth",
+    "--threads",
+    "--context",
+    "--after-context",
+    "--before-context",
+)
+#: The other ``git grep`` long options that begin ``--o``. git takes a long option's
+#: unique prefix only, so a prefix shared with one of these (``--o``) is ambiguous and
+#: git refuses the command instead of running a pager.
+_GIT_GREP_OPEN_RIVALS = ("--or", "--only-matching")
+#: The ``git grep`` flags that decide whether grep reaches its pager, as
+#: ``(name, shortest prefix git 2.50.1 takes for it, role)``; ``--no-max-count`` sets
+#: the count to 0.
+_GIT_GREP_PAGING_FLAGS = (
+    ("--quiet", len("--q"), "quiet"),
+    ("--no-quiet", len("--no-q"), "no_quiet"),
+    ("--cached", len("--ca"), "cached"),
+    ("--no-cached", len("--no-ca"), "no_cached"),
+    ("--no-max-count", len("--no-m"), "max"),
+)
+#: The characters a backslash escapes inside double quotes; before any other it is
+#: a literal backslash.
+_DOUBLE_QUOTE_ESCAPES = frozenset('$`"\\\n')
+
+
+def _grep_arg_pager(word: str) -> "tuple[str, str, bool]":
+    """How ``git grep`` parses *word*, as submitted: ``(role, value, quiet)``.
+
+    Roles: ``pager`` with the command git would run as its pager (``""`` for a bare
+    ``-O``, which asks for the default pager); ``no_pager`` for
+    ``--no-open-files-in-pager`` (or a prefix git takes for it, from ``--no-op``),
+    which clears an earlier ``-O``; ``max`` with the ``-m`` / ``--max-count`` value
+    (``--no-max-count`` sets it to ``0``) and ``max_next`` when that value is the
+    next word; ``no_quiet``, ``cached`` and ``no_cached`` for those flags;
+    ``skip_next`` when *word* is another option whose value is the FOLLOWING word
+    (so that word is not read as a pager); ``plain`` otherwise. *quiet* is true when
+    *word* sets ``-q`` / ``--quiet``. Only ``-O`` / ``--open-files-in-pager`` carry a
+    pager, and always GLUED to the option, so a pager is never a separate word. A
+    short cluster is walked one letter at a time, the way git's parse-options walks
+    it: ``O`` is the pager only before the first letter that takes a value, since
+    everything after that letter is its value. A long name is matched by the
+    shortest prefix git 2.50.1 takes for it.
+    """
+    if word.startswith("--"):
+        name, _sep, value = word.partition("=")
+        if not _sep and len(name) >= len("--no-op") and "--no-open-files-in-pager".startswith(name):
+            return ("no_pager", "", False)
+        if (
+            len(name) > 2
+            and "--open-files-in-pager".startswith(name)
+            and not any(rival.startswith(name) for rival in _GIT_GREP_OPEN_RIVALS)
+        ):
+            return ("pager", value, False)
+        if len(name) >= len("--max-c") and "--max-count".startswith(name):
+            return ("max", value, False) if _sep else ("max_next", "", False)
+        if not _sep:
+            for flag, shortest, role in _GIT_GREP_PAGING_FLAGS:
+                if len(name) >= shortest and flag.startswith(name):
+                    return (role, "0" if role == "max" else "", role == "quiet")
+        if not _sep and len(name) > 2 and any(o.startswith(name) for o in _GIT_GREP_VALUE_LONG):
+            return ("skip_next", "", False)
+        return ("plain", "", False)
+    quiet = False
+    if word.startswith("-") and len(word) > 1:
+        j = 1
+        while j < len(word) and word[j].isascii() and word[j].isalnum():
+            letter, rest = word[j], word[j + 1 :]
+            if letter == "O":
+                return ("pager", rest, quiet)
+            if letter == "m":
+                return ("max", rest, quiet) if rest else ("max_next", "", quiet)
+            if letter in _GIT_GREP_VALUE_SHORT:
+                return ("plain" if rest else "skip_next", "", quiet)
+            quiet = quiet or letter == "q"
+            j += 1
+    return ("plain", "", quiet)
+
+
+def _scan_grep_args(args: "list[str]") -> "tuple[str | None, bool, bool]":
+    """What a ``git grep`` does about a pager from its own arguments *args*.
+
+    Returns ``(pager, quiet, stops)``: the ``-O`` value (``None`` with no ``-O``),
+    whether ``-q`` is set, and whether grep exits before it reaches any pager of its
+    own. Each argument is a word already expanded from any literal array the same
+    line set, so every word is read the same way: a value-taking option's value is
+    skipped, so ``-e '-O<cmd>'`` reads ``-O<cmd>`` as a pattern, not a pager. The
+    LAST ``-O`` wins, as in git, so ``-O<kill> -Ocat`` runs only ``cat``, and a real
+    ``--no-open-files-in-pager`` clears it. The last ``-q`` / ``--no-quiet``,
+    ``--cached`` / ``--no-cached`` and max count win too.
+
+    grep stops before its pager (``builtin/grep.c``) when the max count git reads is
+    0, when ``--cached`` comes with an ``-O`` (git dies), and when a word starting
+    with ``-`` follows the first non-option word before any ``--`` (git dies: an
+    option must come before non-option arguments).
+
+    Option parsing stops where git's ``parse-options`` stops for ``git grep``: at
+    ``--``, at ``--end-of-options``, and at the first non-option word, a lone ``-``
+    included. The bare words ``(`` and ``)`` are options to git (grep's pattern
+    grouping, declared without a dash), so parsing goes on past them. A word after
+    ``--`` (``git grep -e x -- <file> -O'<cmd>'``) is a path to git, never a pager.
+    """
+    pager: "str | None" = None
+    quiet = cached = dies = False
+    count = ""
+    pending = ""
+    for index, arg in enumerate(args):
+        if pending:
+            count = arg if pending == "max_next" else count
+            pending = ""
+            continue
+        if arg in ("(", ")"):
+            continue  # grep's dash-less grouping options; git parses on
+        if arg in ("-", "--", "--end-of-options") or not arg.startswith("-"):
+            if arg != "--":
+                rest = args[index + 1 :]
+                rest = rest[: rest.index("--")] if "--" in rest else rest
+                # After --end-of-options the next word is the first non-option.
+                rest = rest[1:] if arg == "--end-of-options" else rest
+                dies = any(word.startswith("-") for word in rest)
+            break  # git parses no option (so no pager) at or after this word
+        role, value, sets_quiet = _grep_arg_pager(arg)
+        quiet = (quiet or sets_quiet) and role != "no_quiet"
+        if role in ("skip_next", "max_next"):
+            pending = role
+        elif role in ("pager", "no_pager"):
+            pager = value if role == "pager" else None
+        elif role == "max":
+            count = value
+        elif role in ("cached", "no_cached"):
+            cached = role == "cached"
+    stops = dies or _git_int(count) == 0 or (cached and pager is not None)
+    return pager, quiet, stops
+
+
+def _shell_word(word: "_shell_commands.ShellWord") -> "tuple[str, list[int]]":
+    """The text the shell passes for *word*, with each character's quoting.
+
+    Quote syntax (an opening or closing quote) is removed, an escape pair gives the
+    escaped character (a backslash-newline gives nothing, and inside double quotes a
+    backslash before any other character stays), all as the shared quote machine
+    marked the steps. The quoting is 0 unquoted, 1 literal (single-quoted or
+    escaped), 2 double-quoted.
+    """
+    chars: "list[str]" = []
+    quoting: "list[int]" = []
+    for step in word.steps:
+        if len(step.text) == 2:
+            if step.char == "\n":
+                continue
+            kept = (
+                step.text
+                if step.state == 2 and step.char not in _DOUBLE_QUOTE_ESCAPES
+                else step.char
+            )
+            chars.append(kept)
+            quoting.extend([1] * len(kept))
+        elif step.char in "'\"" and (step.active or step.state == 0):
+            continue
+        else:
+            chars.append(step.char)
+            quoting.append(step.state)
+    return "".join(chars), quoting
+
+
+def _git_config_value(setting: str) -> "tuple[str, bool, str]":
+    """``(key folded, has a value, value)`` of one ``key=value`` config setting."""
+    key, has_value, value = setting.partition("=")
+    return key.lower(), bool(has_value), value
+
+
+def _is_assignment(word: str) -> bool:
+    """True if *word* is a shell ``NAME=value`` assignment word."""
+    name, has_value, _value = word.partition("=")
+    return (
+        bool(has_value)
+        and bool(name)
+        and name.isascii()
+        and not name[0].isdigit()
+        and name.replace("_", "a").isalnum()
+    )
+
+
+def _assignment_parts(word: str) -> "tuple[str, bool, str] | None":
+    """``(name, appends, value)`` of a shell ``NAME=value`` / ``NAME+=value`` word,
+    else None.
+
+    An array opener (``a=(`` / ``a+=(``) arrives as ``a=`` / ``a+=`` with an empty
+    value. A subscripted word (``a[3]=x``) is not read: this read keeps only
+    last-assignment-wins literal arrays, so a one-index write is left to the verdict
+    the command has without the read.
+    """
+    head, has_value, value = word.partition("=")
+    if not has_value:
+        return None
+    appends = head.endswith("+")
+    if appends:
+        head = head[:-1]
+    if not head or not head.isascii() or head[0].isdigit():
+        return None
+    if not head.replace("_", "a").isalnum():
+        return None
+    return head, appends, value
+
+
+def _subscript_assignment_name(word: str) -> "str | None":
+    """The array name of a ``name[subscript]=`` / ``name[subscript]+=`` write, else None.
+
+    This read does not model which index such a write sets (numeric-subscript parsing
+    is out of scope), so the caller marks the array unreadable instead: a stale value
+    the write may have replaced is then not read, so the command keeps the verdict it
+    has rather than being refused for a value this read cannot see.
+    """
+    if "=" not in word:
+        return None
+    head = word.partition("=")[0]
+    if head.endswith("+"):
+        head = head[:-1]
+    if not (head.endswith("]") and "[" in head):
+        return None
+    name = head.split("[", 1)[0]
+    if not name or not name.isascii() or name[0].isdigit() or not name.replace("_", "a").isalnum():
+        return None
+    return name
+
+
+def _name_end(value: str, at: int) -> int:
+    """The end of the shell variable name that starts at *at* (``at`` when none)."""
+    end = at
+    while end < len(value) and (
+        value[end] == "_" or (value[end].isascii() and value[end].isalnum())
+    ):
+        end += 1
+    if end > at and value[at].isdigit():
+        return at
+    return end
+
+
+def _array_refs(value: str, quoting: "list[int]") -> "list[tuple[int, int, str, int | str]]":
+    """``(start, end, name, selector)`` of each variable reference in *value* that
+    bash expands (not single-quoted or escaped): ``$a`` and ``${a}`` select element
+    0, ``${a[N]}`` element N (a plain decimal subscript only), ``${a[@]}`` /
+    ``${a[*]}`` every element. One pass."""
+    refs: "list[tuple[int, int, str, int | str]]" = []
+    i = 0
+    while i < len(value):
+        if value[i] != "$" or quoting[i] == 1:
+            i += 1
+            continue
+        if value[i + 1 : i + 2] != "{":
+            end = _name_end(value, i + 1)
+            if end > i + 1:
+                refs.append((i, end, value[i + 1 : end], 0))
+                i = end
+            else:
+                i += 1
+            continue
+        end = _name_end(value, i + 2)
+        name = value[i + 2 : end]
+        selector: "int | str" = 0
+        if end < len(value) and value[end] == "[":
+            close = end + 1
+            while close < len(value) and value[close].isascii() and value[close].isalnum():
+                close += 1
+            subscript = value[end + 1 : close]
+            if not subscript and value[close : close + 1] in ("@", "*"):
+                subscript = value[close]
+                close += 1
+            # Only a plain number of at most 18 digits is read, decimal or (with a
+            # leading zero, as bash reads it) octal, so it fits bash's 64-bit
+            # arithmetic and converting it is cheap. Any other form (an expression,
+            # a hex spelling, a number bash wraps or refuses) is left unread, so the
+            # command keeps its verdict rather than being refused for a value this
+            # read cannot see.
+            octal = subscript.startswith("0")
+            if subscript in ("@", "*"):
+                index: "int | str | None" = subscript
+            elif (
+                0 < len(subscript) <= 18
+                and subscript.isascii()
+                and subscript.isdigit()
+                and not (octal and ("8" in subscript or "9" in subscript))
+            ):
+                index = int(subscript, 8 if octal else 10)
+            else:
+                index = None
+            if index is None or value[close : close + 1] != "]":
+                i += 1
+                continue
+            selector = index
+            end = close + 1
+        if name and value[end : end + 1] == "}":
+            refs.append((i, end + 1, name, selector))
+            i = end + 1
+        else:
+            i += 1
+    return refs
+
+
+def _selected(array: "list[str]", selector: "int | str", state: int) -> "list[str]":
+    """The words reference ``${name[selector]}`` gives from the literal *array*,
+    quoted per *state* (0 unquoted, 2 double-quoted)."""
+    if selector in ("@", "*"):
+        values = list(array)
+    else:
+        index = int(selector)
+        values = [array[index]] if 0 <= index < len(array) else [""]
+    if state == 0:
+        return [part for value in values for part in value.split()]
+    if selector == "*":
+        return [" ".join(values)]
+    return values
+
+
+def _expand_word(
+    value: str, quoting: "list[int]", arrays: "dict[str, list[str]]", room: int
+) -> "list[str] | None":
+    """The words bash makes of *value* by expanding the literal array references it
+    names, or None once they would hold more than *room* characters.
+
+    A reference to an array this read did not see expands to nothing, as bash
+    expands an unset variable, so the command is never refused for it. None means
+    the expansion is not read, so the caller keeps the verdict the command has
+    without this read; the caller passes the length of the text it read, which keeps
+    the read's work in step with that text however often a word repeats an array.
+    """
+    refs = _array_refs(value, quoting)
+    if not refs:
+        return [value]
+    words = [""]
+    size = 0
+    at = 0
+    for start, end, name, selector in refs:
+        elements = (
+            _selected(arrays.get(name, []), selector, quoting[start]) if name in arrays else []
+        )
+        size += start - at + sum(len(element) for element in elements)
+        if size > room:
+            return None
+        words[-1] += value[at:start]
+        if elements:
+            words[-1] += elements[0]
+            words.extend(elements[1:])
+        at = end
+    words[-1] += value[at:]
+    return words
+
+
+def _git_grep_invocation_pagers(
+    words: "list[tuple[str, list[int]]]", arrays: "dict[str, list[str]]", room: int
+) -> "list[str]":
+    """The pager commands one simple command's ``git grep`` can run, else ``[]``.
+
+    *room* is how many characters its array expansions may add up to (the length of
+    the text read); past that the invocation is not read and keeps its verdict.
+    """
+    sub = [value for value, _quoting in words]
+    found = _program_args(sub)
+    # The program name is folded: a case-insensitive filesystem runs ``GIT``.
+    if found is None or found[0].lower() != "git":
+        return []
+    i = len(sub) - len(found[1])
+    # Every assignment before ``git`` is in its environment, whether it leads the
+    # command or follows ``env`` or ``sudo``.
+    env = dict(word.partition("=")[::2] for word in sub[: i - 1] if _is_assignment(word))
+    settings: "list[str]" = []
+    paging = ""  # the last of -P / --no-pager ("off") and -p / --paginate ("on")
+    is_grep = False
+    while i < len(sub):
+        token = sub[i]
+        if token in _GIT_GLOBAL_EXIT_OPTIONS:
+            return []  # git runs ``version`` / ``help`` or prints a path, never grep
+        if token in ("-P", "--no-pager", "-p", "--paginate"):
+            # ``-P`` makes git set ``GIT_PAGER=cat``; ``-p`` pages whatever
+            # ``pager.grep`` says.
+            paging = "off" if token in ("-P", "--no-pager") else "on"
+        elif token in _GIT_GLOBAL_VALUE_OPTIONS:
+            if i + 1 < len(sub) and token == "-c":
+                settings.append(sub[i + 1])
+            i += 1  # its value is the next word, never the subcommand or a pager
+        elif not token.startswith("-"):
+            is_grep = token == "grep"  # a subcommand: ``grep`` or another
+            i += 1
+            break
+        i += 1
+    if not is_grep:
+        return []
+    pager_values: "dict[str, tuple[bool, str]]" = {}
+    for setting in settings:
+        key, has_value, value = _git_config_value(setting)
+        if key in ("core.pager", "pager.grep"):
+            pager_values[key] = (has_value, value)  # the last one wins, as in git
+    grep_paged = paging != "off"
+    # git itself starts the pager before grep runs (so -q, a zero max count or an
+    # exit cannot stop it) under -p or a true or command ``pager.grep``.
+    git_pages = paging == "on"
+    grep_pager: "str | None" = None
+    # ``pager.grep`` is read only when no -p / -P said otherwise.
+    if not paging and "pager.grep" in pager_values:
+        has_value, value = pager_values["pager.grep"]
+        boolean = _git_bool(value) if has_value else True
+        git_pages = boolean is not False
+        if boolean is False:
+            grep_paged = False  # a boolean false: grep's paging is off
+        elif boolean is None:
+            grep_pager = value  # a command: grep's own pager
+    # The one pager git runs (``git_pager``): GIT_PAGER, else a ``pager.grep``
+    # command, else core.pager, else PAGER.
+    if "GIT_PAGER" in env:
+        default_pager = env["GIT_PAGER"]
+    elif grep_pager is not None:
+        default_pager = grep_pager
+    elif "core.pager" in pager_values:
+        default_pager = pager_values["core.pager"][1]
+    else:
+        default_pager = env.get("PAGER", "")
+    args: "list[str]" = []
+    for value, quoting in words[i:]:
+        expanded = _expand_word(value, quoting, arrays, room) if "$" in value else [value]
+        if expanded is None:
+            return []  # an expansion longer than the text read is not read
+        if "$" in value:
+            room -= sum(len(word) for word in expanded)
+        args.extend(expanded)
+    last, quiet, stops = _scan_grep_args(args)
+    pagers: "dict[str, None]" = {}
+    if not stops and last is not None and last.strip():
+        # ``-O<cmd>`` names the pager itself, so no configured pager runs.
+        pagers[last] = None
+    elif grep_paged and (git_pages or (not stops and (last is not None or not quiet))):
+        # A bare ``-O`` pages with the default pager even under -q; without -O,
+        # grep skips its own pager under -q.
+        pagers[default_pager] = None
+    return [pager for pager in pagers if pager.strip()]
+
+
+def _unquoted_probe(text: str) -> str:
+    """*text* folded with quoting removed, for the "no ``git`` here" shortcut.
+
+    bash runs ``git`` for ``g''it``, ``\"g\"it``, ``gi\\t``, ``gi\\<newline>t`` and
+    ``g$()it``, so the quote characters, backslashes, line continuations and empty
+    substitutions are dropped before looking for the name. Dropping more than the
+    shell would only lets more texts through to the full read.
+    """
+    probe = text.replace("\\\n", "")
+    for drop in ("$()", "``", "'", '"', "\\"):
+        probe = probe.replace(drop, "")
+    return probe.lower()
+
+
+def _git_grep_pager_commands(source: str) -> "list[str]":
+    """The pager commands every ``git grep`` in *source* can run, for the kill check.
+
+    ``git grep`` runs its pager on the matching files, so a pager that kills the
+    product is a self-kill no argv position shows. Parsed the way git parses it, one
+    invocation at a time and only from what that simple command line itself shows:
+
+    * the last ``-O`` / ``--open-files-in-pager=`` among grep's own arguments, with
+      each literal array reference there expanded from the arrays the text's earlier
+      commands set (last assignment wins);
+    * unless paging is off (``-P`` / ``--no-pager``, or a false ``pager.grep``
+      without ``-p``), the ``GIT_PAGER=`` / ``PAGER=`` assignments before ``git`` and
+      the last ``core.pager`` and ``pager.grep`` git reads from a ``-c`` on the same
+      command;
+    * none of grep's own when grep exits first or skips it (``-q`` without ``-O``,
+      see :func:`_scan_grep_args`), unless git itself pages under ``-p`` or a true
+      or command ``pager.grep``.
+
+    The commands and their words come from the shared reader
+    (:func:`shell_commands.read_commands`) after ``$'...'`` is decoded as every floor
+    reader decodes it, so a quoted ``;`` or ``|`` inside an argument does not cut one
+    ``git grep`` in two. Each distinct command is returned once. A value this read
+    cannot see on the same line (an environment variable set earlier, a non-literal
+    array, a config file, an alias, a here-document, ``find -exec``) is not read, and
+    the command is not refused for it.
+    """
+    commands: "dict[str, None]" = {}
+    text = _shell._decode_shell_quoted_literals(source)
+    if "git" not in _unquoted_probe(text):
+        return []  # no ``git`` word can be read from it
+    arrays: "dict[str, list[str]]" = {}
+    opener: "tuple[str, bool] | None" = None
+    for command in _shell_commands.read_commands(text):
+        words = [_shell_word(word) for word in command.argv]
+        sub = [value for value, _quoting in words]
+        if opener is not None:
+            # The elements of ``name=( ... )``: the reader ends the opener at ``(``
+            # and this command at ``)``.
+            name, appends = opener
+            elements = [value for value, _quoting in words]
+            arrays[name] = (arrays.get(name, []) if appends else []) + elements
+            opener = None
+            continue
+        if sub[:1] == ["unset"] and "-f" not in sub:
+            for name in sub[1:]:
+                arrays.pop(name, None)  # bash unsets it, so it expands to nothing
+            continue
+        parts = [_assignment_parts(word) for word in sub]
+        drops = [_subscript_assignment_name(word) for word in sub]
+        if sub and all(p is not None or d is not None for p, d in zip(parts, drops)):
+            # A command of only assignment words: apply the simple ones (last wins,
+            # ``+=`` appends, ``a=(`` opens a literal array), and mark unreadable any
+            # array a subscript write touches.
+            for index, (part, drop) in enumerate(zip(parts, drops)):
+                if part is None:
+                    arrays.pop(drop or "", None)  # set: the guard above holds for each word
+                    continue
+                name, appends, pvalue = part
+                if index == len(parts) - 1 and command.separator == "(" and not pvalue:
+                    opener = (name, appends)
+                else:
+                    arrays[name] = (arrays.get(name, []) if appends else []) + [pvalue]
+            continue
+        for pager in _git_grep_invocation_pagers(words, arrays, len(text)):
+            commands[pager] = None
+    return list(commands)
+
+
+def _git_grep_pager_kills(submitted: str, is_kill: "Callable[..., bool]") -> bool:
+    """True if a ``git grep`` in *submitted* names a pager *is_kill* reads as a kill.
+
+    *submitted* is the command as submitted, since git parses its options with case.
+    The shared payload walk unwraps a lower-case wrapping shell (``bash -c``) as it
+    does for every floor; a mixed-case wrapper (``BASH -c``) is not unwrapped. Each
+    pager is asked about once, as ``is_kill(pager.lower(), raw_text=pager)``. An
+    array expansion can make a pager longer than *submitted*; such a pager is not
+    read (the command keeps its verdict), so every pager asked about is strictly
+    shorter than the text it came from and the re-entry ends.
+    """
+    checked: "set[str]" = set()
+    for source, _tokens in _shell._shell_payload_walk(submitted):
+        for command in _git_grep_pager_commands(source):
+            if command in checked or len(command) >= len(submitted):
+                continue
+            checked.add(command)
+            if is_kill(command.lower(), raw_text=command):
+                return True
+    return False
