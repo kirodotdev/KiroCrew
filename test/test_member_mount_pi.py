@@ -152,17 +152,33 @@ def test_the_member_mounts_reach_the_handoff_with_their_identity(agents_dir, tmp
         assert servers[name]["exposure"] == "direct"
 
 
-def test_an_ordinary_pi_session_carries_nothing(agents_dir, tmp_path) -> None:
-    """A non-member pi session carries nothing: spec-server delivery is member-only.
+def test_an_ordinary_pi_session_carries_the_control_plane_only(agents_dir, tmp_path) -> None:
+    """A non-member pi session carries Crew's control plane, with its own identity.
 
-    The spec servers reach pi only for a crewmate DM session (``member_context``) or
-    a crewmate's worker session (``members.is_crewmate_worker_session``);
-    an ordinary pi session composes the empty array it always did, like every other
-    mirror-less backend's ordinary session.
+    The spec names ``kirocrew-core`` and the dashboard server: the control plane
+    reaches the session as a mirrored harness's does, with no gateway routing, and
+    the dashboard server stays member-only. ``kirocrew-cron`` is not in the spec's
+    ``tools``, so it is not added.
     """
+    key = "dashboard_abc123"
+    client = _client(tmp_path, key, backend=ACP_BACKEND_PI)
+    out = client._resolve_session_mcp_servers()
+    assert _names(out) == ["kirocrew-core"]
+    assert client.member_dispatch_mounted is False
+    env = out[0]["env"]
+    pairs = {e["name"]: e["value"] for e in env} if isinstance(env, list) else env
+    assert pairs["KIROCREW_SESSION_KEY"] == key
+    assert pairs[STUB_SESSION_TOKEN_ENV] == client._stub_session_token
+
+
+def test_an_ordinary_pi_session_withholds_a_narrowed_control_plane(agents_dir, tmp_path) -> None:
+    """A switched-off ``kirocrew-core`` tool withholds the whole server: pi has no per-call deny."""
+    spec_path = agents_dir / "kirocrew.json"
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    spec["mcpServers"]["kirocrew-core"]["disabledTools"] = ["send_message"]
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
     client = _client(tmp_path, "dashboard_abc123", backend=ACP_BACKEND_PI)
     assert client._resolve_session_mcp_servers() == []
-    assert client.member_dispatch_mounted is False
 
 
 def test_the_panel_switch_withholds_only_the_panel(agents_dir, tmp_path, monkeypatch) -> None:

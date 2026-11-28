@@ -132,12 +132,14 @@ class TestTheSpecParse:
         ],
     )
     def test_an_ordinary_spec_leaves_it_off(self, agents_dir, tmp_path, body):
-        # Non-member key: spec-server delivery is member-only, so an ordinary pi
-        # session composes the empty array regardless of the spec's own servers.
+        # Non-member key: an ordinary pi session carries only Crew's control plane,
+        # and only when the spec's ``tools`` names it.
         _write_spec(agents_dir, "pi-normal", body)
         client = _client(tmp_path, "dashboard_abc123", backend=ACP_BACKEND_PI)
         client._agent = "pi-normal"
-        assert client._resolve_session_mcp_servers() == []
+        names = [e["name"] for e in client._resolve_session_mcp_servers()]
+        tools = body.get("tools")
+        assert names == (["kirocrew-core"] if isinstance(tools, list) else [])
         assert client.spec_zero_tools is False
         assert client._enforces_zero_tool_ban is False
 
