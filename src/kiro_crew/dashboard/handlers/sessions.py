@@ -136,10 +136,12 @@ if TYPE_CHECKING:
         _remove_slot_for_history_key,
     )
     from kiro_crew.dashboard.handlers.sessions_parts.delete_routes import (  # noqa: F401
+        WORKER_RELEASE_UNRECORDED_CODE,
         _claim_history_delete,
         _clear_history_rows,
         _clearable_history_keys,
         _delete_claimed_session,
+        _release_work_binding,
         _user_only_query,
         api_session_delete,
         api_sessions_clear,

@@ -40,6 +40,7 @@ from kiro_crew.dashboard.handlers.sessions_parts.delete_claim import (
     _owner_keys_after_unlink,
     _owner_keys_bound_to_transcript,
     _OwnerKeyUnreadable,
+    _resolve_history_delete_claim,
     _rollback_ledger_exclusion,
     _unstrand_shared_ledger_unit,
 )
@@ -110,6 +111,13 @@ async def _delete_claimed_session(
         swept = await _owner_keys_bound_to_transcript(crons, (key,))
     except (CronStoreBusy, CronStoreUnreadable) as exc:
         return _cron_store_refusal(exc)
+
+    # A worker chat's open work-board item is released BEFORE the unlink, as a
+    # recorded entry, and a release that cannot be recorded refuses the delete with
+    # the row intact (``work_ledger_conductor.release_deleted_worker``).
+    released = await _release_work_binding(state, key, delete_claim)
+    if released is not None:
+        return released
 
     # The ledger exclusion is written BEFORE the unlink, and a failure REFUSES the
     # delete with the row intact. It has to be this side of the unlink to be a
@@ -259,6 +267,11 @@ async def _clear_history_rows(
             continue
 
         delete_claim = _claim_history_delete(delete_windows, state, key)
+        # The worker release first, as in the single delete: a row whose open item
+        # cannot be released is reported undeletable and left alone.
+        if await _release_work_binding(state, key, delete_claim) is not None:
+            undeletable.append({"id": key, "code": WORKER_RELEASE_UNRECORDED_CODE})
+            continue
         # Per ROW, the same precondition the single delete applies: the ledger
         # exclusion is written before this row's transcript is unlinked, because a
         # failure after the unlink has nothing left to refuse and would leave this
@@ -364,6 +377,48 @@ async def _clear_history_rows(
             "undeletable": undeletable,
         }
     )
+
+
+#: ``work_ledger_conductor.CODE_WORKER_RELEASE_UNRECORDED``, spelled here so the handlers
+#: package loads no member of the work-ledger family at import (pinned equal in tests).
+WORKER_RELEASE_UNRECORDED_CODE = "worker_release_unrecorded"
+
+
+async def _release_work_binding(
+    state: DashboardState, key: str, claim: _HistoryDeleteClaim
+) -> web.Response | None:
+    """Release *key*'s worker binding before the unlink; the refusal, or ``None``.
+
+    Inside the row's delete-in-flight window, so no resume can take the key between
+    the release and the unlink. The binding is the live slot's, so it is released only
+    when the transcript being deleted is the one that slot owns: when canonical and
+    stacked transcripts coexist and the slot resolves to the OTHER file, nothing is
+    released. Ownership that cannot be resolved refuses, with the row intact.
+    shortcut: a delete that then does not proceed (a lock timeout, a pin, an
+    unreadable owner) leaves the item open and unbound, which the conductor sees and
+    can rebind; restore the binding if that proves common.
+    """
+    # Call-time, through the routes' facade: the handlers package loads no member of
+    # the work-ledger family at import.
+    from kiro_crew.dashboard.handlers import work_ledger as work_ledger_routes
+
+    if claim.slot is not None and not claim.path_match_verified:
+        assert state.conversation_log is not None
+        resolved = await asyncio.to_thread(
+            _resolve_history_delete_claim, state.conversation_log, key, claim
+        )
+        if resolved.slot is None:
+            if resolved.complete:
+                return None
+            return web.json_response(
+                {
+                    "error": "Which transcript owns this chat could not be resolved, so it "
+                    "was not deleted. Try again.",
+                    "code": WORKER_RELEASE_UNRECORDED_CODE,
+                },
+                status=409,
+            )
+    return await work_ledger_routes.release_deleted_worker(state, key)
 
 
 def _user_only_query(request: web.Request) -> bool:

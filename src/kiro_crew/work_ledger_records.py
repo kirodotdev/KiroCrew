@@ -128,6 +128,7 @@ EVENT_KINDS: frozenset[str] = frozenset(
         "retire",
         "destroy",
         "ask",
+        "release",
     }
 )
 

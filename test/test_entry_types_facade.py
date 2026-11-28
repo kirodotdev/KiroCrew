@@ -105,7 +105,7 @@ _SCHEMA_DIGESTS: dict[str, str] = {
     "ledger/recorded": "ce8a9e0246ca5f62f01fe4d9edaad4b9",
     "object/observed": "3aa509be5a56048bafed2769c376e08f",
     "radar/recorded": "f5da674a52d214bb4b0e46b717ff3042",
-    "work/recorded": "fc59f6c109d9eec633bbf769a91fae9a",
+    "work/recorded": "c39e3ecf2258a00a140d49d8f751cd96",
     "work/charged": "dfafeefd53bcb426be1351ea831bb481",
     "panel/published": "3bed4520ab9f3b183255124dfa140c1e",
     "dashboard/instance_changed": "e89026634b8f99bc617fc02e0839cecc",

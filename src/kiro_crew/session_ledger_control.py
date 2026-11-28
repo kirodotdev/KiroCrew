@@ -700,7 +700,7 @@ def note_work_unit_recorded(slot_key: str, session_id: str, *, canonical: str = 
     )
 
 
-def newest_work_unit(slot_key: str) -> str:
+def newest_work_unit(slot_key: str, *, strict: bool = False) -> str:
     """*slot_key*'s CURRENT newest unit, the one a report or relay for it is written into.
 
     The newest unit the slot has, whether or not it holds a work record yet: after a
@@ -709,6 +709,7 @@ def newest_work_unit(slot_key: str) -> str:
     (``crew_log.projection_readers.newest_unit_in_succession``, cached against the
     store root). Falls back to the unit that last recorded (the work-order file) when
     the store lists no unit for the slot; ``""`` when neither names a live unit.
+    A lookup that fails reads as ``""`` too, unless *strict*, which raises instead.
     """
     if not slot_key:
         return ""
@@ -724,6 +725,8 @@ def newest_work_unit(slot_key: str) -> str:
             if CrewLog.exists(KIND_SESSION, unit):
                 return unit
     except Exception as exc:
+        if strict:
+            raise
         logger.debug("work ledger: could not resolve this slot's newest unit: %s", exc)
     return ""
 
