@@ -400,6 +400,13 @@ This is viable because a GitHub `/archive/` tarball is byte-stable for a fixed
 commit sha; the digest was confirmed by downloading the artifact four times and
 reproducing it each time.
 
+The adopted repository (0.3.6 and later) fetches the same bytes through the app
+context's verified download (`ctx.verified_download`, seam level 20,
+app-kit-platform §40) instead, which follows a redirect only on the same host. So
+it names the `codeload.github.com/<owner>/<repo>/tar.gz/<ENGINE_COMMIT>` url that
+`/archive/` redirects to, with the same `ENGINE_TARBALL_SHA256` and the archive's
+exact length (`ENGINE_TARBALL_SIZE`, 3,159,833 bytes) beside it.
+
 Failure behaviour, all of which keeps a working older engine rather than a
 half-removed one:
 
@@ -575,9 +582,10 @@ sensitive-path check and the governance ceiling — would never be reached.
     (`routes._has_bitmap_signature`: the shared `messaging.raster.sniff_raster_mime`
     table, which `messaging/raster.py` owns, plus the `ftyp` box at offset 4 for
     AVIF/HEIF). The adopted repository asks the same table through the public
-    `apps.backend_sdk.sniff_raster_mime` (seam level 14, app-kit-platform §40), so
-    its pin carries `minAppSdkLevel` 14. Anything else stays in the text and is
-    scanned as ordinary prose.
+    `apps.backend_sdk.sniff_raster_mime` (seam level 14, app-kit-platform §40), and
+    from 0.3.6 every other host control through a public seam as well, the highest
+    being `ctx.verified_download` (level 20), so its pin carries `minAppSdkLevel` 20.
+    Anything else stays in the text and is scanned as ordinary prose.
     Both directions are pinned per format: a fake bitmap body cannot carry a
     credential, and every real signature survives.
     **And the signature is necessary, not sufficient.** A correct header only proves
@@ -613,7 +621,11 @@ sensitive-path check and the governance ceiling — would never be reached.
     a separator absent from base64 and therefore cannot occur in a body at all — listing
     those here would be dead code, which is what the earlier bare-prefix alternatives
     effectively were: `xox[abposr]` matched 0.88% of 20 KB rasters and 4.7% of 100 KB
-    ones by chance, silently blanking real pictures.
+    ones by chance, silently blanking real pictures. The adopted repository (0.3.6 and
+    later) runs the gateway's whole credential scan over the encoded text instead
+    (`apps.backend_sdk.iter_credential_matches`, seam level 17): it matches the same
+    key id, and each of its other shapes needs a separator outside the base64 alphabet
+    or a long fixed word, so a real raster does not trip it.
     **The carve-out requires the URI to TERMINATE at the body.** `_INLINE_BITMAP_RE`
     captures, as group 2, the maximal run of characters after the base64 that are NOT in
     `_BITMAP_URI_TERMINATORS` (`"`, `'`, `` ` ``, `)`, `<`, `>`, `,`, `;`, `]`, `}`, `\`,
