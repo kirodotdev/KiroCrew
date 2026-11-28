@@ -9,6 +9,12 @@ HEAD. Either of two records counts:
   current head SHA (the author did the checks, so the author writes them down);
 - a human approval on the current head whose review body carries the template.
 
+A record made for an earlier head of the PR still counts when the sensitive
+files' diff is byte-identical on both heads, each measured against its own
+merge base, so a rebase that changes nothing sensitive keeps the record. Any
+doubt (another set of sensitive files, a changed byte, a compare the API
+cannot answer in full) leaves the check red.
+
 A bare "Approve" click does not count. The gate checks format only: it cannot
 judge whether the reasoning is right, it only makes sure someone wrote it down.
 Merging still needs a second person's approval; GitHub's branch rules enforce
@@ -39,7 +45,8 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
+from urllib.parse import quote
 
 # Paths whose change can break every command, leak a secret, or lock a user
 # out. `*` in fnmatch also matches `/`, so a directory glob covers subdirs.
@@ -94,6 +101,13 @@ WRITE_PERMISSIONS = {"admin", "write"}
 
 # GitHub's PR files endpoint stops at this many rows without an error.
 FILES_API_CAP = 3000
+
+# A compare lists at most this many files, all on its first page.
+COMPARE_FILES_CAP = 300
+
+# The most earlier heads one run compares against the current head, newest
+# record first. Each costs one compare read.
+CARRY_MAX_HEADS = 5
 
 # Marks the one sticky comment this gate owns. Only a comment by COMMENT_AUTHOR
 # carrying it is edited, so a user who pastes the marker cannot hijack it.
@@ -314,6 +328,162 @@ def _author_comments(comments: list[dict], author: str) -> list[dict]:
     return list(reversed(picked))
 
 
+class CarryUnavailable(Exception):
+    """A head's sensitive diff could not be read in full."""
+
+
+# One sensitive file's diff on one head: (old name, status, mode on the head,
+# patch text). A removed file has no mode on the head, so its mode is "".
+SensitivePatches = dict[str, tuple[str, str, str, str]]
+
+# The statuses whose whole change the patch text shows. `changed` (a mode-only
+# change), `copied` and anything new are not compared, so they never carry.
+CARRY_STATUSES = frozenset({"added", "modified", "removed", "renamed"})
+
+# A regular file or an executable one. A compare row never says which, so the
+# mode is read from the head's tree. A symlink (120000) or a submodule
+# (160000) is refused: its patch may not show what changed.
+REGULAR_MODES = frozenset({"100644", "100755"})
+
+
+def _patch_line_counts(patch: str) -> tuple[int, int]:
+    lines = patch.split("\n")
+    return sum(ln.startswith("+") for ln in lines), sum(ln.startswith("-") for ln in lines)
+
+
+def sensitive_patches(
+    rows: list[dict], modes_of: Callable[[list[str]], dict[str, str]]
+) -> SensitivePatches:
+    """Each sensitive file's diff from one compare's file rows.
+
+    `modes_of(paths)` answers each path's git mode on the compared head.
+    Raises CarryUnavailable when the list may be cut short, or when a sensitive
+    file has no patch text (binary, too large to show, or a pure rename), a
+    patch whose +/- lines disagree with the row's counts (cut short), a status
+    the patch cannot show in full, or a mode that cannot be read or is not a
+    regular file: a diff that cannot be read cannot be shown to be unchanged.
+    """
+    if len(rows) >= COMPARE_FILES_CAP:
+        raise CarryUnavailable(f"the compare lists {COMPARE_FILES_CAP}+ files, past what it shows")
+    picked: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise CarryUnavailable("the compare lists a file row that is not an object")
+        if not sensitive_files(changed_paths([row])):
+            continue
+        name = row.get("filename") or ""
+        patch = row.get("patch")
+        status = row.get("status") or ""
+        if not name or not isinstance(patch, str) or not patch:
+            raise CarryUnavailable(f"`{name or '?'}` has no patch text to compare")
+        if status not in CARRY_STATUSES:
+            raise CarryUnavailable(f"`{name}` has status `{status or '?'}`, which is not compared")
+        if _patch_line_counts(patch) != (row.get("additions"), row.get("deletions")):
+            raise CarryUnavailable(f"the patch of `{name}` disagrees with its line counts")
+        picked.append(row)
+    wanted = [row["filename"] for row in picked if row["status"] != "removed"]
+    modes = modes_of(wanted) if wanted else {}
+    patches: SensitivePatches = {}
+    for row in picked:
+        name = row["filename"]
+        mode = ""
+        if row["status"] != "removed":
+            mode = modes.get(name, "")
+            if mode not in REGULAR_MODES:
+                raise CarryUnavailable(f"`{name}` is not a regular file (mode {mode or '?'})")
+        patches[name] = (row.get("previous_filename") or "", row["status"], mode, row["patch"])
+    return patches
+
+
+def carry_problem(
+    earlier: str, head: str, hits: list[str], patches_of: Callable[[str], SensitivePatches]
+) -> str | None:
+    """Why a record for `earlier` does not count for `head` (None when it does).
+
+    The exact patch text is compared, hunk headers and context lines included,
+    rather than a patch-id: a patch-id ignores line numbers and whitespace, so
+    it would also match a change that moved inside a file `main` edited in
+    between. Each head's diff is taken against its own merge base, so `main`
+    moving under a rebase adds nothing to either side. The file's mode on the
+    head is compared too, because a compare row does not show it.
+    """
+    try:
+        before = patches_of(earlier)
+        after = patches_of(head)
+    except CarryUnavailable as exc:
+        return f"could not compare the two heads ({exc})"
+    covered = sensitive_files(list(after) + [diff[0] for diff in after.values() if diff[0]])
+    if set(covered) != set(hits):
+        return "the compare of the current head disagrees with the PR's file list"
+    if set(before) != set(after):
+        changed = sorted(set(before) ^ set(after))
+        return "the set of sensitive files changed (" + ", ".join(f"`{p}`" for p in changed) + ")"
+    for path in sorted(after):
+        if before[path][2] != after[path][2]:
+            return f"the mode of `{path}` changed ({before[path][2]} -> {after[path][2]})"
+        if before[path] != after[path]:
+            return f"the diff of `{path}` changed"
+    return None
+
+
+def named_head(body: str) -> str:
+    """The one full SHA on the template's `Head commit:` line, or ""."""
+    lower = (body or "").lower()
+    if HEADING.lower() not in lower:
+        return ""
+    lines = body[lower.index(HEADING.lower()) + len(HEADING) :].splitlines()
+    shas = set(_SHA_RE.findall((_field_value(lines, "Head commit") or "").lower()))
+    if len(shas) != 1:
+        return ""
+    (sha,) = shas
+    return sha if len(sha) == 40 else ""
+
+
+def _carry_candidates(
+    owned: list[dict],
+    standing: dict[str, list[dict]],
+    author: str,
+    head: str,
+    permission_of: Callable[[str], str],
+) -> Iterator[tuple[str, str]]:
+    """(earlier head, who and what) for each record complete for another head.
+
+    Newest author comment first, then each reviewer's newest approval first;
+    one entry per earlier head, at most CARRY_MAX_HEADS of them. Lazy, so a
+    record that carries spends no reads on the ones after it.
+    """
+    records: list[tuple[str, Callable[[str], list[str]], str]] = [
+        (
+            named_head(comment.get("body") or ""),
+            lambda earlier, c=comment: _author_comment_problems(c, author, earlier, permission_of),
+            f"@{author}'s template comment",
+        )
+        for comment in owned
+    ]
+    for login, approvals in sorted(standing.items()):
+        records += [
+            (
+                review.get("commit_id") or "",
+                lambda earlier, r=review, who=login: _approval_problems(
+                    r, who, author, earlier, permission_of
+                ),
+                f"@{login}'s template approval",
+            )
+            for review in reversed(approvals)
+        ]
+    picked: set[str] = set()
+    for earlier, problems_for, who in records:
+        if len(picked) >= CARRY_MAX_HEADS:
+            return
+        if not earlier or earlier == head or earlier in picked:
+            continue
+        # Judged as if `earlier` were the head, so only a record that was
+        # complete for its own head can carry.
+        if not problems_for(earlier):
+            picked.add(earlier)
+            yield earlier, who
+
+
 def evaluate(
     pr: dict,
     files: list[str],
@@ -321,12 +491,15 @@ def evaluate(
     permission_of: Callable[[str], str],
     head: str | None = None,
     comments: list[dict] | None = None,
+    patches_of: Callable[[str], SensitivePatches] | None = None,
 ) -> Verdict:
     """Decide the gate for `head` (defaults to the PR's head).
 
     `permission_of(login)` returns the repo permission. Any standing approval
     on `head` with a complete template passes, not just the reviewer's latest.
     So does any PR-author comment with a complete template that names `head`.
+    With `patches_of(sha)` (a head's sensitive diff), a record complete for an
+    earlier head also passes when that head's sensitive diff equals `head`'s.
     """
     hits = sensitive_files(files)
     if not hits:
@@ -365,7 +538,8 @@ def evaluate(
         note = f" ({len(owned)} comments checked, none complete)" if len(owned) > 1 else ""
         messages.append(f"@{author} comment{note}: " + "; ".join(latest))
 
-    for login, approvals in sorted(_standing_approvals(reviews).items()):
+    standing = _standing_approvals(reviews)
+    for login, approvals in sorted(standing.items()):
         latest_why: list[str] = []
         for review in reversed(approvals):
             why = _approval_problems(review, login, author, head, permission_of)
@@ -379,6 +553,22 @@ def evaluate(
             latest_why = latest_why or why
         note = f" ({len(approvals)} approvals checked, none complete)" if len(approvals) > 1 else ""
         messages.append(f"@{login}{note}: " + "; ".join(latest_why))
+
+    if patches_of is not None:
+        for earlier, who in _carry_candidates(owned, standing, author, head, permission_of):
+            problem = carry_problem(earlier, head, hits, patches_of)
+            if problem is None:
+                return Verdict(
+                    ok=True,
+                    sensitive=hits,
+                    head=head,
+                    messages=[
+                        f"{who} for {earlier[:12]} carries to {head[:12]}: the diff of every "
+                        "sensitive file is byte-identical on both heads, each against its own "
+                        "merge base."
+                    ],
+                )
+            messages.append(f"{who} for {earlier[:12]} does not carry to {head[:12]}: {problem}.")
 
     if not messages:
         messages.append(f"No reasoning template for {head[:12]} yet.")
@@ -441,6 +631,46 @@ def _gh_json(path: str, paginate: bool = False) -> Any:
     return data
 
 
+_TREE_MODES_QUERY = """
+query($owner: String!, $name: String!, $expression: String!) {
+  repository(owner: $owner, name: $name) {
+    object(expression: $expression) { ... on Tree { entries { name mode } } }
+  }
+}
+"""
+
+
+def tree_modes(repo: str, sha: str, paths: list[str]) -> dict[str, str]:
+    """Each path's git mode at `sha` (octal text, `100644`), read from its
+    parent tree. Raises CarryUnavailable on any read that does not answer."""
+    owner, _, name = repo.partition("/")
+    by_dir: dict[str, list[str]] = {}
+    for path in paths:
+        parent, _, base = path.rpartition("/")
+        by_dir.setdefault(parent, []).append(base)
+    modes: dict[str, str] = {}
+    for parent, names in sorted(by_dir.items()):
+        cmd = ["gh", "api", "graphql", "-f", f"query={_TREE_MODES_QUERY}"]
+        cmd += ["-f", f"owner={owner}", "-f", f"name={name}", "-f", f"expression={sha}:{parent}"]
+        try:
+            data = json.loads(_gh_read(cmd))
+        except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+            raise CarryUnavailable(
+                f"reading modes at {sha[:12]} failed: {_first_line(exc)}"
+            ) from exc
+        tree = (((data or {}).get("data") or {}).get("repository") or {}).get("object")
+        entries = tree.get("entries") if isinstance(tree, dict) else None
+        if not isinstance(entries, list):
+            raise CarryUnavailable(f"no tree for `{parent or '.'}` at {sha[:12]}")
+        found = {e.get("name"): e.get("mode") for e in entries if isinstance(e, dict)}
+        for base in names:
+            mode = found.get(base)
+            if not isinstance(mode, int):
+                raise CarryUnavailable(f"no mode for `{parent}/{base}` at {sha[:12]}")
+            modes[f"{parent}/{base}" if parent else base] = f"{mode:o}"
+    return modes
+
+
 def _summary(verdict: Verdict) -> str:
     lines = ["### Sensitive Change Review", ""]
     if verdict.sensitive:
@@ -459,6 +689,8 @@ def _summary(verdict: Verdict) -> str:
             "   `Head commit` line: it must name the current head SHA.",
             "2. The check turns green within a minute, with no push.",
             "3. A new push resets this check: post it again for the new head.",
+            "   A push that leaves every sensitive file's diff byte-identical",
+            "   (a plain rebase) keeps the record for the earlier head.",
             "",
             "Only the author's comment counts this way. A reviewer can instead",
             'paste the filled template into an "Approve" review on this head.',
@@ -583,9 +815,45 @@ def main() -> int:
         print(f"Permission for @{login}: {permission}.")
         return permission
 
+    base_ref = ((pr.get("base") or {}).get("ref")) or ""
+    compared: dict[str, SensitivePatches | CarryUnavailable] = {}
+
+    def patches_of(sha: str) -> SensitivePatches:
+        # A three-dot compare diffs `sha` against its merge base with the base
+        # branch, which is what the PR's own file list shows for its head.
+        if sha not in compared:
+            try:
+                if not base_ref:
+                    raise CarryUnavailable("the PR names no base branch")
+                path = f"repos/{repo}/compare/{quote(base_ref, safe='')}...{sha}?per_page=1"
+                try:
+                    data = _gh_json(path)
+                except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+                    raise CarryUnavailable(
+                        f"GET compare for {sha[:12]} failed: {_first_line(exc)}"
+                    ) from exc
+                compare_rows = data.get("files") if isinstance(data, dict) else None
+                if not isinstance(compare_rows, list):
+                    raise CarryUnavailable(f"the compare for {sha[:12]} lists no files")
+                compared[sha] = sensitive_patches(
+                    compare_rows, lambda paths: tree_modes(repo, sha, paths)
+                )
+            except CarryUnavailable as exc:
+                compared[sha] = exc
+        result = compared[sha]
+        if isinstance(result, CarryUnavailable):
+            raise result
+        return result
+
     try:
         verdict = evaluate(
-            pr, changed_paths(rows), reviews, permission_of, head=event_head, comments=comments
+            pr,
+            changed_paths(rows),
+            reviews,
+            permission_of,
+            head=event_head,
+            comments=comments,
+            patches_of=patches_of,
         )
     except PermissionReadError as exc:
         print(f"::error::Could not read a reviewer's permission ({exc}); re-run this job.")

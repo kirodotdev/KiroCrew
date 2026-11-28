@@ -886,3 +886,400 @@ def test_a_write_sends_its_body_from_a_file_not_stdin(mod, monkeypatch) -> None:
     mod._gh_write("POST", "repos/o/r/issues/1/comments", "hello")
 
     assert seen == {"stdin": None, "body": {"body": "hello"}}
+
+
+# -- Carrying a record across a push that leaves the sensitive diff alone ------
+
+SANDBOX_PATCH = "@@ -10,6 +10,7 @@ def floor():\n     keep\n+    block('--mirror')\n     keep\n"
+
+
+def _row(name="src/kiro_crew/sandbox.py", patch=SANDBOX_PATCH, **extra):
+    lines = patch.split("\n") if isinstance(patch, str) else []
+    row = {
+        "filename": name,
+        "status": "modified",
+        "patch": patch,
+        "additions": sum(ln.startswith("+") for ln in lines),
+        "deletions": sum(ln.startswith("-") for ln in lines),
+    }
+    return dict(row, **extra)
+
+
+def _regular(paths):
+    return {path: "100644" for path in paths}
+
+
+def _diffs(mod, **by_head):
+    """patches_of over fixed compare rows per head; an exception is raised.
+
+    A head maps to its rows, or to (rows, modes) to set the modes it reads.
+    """
+
+    def patches_of(sha):
+        answer = by_head[sha]
+        if isinstance(answer, BaseException):
+            raise answer
+        rows, modes = answer if isinstance(answer, tuple) else (answer, None)
+        return mod.sensitive_patches(rows, (lambda _paths: modes) if modes else _regular)
+
+    return patches_of
+
+
+def _old_comment():
+    return _comment(body=_comment()["body"].replace(HEAD, OLD))
+
+
+def _eval_carry(mod, patches_of, comments=(), reviews=(), pr=None, perm=None):
+    return mod.evaluate(
+        pr or _pr(),
+        SENSITIVE,
+        list(reviews),
+        perm or _writers("alice", "bob"),
+        comments=list(comments),
+        patches_of=patches_of,
+    )
+
+
+def test_identical_sensitive_diff_carries_the_authors_comment(mod):
+    rows = [
+        _row(),
+        {"filename": "README.md", "status": "modified", "patch": "@@ -1 +1 @@\n-a\n+b\n"},
+    ]
+    readme_moved = [_row(), {"filename": "README.md", "status": "modified", "patch": "@@ x"}]
+    v = _eval_carry(mod, _diffs(mod, **{OLD: rows, HEAD: readme_moved}), comments=[_old_comment()])
+    assert v.ok, v.messages
+    assert f"@alice's template comment for {OLD[:12]} carries to {HEAD[:12]}" in v.messages[0]
+    assert "byte-identical" in v.messages[0]
+
+
+def test_identical_sensitive_diff_carries_a_template_approval(mod):
+    v = _eval_carry(
+        mod, _diffs(mod, **{OLD: [_row()], HEAD: [_row()]}), reviews=[_review(commit=OLD)]
+    )
+    assert v.ok, v.messages
+    assert f"@bob's template approval for {OLD[:12]}" in v.messages[0]
+
+
+def test_one_changed_byte_does_not_carry(mod):
+    changed = SANDBOX_PATCH.replace("--mirror", "--mirrOr")
+    v = _eval_carry(
+        mod, _diffs(mod, **{OLD: [_row()], HEAD: [_row(patch=changed)]}), comments=[_old_comment()]
+    )
+    assert not v.ok
+    assert "the diff of `src/kiro_crew/sandbox.py` changed" in " ".join(v.messages)
+
+
+def test_moved_hunk_does_not_carry(mod):
+    # A patch-id would match this; the exact patch text does not.
+    moved = SANDBOX_PATCH.replace("-10,6 +10,7", "-40,6 +40,7")
+    v = _eval_carry(
+        mod, _diffs(mod, **{OLD: [_row()], HEAD: [_row(patch=moved)]}), comments=[_old_comment()]
+    )
+    assert not v.ok
+
+
+def test_added_sensitive_file_does_not_carry(mod):
+    files = ["src/kiro_crew/sandbox.py", "src/kiro_crew/hooks.py"]
+    after = [_row(), _row(name="src/kiro_crew/hooks.py")]
+    v = mod.evaluate(
+        _pr(),
+        files,
+        [],
+        _writers("alice"),
+        comments=[_old_comment()],
+        patches_of=_diffs(mod, **{OLD: [_row()], HEAD: after}),
+    )
+    assert not v.ok
+    assert "set of sensitive files changed (`src/kiro_crew/hooks.py`)" in " ".join(v.messages)
+
+
+def test_removed_sensitive_file_does_not_carry(mod):
+    before = [_row(), _row(name="src/kiro_crew/hooks.py")]
+    v = _eval_carry(mod, _diffs(mod, **{OLD: before, HEAD: [_row()]}), comments=[_old_comment()])
+    assert not v.ok
+    assert "set of sensitive files changed" in " ".join(v.messages)
+
+
+def test_fork_is_refused_even_when_the_diff_is_identical(mod):
+    v = _eval_carry(
+        mod,
+        _diffs(mod, **{OLD: [_row()], HEAD: [_row()]}),
+        comments=[_old_comment()],
+        pr=_pr(head_repo={"full_name": "x/r"}),
+    )
+    assert not v.ok and v.fork
+
+
+def test_dismissed_approval_does_not_carry(mod):
+    reviews = [_review(commit=OLD), _review(commit=OLD, state="DISMISSED", body="")]
+    v = _eval_carry(mod, _diffs(mod, **{OLD: [_row()], HEAD: [_row()]}), reviews=reviews)
+    assert not v.ok
+
+
+def test_incomplete_earlier_record_does_not_carry(mod):
+    v = _eval_carry(
+        mod, _diffs(mod, **{OLD: [_row()], HEAD: [_row()]}), reviews=[_review(commit=OLD, body="")]
+    )
+    assert not v.ok
+
+
+def test_compare_failure_fails_closed(mod):
+    broken = mod.CarryUnavailable("GET compare failed: HTTP 404")
+    v = _eval_carry(mod, _diffs(mod, **{OLD: broken, HEAD: [_row()]}), comments=[_old_comment()])
+    assert not v.ok
+    assert "could not compare the two heads (GET compare failed: HTTP 404)" in " ".join(v.messages)
+
+
+def test_compare_that_disagrees_with_the_file_list_fails_closed(mod):
+    v = _eval_carry(mod, _diffs(mod, **{OLD: [], HEAD: []}), comments=[_old_comment()])
+    assert not v.ok
+    assert "disagrees with the PR's file list" in " ".join(v.messages)
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        {"patch": None},
+        {"patch": ""},
+        {"filename": "", "previous_filename": "src/kiro_crew/hooks.py"},
+    ],
+)
+def test_sensitive_file_without_patch_text_cannot_be_compared(mod, missing):
+    with pytest.raises(mod.CarryUnavailable):
+        mod.sensitive_patches([dict(_row(), **missing)], _regular)
+
+
+def test_compare_at_the_file_cap_cannot_be_compared(mod):
+    rows = [{"filename": f"f{i}", "patch": "x"} for i in range(mod.COMPARE_FILES_CAP)]
+    with pytest.raises(mod.CarryUnavailable):
+        mod.sensitive_patches(rows, _regular)
+
+
+def test_non_sensitive_rows_need_no_patch(mod):
+    assert mod.sensitive_patches([_row(), {"filename": "logo.png"}], _regular) == {
+        "src/kiro_crew/sandbox.py": ("", "modified", "100644", SANDBOX_PATCH)
+    }
+
+
+@pytest.mark.parametrize(
+    "line, want",
+    [
+        (f"- Head commit: {OLD}", OLD),
+        (f"- **Head commit:** `{OLD}`", OLD),
+        (f"- Head commit: {OLD[:12]}", ""),
+        (f"- Head commit: {OLD} and {HEAD}", ""),
+        ("- Head commit:", ""),
+    ],
+)
+def test_named_head_needs_one_full_sha(mod, line, want):
+    assert (
+        mod.named_head(f"## Sensitive change review\n{line}\n- What rule changed: x y z\n") == want
+    )
+
+
+def test_carry_compares_at_most_the_newest_heads(mod):
+    heads = [f"{i:x}" * 40 for i in range(1, mod.CARRY_MAX_HEADS + 3)]
+    comments = [_comment(body=_comment()["body"].replace(HEAD, h)) for h in heads]
+    asked = []
+
+    def patches_of(sha):
+        asked.append(sha)
+        raise mod.CarryUnavailable("unreadable")
+
+    assert not _eval_carry(mod, patches_of, comments=comments).ok
+    assert len(set(asked)) == mod.CARRY_MAX_HEADS
+    assert set(asked) == set(reversed(heads[-mod.CARRY_MAX_HEADS :]))
+
+
+def test_carry_is_off_without_a_compare(mod):
+    assert not _eval_carry(mod, None, comments=[_old_comment()]).ok
+
+
+def _carry_main(mod, monkeypatch, compare, summary_path, base_ref="main", modes_at=None):
+    pr = dict(_pr(), changed_files=1, base={"repo": SAME, "ref": base_ref})
+    asked = []
+    writes = []
+
+    def fake(path, paginate=False):
+        if path.endswith("/files?per_page=100"):
+            return [_row()]
+        if path.endswith("/reviews?per_page=100"):
+            return []
+        if path.endswith("/comments?per_page=100"):
+            return [_old_comment()]
+        if path.endswith("/permission"):
+            return {"permission": "write"}
+        if "/compare/" in path:
+            asked.append(path)
+            return compare(path)
+        return pr
+
+    monkeypatch.setattr(mod, "_gh_json", fake)
+    modes_at = modes_at or (lambda _sha, paths: _regular(paths))
+    monkeypatch.setattr(mod, "tree_modes", lambda _repo, sha, paths: modes_at(sha, paths))
+    monkeypatch.setattr(mod, "_gh_write", lambda method, p, body: writes.append(body))
+    monkeypatch.setenv("REPO", "o/r")
+    monkeypatch.setenv("PR", "1")
+    monkeypatch.setenv("EVENT_HEAD_SHA", HEAD)
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_path))
+    return mod.main(), asked, writes
+
+
+def test_main_carries_and_says_which_head(mod, monkeypatch, tmp_path):
+    code, asked, writes = _carry_main(
+        mod, monkeypatch, lambda _p: {"files": [_row()]}, tmp_path / "summary.md"
+    )
+    assert code == 0
+    assert asked == [
+        f"repos/o/r/compare/main...{OLD}?per_page=1",
+        f"repos/o/r/compare/main...{HEAD}?per_page=1",
+    ]
+    said = f"@alice's template comment for {OLD[:12]} carries to {HEAD[:12]}"
+    assert said in (tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert said in writes[0]
+
+
+def test_main_compare_read_error_fails_closed(mod, monkeypatch, tmp_path):
+    def compare(_path):
+        raise subprocess.CalledProcessError(1, ["gh"], stderr="gh: Not Found (HTTP 404)")
+
+    code, _asked, writes = _carry_main(mod, monkeypatch, compare, tmp_path / "summary.md")
+    assert code == 1
+    assert "could not compare the two heads" in writes[0]
+    assert "HTTP 404" in writes[0]
+
+
+def test_failure_summary_says_a_plain_rebase_keeps_the_record(mod):
+    text = mod._summary(_eval(mod, _pr(), SENSITIVE, []))
+    assert "keeps the record for the earlier head" in text
+
+
+# -- What a compare row does not show: mode, status, cut-short patches ---------
+
+
+def test_changed_mode_alone_does_not_carry(mod):
+    # A compare row shows no mode, so an exec-bit flip on an already edited
+    # file leaves the patch text identical.
+    sandbox = "src/kiro_crew/sandbox.py"
+    v = _eval_carry(
+        mod,
+        _diffs(mod, **{OLD: [_row()], HEAD: ([_row()], {sandbox: "100755"})}),
+        comments=[_old_comment()],
+    )
+    assert not v.ok
+    assert f"the mode of `{sandbox}` changed (100644 -> 100755)" in " ".join(v.messages)
+
+
+@pytest.mark.parametrize("mode", ["120000", "160000", "40000", ""])
+def test_symlink_submodule_or_unread_mode_cannot_be_compared(mod, mode):
+    modes = {"src/kiro_crew/sandbox.py": mode} if mode else {}
+    with pytest.raises(mod.CarryUnavailable, match="not a regular file"):
+        mod.sensitive_patches([_row()], lambda _paths: modes)
+
+
+def test_removed_file_reads_no_mode(mod):
+    asked = []
+
+    def modes_of(paths):
+        asked.append(paths)
+        return {}
+
+    patches = mod.sensitive_patches([_row(status="removed")], modes_of)
+    assert patches["src/kiro_crew/sandbox.py"][2] == ""
+    assert asked == []
+
+
+@pytest.mark.parametrize("status", ["changed", "copied", "unchanged", ""])
+def test_status_the_patch_cannot_show_cannot_be_compared(mod, status):
+    with pytest.raises(mod.CarryUnavailable, match="not compared"):
+        mod.sensitive_patches([_row(status=status)], _regular)
+
+
+def test_cut_short_patch_cannot_be_compared(mod):
+    with pytest.raises(mod.CarryUnavailable, match="disagrees with its line counts"):
+        mod.sensitive_patches([_row(additions=40)], _regular)
+
+
+def test_row_that_is_not_an_object_cannot_be_compared(mod):
+    with pytest.raises(mod.CarryUnavailable, match="not an object"):
+        mod.sensitive_patches([_row(), "src/kiro_crew/sandbox.py"], _regular)
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        {"status": "renamed", "previous_filename": "src/kiro_crew/sandbox_old.py"},
+        {"status": "added"},
+    ],
+)
+def test_rename_source_or_status_change_does_not_carry(mod, after):
+    before = _row(status="renamed", previous_filename="src/kiro_crew/sandbox_wrap.py")
+    files = ["src/kiro_crew/sandbox.py", "src/kiro_crew/sandbox_old.py"]
+    v = mod.evaluate(
+        _pr(),
+        files if after.get("previous_filename") else files[:1],
+        [],
+        _writers("alice"),
+        comments=[_old_comment()],
+        patches_of=_diffs(mod, **{OLD: [before], HEAD: [_row(**after)]}),
+    )
+    assert not v.ok
+    assert "the diff of `src/kiro_crew/sandbox.py` changed" in " ".join(v.messages)
+
+
+def _tree_answer(entries):
+    return json.dumps({"data": {"repository": {"object": {"entries": entries}}}})
+
+
+def test_tree_modes_reads_each_parent_tree_once(mod, gh_calls):
+    gh_calls["answers"] = [
+        _tree_answer([{"name": "a.py", "mode": 0o100644}, {"name": "b.py", "mode": 0o100755}]),
+        _tree_answer([{"name": "c.py", "mode": 0o120000}]),
+    ]
+    modes = mod.tree_modes("o/r", HEAD, ["src/a.py", "src/b.py", "src/x/c.py"])
+    assert modes == {"src/a.py": "100644", "src/b.py": "100755", "src/x/c.py": "120000"}
+    assert gh_calls["calls"] == 2
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        json.dumps({"data": {"repository": {"object": None}}}),
+        json.dumps({"errors": [{"message": "Something went wrong"}]}),
+        _tree_answer([{"name": "other.py", "mode": 0o100644}]),
+        _tree_answer([{"name": "a.py", "mode": "100644"}]),
+        "not json",
+        _err("gh: Not Found (HTTP 404)"),
+    ],
+)
+def test_tree_modes_fails_closed(mod, gh_calls, answer):
+    gh_calls["answers"] = [answer]
+    with pytest.raises(mod.CarryUnavailable):
+        mod.tree_modes("o/r", HEAD, ["src/a.py"])
+
+
+def test_main_changed_mode_fails_closed(mod, monkeypatch, tmp_path):
+    def modes_at(sha, paths):
+        return {p: "100755" if sha == HEAD else "100644" for p in paths}
+
+    code, _asked, writes = _carry_main(
+        mod, monkeypatch, lambda _p: {"files": [_row()]}, tmp_path / "s.md", modes_at=modes_at
+    )
+    assert code == 1
+    assert "the mode of `src/kiro_crew/sandbox.py` changed" in writes[0]
+
+
+def test_main_without_a_base_ref_fails_closed(mod, monkeypatch, tmp_path):
+    code, asked, writes = _carry_main(
+        mod, monkeypatch, lambda _p: {"files": [_row()]}, tmp_path / "s.md", base_ref=""
+    )
+    assert code == 1
+    assert asked == []
+    assert "the PR names no base branch" in writes[0]
+
+
+@pytest.mark.parametrize("answer", [[], "text", {"files": None}, {"files": {"a": 1}}])
+def test_main_malformed_compare_fails_closed(mod, monkeypatch, tmp_path, answer):
+    code, _asked, writes = _carry_main(mod, monkeypatch, lambda _p: answer, tmp_path / "s.md")
+    assert code == 1
+    assert "lists no files" in writes[0]
