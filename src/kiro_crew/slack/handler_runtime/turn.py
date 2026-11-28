@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         EVENT_TEXT_CHUNK,
         EVENT_THINKING_CHUNK,
         EVENT_TOOL_CALL,
+        EVENT_TOOL_CALL_UPDATE,
         SESSION_NOT_FOUND_GIVE_UP_TEXT,
         SESSION_NOT_FOUND_NOT_REPLAYED_TEXT,
         SESSION_NOT_FOUND_RETRY_NOTICE,
@@ -87,6 +88,7 @@ if TYPE_CHECKING:
         build_session_replay,
         build_working_blocks,
         canonical_key,
+        capabilities_of,
         consume_reinjection,
         context_template,
         continue_timed_out_calls,
@@ -978,6 +980,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             await turn.clear_working_indicators()
             return False
 
+        _refines_titles = capabilities_of(client).refines_tool_call_titles
         # A call whose own silence timer ends the prompt is handed back to the
         # model inside this turn (``acp.timed_out_continuation``): the same session
         # is told the call timed out, and its answer streams on into this reply.
@@ -999,6 +1002,11 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             elif event.kind == EVENT_TOOL_CALL:
                 await answer.release_quoted_hold()
                 await _screen_tool_call(turn, event)
+
+            elif event.kind == EVENT_TOOL_CALL_UPDATE:
+                # Refining backends only: a kiro-cli update titles a failed call by its tool.
+                if _refines_titles:
+                    await answer.on_tool_title(event)
 
             elif event.kind == EVENT_PERMISSION_REQUEST:
                 await answer.release_quoted_hold()

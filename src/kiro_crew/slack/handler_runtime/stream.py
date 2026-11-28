@@ -260,6 +260,18 @@ def _resolve_comment_hold(bracket_hold: str, accumulated: str) -> tuple[str, str
     return "", bracket_hold
 
 
+def _shown_tool_name(title: str) -> str:
+    """A tool call's title as the thread shows it: no ``Running:`` lead, redacted."""
+    tool_name, _ = redact_exfiltration_urls(title.removeprefix("Running: "))
+    tool_name, _ = redact_credentials(tool_name)
+    return tool_name
+
+
+def _tool_line(tool_name: str) -> str:
+    """The line a tool call adds to the answer when the turn does not stream."""
+    return f"\n🫆 `{tool_name}`\n"
+
+
 async def _safe_update(slack: SlackClientOps, channel: str, ts: str, text: str) -> None:
     """Update a Slack message, truncating if too long.
 
@@ -494,6 +506,11 @@ class _AnswerStream:
         self.active_task_id = ""  # current in-progress task
         self.active_task_title = ""  # display title (purpose or tool name)
         self.active_task_has_details = False  # opened with the tool name as details
+        self.active_task_has_purpose = False  # titled with its call's purpose
+        # What a refined title (``on_tool_title``) renames: the running call's
+        # ``tool_call_id`` and, when the turn does not stream, the line it added.
+        self.active_tool_call_id = ""
+        self.tool_line = ""
         self.tool_start_time = 0.0  # monotonic time when current tool started
         self.tool_timer_task: asyncio.Task | None = None  # periodic elapsed-time updater
         self.status_dirty = False  # True when status needs reset to base on next text chunk
@@ -1137,12 +1154,12 @@ class _AnswerStream:
     async def on_tool_call(self, event: LLMEvent) -> None:
         """Project a tool call the provider is already running: show its task card (or
         an inline line without streaming), and seal the message before a ``wait``."""
-        tool_name = event.title.removeprefix("Running: ")
-        tool_name, _ = redact_exfiltration_urls(tool_name)
-        tool_name, _ = redact_credentials(tool_name)
+        tool_name = _shown_tool_name(event.title)
         tool_kind = event.tool_kind or ""
         tool_detail = event.tool_purpose or tool_kind
-        tool_status = f"\n🫆 `{tool_name}`\n"
+        tool_status = _tool_line(tool_name)
+        self.active_tool_call_id = event.tool_call_id or ""
+        self.tool_line = ""
         # Keyed on the tool's programmatic identity when the transport
         # sent one (same rule as SlackRenderer); the title compare is the
         # fallback for a frame without ``_meta.kiro``.
@@ -1194,6 +1211,7 @@ class _AnswerStream:
             self.active_task_title = event.tool_purpose or tool_name
             self.active_task_title, _ = redact_exfiltration_urls(self.active_task_title)
             self.active_task_title, _ = redact_credentials(self.active_task_title)
+            self.active_task_has_purpose = bool(event.tool_purpose)
             _details = tool_name if tool_detail else ""
             self.active_task_has_details = bool(_details)
             await self.append_task(
@@ -1205,6 +1223,7 @@ class _AnswerStream:
             self.start_tool_timer()
         else:
             self.accumulated += tool_status
+            self.tool_line = tool_status
             # ``stream_ts`` may be None here: ``ensure_started``
             # demoted (``use_slack_stream`` False) AND its chat.update
             # fallback post failed, so there is no placeholder to edit.
@@ -1285,6 +1304,41 @@ class _AnswerStream:
             if self.carried:
                 # The next text continues that run, so no gap goes between them.
                 self.tool_gap = False
+
+    async def on_tool_title(self, event: LLMEvent) -> None:
+        """Rename the running call's step with the title its ``tool_call_update`` sends.
+
+        ``_run_turn`` calls this only on a backend whose capabilities say
+        ``refines_tool_call_titles``, and it acts only for the call ``on_tool_call``
+        showed last. The open card takes the title in place (same task id) unless
+        its call's purpose titles it; without a stream the call's line is rewritten
+        while it still ends the answer. A closed card, a line that text has
+        followed and the ``is using …`` status keep what they showed.
+        """
+        if not event.tool_call_id or event.tool_call_id != self.active_tool_call_id:
+            return
+        tool_name = _shown_tool_name(event.title)
+        if not tool_name:
+            return
+        if self.use_slack_stream:
+            if (
+                self.active_task_id
+                and not self.active_task_has_purpose
+                and tool_name != self.active_task_title
+            ):
+                self.active_task_title = tool_name
+                await self.append_task(self.active_task_id, tool_name, "in_progress")
+        elif self.tool_line and self.accumulated.endswith(self.tool_line):
+            line = _tool_line(tool_name)
+            if line == self.tool_line:
+                return
+            self.accumulated = self.accumulated[: -len(self.tool_line)] + line
+            self.tool_line = line
+            if self.stream_ts and self.channel_activation != ACTIVATION_REVIEW:
+                await _safe_update(
+                    self.slack, self.channel, self.stream_ts, redact(self.accumulated) + _CURSOR
+                )
+                self.last_edit = time.monotonic()
 
     def take_carried(self) -> None:
         """Put the text carried across a ``wait`` back into the answer.

@@ -765,9 +765,10 @@ live renderer's `observe` as the driver's `event_tap`:
   `OutputEvent` does not carry (a tool call's arguments and identity, a tool's
   result). Its return value is ignored and an exception it raises is logged and
   swallowed.
-- The live renderer consumes `TEXT_CHUNK` and `TOOL_CALL` (paired by
-  `tool_call_id` with the raw event the tap saw) and the raw tool results. It is
-  fenced: the first failure of its sink switches it off for the rest of the turn.
+- The live renderer consumes `TEXT_CHUNK`, `TOOL_CALL` (paired by
+  `tool_call_id` with the raw event the tap saw), `TOOL_TITLE` (below) and the
+  raw tool results. It is fenced: the first failure of its sink switches it off
+  for the rest of the turn.
   Nothing it does waits on disk: the sink queues each step's transcript write on
   one ordered background writer.
 - Before any reply write the step writes are SETTLED: `TeeRenderer` settles the
@@ -798,8 +799,14 @@ live renderer's `observe` as the driver's `event_tap`:
   carries the turn's own `source_thread` / `source_user` / `agent`. History
   readers filter to user/assistant rows, so a recorded step never enters a later
   prompt.
-- Not carried: a `tool_call_update` refinement (the step keeps its first title;
-  kiro-cli sends the full title on the call itself), a tool's output on the
+- A call's refined title (`TOOL_TITLE`, which the driver sends only on a backend
+  whose capabilities say `refines_tool_call_titles`, right after the tap saw the
+  update) takes the last raw `tool_call_update` the tap saw, when it names the
+  same `tool_call_id`, and goes out as the runner's own refinement frame: the
+  `tool_call` frame with `is_update` set and no empty `purpose`, which the tab
+  merges into the step's pill and current-step line.
+  The stored row keeps the title it was written with.
+- Not carried: a tool's output on the
   stored row (it reaches the open tab as the `tool_result` frame only), and the
   streamed text in a mid-turn snapshot of the tab (it is frames only, so a tab
   re-read mid-turn shows the text from the next chunk on, and the reply replaces
