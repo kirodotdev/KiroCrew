@@ -76,6 +76,7 @@ from kiro_crew.config.memory_sections import (
     dream_mode_from,
     extraction_instructions_from,
     fact_origin_gate_mode_from,
+    inject_lessons_per_turn_mode_from,
     kind_routing_mode_from,
     lesson_fold_mode_from,
     lesson_origin_gate_mode_from,
@@ -425,7 +426,9 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         dream=dream_mode_from(section.get("dream")),
         inject_memory=section.read("inject_memory", _safe_bool),
         inject_lessons=section.read("inject_lessons", _safe_bool),
-        inject_lessons_per_turn=section.read("inject_lessons_per_turn", _safe_bool),
+        inject_lessons_per_turn=inject_lessons_per_turn_mode_from(
+            section.get("inject_lessons_per_turn")
+        ),
         inject_activity=section.read("inject_activity", _safe_bool),
         startup_recall_timeout_secs=section.read(
             "startup_recall_timeout_secs", _safe_float, 0.0, STARTUP_RECALL_TIMEOUT_MAX_SECS

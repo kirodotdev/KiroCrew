@@ -665,10 +665,12 @@ def build_session_context(
         renderer=lessons_renderer,
         part_index=lessons_part_index,
     )
-    if session_key and _cfg.memory.inject_lessons_per_turn:
+    if session_key and _cfg.memory.inject_lessons_per_turn != "off":
         # The block as sent, after any trim: per-message lessons skip what it holds.
         self._remember_startup_lessons(
-            session_key, parts[lessons_part_index] if lessons_part_index is not None else ""
+            session_key,
+            parts[lessons_part_index] if lessons_part_index is not None else "",
+            shadow=_cfg.memory.inject_lessons_per_turn == "shadow",
         )
 
     # Admit background as whole source blocks, never by slicing the joined

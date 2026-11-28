@@ -407,7 +407,7 @@ _STORE_SIGNATURES = {
     "set_semantic_if_absent": "(self, key: 'str', value: 'object', confidence: 'float', source: 'str', *, facets: \"'memory_schema.MemoryFacets | None'\" = None) -> 'str'",
     "space_generation": "(self) -> 'int'",
     "startup_lesson_query": "(self, query_text: 'str') -> '_RecallQuery'",
-    "turn_lessons": "(self, query_text: 'str', *, shown: 'Callable[[str], bool]', project_dir: 'str | Path | None' = None, max_rows: 'int', max_chars: 'int', render_lesson: 'Callable[[str], str] | None' = None) -> 'list[tuple[str, str]]'",
+    "turn_lessons": "(self, query_text: 'str', *, shown: 'Callable[[str], bool]', project_dir: 'str | Path | None' = None, max_rows: 'int', max_chars: 'int', render_lesson: 'Callable[[str], str] | None' = None, facts: 'dict[str, dict[str, str]] | None' = None) -> 'list[tuple[str, str]]'",
     "update_lesson_applies": "(self, rule: 'str', repo_scope: 'str | None' = None, *, current: 'str', applies: 'str') -> 'str'",
     "validate_semantic": "(self, key: 'str', value: 'object', confidence: 'float', source: 'str', *, value_json: 'str | None' = None) -> 'tuple[SemanticRejectCode, str] | None'",
     "with_record_metadata": "(self, rows: 'list[dict]') -> 'list[dict]'",

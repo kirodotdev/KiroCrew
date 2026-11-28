@@ -101,6 +101,9 @@ def test_observing_is_false_only_when_every_stage_is_off() -> None:
         for name in ("kind_routing", "lesson_fold", "rule_authority_order", "relevance_rule")
     }
     assert trace.observing(SimpleNamespace(**vars(off), **on)) is False
+    # Per-message lessons under enforce (a stored true) asked for no outcome lines.
+    enforced = {**vars(off), "inject_lessons_per_turn": "enforce"}
+    assert trace.observing(SimpleNamespace(**enforced)) is False
     for stage in msr.STAGES:
         mode = "propose" if stage.name == "dream" else "shadow"
         flags = {**vars(off), stage.name: mode}

@@ -184,6 +184,16 @@ and session starts and reports the next UTC midnight as `window_start`. This
 conservatively undercounts readiness by at most one day, avoiding counters that
 mix policy versions. A start exactly at UTC midnight keeps that day.
 
+`memory.inject_lessons_per_turn` adds lessons rather than dropping them, so its
+row reads the other way round. Seen is the follow-up turns it checked and changed
+is the lessons `enforce` would have added. Its miss is a would-add lesson that
+the same session later recalled or re-taught: a lesson `off` held back that the
+session needed. Its control is a hashed sample of the session-start lessons,
+scored the same way. It passes when at least one would-add lesson was needed and
+its rate is no lower than the control's. A line under the table counts the
+would-add lessons by tier and source, including `legacy` rows labelled
+`user_explicit`.
+
 ## Memory Modes
 
 Each session can operate in one of three memory modes:
