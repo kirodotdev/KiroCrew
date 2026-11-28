@@ -6,10 +6,11 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useProvider } from '../../providers'
 import { providerUsageQuery } from '../../api/providerUsageQuery'
 import { api } from '../../api/client'
-import { reportsCredits, reportsDollars } from '../../api/acpBackend'
+import { configuredAcpBackend, reportsCredits, reportsDollars } from '../../api/acpBackend'
 import { failedWithNoData } from '../../api/queryState'
 import { reportForError } from '../../utils/errorReport'
 import type { AcpBackendConfig } from '../../api/acpBackend'
+import { PlanLimitsCard } from './PlanLimitsCard'
 import { TokenDailyChart } from './TokenDailyChart'
 import { TokenStackedAreaChart } from './TokenStackedAreaChart'
 import { formatCost } from '../../utils/formatCost'
@@ -101,6 +102,12 @@ export default function UsageTab() {
   return (
     <div className="space-y-4">
       {err && <ErrorNotice title={i18nT('pages.sessionsTab.could_not_refresh')} message={err} askAgent />}
+      {/* The account plan windows Codex reports, apart from the token and
+          cost totals below, which count only this install's turns. */}
+      <PlanLimitsCard
+        limits={data.planLimits}
+        defaultBackend={cfgQuery.data ? configuredAcpBackend(cfgQuery.data) : undefined}
+      />
       {b && b.plan && (
         <Card>
           <CardTitle><BarChart3 className="lucide-inline" /> {i18nT('pages.overview.usageTab.billing')}</CardTitle>
