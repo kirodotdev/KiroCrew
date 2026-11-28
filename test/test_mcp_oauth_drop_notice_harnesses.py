@@ -83,6 +83,7 @@ def _surfaced(
     monkeypatch.setattr(chat_runner, "_notice_spec_hooks_run_nowhere", _nothing)
     monkeypatch.setattr(chat_runner, "_notice_tools_settings_applied_nowhere", _nothing)
     monkeypatch.setattr(chat_runner, "_surface_overlong_hook_commands", _nothing)
+    monkeypatch.setattr(chat_runner, "_surface_invalid_matcher_hooks", _nothing)
     monkeypatch.setattr(chat_runner, "_surface_withheld_project_hooks", _nothing)
     monkeypatch.setattr(chat_runner, "_surface_withheld_project_hook_files", _nothing)
     monkeypatch.setattr(chat_runner, "_surface_kas_project_hooks", _nothing)

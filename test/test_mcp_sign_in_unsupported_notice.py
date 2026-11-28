@@ -41,6 +41,7 @@ def _surfaced(monkeypatch, lost: list[str]) -> list[dict]:
     # Only the lost-keys row is under test; the other session-start notices read
     # the filesystem and are covered by their own tests.
     monkeypatch.setattr(chat_runner, "_surface_overlong_hook_commands", _nothing)
+    monkeypatch.setattr(chat_runner, "_surface_invalid_matcher_hooks", _nothing)
     monkeypatch.setattr(chat_runner, "_surface_withheld_project_hooks", _nothing)
     monkeypatch.setattr(chat_runner, "_surface_withheld_project_hook_files", _nothing)
     client = SimpleNamespace(
