@@ -294,8 +294,11 @@ def _untracked_collisions(proj: str, target: str, env: dict[str, str]) -> list[s
     def _all_removed_below(directory: Path) -> bool:
         """Whether every file under *directory* is one the reset deletes."""
         for here, dirs, files in os.walk(directory):
-            # os.walk lists a symlink to a directory under dirs and never enters it.
-            links = [d for d in dirs if os.path.islink(os.path.join(here, d))]
+            # os.walk lists a link to a directory under dirs. Its own link test is
+            # os.path.islink, False for a Windows junction, so it would enter one and
+            # judge this directory by the target's files, which are not this checkout's.
+            links = [d for d in dirs if platform_compat.is_link_or_junction(os.path.join(here, d))]
+            dirs[:] = [d for d in dirs if d not in links]
             for file_name in [*files, *links]:
                 if not _removed(Path(here, file_name).relative_to(root).as_posix()):
                     return False
