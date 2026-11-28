@@ -264,11 +264,14 @@ class TestOrphanForwarderReclaim:
         comparing ``ssh`` with ``/usr/bin/ssh`` element-exactly would leak every orphan.
         """
         import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew import platform_compat as pc
         from kiro_crew.instances import token_mint
 
         head = sys.executable
         monkeypatch.setattr(token_mint, "resolve_ssh_bin", lambda: head)
         self._fake_orphan(monkeypatch)
+        real_exists = pc.pid_exists
+        monkeypatch.setattr(pc, "pid_exists", lambda p: p == 424242 or real_exists(p))
         sign = self._pin_identity_key(monkeypatch)
         seen: dict = {}
 
@@ -1248,3 +1251,219 @@ class TestOrphanForwarderReclaim:
 
         assert outcome == "recycled_during_grace"
         assert delivered == [pc.SIGTERM], "SIGKILL must be withheld on argv change"
+
+    _GONE_PID = 424243
+
+    @staticmethod
+    def _gone_fields(reg):
+        inst = reg.get("cd-1")
+        return (
+            inst.local_port,
+            inst.was_connected,
+            inst.forwarder_pid,
+            inst.forwarder_start,
+            inst.forwarder_sig,
+            inst.forwarder_argv_sig,
+        )
+
+    @staticmethod
+    def _record_gone_signals(monkeypatch):
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew import platform_compat as pc
+
+        sent: list = []
+        monkeypatch.setattr(pc, "kill_pid", lambda pid, sig: sent.append((pid, sig)) or True)
+        monkeypatch.setattr(
+            pc,
+            "kill_pid_pinned",
+            lambda pid, start, sig: sent.append((pid, sig)) or True,
+        )
+        monkeypatch.setattr(
+            stm._SshTunnel,
+            "_signal_group",
+            staticmethod(lambda pid, sig: sent.append((pid, sig)) or True),
+        )
+        reached: list = []
+        real_verify = stm._verify_and_reclaim_forwarder
+
+        def verify(*args, **kwargs):
+            reached.append(args[0])
+            return real_verify(*args, **kwargs)
+
+        monkeypatch.setattr(stm, "_verify_and_reclaim_forwarder", verify)
+        return sent, reached
+
+    def _absent_pid(self, monkeypatch):
+        from kiro_crew import platform_compat as pc
+
+        real_exists = pc.pid_exists
+        asked: list = []
+
+        def exists(p):
+            if p == self._GONE_PID:
+                asked.append(p)
+                return False
+            return real_exists(p)
+
+        monkeypatch.setattr(pc, "pid_exists", exists)
+        return asked
+
+    async def _reclaim_cd1(self, reg, mgr):
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+
+        params = stm._TransportParams(method="ssh", ssh_host="cd-1-alias")
+        async with mgr._lock:
+            await mgr._reclaim_orphan_forwarder(reg.get("cd-1"), params)
+
+    @pytest.mark.asyncio
+    async def test_absent_pid_clears_the_record_and_signals_nothing(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+
+        asked = self._absent_pid(monkeypatch)
+        sent, reached = self._record_gone_signals(monkeypatch)
+        sign = self._pin_identity_key(monkeypatch)
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+        try:
+            reg, mgr = self._mgr(tmp_path)
+            self._record(
+                reg,
+                port=port,
+                pid=self._GONE_PID,
+                start="12345",
+                sig=sign("cd-1", self._GONE_PID, "12345", port),
+            )
+
+            with caplog.at_level(logging.INFO, logger=stm.logger.name):
+                await self._reclaim_cd1(reg, mgr)
+        finally:
+            holder.close()
+
+        assert asked == [self._GONE_PID]
+        assert self._gone_fields(reg) == (port, True, 0, "", "", "")
+        assert sent == []
+        assert reached == []
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("Clearing recorded ssh forwarder pid" in m for m in messages)
+        assert not any("still reads as its live spawner" in m for m in messages)
+
+    @pytest.mark.asyncio
+    async def test_bad_signature_with_absent_pid_writes_nothing(self, tmp_path, monkeypatch):
+        asked = self._absent_pid(monkeypatch)
+        sent, reached = self._record_gone_signals(monkeypatch)
+        self._pin_identity_key(monkeypatch)
+        reg, mgr = self._mgr(tmp_path)
+        self._record(reg, port=50601, pid=self._GONE_PID, start="12345", sig="deadbeef" * 8)
+        before = self._gone_fields(reg)
+        writes: list = []
+        real_update = reg.update
+        monkeypatch.setattr(
+            reg, "update", lambda *a, **k: writes.append((a, k)) or real_update(*a, **k)
+        )
+
+        await self._reclaim_cd1(reg, mgr)
+
+        assert writes == []
+        assert asked == []
+        assert self._gone_fields(reg) == before
+        assert sent == []
+        assert reached == []
+
+    _LIVE_PID = 424244
+    _LIVE_START = "live-start"
+
+    def _live_pid(self, monkeypatch):
+        """Fabricate a live pid through process-probe doubles (no child spawned)."""
+        from kiro_crew import platform_compat as pc
+
+        real_exists = pc.pid_exists
+        real_start = pc.process_start_time
+        monkeypatch.setattr(pc, "pid_exists", lambda p: p == self._LIVE_PID or real_exists(p))
+        monkeypatch.setattr(
+            pc,
+            "process_start_time",
+            lambda p: self._LIVE_START if p == self._LIVE_PID else real_start(p),
+        )
+
+    @staticmethod
+    def _port_holder():
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        return holder, holder.getsockname()[1]
+
+    @pytest.mark.asyncio
+    async def test_live_pid_with_a_different_start_time_is_left_as_recorded(
+        self, tmp_path, monkeypatch
+    ):
+        self._live_pid(monkeypatch)
+        holder, port = self._port_holder()
+        try:
+            self._fake_orphan(monkeypatch)
+            sent, reached = self._record_gone_signals(monkeypatch)
+            sign = self._pin_identity_key(monkeypatch)
+            recorded = "not-the-live-start-time"
+            reg, mgr = self._mgr(tmp_path)
+            self._record(
+                reg,
+                port=port,
+                pid=self._LIVE_PID,
+                start=recorded,
+                sig=sign("cd-1", self._LIVE_PID, recorded, port),
+            )
+            before = self._gone_fields(reg)
+
+            await self._reclaim_cd1(reg, mgr)
+
+            assert self._gone_fields(reg) == before
+            # A fingerprint-free record is verified once per argv candidate.
+            assert reached and set(reached) == {self._LIVE_PID}
+            assert sent == []
+        finally:
+            holder.close()
+
+    @pytest.mark.asyncio
+    async def test_live_pid_whose_parent_reads_minus_one_is_left_as_recorded(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew import platform_compat as pc
+
+        self._live_pid(monkeypatch)
+        holder, port = self._port_holder()
+        try:
+            monkeypatch.setattr(pc, "IS_WINDOWS", False)
+            monkeypatch.setattr(pc, "get_ppid", lambda pid: -1)
+            sent, reached = self._record_gone_signals(monkeypatch)
+            sign = self._pin_identity_key(monkeypatch)
+            start = self._LIVE_START
+            reg, mgr = self._mgr(tmp_path)
+            self._record(
+                reg,
+                port=port,
+                pid=self._LIVE_PID,
+                start=start,
+                sig=sign("cd-1", self._LIVE_PID, start, port),
+            )
+            before = self._gone_fields(reg)
+
+            with caplog.at_level(logging.INFO, logger=stm.logger.name):
+                await self._reclaim_cd1(reg, mgr)
+
+            assert self._gone_fields(reg) == before
+            assert reached == []
+            assert sent == []
+            assert any(
+                "Not reclaiming recorded" in r.getMessage() and "parent pid -1" in r.getMessage()
+                for r in caplog.records
+            )
+        finally:
+            holder.close()

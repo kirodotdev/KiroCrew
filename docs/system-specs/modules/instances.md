@@ -748,6 +748,11 @@ trust root (`sel_hmac_key_path()`, domain-separated exactly like the
 `session_pid_sig` sidecar protocol) — a root an agent can neither read nor
 replace, so a record written, edited, or re-pointed by anything but the
 gateway fails verification outright and nothing is ever signalled for it.
+Once the MAC verifies, a recorded pid that no process has any more
+(`platform_compat.pid_exists` is false) has its forwarder identity cleared in
+one write and nothing is signalled; `local_port` and `was_connected` stay as
+recorded, so the port is still preferred. A pid that exists, including one
+whose parent pid cannot be read, goes on to the checks below.
 Behind the MAC, defense in depth from kernel-owned facts: the candidate must
 be a genuine ORPHAN — not a pid this manager currently supervises, and
 whose spawning gateway is gone (`_forwarder_orphan_state`). On POSIX that is
