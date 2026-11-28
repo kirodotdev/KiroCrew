@@ -31,7 +31,6 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Collection
 from kiro_crew import mediated_request_capability
 from kiro_crew import sel as sel_module
 from kiro_crew.acp import batch_guard, launch_tuning, pi_steer_turn, transport_framing
-from kiro_crew.acp.client_antigravity import _parse_antigravity_version
 from kiro_crew.acp.client_claude_session import (  # noqa: F401 -- CLAUDE_ACP_TESTED_VERSION
     CLAUDE_ACP_STEERING_MIN_VERSION,
     CLAUDE_ACP_TESTED_INSTALL,
@@ -282,25 +281,22 @@ def _tested_range_label(low: tuple[int, int, int], high: tuple[int, int, int]) -
 
 
 def untested_version_issue(backend: str, agent_version: str) -> str:
-    """Return a warning when *agent_version* sits outside the tested range for *backend*."""
+    """The notice for an *agent_version* outside *backend*'s tested range, else ``""``.
+
+    A warning only: the session still runs. A backend with no tested range, and an
+    absent or unreadable version, gets none. Parsed by :func:`_adapter_version_at_least`,
+    the reader the goose steer floor uses, so the two notices read one version alike.
+    """
     range_and_fix = _TESTED_VERSION_RANGES.get(backend)
     display_version = agent_version.strip() if isinstance(agent_version, str) else ""
     if range_and_fix is None or not display_version:
         return ""
     (low, high), fix = range_and_fix
-    if backend == ACP_BACKEND_ANTIGRAVITY:
-        parsed = _parse_antigravity_version(display_version)
-        if parsed is None:
-            return ""
-        newer = parsed >= (*high, 0)
-        if (*low, 1) <= parsed and not newer:
-            return ""
-    else:
-        if not _adapter_version_at_least(display_version, (0, 0, 0)):
-            return ""
-        newer = _adapter_version_at_least(display_version, high)
-        if _adapter_version_at_least(display_version, low) and not newer:
-            return ""
+    if not _adapter_version_at_least(display_version, (0, 0, 0)):
+        return ""
+    newer = _adapter_version_at_least(display_version, high)
+    if _adapter_version_at_least(display_version, low) and not newer:
+        return ""
     tested = _tested_range_label(low, high)
     advice = (
         _NEWER_THAN_TESTED_ADVICE.get(backend) if newer else _OLDER_THAN_TESTED_ADVICE.get(backend)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -16,7 +15,7 @@ from kiro_crew import context as context_mod
 from kiro_crew import steering_plan
 from kiro_crew.acp import _dispatch
 from kiro_crew.acp import client as client_mod
-from kiro_crew.acp import client_antigravity, client_claude_session, client_turn_control
+from kiro_crew.acp import client_claude_session, client_turn_control
 from kiro_crew.acp._dispatch import agent_version_from_init
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.client_antigravity import _refuse_unverified_antigravity_version
@@ -66,13 +65,6 @@ def _antigravity_client(version: object) -> AcpClient:
     return client
 
 
-def _clear_version_warning_cache(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Clear per-process warning state so each test checks fresh log output."""
-    for attr in ("_warned_versions", "_antigravity_versions_noted"):
-        if hasattr(client_antigravity, attr):
-            monkeypatch.setattr(client_antigravity, attr, set())
-
-
 def test_antigravity_version_constants_exports_and_hints() -> None:
     assert antigravity_mod.ANTIGRAVITY_MIN_VERSION == (1, 4, 4)  # flake-ok: version tuple
     assert ANTIGRAVITY_VERIFIED_VERSION == "1.5.0"
@@ -88,14 +80,8 @@ def test_antigravity_version_constants_exports_and_hints() -> None:
     assert "refuses other versions" not in remedy.lower()
 
 
-@pytest.mark.parametrize(
-    "version",
-    ["1.4.4", "1.4.5", "1.5.0", "1.6.0", "2.0.0", "", None, "dev"],
-)
-def test_refuse_unverified_antigravity_version_accepts_floor_and_unparseable(
-    version: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _clear_version_warning_cache(monkeypatch)
+@pytest.mark.parametrize("version", ["1.4.4", "1.4.5", "1.5.0", "1.6.0", "2.0.0", " 1.5.0 "])
+def test_refuse_unverified_antigravity_version_accepts_floor_and_newer(version: str) -> None:
     _refuse_unverified_antigravity_version(_antigravity_client(version))
 
 
@@ -106,32 +92,22 @@ def test_refuse_unverified_antigravity_version_refuses_below_floor(version: str)
     exc = exc_info.value
     assert exc.transient is False
     assert exc.user_worded is True
-    assert "1.4.4" in str(exc)
+    assert f"{version} is older than the minimum version 1.4.4" in str(exc)
     assert "only" not in str(exc).lower()
 
 
-@pytest.mark.parametrize("version", ["2.0.0", "dev", ""])
-def test_refuse_unverified_antigravity_version_logs_once_per_process(
-    version: str, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("version", ["", None, "dev", "1.4", "\u0661.\u0664.\u0665", 123])
+def test_refuse_unverified_antigravity_version_refuses_absent_or_unreadable(
+    version: object,
 ) -> None:
-    _clear_version_warning_cache(monkeypatch)
-    assert client_turn_control.ANTIGRAVITY_TESTED_RANGE == ((1, 4, 4), (2, 0, 0))
-    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.client"):
+    """A runtime with no readable version is refused, as before the floor replaced the pin."""
+    with pytest.raises(AcpToolGateUnroutable) as exc_info:
         _refuse_unverified_antigravity_version(_antigravity_client(version))
-        _refuse_unverified_antigravity_version(_antigravity_client(version))
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) == 1
-
-
-def test_refuse_unverified_antigravity_version_is_silent_inside_tested_range(
-    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _clear_version_warning_cache(monkeypatch)
-    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.client"):
-        for version in ("1.4.4", "1.4.5", "1.5.0", "1.9.9"):
-            _refuse_unverified_antigravity_version(_antigravity_client(version))
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert warnings == []
+    exc = exc_info.value
+    assert exc.transient is False
+    assert exc.user_worded is True
+    assert "did not report a version Kiro Crew can read" in str(exc)
+    assert ANTIGRAVITY_INSTALL_HINT in str(exc)
 
 
 @pytest.mark.parametrize(
@@ -1341,48 +1317,20 @@ async def test_antigravity_read_prompt_response_and_stream_handle_unattributed_e
             pass
 
 
-def test_antigravity_semver_prereleases_prefixes_whitespace_and_command_text(
-    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Reject prereleases and short versions below 1.4.4, accept v-prefixes, and guard parsers."""
-    for below_floor in ("1.4.4-rc.1", "v1.4.3", "V1.4.3", "1.4"):
-        with pytest.raises(AcpToolGateUnroutable) as exc_info:
-            _refuse_unverified_antigravity_version(_antigravity_client(below_floor))
-        assert exc_info.value.transient is False
-        assert exc_info.value.user_worded is True
-        issue = client_turn_control.untested_version_issue(ACP_BACKEND_ANTIGRAVITY, below_floor)
-        assert "install agy-acp-server 1.5.0" not in issue
-        assert ANTIGRAVITY_INSTALL_HINT in issue
+def test_antigravity_tested_range_notice_reads_one_parser() -> None:
+    """The floor and the tested-range notice read a version through one parser."""
+    for silent in ("1.4.4", "1.10.0", "1.4.4+build.1", " 1.5.0 "):
+        _refuse_unverified_antigravity_version(_antigravity_client(silent))
+        assert client_turn_control.untested_version_issue(ACP_BACKEND_ANTIGRAVITY, silent) == ""
 
-    _clear_version_warning_cache(monkeypatch)
-    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.client"):
-        for silent in ("v1.5.0", "V1.5.0", "1.10.0", "1.4.4+build.1", " 1.5.0 "):
-            _refuse_unverified_antigravity_version(_antigravity_client(silent))
-            assert client_turn_control.untested_version_issue(ACP_BACKEND_ANTIGRAVITY, silent) == ""
-    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
-
-    # Keep Unicode digits unparseable with ASCII regex and log once instead of refusing as 1.4.3.
-    caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.client"):
-        _refuse_unverified_antigravity_version(_antigravity_client("١.٤.٣"))
-        _refuse_unverified_antigravity_version(_antigravity_client("١.٤.٣"))
-    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
-    assert client_turn_control.untested_version_issue(ACP_BACKEND_ANTIGRAVITY, "١.٤.٣") == ""
-
-    # Whitespace around 2.0.0 agrees across both checks, and non-strings never raise TypeError.
-    caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.client"):
-        _refuse_unverified_antigravity_version(_antigravity_client(" 2.0.0 "))
-        _refuse_unverified_antigravity_version(_antigravity_client("2.0.0"))
-    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
-
-    for above in (" 2.0.0 ", "v2.0.0"):
+    for above in (" 2.0.0 ", "2.1.0"):
         notice = client_turn_control.untested_version_issue(ACP_BACKEND_ANTIGRAVITY, above)
         assert "Google Antigravity" in notice
         assert "1.4.4 to 1.x" in notice
         assert "A Kiro Crew update moves the tested range." in notice
 
     assert client_claude_session._adapter_version_at_least(" 2.0.0 ", (2, 0, 0)) is True
-    assert client_claude_session._adapter_version_at_least("١.٤.٣", (0, 0, 0)) is False
-    assert client_claude_session._adapter_version_at_least(123, (0, 0, 0)) is False  # type: ignore[arg-type]
+    assert (
+        client_claude_session._adapter_version_at_least("\u0661.\u0664.\u0663", (0, 0, 0)) is False
+    )
     assert client_turn_control.untested_version_issue(ACP_BACKEND_ANTIGRAVITY, 123) == ""  # type: ignore[arg-type]

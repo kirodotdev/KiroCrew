@@ -69,6 +69,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     UPDATE_AGENT_THOUGHT_CHUNK,
     UPDATE_TOOL_CALL,
     UPDATE_TOOL_CALL_UPDATE,
+    UPDATE_USAGE,
     AcpEvent,
     JsonRpcMessage,
     RefusalInfo,

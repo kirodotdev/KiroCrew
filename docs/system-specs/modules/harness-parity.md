@@ -706,7 +706,7 @@ and `test_claude_native_child_stop.py`.
 ### Antigravity: version floor, cross-folder load, and unattributed turn failures
 
 Google Antigravity (`ACP_BACKEND_ANTIGRAVITY`) checks `ANTIGRAVITY_MIN_VERSION` (`1.4.4`) at the handshake.
-Runtimes outside `ANTIGRAVITY_TESTED_RANGE` (`1.4.4` to `< 2.0.0`, verified through `1.5.0`) log one warning per process.
+A runtime at `2.0.0` or newer, above `ANTIGRAVITY_TESTED_RANGE` (`1.4.4` to `< 2.0.0`, verified through `1.5.0`), runs and gets the shared tested-range notice (`untested_version_issue`). A runtime below `1.4.4`, or one with no readable version, is refused.
 Cross-folder `session/load` works across directories, so `ACP_BACKEND_ANTIGRAVITY` stays outside `ACP_BACKENDS_CWD_BOUND_SESSIONS`.
 
 Antigravity receives `mcpServers` on each `session/new` and `session/load` through `ACP_BACKENDS_SESSION_MCP_ARRAY`.
