@@ -760,13 +760,18 @@ def _refuse_unless_json_object(src: Path, label: str, *, installed: bool) -> Non
 
     Only structure is checked, not schema: field-level checks would duplicate each
     consumer's validation and refuse bundles those consumers accept. For the same reason
-    a leading byte-order mark is accepted where the file's readers accept one.
+    a leading byte-order mark is accepted where the file's readers accept one, and
+    `hooks.json` is parsed from its bytes as the hook store parses it, so UTF-16 and
+    UTF-32 pass there too.
     """
     try:
-        text = src.read_text(encoding="utf-8")
-        if src.name in _BOM_TOLERANT_JSON_OBJECTS:
-            text = strip_utf8_bom(text)
-        parsed = json.loads(text)
+        if src.name == "hooks.json":
+            parsed = json.loads(src.read_bytes())
+        else:
+            text = src.read_text(encoding="utf-8")
+            if src.name in _BOM_TOLERANT_JSON_OBJECTS:
+                text = strip_utf8_bom(text)
+            parsed = json.loads(text)
     except (OSError, ValueError, RecursionError) as e:
         if not installed:
             return
