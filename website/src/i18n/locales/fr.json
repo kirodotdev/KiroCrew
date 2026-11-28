@@ -9364,7 +9364,11 @@
       "reasoning_effort": "Effort de raisonnement",
       "smarter": "Plus intelligent",
       "use_configured_default": "Utiliser l’effort par défaut ({{level}})",
-      "use_default_effort": "Utiliser l’effort par défaut"
+      "use_default_effort": "Utiliser l’effort par défaut",
+      "not_offered_runs": "{{running}} ({{level}} n’est pas proposé par ce modèle)",
+      "not_offered_model_own": "Le modèle décide du niveau d’effort ({{level}} n’est pas proposé par ce modèle)",
+      "not_offered_short": "{{level}} non proposé",
+      "model_own_short": "Le modèle décide"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Ajoutez un registre d'organisation pour découvrir les applications propres à votre équipe",

@@ -9133,7 +9133,11 @@
       "reasoning_effort": "রিজনিং প্রচেষ্টা",
       "smarter": "আরও বুদ্ধিমান",
       "use_configured_default": "ডিফল্ট প্রচেষ্টা ব্যবহার করো ({{level}})",
-      "use_default_effort": "ডিফল্ট প্রচেষ্টা ব্যবহার করো"
+      "use_default_effort": "ডিফল্ট প্রচেষ্টা ব্যবহার করো",
+      "not_offered_runs": "{{running}} (এই মডেল {{level}} দেয় না)",
+      "not_offered_model_own": "মডেল প্রচেষ্টার মাত্রা ঠিক করে (এই মডেল {{level}} দেয় না)",
+      "not_offered_short": "{{level}} উপলব্ধ নয়",
+      "model_own_short": "মডেল ঠিক করে"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "টিম-নির্দিষ্ট অ্যাপ খুঁজে পেতে প্রতিষ্ঠানের একটি রেজিস্ট্রি যোগ করুন",

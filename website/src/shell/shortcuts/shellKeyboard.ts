@@ -211,6 +211,8 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
             return r?.reasoning_effort ?? level
           },
           (value) => store.dispatch(updateSlot({ key: activeSlot, reasoning_effort: value })))
+        // The chip names the level that runs from this answer; ask again for the new pick.
+        void queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities', activeSlot] })
       } catch (e) {
         store.dispatch(setAgentSwitchNotice(agentSwitchErrorNotice(e)))
         // eslint-disable-next-line no-console -- failure diagnostic; the notice above already told the user
@@ -238,6 +240,8 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
             return r?.reasoning_effort ?? level
           },
           (value) => store.dispatch(updateSlot({ key: activeSlot, reasoning_effort: value })))
+        // The chip names the level that runs from this answer; ask again for the new pick.
+        void queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities', activeSlot] })
       } catch (e) {
         store.dispatch(setAgentSwitchNotice(agentSwitchErrorNotice(e)))
         // eslint-disable-next-line no-console -- failure diagnostic; the notice above already told the user

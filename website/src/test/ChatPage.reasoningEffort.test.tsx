@@ -104,6 +104,25 @@ describe('ChatInput reasoning effort on the model chip', () => {
     expect(screen.getByTestId('composer-model-chip')).toHaveTextContent(/^claude-opus-4\.7$/)
   })
 
+  it('names the level that runs when the model does not offer the picked one', () => {
+    renderInput({ reasoningEffort: 'high', effortNotOffered: 'max' })
+    const chip = screen.getByTestId('composer-model-chip')
+    expect(chip).toHaveTextContent(/^claude-opus-4\.7·High·Max not offered$/)
+    expect(chip).toHaveAccessibleName(
+      'Model: claude-opus-4.7 · Reasoning effort: High (Max is not offered by this model)',
+    )
+    expect(chip).toHaveAttribute('title', 'Model: claude-opus-4.7 · Reasoning effort: High (Max is not offered by this model)')
+  })
+
+  it('says the model decides the level when that level has no name', () => {
+    renderInput({ reasoningEffort: '', effortNotOffered: 'max' })
+    const chip = screen.getByTestId('composer-model-chip')
+    expect(chip).toHaveTextContent(/^claude-opus-4\.7·Model decides·Max not offered$/)
+    expect(chip).toHaveAccessibleName(
+      'Model: claude-opus-4.7 · Reasoning effort: The model decides the level (Max is not offered by this model)',
+    )
+  })
+
   it('names only the model when the capability is off', () => {
     renderInput({ hasEffort: undefined })
     expect(screen.getByTestId('composer-model-chip')).toHaveAccessibleName('Model: claude-opus-4.7')

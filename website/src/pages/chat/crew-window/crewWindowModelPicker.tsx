@@ -11,7 +11,7 @@ import { OverlayPortal } from '../../../components/overlayRoot'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { retryThroughRestart } from '../../../api/queryClient'
-import { effortOffOnAuto, selectionCapabilitiesFailed } from '../../../lib/effort'
+import { effortInForce, effortOffOnAuto, selectionCapabilitiesFailed } from '../../../lib/effort'
 import ModelEffortDropdown from '../../../components/ModelEffortDropdown'
 import type { ModelItem } from '../../../components/ModelDropdownList'
 import { useAnchoredTriggerRect } from '../../../hooks/useAnchoredTriggerRect'
@@ -22,10 +22,12 @@ import type { RemoteCrewCapabilities } from '../../../types'
 /** The model fields of the peer's slot row. */
 export interface PeerModelFields { model?: string; served_model?: string; reasoning_effort?: string }
 
-interface PeerSelectionCaps { known?: boolean; effort_supported?: boolean; effort_levels?: string[] }
+interface PeerSelectionCaps { known?: boolean; effort_supported?: boolean; effort_levels?: string[]; effort_unapplied?: string; effort_running?: string; effort_inherited?: boolean }
 
-/** How often a not-yet-known capability answer is asked again. */
+/** How often an unknown or failed capability answer is asked again. */
 const CAPS_RETRY_MS = 5000
+/** An inherited default changed elsewhere must reach the chip. */
+const CAPS_REFRESH_MS = 30_000
 
 export function useCrewWindowModelPicker({ instanceId, slotKey, slotPath, slot, caps, enabled, onWritten }: {
   instanceId: string
@@ -40,17 +42,33 @@ export function useCrewWindowModelPicker({ instanceId, slotKey, slotPath, slot, 
   onWritten: () => void
 }) {
   const selectionQ = useQuery({
-    queryKey: ['crew-window', instanceId, slotPath, 'selection-capabilities', slot?.model ?? ''],
+    queryKey: ['crew-window', instanceId, slotPath, 'selection-capabilities', slot?.model ?? '', slot?.reasoning_effort ?? ''],
     queryFn: () => api.crewPeerGet(instanceId, slotPath + '/selection-capabilities') as Promise<PeerSelectionCaps>,
     enabled,
+    // An effort pick re-keys this read, and a key with no answer would hide the
+    // slider while it is in use. Keep the previous answer while the new one
+    // loads, but only for the same peer, slot and model: another model's
+    // levels are not this one's. Drop its running/unapplied pair, which
+    // belongs to the previous level: after a cleared pick it would name the
+    // old level as running. Inline, so react-query re-asks on every key change
+    // instead of carrying a placeholder across a later model change.
+    placeholderData: (prev, prevQuery) => {
+      const k = prevQuery?.queryKey
+      return prev && k?.[1] === instanceId && k[2] === slotPath && k[4] === (slot?.model ?? '')
+        ? { ...prev, effort_unapplied: undefined, effort_running: undefined }
+        : undefined
+    },
     // A failure shows the "could not verify" notice, so a restart or a dropped
     // link is ridden out first (see `retryThroughRestart`).
     retry: retryThroughRestart,
     // A peer session that has not started yet answers `known: false`; ask
     // again until it knows, so the effort control appears once it does.
-    // A failed read is asked again too, so the effort control comes back once
-    // the peer answers instead of staying gone for the window's life.
-    refetchInterval: q => (q.state.status === 'error' || q.state.data?.known === false ? CAPS_RETRY_MS : false),
+    // A failed read uses the same fast retry. Once an answer is known, refresh
+    // less often so a changed inherited default reaches the chip.
+    refetchInterval: q => {
+      if (q.state.status === 'error' || q.state.data?.known === false) return CAPS_RETRY_MS
+      return q.state.data?.known === true ? CAPS_REFRESH_MS : false
+    },
   })
   const models = useMemo<ModelItem[]>(
     () => (caps?.models ?? []).map(m => ({ name: m.model_name, description: m.description })),
@@ -103,10 +121,13 @@ export function useCrewWindowModelPicker({ instanceId, slotKey, slotPath, slot, 
     selectionCapabilitiesFailed(selectionQ),
     shownModel,
   )
+  // What runs, when the peer's model does not offer the slot's level.
+  const effort = effortInForce(slot?.reasoning_effort || '', selectionQ.data, !!slot?.reasoning_effort)
   const chipProps = {
     modelName: shownModel,
     modelIsInheritedDefault: !slot?.model && !!slot?.served_model,
-    reasoningEffort: slot?.reasoning_effort || '',
+    reasoningEffort: effort.level,
+    effortNotOffered: effort.notOffered,
     effortIsDefault: !slot?.reasoning_effort,
     hasEffort,
     onModelClick: (r: DOMRect, trigger?: HTMLElement) => { anchorTo(r, trigger); dd.setOpen(!dd.open) },

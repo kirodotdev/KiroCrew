@@ -9595,7 +9595,11 @@
       "reasoning_effort": "Глубина размышлений",
       "smarter": "Умнее",
       "use_configured_default": "Использовать глубину по умолчанию ({{level}})",
-      "use_default_effort": "Использовать глубину по умолчанию"
+      "use_default_effort": "Использовать глубину по умолчанию",
+      "not_offered_runs": "{{running}} (эта модель не предлагает {{level}})",
+      "not_offered_model_own": "Глубину выбирает модель (эта модель не предлагает {{level}})",
+      "not_offered_short": "{{level}} недоступно",
+      "model_own_short": "Решает модель"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Добавьте реестр организации, чтобы находить приложения вашей команды",

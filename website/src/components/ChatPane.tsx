@@ -589,7 +589,7 @@ export default function ChatPane({
   const pickerModels = useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch, dashCfg })
   const {
     installedAgents, displayAgents, agentChoices, defaultAgent, paneAgentName, queryClient, navigate, agentDD, selectionCapabilitiesQ, codexPairModels,
-    jevRouteOn, modelDD, anchorAgentBtn, anchorModelBtn, shownModel, effortSupported, defaultEffort, effectiveEffort,
+    jevRouteOn, modelDD, anchorAgentBtn, anchorModelBtn, shownModel, effortSupported, defaultEffort, effectiveEffort, effortNotOffered,
     chipDefault, modelMarker,
   } = pickerModels
   // The pane header carries the same session colour as the sidebar row, read
@@ -1482,6 +1482,7 @@ export default function ChatPane({
           agentSource={installedAgents.find((a) => a.name === paneAgentName)?.source}
           modelName={shownModel}
           reasoningEffort={effectiveEffort}
+          effortNotOffered={effortNotOffered}
           effortIsDefault={!paneSlot?.reasoning_effort && !legacyCodexEffort(paneSlot?.model || '', '', codexPairModels) && !!defaultEffort}
           // Effort is edited inside the model picker below; the chip only
           // names the level in force.

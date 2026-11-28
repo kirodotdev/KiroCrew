@@ -8902,7 +8902,11 @@
       "reasoning_effort": "推理强度",
       "smarter": "更聪明",
       "use_configured_default": "使用默认推理强度（{{level}}）",
-      "use_default_effort": "使用默认推理强度"
+      "use_default_effort": "使用默认推理强度",
+      "not_offered_runs": "{{running}}（此模型不提供{{level}}）",
+      "not_offered_model_own": "由模型决定强度（此模型不提供{{level}}）",
+      "not_offered_short": "不提供{{level}}",
+      "model_own_short": "由模型决定"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "添加组织注册表以发现团队专属应用",

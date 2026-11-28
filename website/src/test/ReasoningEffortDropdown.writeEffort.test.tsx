@@ -24,7 +24,10 @@ let store: ReturnType<typeof makeStore>
 function wrap(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   store = makeStore()
-  return render(<Provider store={store}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></Provider>)
+  return Object.assign(
+    render(<Provider store={store}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></Provider>),
+    { client: qc },
+  )
 }
 
 let localWrite: ReturnType<typeof vi.spyOn>
@@ -59,5 +62,16 @@ describe('ReasoningEffortDropdown writeEffort', () => {
     wrap(<ReasoningEffortDropdown slot="chat-1" currentEffort="high" onClose={vi.fn()} embedded levelsOverride={['low', 'high']} />)
     fireEvent.click(screen.getByRole('switch', { name: 'Use default effort' }))
     await waitFor(() => expect(localWrite).toHaveBeenCalledWith('chat-1', ''))
+  })
+
+  it('invalidates the slot capabilities after a successful effort write', async () => {
+    const { client } = wrap(<ReasoningEffortDropdown slot="chat-1" currentEffort="high" onClose={vi.fn()} embedded levelsOverride={['low', 'high']} />)
+    const capsKey = ['slot-selection-capabilities', 'chat-1']
+    client.setQueryData(capsKey, { known: true, effort_supported: true, effort_levels: ['low', 'high'] })
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Use default effort' }))
+
+    await waitFor(() => expect(localWrite).toHaveBeenCalledWith('chat-1', ''))
+    await waitFor(() => expect(client.getQueryState(capsKey)?.isInvalidated).toBe(true))
   })
 })

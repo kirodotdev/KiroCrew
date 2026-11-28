@@ -371,6 +371,10 @@ export interface ChatInputProps {
    *  per-slot pick. Only the chip's hover / accessible name says so: outside
    *  the picker the two states otherwise read identically. */
   effortIsDefault?: boolean
+  /** The slot's level when the serving model does not offer it: `reasoningEffort`
+   *  is then the level that runs instead, and the chip's hover / accessible name
+   *  says this one is not offered. */
+  effortNotOffered?: string
   /** True when the session's model takes a reasoning-effort level. The chip
    *  then names the level in force beside the model; the slider that CHANGES
    *  it lives inside the model picker the chip opens -- model + effort are one

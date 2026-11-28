@@ -246,6 +246,34 @@ def accepts_effort_level(self: AcpProvider, level: str) -> bool:
     return effort_config_option_value(self._client.backend, level, advertised) in advertised
 
 
+def effort_left_unapplied(self: AcpProvider, stored: str) -> tuple[str, str] | None:
+    """``(stored, running)`` when this session does not offer *stored*, else ``None``.
+
+    Only a harness that advertises its own vocabulary can answer, because only
+    there :meth:`accepts_effort_level` can say False: a level with no spelling in
+    the session's option is hidden, never mapped onto a neighbour, so the session
+    runs another level while the slot keeps the pick for a model that offers it.
+
+    *running* is what the effort option's ``currentValue`` names, which is what
+    the harness reports it runs (pi clamps a level to the new model's ceiling
+    itself, ``test/fixtures/acp_frames/pi/effort-live.jsonl``). Without one it
+    is the level this session resolves, and ``""`` when neither names a level:
+    the model runs its own, which has no name here.
+    """
+    if not stored or self.accepts_effort_level(stored):
+        return None
+    advertised = self._advertised_effort_levels() or []
+    option_id = effort_config_option_id(self._client.backend)
+    current: object = None
+    for opt in self._client.acp_config_options:
+        if isinstance(opt, dict) and opt.get("id") == option_id:
+            current = opt.get("currentValue")
+            break
+    if isinstance(current, str) and current in advertised:
+        return stored, current
+    return stored, self._resolve_effort() or ""
+
+
 def _on_default_pseudo_model(provider: AcpProvider) -> bool:
     """True when a ``ACP_BACKENDS_DEFAULT_PSEUDO_MODEL`` session serves no concrete id.
 
@@ -1000,6 +1028,19 @@ async def _apply_initial_effort(self: AcpProvider) -> None:
     if not self.capabilities.effort_via_config_option:
         return
     level = self._resolve_effort()
+    stored = self._effort_per_model.get(self._effort_model)
+    if stored and (not level or not self.accepts_effort_level(stored)):
+        # The slot keeps the level for a model that offers it (``reapply_live_effort``),
+        # so this start runs another one. Where the harness advertises its
+        # vocabulary, the dashboard reads which through ``effort_left_unapplied``.
+        logger.info(
+            "ACP stored effort not applied: backend=%s model=%s effort=%s runs=%s "
+            "(this model does not offer it)",
+            self._client.backend,
+            self._client._model,
+            stored,
+            level or "the model's own",
+        )
     if not level:
         return
     try:

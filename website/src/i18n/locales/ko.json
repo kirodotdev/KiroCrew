@@ -8902,7 +8902,11 @@
       "reasoning_effort": "추론 강도",
       "smarter": "똑똑하게",
       "use_configured_default": "기본 추론 강도 사용 ({{level}})",
-      "use_default_effort": "기본 추론 강도 사용"
+      "use_default_effort": "기본 추론 강도 사용",
+      "not_offered_runs": "{{running}} (이 모델에서는 {{level}} 사용 불가)",
+      "not_offered_model_own": "모델이 강도를 결정합니다 (이 모델에서는 {{level}} 사용 불가)",
+      "not_offered_short": "{{level}} 사용 불가",
+      "model_own_short": "모델이 결정"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "조직 레지스트리를 추가하여 팀 전용 앱을 찾아보세요",

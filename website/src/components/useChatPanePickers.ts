@@ -12,7 +12,7 @@ import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
 import { useAvailableModelsQuery } from '../hooks/useAvailableModels'
 import { effortToCarry, filterInteractiveModels, legacyCodexEffort, modelWithoutEffort, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
-import { effortOffOnAuto, modelSupportsEffort, selectionCapabilitiesFailed } from '../lib/effort'
+import { effortInForce, effortOffOnAuto, modelSupportsEffort, selectionCapabilitiesFailed } from '../lib/effort'
 import { JEV_ROUTE_MODEL, jevRouteOffered, withJevRoute } from '../lib/jevRoute'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useDefaultEffort } from '../hooks/useDefaultEffort'
@@ -193,9 +193,15 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
     shownModel,
   )
   const defaultEffort = useDefaultEffort(provider.capabilities.reasoningEffort)
-  const effectiveEffort = paneSlot?.reasoning_effort || legacyCodexEffort(
+  // What runs, when the model does not offer the slot's level (see ChatPage).
+  const ownEffort = paneSlot?.reasoning_effort || legacyCodexEffort(
     paneSlot?.model || '', '', codexPairModels,
-  ) || defaultEffort
+  )
+  const { level: effectiveEffort, notOffered: effortNotOffered } = effortInForce(
+    ownEffort || defaultEffort,
+    effortCaps,
+    !!ownEffort,
+  )
   // What the pin alone would say; differing from `shownModel` means the chip
   // is naming the served default an inheriting slot runs on (see ChatPage).
   const _pinShownModel = displayModel(
@@ -221,7 +227,7 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
     installedAgents, displayAgents, agentChoices, defaultAgent, paneAgentName, queryClient, navigate, defaultAgentFailed, toggleDefaultAgent, agentDD, templatesOnly,
     selectionCapabilitiesQ, ownModelsQuery, ownModelsFailed, codexPairModels, hiddenModelsQ, modelPickerConfigured, jevRouteOn, modelDD,
     attachModelList, modelListEdges, agentBtnRect, anchorAgentBtn, modelBtnRect, anchorModelBtn, shownModel,
-    effortSupported, effortLevelsOverride, effortAutoNote, defaultEffort, effectiveEffort, chipDefault, modelMarker, kiroCliSignedOut, paneRunsHere, activeSlotRunsHere,
+    effortSupported, effortLevelsOverride, effortAutoNote, defaultEffort, effectiveEffort, effortNotOffered, chipDefault, modelMarker, kiroCliSignedOut, paneRunsHere, activeSlotRunsHere,
     projectLocked, projectPickerOpen, setProjectPickerOpen, projectBtnRect, anchorProjectBtn,
   }
 }

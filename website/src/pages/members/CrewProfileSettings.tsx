@@ -366,6 +366,9 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
       void queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
       void queryClient.invalidateQueries({ queryKey: ['agent-resolved-model', member.name] })
       void queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
+      // The member's level is what its other sessions inherit, so every
+      // session's effort answer is asked again, not only this thread's.
+      if (key === 'model' || key === 'reasoning_effort') void queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities'] })
     }
   }
 
