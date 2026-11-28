@@ -374,6 +374,20 @@ def _forget_observed_people():
 
 
 @per_test_guard
+def _forget_usage_account():
+    """Forget the signed-in account ``/api/sessions/usage`` tags its answer with.
+
+    Production never clears these module globals, so a test whose fake service
+    reports an identity left an ``account`` key in a later test's answer.
+    """
+    sessions = sys.modules.get("kiro_crew.dashboard.handlers.sessions")
+    if sessions is not None:
+        sessions._usage_account_fp = ""
+        sessions._usage_account_tag = ""
+    yield
+
+
+@per_test_guard
 def _forget_offered_instance_types():
     """Give every test an empty EC2 instance-type offering cache.
 
