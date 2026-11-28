@@ -13,7 +13,7 @@ import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable
 
-from kiro_crew.slack.code_channels.workspace import git_ops
+from kiro_crew.slack.code_channels.workspace import checkout_reads
 from kiro_crew.slack.code_channels.workspace.pr import PrLookup
 from kiro_crew.slack.code_channels.workspace.remote import RepoRef, parse_remote
 from kiro_crew.slack.code_channels.workspace.store import WorkspaceRecord, WorkspaceStore
@@ -54,7 +54,7 @@ class WorkerPrs:
         the board does not show are counted but never looked up.
         """
         cwd = self._checkout_dir(record)
-        repo = parse_remote(await asyncio.to_thread(git_ops.remote_url, cwd)) if cwd else None
+        repo = parse_remote(await checkout_reads.remote_url(cwd)) if cwd else None
         if repo is None:
             return board
         # A worker working in ANOTHER repository (its session moved there) reports
@@ -143,7 +143,7 @@ class WorkerPrs:
         if cached is not None and now - cached[0] < _PR_TTL_LIVE:
             return cached[1]
         try:
-            url = await asyncio.to_thread(git_ops.remote_url, project)
+            url = await checkout_reads.remote_url(project)
         except Exception:
             url = ""
         found = (parse_remote(url) or _UNREADABLE) if url else None
