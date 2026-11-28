@@ -576,6 +576,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_on_row": ("value", "None"),
     "_origin": ("value", "''"),
     "_owed_segment_cut": ("value", "None"),
+    "_steer_hold_after": ("value", "None"),
     "_pending": ("value", "[]"),
     "_pending_consumers": ("value", "0"),
     "_pending_context": ("value", "[]"),

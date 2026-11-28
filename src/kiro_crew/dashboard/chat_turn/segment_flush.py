@@ -753,6 +753,54 @@ def _append_command_reply(slot: _ChatSlot, text: str) -> None:
 _TOOL_GROUP_ROLES = frozenset({"tool", "permission", "card"})
 
 
+def _is_stop_event_row(m: dict) -> bool:
+    """Whether *m* is a stop card, whose ``cls`` carries its JSON payload."""
+    cls_val = m.get("cls", "")
+    if not cls_val or not isinstance(cls_val, str):
+        return False
+    try:
+        parsed = json.loads(cls_val)
+        return isinstance(parsed, dict) and parsed.get("kind") == "stop_event"
+    except ValueError:
+        return False
+
+
+def _lift_rows_held_below(slot: _ChatSlot) -> list[dict]:
+    """Lift out the rows a held steer cut must land below the reply, in order.
+
+    A steer held while a construct was open (``_hold_steer_cut``) left its row
+    inside the reply's chunk run. Every durable row written since the hold's
+    mark is removed from the window here and returned, so the segment's rows
+    are one run again; the caller saves the reply, then re-lands these rows
+    after it, so the transcript reads reply, then steer: the order the clients
+    drew it. Empty when no cut is held. The mark is spent either way.
+    """
+    mark = getattr(slot, "_steer_hold_after", None)
+    if mark is None:
+        return []
+    slot._steer_hold_after = None
+    (after,) = mark
+    start: int | None = 0
+    if after is not None:
+        start = next(
+            (i + 1 for i in range(len(slot.messages) - 1, -1, -1) if slot.messages[i] is after),
+            None,
+        )
+    if start is None:
+        return []
+    kept: list[dict] = []
+    held: list[dict] = []
+    for m in slot.messages[start:]:
+        role = m.get("role", "")
+        if role == "chunk" or role in _TOOL_GROUP_ROLES or _is_stop_event_row(m):
+            kept.append(m)
+        else:
+            held.append(m)
+    if held:
+        slot.messages = slot.messages[:start] + kept
+    return held
+
+
 def _flush_segment(
     state: DashboardState,
     slot: _ChatSlot,
@@ -790,15 +838,7 @@ def _flush_segment(
     # Also pull aside any stop_event interleaved with this segment's chunks
     # so it lands AFTER the finalized assistant message. Historical
     # stop_events from prior turns stay in place.
-    def _is_stop_event(m: dict) -> bool:
-        cls_val = m.get("cls", "")
-        if not cls_val or not isinstance(cls_val, str):
-            return False
-        try:
-            parsed = json.loads(cls_val)
-            return isinstance(parsed, dict) and parsed.get("kind") == "stop_event"
-        except ValueError:
-            return False
+    held_below = _lift_rows_held_below(slot)
 
     # Walk backwards over THIS segment's rows and split them into: chunk rows
     # to drop, stop_events to re-land after the finalized message, and
@@ -822,17 +862,17 @@ def _flush_segment(
     segment_start = len(slot.messages)
     for i in range(len(slot.messages) - 1, -1, -1):
         role = slot.messages[i].get("role", "")
-        if role == "chunk" or role in _TOOL_GROUP_ROLES or _is_stop_event(slot.messages[i]):
+        if role == "chunk" or role in _TOOL_GROUP_ROLES or _is_stop_event_row(slot.messages[i]):
             segment_start = i
         else:
             break
     head = slot.messages[:segment_start]
     tail = slot.messages[segment_start:]
-    trailing_stop_events = [m for m in tail if _is_stop_event(m)]
+    trailing_stop_events = [m for m in tail if _is_stop_event_row(m)]
     # Keep the tool-group rows of this segment in place; drop its chunk rows
     # and pull its stop_events aside (re-landed after the finalized message).
     kept_tool_rows = [
-        m for m in tail if m.get("role", "") in _TOOL_GROUP_ROLES and not _is_stop_event(m)
+        m for m in tail if m.get("role", "") in _TOOL_GROUP_ROLES and not _is_stop_event_row(m)
     ]
     slot.messages = head + kept_tool_rows
     # The window rewrite above is only half the release: append put each chunk
@@ -907,6 +947,9 @@ def _flush_segment(
     # prose → stop card.
     for ev in trailing_stop_events:
         slot.messages.append(ev)
+    if held_below:
+        slot.messages.extend(held_below)
+        slot._dirty = True
     # Tell the frontend to finalize streaming → assistant.
     if broadcast:
         state.broadcast_ws("chat_segment", {"slot": slot.key})

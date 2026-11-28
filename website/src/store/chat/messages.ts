@@ -11,7 +11,7 @@ import { permissionRowTarget, sameApprovalTarget } from '../../types/approvalTar
 import { SEND_ATTEMPTS_PER_SLOT_MAX, type ChatState, type SendAttempt } from './state'
 import { isUnsafeKey, normalizeQueueEntries, safeKey } from './wire'
 import { hydrateQueuedBubbles } from './queue'
-import { ensureMsgId, finalizeTrailingStreaming, floorForGen, mintMsgId, raiseChunkSeq, rowIdentities, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
+import { ensureMsgId, finalizeTrailingStreaming, finalizeTrailingStreamingAtSteer, floorForGen, mintMsgId, raiseChunkSeq, rowIdentities, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
 import { isOutOfBandRow, isTurnBoundaryUser, mergePreservedThinking, reinsertThinkingOrphans } from './thinking'
 import { retainServerTotal, setPagingCursor, writeSlotPage } from './slotCache'
 import { evictMcpApps } from './mcpApps'
@@ -35,7 +35,7 @@ export const messageReducers = {
     // when the user row actually lands and announces it with
     // `question_card_resolved`, which every window — this one included —
     // applies through resolveQuestionCard.
-    if (m.role === 'user' && m.meta?.steer) finalizeTrailingStreaming(state.messages)
+    if (m.role === 'user' && m.meta?.steer) finalizeTrailingStreamingAtSteer(state.messages)
     // Non-steer user bubbles carry a `sendId` in meta (set by ChatPage at
     // send time) that serves as both the optimistic marker and the correlation
     // ID for reconciliation. The `optimistic` flag is kept as a simple boolean
@@ -132,11 +132,15 @@ export const messageReducers = {
       // done on the insert path — after a reconcile a NEW post-steer
       // streaming message may already be live below the bubble, and freezing
       // it here would wrongly finalize the in-flight stream.
-      finalizeTrailingStreaming(msgs)
+      finalizeTrailingStreamingAtSteer(msgs)
     }
     // Optimistic steer bubble from a pane-scoped composer: same freeze as the
     // appendMessage (active-slot) path.
-    if (message.role === 'user' && ((message.meta?.steer && message.meta?.optimistic) || message.meta?.responsiveSend)) {
+    // A waiting send is cut at once by the gateway whatever the text holds,
+    // so only a steer keeps an open construct streaming above its bubble.
+    if (message.role === 'user' && message.meta?.steer && message.meta?.optimistic) {
+      finalizeTrailingStreamingAtSteer(msgs)
+    } else if (message.role === 'user' && message.meta?.responsiveSend) {
       finalizeTrailingStreaming(msgs)
     }
     // Mark non-steer user bubbles as optimistic so the sseChatMessage

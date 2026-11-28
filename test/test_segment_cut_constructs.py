@@ -18,8 +18,10 @@ and the harness renders one it finds in transcript text.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
-from turn_harness import APPROVED, SlotSpec, TurnScript, run_turn
+from turn_harness import APPROVED, Do, SlotSpec, TurnScript, Wait, run_turn
 
 from kiro_crew.acp.types import (
     EVENT_COMPACTION_STATUS,
@@ -194,3 +196,166 @@ class TestPermissionRequestCut:
         persisted = [str(row.get("content")) for row in record.rows("assistant")]
         cut = [t for t in persisted if "Writing the file now." in t and "Written." not in t]
         assert cut, persisted
+
+
+class TestSteerCut:
+    """Through the real ``_run_chat``: a steer that lands inside an open widget
+    must not split it. The widget is saved whole above the steer, and the text
+    after the widget lands below it."""
+
+    _WIDGET_HEAD = 'Here:\n<mcwidget title="t">\n<div>row 1</div>\n'
+    _WIDGET_TAIL = "<div>row 2</div>\n</mcwidget>\n"
+
+    @staticmethod
+    def _steer(ctx) -> None:
+        # What the steer handler does, on the turn's loop while it awaits:
+        # cut the segment, then append the steer's own row.
+        def _deliver() -> None:
+            ctx.slot._steer_segment_cut()
+            ctx.slot.append("user", "steer message", "msg msg-u", meta={"steer": True})
+
+        asyncio.get_running_loop().call_soon(_deliver)
+
+    @staticmethod
+    def _order(record) -> list[str]:
+        out = []
+        for row in record.window:
+            role = row.get("role")
+            if role == "user" and (row.get("meta") or {}).get("steer"):
+                out.append("steer")
+            elif role == "assistant":
+                out.append("assistant:" + str(row.get("content")))
+        return out
+
+    @pytest.mark.asyncio
+    async def test_a_steer_inside_an_open_widget_keeps_it_whole_above_the_steer(self):
+        record = await run_turn(
+            TurnScript(
+                events=[
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text=self._WIDGET_HEAD),
+                    Do(self._steer),
+                    Wait(1),
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text=self._WIDGET_TAIL),
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text="After the widget."),
+                    AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+                ]
+            )
+        )
+
+        assert record.stop_reason == STOP_REASON_END_TURN
+        assert self._order(record) == [
+            "assistant:" + self._WIDGET_HEAD + self._WIDGET_TAIL,
+            "steer",
+            "assistant:After the widget.",
+        ]
+        assert [r for r in record.window if r.get("role") == "chunk"] == []
+
+    @pytest.mark.asyncio
+    async def test_text_in_the_chunk_that_closes_the_widget_lands_below_the_steer(self):
+        record = await run_turn(
+            TurnScript(
+                events=[
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text=self._WIDGET_HEAD),
+                    Do(self._steer),
+                    Wait(1),
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text=self._WIDGET_TAIL + "\nAfter the widget."),
+                    AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+                ]
+            )
+        )
+
+        assert self._order(record) == [
+            "assistant:" + self._WIDGET_HEAD + self._WIDGET_TAIL,
+            "steer",
+            "assistant:\nAfter the widget.",
+        ]
+        assert [r for r in record.window if r.get("role") == "chunk"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_widget_that_never_closes_is_still_saved_whole_above_the_steer(self):
+        record = await run_turn(
+            TurnScript(
+                events=[
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text=self._WIDGET_HEAD),
+                    Do(self._steer),
+                    Wait(1),
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text="<div>row 2</div>\n"),
+                    AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+                ]
+            )
+        )
+
+        assert self._order(record) == [
+            "assistant:" + self._WIDGET_HEAD + "<div>row 2</div>\n",
+            "steer",
+        ]
+        assert [r for r in record.window if r.get("role") == "chunk"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_turn_stopped_inside_the_open_widget_saves_it_above_the_steer(self):
+        def _stop(ctx) -> None:
+            ctx.slot.task.cancel()
+
+        record = await run_turn(
+            TurnScript(
+                events=[
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text=self._WIDGET_HEAD),
+                    Do(self._steer),
+                    Wait(1),
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text="<div>row 2</div>\n"),
+                    Do(_stop),
+                    Wait(1),
+                    AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+                ]
+            )
+        )
+
+        assert record.stop_reason == "failed: CancelledError"
+        assert self._order(record) == [
+            "assistant:" + self._WIDGET_HEAD + "<div>row 2</div>\n",
+            "steer",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_hold_ended_by_compaction_does_not_cut_the_next_reply(self):
+        record = await run_turn(
+            TurnScript(
+                events=[
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text=self._WIDGET_HEAD),
+                    Do(self._steer),
+                    Wait(1),
+                    AcpEvent(
+                        kind=EVENT_TOOL_CALL, tool_call_id="t1", title="read_file", tool_kind="read"
+                    ),
+                    AcpEvent(kind=EVENT_COMPACTION_STATUS, text="started"),
+                    AcpEvent(kind=EVENT_COMPACTION_STATUS, text="completed"),
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text="after one"),
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text=" after two"),
+                    AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+                ]
+            )
+        )
+
+        persisted = [str(row.get("content")) for row in record.rows("assistant")]
+        assert "after one" not in persisted, persisted
+        assert any(text.endswith("after one after two") for text in persisted), persisted
+
+    @pytest.mark.asyncio
+    async def test_a_steer_after_plain_prose_still_cuts_at_once(self):
+        record = await run_turn(
+            TurnScript(
+                events=[
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text="Before the steer."),
+                    Do(self._steer),
+                    Wait(1),
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text="After the steer."),
+                    AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+                ]
+            )
+        )
+
+        assert self._order(record) == [
+            "assistant:Before the steer.",
+            "steer",
+            "assistant:After the steer.",
+        ]

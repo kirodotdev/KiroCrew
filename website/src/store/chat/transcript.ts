@@ -4,6 +4,7 @@
  *  chunk-seq floor a snapshot vouches for, and the bounded-page identity rules
  *  every slot-detail reducer cuts and merges by. Nothing here touches chat
  *  state; callers pass the arrays in. */
+import { endsInOpenConstruct } from '../../lib/openConstruct'
 import type { ChatMessage } from '../../types'
 import { isStopEvent } from '../../lib/stopEvent'
 import { jsonEqual } from '../../utils/structuralEqual'
@@ -604,6 +605,21 @@ export const finalizeTrailingStreaming = (msgs: ChatMessage[]) => {
   for (let i = msgs.length - 1; i >= 0; i--) {
     if (msgs[i].role === 'streaming') {
       finalizeStreamingAt(msgs, i)
+      break
+    }
+  }
+}
+
+/** Finalize-on-steer: freeze the trailing streaming message at a steer
+ *  bubble, unless it ends inside an open widget, fence or options marker.
+ *  The gateway holds its steer cut there too (`_hold_steer_cut`), so the
+ *  message stays live above the bubble and the chunk reducer, which appends to
+ *  the last `streaming` row, keeps growing it until the gateway's
+ *  `chat_segment` freezes it once the construct has closed. */
+export const finalizeTrailingStreamingAtSteer = (msgs: ChatMessage[]) => {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'streaming') {
+      if (!endsInOpenConstruct(msgs[i].content)) finalizeStreamingAt(msgs, i)
       break
     }
   }
