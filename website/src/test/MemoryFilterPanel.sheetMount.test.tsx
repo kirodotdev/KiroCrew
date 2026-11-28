@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { i18next } from '../i18n/all'
 import { renderWithProviders } from './helpers'
 import { FilterPanel } from '../pages/overview/memoryPage/MemoryListParts'
 import { DEFAULT_VIEW } from '../pages/overview/memoryPage/memoryListView'
@@ -22,5 +23,18 @@ describe('FilterPanel sheet mounting', () => {
   it('mounts every row at once in the wide rail', () => {
     renderWithProviders(<FilterPanel capped view={DEFAULT_VIEW} facets={{ tag: tags }} onToggle={() => {}} onRange={() => {}} />)
     expect(screen.getAllByRole('checkbox')).toHaveLength(60)
+  })
+
+  it('matches the value search against the labels of the language now shown', async () => {
+    renderWithProviders(<FilterPanel capped view={DEFAULT_VIEW} facets={{ scope: { '': 3 } }} onToggle={() => {}} onRange={() => {}} />)
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'all repos' } })
+    expect(screen.getAllByRole('checkbox')).toHaveLength(1)
+    try {
+      // The Japanese label does not hold the English words, so the value no longer matches.
+      await act(async () => { await i18next.changeLanguage('ja') })
+      expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
   })
 })

@@ -220,7 +220,8 @@ export const FilterPanel = memo(function FilterPanel({ view, facets, decay, trai
   /** Clamps the bound to the other one as it is when applied (setConfidenceBound). */
   onRange: (bound: 'conf_min' | 'conf_max', value: number | undefined) => void
 }) {
-  useLanguageGeneration()
+  // The value search matches translated labels, so a language change filters again.
+  const language = useLanguageGeneration()
   const { t } = useTranslation()
   const [find, setFind] = useState('')
   const needle = find.trim().toLocaleLowerCase()
@@ -262,7 +263,8 @@ export const FilterPanel = memo(function FilterPanel({ view, facets, decay, trai
         ? (a, b) => STRENGTH_STATES.indexOf(a as never) - STRENGTH_STATES.indexOf(b as never)
         : (a, b) => Number(ticked.includes(b)) - Number(ticked.includes(a)) || (counts[b] || 0) - (counts[a] || 0) || compareText(a, b))
     return { group, counts, ticked, values }
-  }).filter(item => item.values.length), [counted, kind, filters, needle])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- facetLabel reads the catalog of `language`
+  }).filter(item => item.values.length), [counted, kind, filters, needle, language])
   const rowCount = shown.reduce((sum, item) => sum + item.values.length, 0)
   // The (?) tips mount once every row is in and has painted, not in the frames that lay the rows out.
   const [tipsReady, setTipsReady] = useState(capped)
