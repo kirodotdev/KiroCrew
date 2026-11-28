@@ -485,7 +485,7 @@ class TestRenderForSlackOrdering:
     def test_tables_convert_when_the_message_is_whole(self) -> None:
         table = "| a | b |\n| - | - |\n| 1 | 2 |"
         body = "\n".join(render_for_slack(table, redactor=_fake_redactor))
-        assert "*a:*" in body, "a single-block message should get the mobile rendering"
+        assert "*a | b*\n• *1:* 2" in body, "a single-block message should get the mobile rendering"
 
     def test_tables_stay_raw_when_a_split_occurred(self) -> None:
         """A block starting mid-table would adopt a DATA row as its header."""
@@ -710,8 +710,9 @@ class TestConvertedSlackDisplayRedaction:
 class TestLiteralOnlyRedactionKeepsTheBlockMarkup:
     """A converted block dirty only as written keeps its links and emphasis.
 
-    ``_convert_tables`` writes ``*<header>:* <cell>``, the ``:`` a named-credential
-    pattern needs after a ``SecretAccessKey`` header. Slack's reading scans clean, so
+    The flattener reads each cell as ``*<header>:* <cell>`` for the redactor, the
+    ``:`` a named-credential pattern needs after a ``SecretAccessKey`` header,
+    before writing the bullet without the header. Slack's reading scans clean, so
     the markup stays; only a key the Slack reading joins costs the block its markup.
     """
 
@@ -732,15 +733,17 @@ class TestLiteralOnlyRedactionKeepsTheBlockMarkup:
     def _assert_key_gone_and_markup_kept(self, text: str) -> None:
         assert self._SECRET_VALUE not in text
         assert self._SECRET_VALUE not in slack_mrkdwn_reading(text)
-        # The structured detectors keep the header label and redact only its value.
-        assert "*SecretAccessKey:* [REDACTED: credential]" in text
+        # The structured detectors redact only the value, under the header line.
+        assert "*Profile | SecretAccessKey*\n• *prod:* [REDACTED: credential]" in text
         assert f"<{self._URL}|the wiki>" in text
         assert "*so far*" in text
         assert "*runbook*" in text
         assert "_ping_" in text
 
     def test_the_literal_only_match_is_the_block_as_posted(self) -> None:
-        expected = self._credential_redactor(slack_format.to_slack_mrkdwn(self._PAYLOAD))
+        expected = self._credential_redactor(
+            slack_format.to_slack_mrkdwn(self._PAYLOAD, cell_redactor=self._credential_redactor)
+        )
         parts = render_for_slack(self._PAYLOAD, redactor=self._credential_redactor)
         assert parts == [expected]
         self._assert_key_gone_and_markup_kept(parts[0])
@@ -749,6 +752,16 @@ class TestLiteralOnlyRedactionKeepsTheBlockMarkup:
         rendered = render_one_for_slack(self._PAYLOAD, redactor=self._credential_redactor)
         assert rendered.redacted is True
         self._assert_key_gone_and_markup_kept(rendered.text)
+
+    def test_a_cell_value_split_by_link_markup_is_read_as_slack_shows_it(self) -> None:
+        """The cell is read under its header in display form, not only as written."""
+        split = f"[{self._SECRET_VALUE[:4]}]({self._URL}){self._SECRET_VALUE[4:]}"
+        payload = self._PAYLOAD.replace(self._SECRET_VALUE, split)
+        rendered = render_one_for_slack(payload, redactor=self._credential_redactor)
+        assert self._SECRET_VALUE not in rendered.text
+        assert self._SECRET_VALUE not in slack_mrkdwn_reading(rendered.text)
+        assert "[REDACTED: credential]" in rendered.text
+        assert rendered.redacted is True
 
     def test_a_key_the_slack_reading_joins_still_costs_the_markup(self) -> None:
         payload = f"{_SECRET[:4]}**{_SECRET[4:]}* and [the wiki]({self._URL})"
@@ -913,7 +926,8 @@ class TestRenderOneForSlackOrdering:
             in render_one_for_slack(table, keep_tables=True, redactor=_fake_redactor).text
         )
         assert (
-            "*a:*" in render_one_for_slack(table, keep_tables=False, redactor=_fake_redactor).text
+            "• *1:* 2"
+            in render_one_for_slack(table, keep_tables=False, redactor=_fake_redactor).text
         )
 
     def test_keep_tables_can_only_add_rawness_never_remove_it(self) -> None:
@@ -933,7 +947,7 @@ class TestRenderOneForSlackOrdering:
         out = render_one_for_slack(table, keep_tables=False, redactor=_fake_redactor).text
         assert "truncated" not in out, "the fixture outgrew the single-message limit"
         assert "| r1499 | v1499 |" in out, "an explicit False lost table rows to the split"
-        assert "*a:*" not in out, "tables were converted across a split boundary"
+        assert "• *r1:*" not in out, "tables were converted across a split boundary"
 
     def test_a_long_unbroken_line_gains_no_invented_newline(self) -> None:
         """The internal pre-split must be invisible in the result.

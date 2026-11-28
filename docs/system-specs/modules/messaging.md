@@ -7338,8 +7338,9 @@ the most mobile surface in the product, so a construct that needs a monospace gr
 or an image is unreadable here rather than merely plain, and the dialect drops
 every info string. Three are reduced: a `<thinking>` block (no chat platform folds
 one away, so the model's scratchpad is otherwise part of the answer), a pipe table
-(flattened to one labelled bullet per row, the shape Slack adopted for mobile
-readability), and a `mermaid` fence (flattened to arrows under a `*Diagram*`
+(flattened to one labelled bullet per row for mobile readability; Slack's own
+flattener writes a different shape, one header line and rows led by their first
+cell, see [slack-gateway](slack-gateway.md)), and a `mermaid` fence (flattened to arrows under a `*Diagram*`
 heading, or kept as source under that same heading when the grammar is not one the
 reduction reads). Each emits Markdown rather than dialect, so `_convert_line`
 stays the single place that knows WhatsApp's spelling and the module stays usable

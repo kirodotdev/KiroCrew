@@ -614,15 +614,82 @@ class TestToSlackMrkdwnKeepTables:
         from kiro_crew.slack.format import to_slack_mrkdwn
 
         escaped = to_slack_mrkdwn("| op | meaning |\n|---|---|\n| a \\| b | or |")
-        assert escaped == "• *op:* a | b | *meaning:* or"
+        assert escaped == "*op | meaning*\n• *a | b:* or"
         code = to_slack_mrkdwn("| op | meaning |\n|---|---|\n| `a|b` | or |")
-        assert code == "• *op:* `a|b` | *meaning:* or"
+        assert code == "*op | meaning*\n• *`a|b`:* or"
 
     def test_an_empty_row_keeps_its_place(self):
         from kiro_crew.slack.format import to_slack_mrkdwn
 
         out = to_slack_mrkdwn("| a | b |\n|---|---|\n| 1 | 2 |\n|  |  |\n| 3 | 4 |")
-        assert out == "• *a:* 1 | *b:* 2\n• —\n• *a:* 3 | *b:* 4"
+        assert out == "*a | b*\n• *1:* 2\n• —\n• *3:* 4"
+
+    def test_each_header_shows_once_above_rows_led_by_their_first_cell(self):
+        """Two columns: one bold header line, then one bullet per row."""
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        out = to_slack_mrkdwn(
+            "| What | Detail |\n"
+            "|---|---|\n"
+            "| Kind | One looping GIF, shown here in Slack |\n"
+            "| Time | About 45 minutes |"
+        )
+        assert out == (
+            "*What | Detail*\n"
+            "• *Kind:* One looping GIF, shown here in Slack\n"
+            "• *Time:* About 45 minutes"
+        )
+        out = to_slack_mrkdwn("| Before | After |\n|---|---|\n| 12 s | 3 s |\n| 40 MB | 22 MB |")
+        assert out == "*Before | After*\n• *12 s:* 3 s\n• *40 MB:* 22 MB"
+
+    def test_a_wider_table_keeps_its_cells_in_column_order(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        three = to_slack_mrkdwn(
+            "| PR | Status | Owner |\n|---|---|---|\n| 12 | merged | Ann |\n| 13 | open | Bo |"
+        )
+        assert three == "*PR | Status | Owner*\n• *12:* merged | Ann\n• *13:* open | Bo"
+        five = to_slack_mrkdwn(
+            "| Name | Role | Team | Site | Since |\n"
+            "|---|---|---|---|---|\n"
+            "| Ann | Dev | Core | SEA | 2024 |"
+        )
+        assert five == "*Name | Role | Team | Site | Since*\n• *Ann:* Dev | Core | SEA | 2024"
+
+    def test_an_empty_cell_holds_its_column(self):
+        """A later cell stays readable in its column when an earlier one is blank."""
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        out = to_slack_mrkdwn(
+            "| PR | Status | Owner |\n|---|---|---|\n| 12 |  | Ann |\n|  | open | Bo |"
+        )
+        assert out == "*PR | Status | Owner*\n• *12:* — | Ann\n• *—:* open | Bo"
+
+    def test_a_bold_first_cell_or_header_does_not_nest_bold(self):
+        """Slack has no nested bold, so an authored ``**`` inside the label is dropped."""
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        out = to_slack_mrkdwn("| **Item** | Qty |\n|---|---|\n| **Total** | 42 |")
+        assert out == "*Item | Qty*\n• *Total:* 42"
+        matrix = to_slack_mrkdwn("| | Mon | Tue |\n|---|---|---|\n| `**x**` | 1 | 2 |")
+        assert matrix == "*— | Mon | Tue*\n• *`**x**`:* 1 | 2"
+
+    def test_a_cell_is_read_by_the_redactor_under_its_own_header(self):
+        """The bullet carries no header, so the redactor reads each cell under its own."""
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        seen: list[str] = []
+
+        def redactor(text: str) -> str:
+            seen.append(text)
+            return text.replace("s3cret", "[REDACTED]")
+
+        table = "| Name | Key |\n|---|---|\n| prod | s3cret |"
+        out = to_slack_mrkdwn(table, cell_redactor=redactor)
+        assert out == "*Name | Key*\n• *prod:* [REDACTED]"
+        assert seen == ["Name: prod", "Key: s3cret"]
+        whole = to_slack_mrkdwn(table, cell_redactor=lambda t: "[GONE]" if "s3cret" in t else t)
+        assert whole == "*Name | Key*\n• *prod:* [GONE]"
 
     def test_keep_tables_still_converts_headings(self):
         from kiro_crew.slack.format import to_slack_mrkdwn
