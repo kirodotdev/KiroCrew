@@ -11,13 +11,19 @@
  */
 import InfoTip from '../../components/InfoTip'
 import { i18nT } from '../../i18n/t'
-import { PROVIDER_APPLE, PROVIDER_CODEX, PROVIDER_LOCAL, PROVIDER_TRANSCRIBE } from '../../lib/sttProviders'
+import {
+  PROVIDER_APPLE,
+  PROVIDER_CODEX,
+  PROVIDER_LOCAL,
+  PROVIDER_SHERPA,
+  PROVIDER_TRANSCRIBE,
+} from '../../lib/sttProviders'
 
 export const AI_OPT_OUT_POLICY_URL =
   'https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_ai-opt-out.html'
 
 export default function SttRetentionNote({ provider }: { provider: string }) {
-  const onDevice = provider === PROVIDER_LOCAL || provider === PROVIDER_APPLE
+  const onDevice = provider === PROVIDER_LOCAL || provider === PROVIDER_APPLE || provider === PROVIDER_SHERPA
   const transcribe = provider === PROVIDER_TRANSCRIBE
   const codex = provider === PROVIDER_CODEX
   if (!onDevice && !transcribe && !codex) return null

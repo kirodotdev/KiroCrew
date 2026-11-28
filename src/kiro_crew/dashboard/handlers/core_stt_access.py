@@ -20,6 +20,8 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response
 from kiro_crew.dashboard.handlers.core_security import _sel
 from kiro_crew.stt import models as stt_models
+from kiro_crew.stt import sherpa_custom
+from kiro_crew.stt.sherpa_custom import CUSTOM_MODEL as SHERPA_CUSTOM_MODEL
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.core")
 
@@ -115,9 +117,16 @@ def _audit_custom_model_disclosure(
     unwrapped SEL failure here would turn a served config into a 500, and an audit
     must never change the outcome it is recording.
     """
-    if not (cfg.stt.custom_model_path or cfg.stt.custom_model_sha256):
-        if cfg.stt.model != stt_models.CUSTOM_MODEL:
-            return
+    in_play = (
+        cfg.stt.custom_model_path
+        or cfg.stt.custom_model_sha256
+        or cfg.stt.model == stt_models.CUSTOM_MODEL
+        or cfg.stt.sherpa_custom_archive
+        or cfg.stt.sherpa_custom_sha256
+        or cfg.stt.sherpa_model == SHERPA_CUSTOM_MODEL
+    )
+    if not in_play:
+        return
     try:
         _sel().log_api_access(
             caller=str(request.get("app") or request.get("user") or "unknown"),
@@ -241,6 +250,10 @@ async def _deny_non_owner_stt_custom_model(request: web.Request, body: dict) -> 
         body.get("model") == stt_models.CUSTOM_MODEL
         or "custom_model_path" in body
         or "custom_model_sha256" in body
+        # The Sherpa-ONNX custom archive chooses the weights the same way.
+        or body.get("sherpa_model") == SHERPA_CUSTOM_MODEL
+        or "sherpa_custom_archive" in body
+        or "sherpa_custom_sha256" in body
     ):
         return None
     # Imported in the body, as `require_owner_dashboard_request` does: importing
@@ -310,6 +323,28 @@ def _stt_custom_model_refusal(body: dict) -> web.Response | None:
                 {
                     "error": "The SHA-256 must be 64 hexadecimal characters.",
                     "code": "custom_model_sha256_invalid",
+                },
+                status=400,
+            )
+    archive = body.get("sherpa_custom_archive")
+    if "sherpa_custom_archive" in body and archive != "":
+        if not sherpa_custom.valid_archive_name(archive):
+            return web.json_response(
+                {
+                    "error": "Enter the archive's file name only, ending in .tar.bz2.",
+                    "code": "sherpa_custom_archive_invalid",
+                    "field": "sherpa_custom_archive",
+                },
+                status=400,
+            )
+    digest = body.get("sherpa_custom_sha256")
+    if "sherpa_custom_sha256" in body and digest != "":
+        if not sherpa_custom.valid_sha256(digest):
+            return web.json_response(
+                {
+                    "error": "The SHA-256 must be 64 hexadecimal characters.",
+                    "code": "sherpa_custom_sha256_invalid",
+                    "field": "sherpa_custom_sha256",
                 },
                 status=400,
             )

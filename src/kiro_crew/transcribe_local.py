@@ -1,8 +1,9 @@
 """The on-device providers behind :func:`kiro_crew.transcribe.transcribe_audio`.
 
 The resident whisper.cpp recogniser (a WAV read with the stdlib, or an ffmpeg
-transcode to 16 kHz mono, and the language it is told) and the Apple SpeechAnalyzer
-lane, which owns its own conversion in :mod:`kiro_crew.apple_speech`.
+transcode to 16 kHz mono, and the language it is told), the resident sherpa-onnx
+recogniser on the same audio route, and the Apple SpeechAnalyzer lane, which owns
+its own conversion in :mod:`kiro_crew.apple_speech`.
 
 :mod:`kiro_crew.transcribe` stays the import path and the patch surface; see
 :mod:`kiro_crew.transcribe_ffmpeg`.
@@ -300,6 +301,29 @@ async def _transcribe_local(audio_path: str, stt_config) -> str | None:  # type:
     # returns. A channel adapter still reports a memo it could not hear, and
     # nothing writes boilerplate into an agent's notes.
     return text
+
+
+async def _transcribe_sherpa(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
+    """Transcribe with the resident sherpa-onnx recogniser (``stt.provider = sherpa_onnx``).
+
+    Same audio route as :func:`_transcribe_local`: a 16 kHz WAV is read directly, and
+    anything else goes through the decoder, both bounded by ``_MAX_AUDIO_SECS``.
+    """
+    from kiro_crew.stt import sherpa
+
+    available = await asyncio.to_thread(sherpa.availability, stt_config)
+    if not available.ok:
+        logger.error("Sherpa-ONNX speech recognition unavailable: %s", available.detail)
+        return None
+    pcm: np.ndarray | None = None
+    if _input_suffix(audio_path) in _WAV_SUFFIXES:
+        pcm = await asyncio.to_thread(_pcm_from_wav, audio_path)
+    if pcm is None:
+        pcm = await _pcm_via_ffmpeg(audio_path, stt_config.timeout_secs)
+    if pcm is None or pcm.size == 0:
+        logger.error("No audio could be decoded from %s", audio_path)
+        return None
+    return await sherpa.transcribe_pcm(pcm, stt_config)
 
 
 async def _transcribe_apple(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]

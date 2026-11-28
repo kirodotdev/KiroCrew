@@ -1194,6 +1194,17 @@ def _build_stt_config(stt_data: dict) -> SttConfig:
         custom_model_sha256=_sections._validated_stt_custom_sha256(
             section.get("custom_model_sha256")
         ),
+        sherpa_model=_sections._validated_stt_sherpa_model(
+            section.get("sherpa_model"),
+            custom_archive=section.get("sherpa_custom_archive"),
+            custom_sha256=section.get("sherpa_custom_sha256"),
+        ),
+        sherpa_custom_archive=_sections._validated_stt_sherpa_custom_archive(
+            section.get("sherpa_custom_archive")
+        ),
+        sherpa_custom_sha256=_sections._validated_stt_custom_sha256(
+            section.get("sherpa_custom_sha256")
+        ),
         language_code=section.get("language_code"),
         # Reached through the module rather than re-exported: the loader facade's
         # import list from `sections` is a frozen pre-split snapshot

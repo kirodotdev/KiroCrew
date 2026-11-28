@@ -72,7 +72,14 @@ KIND_VALUES: tuple[str, ...] = (KIND_STT, KIND_TTS)
 PROVIDER_REGISTERED = "registered"
 
 #: Built-in dictation providers (``config.sections_stt._VALID_STT_PROVIDERS``).
-STT_PROVIDER_VALUES: tuple[str, ...] = ("local", "apple", "transcribe", "codex", "off")
+STT_PROVIDER_VALUES: tuple[str, ...] = (
+    "local",
+    "apple",
+    "transcribe",
+    "codex",
+    "sherpa_onnx",
+    "off",
+)
 
 #: Built-in reply providers (``voice_reply.VALID_PROVIDERS``).
 TTS_PROVIDER_VALUES: tuple[str, ...] = ("system", "polly")
@@ -106,9 +113,10 @@ TRANSCRIPT_VALUES: tuple[str, ...] = ("nonempty", "empty")
 
 #: Every code an ``error`` frame on ``/api/ws/stt`` can carry: the socket's own
 #: (``dashboard/stt_stream._CODE_*``) and the recognisers' (``stt.engine`` /
-#: ``stt.preflight`` / ``stt.decoder`` / ``stt.codex`` / ``stt.codex_rpc``). A
-#: test reads those modules so a new code fails there rather than being counted
-#: as ``other``.
+#: ``stt.preflight`` / ``stt.decoder`` / ``stt.codex`` / ``stt.codex_rpc`` /
+#: ``stt.sherpa_engine`` /
+#: ``stt.sherpa_custom``). A test reads those modules so a new code fails there
+#: rather than being counted as ``other``.
 STT_ERROR_CODES: tuple[str, ...] = (
     "stt_max_duration_exceeded",
     "stt_session_failed",
@@ -136,6 +144,15 @@ STT_ERROR_CODES: tuple[str, ...] = (
     "stt_codex_voice_unavailable",
     "stt_codex_failed",
     "stt_codex_sandbox_unavailable",
+    "stt_sherpa_extra_missing",
+    "stt_sherpa_no_wheel",
+    "stt_sherpa_import_failed",
+    "stt_sherpa_bz2_missing",
+    "stt_sherpa_model_missing",
+    "stt_sherpa_failed",
+    "stt_sherpa_custom_missing",
+    "stt_sherpa_custom_mismatch",
+    "stt_sherpa_custom_unsupported",
 )
 
 #: Why ``/api/ws/stt`` refused before a session started.

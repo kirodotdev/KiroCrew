@@ -4,7 +4,7 @@
 
 Live speech-to-text for the dashboard composer. The browser streams 16 kHz mono Int16 PCM over a WebSocket and the server relays partial hypotheses, one or more final transcripts, and (when enabled) an auto-submit signal.
 
-All selectable recognisers implement streaming (`stt_stream._STREAMING_PROVIDERS`): `local` processes audio in this process, `apple` processes it on-device, `transcribe` sends it to AWS Transcribe Streaming, and `codex` adapts Codex's experimental voice transport. The selectable value `off` is not a recogniser: it runs nothing.
+All selectable recognisers implement streaming (`stt_stream._STREAMING_PROVIDERS`): `local` processes audio in this process, `apple` processes it on-device, `transcribe` sends it to AWS Transcribe Streaming, `codex` adapts Codex's experimental voice transport, and `sherpa_onnx` runs a sherpa-onnx Zipformer model in this process. The selectable value `off` is not a recogniser: it runs nothing.
 
 | `stt.provider` | Where recognition runs | Cost | Precondition |
 |---|---|---|---|
@@ -12,6 +12,7 @@ All selectable recognisers implement streaming (`stt_stream._STREAMING_PROVIDERS
 | `apple` | the OS, on-device SpeechAnalyzer | free | macOS 26 or later, and a Swift toolchain to build the helper |
 | `transcribe` | AWS Transcribe Streaming | billed per audio-second | the `voice` extra, and a recorded AWS consent |
 | `codex` | OpenAI through Codex's ChatGPT-authenticated WebRTC transport | account-dependent usage and limits | Codex adapter (`@agentclientprotocol/codex-acp`, or `CODEX_PATH`) with voice access, ChatGPT login, and `pip install "kirocrew[voice-codex]"` |
+| `sherpa_onnx` | this process, a sherpa-onnx Zipformer transducer held loaded by [`stt.sherpa_engine`](../../../src/kiro_crew/stt/sherpa_engine.py) | free | desktop builds include the runtime; elsewhere `pip install "kirocrew[voice-sherpa]"`; the chosen model (one per language, or the owner's own) downloads on first use or from **Download now** ([Sherpa-ONNX provider](#sherpa-onnx-provider)) |
 | `off` | nowhere | free | none. Every speech path answers `stt_disabled`, exactly as `stt.enabled = false` does; the live socket returns a `stt_streaming_disabled` error frame because `off` is not in `_STREAMING_PROVIDERS`. Also the value an unknown stored provider degrades to ([Legacy provider values](#legacy-provider-values)) |
 
 The batch path at `POST /api/stt/transcribe` (`transcribe.transcribe_audio`)
@@ -1737,6 +1738,209 @@ A composed edition can add STT providers through the `speech` slot on `PlatformC
 | `error` | bool | True only when the provider's `check()` timed out or raised (`speech_providers.check_status`). False for a missing prerequisite such as a login or an install. |
 
 The Settings picker (`SttSettings`, through `lib/speechProviders.ts`) renders its options from this list. An unavailable registered provider stays selectable; while it is selected, `SpeechProviderNotice` shows its `reason` under the picker. An `error` row is a failure, so it renders through `ErrorNotice`, with the agent hand-off only while no AWS profile or region draft is unsaved. Any other row is status text, with a sign-in hint naming `action.label` for a `login` action. Built-ins keep the availability badge and messages above, so a standalone install shows no new text. An older gateway that serves bare names, or no list, still renders: bare names read as available built-ins, and no list falls back to `FALLBACK_PROVIDERS`.
+
+## Sherpa-ONNX provider
+
+`stt.provider = "sherpa_onnx"` recognises speech in this process with a
+[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) offline Zipformer transducer. It exists
+for languages whisper handles poorly at the sizes a laptop can run. Each model knows one
+language, or a fixed pair; a catalog covers the common ones, and any other offline transducer
+k2-fsa publishes runs as a custom model ([A custom Sherpa-ONNX model](#a-custom-sherpa-onnx-model)).
+Three modules own it:
+
+| Module | Owns |
+|---|---|
+| `stt/sherpa_models.py` | the catalog, the pinned download and extraction, and the per-load check of the files on disk |
+| `stt/sherpa_engine.py` | whether `sherpa_onnx` imports, the one resident `OfflineRecognizer`, its load and decode locks, and idle release |
+| `stt/sherpa.py` | the provider surface: `PROVIDER`, the `CODE_*` values, `availability()`, `StreamingSession` and `transcribe_pcm` |
+
+None of them imports `sherpa_onnx` at module scope. `sherpa_models` imports no numpy either,
+so the config loader reads the catalog names on the boot path for free.
+
+**Catalog.** `stt.sherpa_model` selects a row; an unknown stored value reads as the default
+with a log warning, once per value. Every row is an offline Zipformer transducer from the k2-fsa
+`asr-models` release; where an archive holds both precisions the int8 encoder and joiner and the
+fp32 decoder are kept. The Vietnamese rows are the conversion of
+[hynt/Zipformer-30M-RNNT-6000h](https://huggingface.co/hynt/Zipformer-30M-RNNT-6000h). Each row
+decoded the test recording its archive ships with before it was added:
+
+| `stt.sherpa_model` | Languages | Download | On disk | Licence (source) |
+|---|---|---|---|---|
+| `zipformer-vi-30m-int8` (default) | vi | 26 MB | 34 MB | CC BY-NC-ND 4.0 |
+| `zipformer-vi-30m` | vi | 95 MB | 101 MB | CC BY-NC-ND 4.0 |
+| `zipformer-en-small` | en | 112 MB | 28 MB | Apache-2.0 |
+| `zipformer-en-gigaspeech` | en | 310 MB | 75 MB | Apache-2.0 |
+| `zipformer-en-libriheavy-punct` | en | 310 MB | 72 MB | not stated |
+| `zipformer-zh` | zh | 309 MB | 75 MB | not stated |
+| `zipformer-zh-en` | zh, en | 312 MB | 75 MB | not stated |
+| `zipformer-zh-en-punct-int8` | zh, en | 136 MB | 175 MB | Apache-2.0 |
+| `zipformer-yue` | yue | 330 MB | 83 MB | not stated |
+| `zipformer-ja` | ja | 713 MB | 169 MB | Apache-2.0 |
+| `zipformer-ko` | ko | 330 MB | 85 MB | Apache-2.0 |
+| `zipformer-ru-int8` | ru | 60 MB | 73 MB | Apache-2.0 |
+| `zipformer-th` | th | 696 MB | 161 MB | Apache-2.0 |
+
+The download is the whole archive (test recordings and the other precision included) and only
+the four kept files stay on disk. Models above about 100 MB download long enough that a first
+dictation can outlast the browser's wait for `ready`, so Settings offers **Download now** for each.
+
+**Licence.** Each catalog row carries the licence its source model card states
+(`SherpaModel.license`, an SPDX id, or empty when the source states none). Kiro Crew ships no
+weights; the gateway fetches them from the k2-fsa release only when the owner selects this
+provider and dictates or presses **Download now**. The status endpoint serves the licence and the
+source link, and Settings > Voice shows both beside the model picker, so the owner sees the terms
+before the download; a row with no stated licence says to check the source. The Vietnamese rows
+are CC BY-NC-ND 4.0, non-commercial use only.
+
+**Download.** The archive URL is `SHERPA_MODELS_BASE_URL` (the `asr-models` release of
+`k2-fsa/sherpa-onnx`) joined to the archive name; `KIROCREW_SHERPA_MODEL_BASE_URL` overrides the
+base for a mirror, and `KIROCREW_SKIP_MODEL_DOWNLOAD=1` turns downloads off, as it does for the
+whisper weights. The transfer reuses `models.stream_pinned_payload`, so the https floor, the stall
+timeout and the size ceiling are the whisper downloader's own. The archive's sha256 is pinned
+(GitHub's release digest, confirmed by downloading it). Extraction then takes only the four named
+members, each of which must be a regular file of its pinned size, and hashes each one against
+its own pin while it is written to a staging file in the model's directory. Anything else in the
+archive (the test WAVs, the BPE model, the README) is never written. Each verified file is renamed
+into `<data home>/models/sherpa/<model>/`, and the archive is deleted. `models/` is the sealed
+read-only leaf the whisper weights live under, so no new seal is needed.
+
+**Check on every load.** Before a load, every file is hashed again through the same
+one-descriptor check the whisper weights use (`models._sha256_verified_file`), after
+`sandbox.require_real_model_path` has refused a link anywhere on the path. A file that fails its
+digest is deleted and the model is downloaded again. A link or a second hard link refuses the load
+with the sandbox's message and is left alone. The four files total 34 MB at the default, so the
+check costs tens of milliseconds and runs only when the recogniser is not already resident.
+
+**Engine.** One `OfflineRecognizer` per process, built with greedy search, 80 mel features at 16 kHz
+and `min(4, engine.thread_count(stt.threads))` threads: a 30M-parameter model gains nothing from
+more. Loads and decodes run on `executors.stt_executor()`, one decode at a time under an asyncio
+lock, each bounded by `stt.timeout_secs`. A buffer shorter than `MIN_DECODE_SAMPLES` (0.3 s) is
+padded with silence, because the encoder raises on an empty feature matrix. The recogniser is
+released `stt.idle_evict_secs` after its last decode (0 releases it after each session or file). With the
+default model and two threads on an Apple M-series Mac, 3.7 s of audio decoded in 47 ms (a real-time
+factor of about 0.013) and the load took 0.4 s.
+
+**Live sessions.** `StreamingSession` has the `SttStreamSession` shape and is driven by
+`_drive_helper_session` through `stt_adapted_stream.run_sherpa_session`, so the origin check, the
+concurrency and duration caps, redaction, the semantic endpointer and the SEL audit pair apply as
+for every helper provider. `start()` checks availability, then loads the model, downloading it
+first when it is absent. `feed()` queues the PCM and returns at once; one worker task does the rest:
+
+- `stt.vad.Endpointer(stt.silence_ms)` cuts the stream into utterances, capped at
+  `MAX_UTTERANCE_MS` (30 s) of continuous speech. When it ends one, the utterance's whole audio is
+  decoded once and sent as a `final`; the audio after the end point starts the next utterance.
+- While an utterance is open and speech has been heard, it is decoded again for a `partial` at most
+  every `stt.partial_interval_ms`, and only when no more audio is waiting, so a slow host skips
+  partials instead of falling behind. A partial equal to the previous one is not sent.
+- `finish()` decodes what is left of the open utterance, when it is audible, and sends it as the last
+  `final`.
+
+There is no `status` frame for the download, because the helper driver relays only `partial`,
+`final` and `error`. The default model is 26 MB and the browser waits 60 s for `ready`
+(`useStreamingStt`'s `READY_TIMEOUT_MS`), so a first session normally downloads in time; Settings
+offers **Download now** for a slow line.
+
+**Files.** `transcribe_local._transcribe_sherpa` decodes the clip to 16 kHz mono with the same WAV reader and decoder
+the `local` provider uses (`transcribe_local._pcm_from_wav` / `_pcm_via_ffmpeg`), bounded by
+`_MAX_AUDIO_SECS`. It cuts the audio into utterances with the same endpointer and decodes each one,
+because an offline encoder over an hour of audio would hold all of it in memory at once.
+`batch_duration_cap_secs` is `_MAX_AUDIO_SECS` and `provider_splits_oversized` is true, as for
+`local`.
+
+**Text.** Runs of whitespace are folded. Most of these models emit upper-case words with no
+punctuation (`RỒI CŨNG HỖ TRỢ`); a result with no lower-case letter and at least one upper-case one
+is lower-cased with Unicode case rules and its first letter capitalised (`Rồi cũng hỗ trợ`). Text
+that already has case (a cased, punctuated model) or has none (Chinese, Japanese, Thai) is left as
+the model wrote it. Proper nouns in an all-caps model therefore come out lower-case; `stt.polish`
+can restore them. No hallucination filter runs: a transducer emits nothing on silence instead of
+caption boilerplate.
+
+**Language.** A model knows the language or languages it was trained on and ignores
+`stt.language_code`. Each catalog row names them (`SherpaModel.languages`, ISO 639-1), Settings
+lists them under the model picker, and the Language picker is hidden while this provider is
+selected.
+
+**Platforms.** sherpa-onnx publishes wheels for macOS (arm64 and x86_64), glibc Linux (x86_64 and
+aarch64 from glibc 2.17, armv7l from glibc 2.35) and Windows (x64 and x86; ARM64 from Python 3.11).
+`sherpa_engine._has_prebuilt_wheel` holds that table, read from the wheels of the release the extra
+pins. Anywhere else, musl Linux (Alpine) included, pip falls back to a source build that needs
+CMake and a C++ compiler, so a missing package there is reported as `stt_sherpa_no_wheel`, not as
+`stt_sherpa_extra_missing`: telling that user to install the extra sends them back to the install
+that failed. The table fails closed, the same rule as the whisper engine's `_has_prebuilt_wheel`.
+
+**bz2.** The model archive is a `.tar.bz2`, and a Python built without the `_bz2` extension (a
+pyenv build on a Linux host with no `libbz2` headers) cannot read it. Every Python Kiro Crew ships or
+documents has it, so this is reported rather than worked around: while the configured model is not
+on disk, `sherpa.availability(stt_config)` answers `stt_sherpa_bz2_missing` with the remedy
+(rebuild Python with bz2), the engine refuses the load with the same code before any transfer, and
+the store refuses a Settings download with the same sentence in its status. A model already on disk
+needs no bz2, so that install keeps working.
+
+**Errors.** Codes: `stt_sherpa_extra_missing` (`sherpa_onnx` is not installed; the detail carries
+`extras.install_hint("voice-sherpa")`), `stt_sherpa_no_wheel` (not installed, and this platform has
+no prebuilt wheel), `stt_sherpa_import_failed` (installed but it would not load),
+`stt_sherpa_bz2_missing` (the model must be downloaded and this Python cannot open the archive),
+`stt_sherpa_model_missing` (not on disk and the download failed or is turned off) and
+`stt_sherpa_failed` (a load or decode that raised or timed out). All six, and the three custom-model
+codes below, are in `SESSION_ERROR_CODES` and relayed to the client. A failed final ends the session with
+`stt_sherpa_failed`; a failed partial is logged and skipped.
+
+**Desktop app.** Every desktop backend bundles the `voice-sherpa` extra, macOS Intel included
+(sherpa-onnx has an x86_64 macOS wheel where whisper has none), because a sealed bundle cannot
+install a package later. It installs on its own pip step with `--only-binary sherpa-onnx,sherpa-onnx-core`,
+so a missing wheel fails the build instead of starting a source build, and the build then imports
+`sherpa_onnx` and `bz2` from the pruned bundle (`sherpa_runtime_gate` in `packaging/build-desktop.sh`).
+The runtime adds about 38 MB to each backend unpacked (the onnxruntime library is most of it); the
+model is still a download.
+
+**Settings.** `GET /api/stt/status` carries a `sherpa` block (`model`, `present`, the catalog with
+languages, sizes, licences and sources, the store's `download` status, and for `custom` the
+install's `custom` state). `POST /api/stt/prepare` downloads the sherpa model instead of a whisper
+one while this provider is selected, with an optional `{"model": name}` body naming a catalog row;
+for `custom` it unpacks the owner's archive instead, and never downloads.
+
+### A custom Sherpa-ONNX model
+
+`stt.sherpa_model = "custom"` runs any offline Zipformer transducer the owner brings, the same way
+`stt.model = "custom"` runs their own whisper file. Two fields name it:
+`stt.sherpa_custom_archive`, the file name of a sherpa-onnx `.tar.bz2` archive, and
+`stt.sherpa_custom_sha256`, that file's sha256. Steps, also shown in Settings > Voice:
+
+1. Download an offline transducer archive, for example from the
+   [`asr-models` release](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) (a name with
+   `zipformer` and without `streaming` or `ctc`).
+2. Put the file, unchanged, in `<data home>/models/sherpa/custom/` (`sherpa_models.custom_dir()`).
+3. Enter its file name and its sha256 (`shasum -a 256 <file>`, or `Get-FileHash <file> -Algorithm
+   SHA256` on Windows; the release page lists it for recent assets) and pick `custom`.
+
+Nothing is downloaded for a custom model. On each load the archive is hashed through
+`models._sha256_verified_file`, after `sandbox.require_real_model_path`, and refused unless it matches
+the configured digest; the file is the owner's and is never deleted. The first load of a given digest
+unpacks four members into `custom/<digest>/`: one `tokens.txt`, and one each of `encoder*.onnx`,
+`decoder*.onnx` and `joiner*.onnx` by base name, taking the int8 encoder and joiner and the fp32
+decoder when the archive holds both precisions (the choice k2-fsa recommends). Only regular files are
+read, only their bytes, under staging names this code chooses, so a member's path or mode cannot
+place a file anywhere. An archive with no such four (a CTC, Whisper or Paraformer model) is refused
+with `stt_sherpa_custom_unsupported` and its reason. The unpacked files and their sizes and digests go
+in `custom/<digest>/manifest.json`, and later loads check every file against it, re-unpacking when
+one fails. All of it sits under the sealed `models/` leaf the catalog uses.
+
+The archive name must be a plain file name ending in `.tar.bz2` (no separator, no `..`), so it cannot
+name a file outside `custom/`. Both fields are owner-only on `GET`/`PUT /api/config/stt`, with the
+whisper custom pair, and `custom` with either field missing or malformed reads as the default model
+with a warning. `config.json` is mounted read-only in the agent sandbox, so an agent can neither
+change the digest nor write the folder.
+
+A custom model's languages are unknown to Kiro Crew; Settings says the model decides. Codes:
+`stt_sherpa_custom_missing` (no such file in `custom/`), `stt_sherpa_custom_mismatch` (the file does
+not match its sha256) and `stt_sherpa_custom_unsupported`; all three are in `SESSION_ERROR_CODES`.
+
+**Retention.** The same as `local`: audio stays in this process and is never written to disk.
+
+**Not covered.** No native preflight: the sherpa-onnx wheels are built for a baseline CPU and have no
+build-specific instruction set to probe, so a crash on load is not fused the way whisper's is. No
+boot prewarm: a load takes about half a second. Streaming (online) Zipformer models are not in the
+catalog; an offline model re-decoded per partial costs little at this size.
 
 ## Legacy provider values
 

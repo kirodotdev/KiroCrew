@@ -22,10 +22,11 @@ from kiro_crew.dashboard.handlers.core_stt_access import (
     _deny_app_token,
     _spawn_stt_background,
 )
-from kiro_crew.dashboard.stt_stream import PROVIDER_LOCAL
+from kiro_crew.dashboard.stt_stream import PROVIDER_LOCAL, PROVIDER_SHERPA
 from kiro_crew.stt import capabilities as stt_capabilities
 from kiro_crew.stt import decoder as stt_decoder
 from kiro_crew.stt import models as stt_models
+from kiro_crew.stt import sherpa_custom, sherpa_models
 from kiro_crew.stt import telemetry as stt_telemetry
 from kiro_crew.transcribe import (
     VOCABULARIES_ACCESS_DENIED,
@@ -139,6 +140,7 @@ async def api_stt_status(request: web.Request) -> web.Response:
         )
 
     detail, catalog, engine_loaded, decoder_source, probed = await asyncio.to_thread(_probe)
+    sherpa_status = await asyncio.to_thread(_sherpa_status, cfg.stt)
     backend, backend_threads = probed
     present = {str(row["name"]): bool(row["present"]) for row in catalog}
     return web.json_response(
@@ -193,6 +195,10 @@ async def api_stt_status(request: web.Request) -> web.Response:
             # total could not tell the two apart.
             "timings": stt_telemetry.recorder().snapshot(),
             "download": dict(stt_models.store().status),
+            # The `sherpa_onnx` provider's own catalog and transfer, beside the
+            # whisper ones above rather than in them: the two stores are separate and
+            # a panel showing one must not read the other's progress.
+            "sherpa": sherpa_status,
             # The decoder every compressed input goes through, and what can be
             # done about it. `source` names WHICH of the three the transcode path
             # would run, because each one is repaired differently; `auto_fetch`
@@ -210,6 +216,50 @@ async def api_stt_status(request: web.Request) -> web.Response:
             },
         }
     )
+
+
+def _sherpa_status(stt_cfg: object) -> dict[str, object]:
+    """The `sherpa_onnx` catalog, what is on disk, and the store's transfer. BLOCKING (stats).
+
+    For ``custom``: whether the owner's archive is in the folder, whether it has been
+    unpacked, the last check's outcome and the folder it goes in. Never the archive
+    name or digest, which the config endpoint serves to the owner alone.
+    """
+    configured = getattr(stt_cfg, "sherpa_model", "")
+    custom = configured == sherpa_custom.CUSTOM_MODEL
+    model = sherpa_models.resolve(configured)
+    return {
+        "model": sherpa_custom.CUSTOM_MODEL if custom else model.name,
+        "present": (
+            sherpa_custom.is_unpacked(getattr(stt_cfg, "sherpa_custom_sha256", ""))
+            if custom
+            else sherpa_models.is_present(model)
+        ),
+        "models": [
+            {
+                "name": m.name,
+                "languages": list(m.languages),
+                "download_bytes": m.archive_size_bytes,
+                "size_bytes": m.size_bytes,
+                "present": sherpa_models.is_present(m),
+                "license": m.license,
+                "source_url": m.source_url,
+            }
+            for m in sherpa_models.CATALOG
+        ],
+        "download": dict(sherpa_models.store().status),
+        "custom": {
+            "dir": str(sherpa_custom.custom_dir()),
+            "archive_present": custom
+            and sherpa_custom.archive_present(getattr(stt_cfg, "sherpa_custom_archive", "")),
+            "check": dict(sherpa_custom.status),
+        },
+    }
+
+
+async def _ensure_sherpa_model(name: str) -> None:
+    """Download *name* for the Settings button. Failures are in the store's status."""
+    await sherpa_models.store().ensure(sherpa_models.resolve(name))
 
 
 #: Whole-request ceiling on the vocabulary listing. The worker thread carries its
@@ -326,6 +376,33 @@ async def api_stt_prepare(request: web.Request) -> web.Response:
         # is the only reading that makes this endpoint useful without a client.
         body = {}
     requested = body.get("model") if isinstance(body, dict) else None
+    if cfg.stt.provider == PROVIDER_SHERPA and (
+        requested == sherpa_custom.CUSTOM_MODEL
+        or (requested is None and cfg.stt.sherpa_model == sherpa_custom.CUSTOM_MODEL)
+    ):
+        # Nothing to download: check and unpack the owner's archive in the background.
+        _spawn_stt_background(
+            asyncio.to_thread(
+                sherpa_custom.prepare_reporting,
+                cfg.stt.sherpa_custom_archive,
+                cfg.stt.sherpa_custom_sha256,
+            )
+        )
+        return web.json_response(
+            {"model": sherpa_custom.CUSTOM_MODEL, "custom": dict(sherpa_custom.status)},
+            status=202,
+        )
+    if cfg.stt.provider == PROVIDER_SHERPA:
+        # The selected provider's own store: a catalog name only, or the configured one.
+        sherpa = sherpa_models.resolve(
+            sherpa_models.canonical_name(requested) or cfg.stt.sherpa_model
+        )
+        sherpa_store = sherpa_models.store()
+        if sherpa_store.status.get("step") != "downloading":
+            _spawn_stt_background(_ensure_sherpa_model(sherpa.name))
+        return web.json_response(
+            {"model": sherpa.name, "download": dict(sherpa_store.status)}, status=202
+        )
     name = requested if isinstance(requested, str) and requested else cfg.stt.model
     model = await asyncio.to_thread(stt_models.resolve, name)
     if stt_models.store().status.get("step") != "downloading":

@@ -34,6 +34,33 @@ async def run_codex_session(
     )
 
 
+async def run_sherpa_session(
+    ws: web.WebSocketResponse,
+    cfg: KiroCrewConfig,
+    request: web.Request,
+    caller: str,
+) -> None:
+    """Drive the resident sherpa-onnx recogniser with core's caps, redaction and audit."""
+    from kiro_crew.dashboard import stt_stream
+
+    with stt_stream._audited_setup(caller):
+        # Inside the audited block: the module imports numpy, and a failure to
+        # load it must still emit the end audit matching the start.
+        from kiro_crew.stt.sherpa import CODE_FAILED, SESSION_ERROR_CODES, StreamingSession
+
+        session = StreamingSession(cfg.stt)
+        endpointer = stt_stream._build_endpointer(ws, cfg, request)
+    await stt_stream._drive_helper_session(
+        ws,
+        caller,
+        session,
+        endpointer,
+        start_failure_code=lambda: session.failure_code or CODE_FAILED,
+        label="sherpa_onnx",
+        relayed_codes=stt_stream.RELAYED_SESSION_ERROR_CODES | SESSION_ERROR_CODES,
+    )
+
+
 async def _run_registered_session(
     ws: web.WebSocketResponse,
     cfg: KiroCrewConfig,

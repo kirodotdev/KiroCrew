@@ -22,6 +22,11 @@ from kiro_crew.stt.models import DEFAULT_MODEL as _STT_DEFAULT_MODEL
 from kiro_crew.stt.models import resolve as _resolve_stt_model
 from kiro_crew.stt.models import valid_custom_path as _valid_stt_custom_path
 from kiro_crew.stt.models import valid_custom_sha256 as _valid_stt_custom_sha256
+from kiro_crew.stt.sherpa_custom import CUSTOM_MODEL as _SHERPA_CUSTOM_MODEL
+from kiro_crew.stt.sherpa_custom import valid_archive_name as _sherpa_custom_archive_name
+from kiro_crew.stt.sherpa_models import DEFAULT_MODEL as _SHERPA_DEFAULT_MODEL
+from kiro_crew.stt.sherpa_models import MODEL_NAMES as _SHERPA_MODEL_NAMES
+from kiro_crew.stt.sherpa_models import canonical_name as _sherpa_model_name
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -45,6 +50,10 @@ STT_PROVIDER_LOCAL = "local"
 #: make things worse.
 STT_PROVIDER_OFF = "off"
 
+#: The in-process sherpa-onnx recogniser. Pinned equal to ``stt.sherpa.PROVIDER``
+#: by ``test_sherpa_stt``; spelled out here because that module imports numpy.
+STT_PROVIDER_SHERPA = "sherpa_onnx"
+
 #: Local Whisper can detect the spoken language; forcing English corrupts
 #: multilingual dictation before the recogniser can choose the right tokens.
 STT_LANGUAGE_AUTO = "auto"
@@ -55,9 +64,18 @@ STT_LANGUAGE_FALLBACK = "en-US"
 #: to AWS Transcribe (billed, and gated on the AWS consent prompt). All three
 #: produce partial results. ``codex`` adapts Codex's experimental voice transport
 #: using an existing ChatGPT login and the optional ``voice-codex`` extra.
+#: ``sherpa_onnx`` runs a sherpa-onnx Zipformer model in-process (the optional
+#: ``voice-sherpa`` extra; the model selected by ``stt.sherpa_model``).
 #: ``off`` selects no recogniser; it is deliberately absent from
 #: ``stt_stream._STREAMING_PROVIDERS``, which grants by positive membership.
-_VALID_STT_PROVIDERS = (STT_PROVIDER_LOCAL, "apple", "transcribe", "codex", STT_PROVIDER_OFF)
+_VALID_STT_PROVIDERS = (
+    STT_PROVIDER_LOCAL,
+    "apple",
+    "transcribe",
+    "codex",
+    STT_PROVIDER_SHERPA,
+    STT_PROVIDER_OFF,
+)
 
 
 def valid_stt_providers() -> tuple[str, ...]:
@@ -260,6 +278,64 @@ def _validated_stt_model(
         )
         return field_default(SttConfig, "model")
     return _resolve_stt_model(value).name
+
+
+_WARNED_SHERPA_MODELS: set[str] = set()
+
+
+def _validated_stt_sherpa_model(
+    value: object, *, custom_archive: object = "", custom_sha256: object = ""
+) -> str:
+    """``stt.sherpa_model`` as stored: a catalog name or ``custom``, else the default.
+
+    Degrades rather than failing the load, like ``stt.model``, and logs once. A
+    ``null`` is the absent key and says nothing. The name becomes a directory under
+    the models folder, which is why only a catalog name passes. ``custom`` passes
+    only with a usable archive name and digest beside it, read from the sibling
+    values because this runs during the load, like ``stt.model``'s custom pair.
+    """
+    if value is None:
+        return _SHERPA_DEFAULT_MODEL
+    if value == _SHERPA_CUSTOM_MODEL:
+        if _sherpa_custom_archive_name(custom_archive) and _valid_stt_custom_sha256(custom_sha256):
+            return _SHERPA_CUSTOM_MODEL
+        logger.warning(
+            "stt.sherpa_model is %r but stt.sherpa_custom_archive (a .tar.bz2 file name) "
+            "and stt.sherpa_custom_sha256 (64 hex characters) are not both set; using %r",
+            _SHERPA_CUSTOM_MODEL,
+            _SHERPA_DEFAULT_MODEL,
+        )
+        return _SHERPA_DEFAULT_MODEL
+    name = _sherpa_model_name(value)
+    if name is not None:
+        return name
+    seen = repr(value)[:80]
+    if seen not in _WARNED_SHERPA_MODELS:
+        _WARNED_SHERPA_MODELS.add(seen)
+        logger.warning(
+            "Unknown stt.sherpa_model %s; using %r (choose one of %s)",
+            seen,
+            _SHERPA_DEFAULT_MODEL,
+            ", ".join(_SHERPA_MODEL_NAMES),
+        )
+    return _SHERPA_DEFAULT_MODEL
+
+
+def _validated_stt_sherpa_custom_archive(value: object) -> str:
+    """``stt.sherpa_custom_archive`` as stored: a plain ``.tar.bz2`` file name or ``""``.
+
+    The rejected value is described by its shape, never quoted: it is an
+    owner-only field, and a hand-edited one may hold something pasted by mistake.
+    """
+    name = _sherpa_custom_archive_name(value)
+    if not name and value:
+        shape = f"str of length {len(value)}" if isinstance(value, str) else type(value).__name__
+        logger.warning(
+            "Ignoring stt.sherpa_custom_archive (%s): it must be a .tar.bz2 file name "
+            "with no folder in it",
+            shape,
+        )
+    return name
 
 
 def _validated_stt_threads(value: object) -> int:
@@ -478,6 +554,10 @@ class SttConfig:
             "`transcribe` sends your audio to AWS Transcribe, which bills your AWS "
             "account. `codex` sends audio to OpenAI through an existing Codex "
             "ChatGPT login (experimental; requires voice access and voice-codex). "
+            "`sherpa_onnx` runs a sherpa-onnx Zipformer model on this machine "
+            "(a model per language, or your own; requires voice-sherpa and downloads "
+            "the model chosen by "
+            "`sherpa_model`). "
             "`off` runs no recogniser at all, the same as turning speech "
             "input off.",
             enum=list(_VALID_STT_PROVIDERS),
@@ -527,6 +607,44 @@ class SttConfig:
             "(or `Get-FileHash <file> -Algorithm SHA256` on Windows).",
             # Owner-only, like the file path: `GET /api/config/stt` serves the pair
             # to the owner alone, so the general config read must mask it too.
+            sensitive=True,
+        ),
+    )
+    sherpa_model: str = field(
+        default=_SHERPA_DEFAULT_MODEL,
+        metadata=_meta(
+            "Sherpa-ONNX Model",
+            "Which model the `sherpa_onnx` provider downloads and runs. Each catalog "
+            "model recognises the language or languages in its name (`vi`, `en`, "
+            "`zh`, `yue`, `ja`, `ko`, `ru`, `th`); Settings > Voice shows its size "
+            "and its licence before the download, and some are for non-commercial "
+            "use only. `custom` runs your own sherpa-onnx offline transducer archive "
+            "named by `sherpa_custom_archive`, checked against `sherpa_custom_sha256`.",
+            enum=[*_SHERPA_MODEL_NAMES, _SHERPA_CUSTOM_MODEL],
+        ),
+    )
+    sherpa_custom_archive: str = field(
+        default="",
+        metadata=_meta(
+            "Sherpa-ONNX Custom Archive",
+            "The file name of a sherpa-onnx offline transducer archive (`.tar.bz2`, "
+            "for example one from the k2-fsa `asr-models` release) to run when "
+            "`sherpa_model` is `custom`. Put the file, unchanged, in `models/sherpa/"
+            "custom` under the Kiro Crew home first; nothing is downloaded. Both this "
+            "and the digest must be set; otherwise `custom` degrades to the default "
+            "model with a warning.",
+            # Owner-only, like the whisper custom pair.
+            sensitive=True,
+        ),
+    )
+    sherpa_custom_sha256: str = field(
+        default="",
+        metadata=_meta(
+            "Sherpa-ONNX Custom Archive SHA-256",
+            "The 64-character hex sha256 of the archive at `sherpa_custom_archive`. "
+            "The archive is hashed on every load and not used unless it matches. Get "
+            "it with `shasum -a 256 <file>` (or `Get-FileHash <file> -Algorithm "
+            "SHA256` on Windows); the release page lists it for recent assets.",
             sensitive=True,
         ),
     )

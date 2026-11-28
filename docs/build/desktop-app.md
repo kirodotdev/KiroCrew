@@ -749,6 +749,12 @@ same way). Key details:
   weights are deliberately excluded from the installer: the user selects a
   model and clicks **Download now**, with no package manager or separate
   dependency step. Intel macOS is the unsupported recognizer exception.
+  Every backend, macOS Intel included, also bundles `sherpa-onnx` (the
+  `voice-sherpa` extra behind the `sherpa_onnx` provider), installed with
+  `--only-binary` so a missing wheel fails the build, and the build imports
+  it and `bz2` from the pruned bundle before publishing (`sherpa_runtime_gate`).
+  It adds about 38 MB per backend; its model is a download like whisper's (see
+  [stt-streaming](../system-specs/modules/stt-streaming.md#sherpa-onnx-provider)).
   Every bundled executable ships **uncompressed** — the Apple notary service
   decompresses archive members and rejects an unsigned executable found inside
   one, which fails the whole macOS release (see
