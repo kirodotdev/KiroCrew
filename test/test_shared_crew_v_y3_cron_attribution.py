@@ -87,7 +87,7 @@ def test_cron_prompt_author_survives_durable_write_and_hydration(tmp_path, long_
         prompts = [row for row in rows if row["role"] == "user"]
         assert len(prompts) == 2
         for prompt in prompts:
-            assert prompt["meta"]["author"] == AUTOMATION_PRINCIPAL.to_public_dict()
+            assert prompt["meta"]["author"] == attribution.author_stamp(AUTOMATION_PRINCIPAL)
         assert (_REFERENCE_MARKER in prompts[1]["content"]) is long_prompt
     inject_cron_result_to_dashboard(state, job, "result", history=None, dismissed=[])
     assert len(slot.messages) == len(disk) == 4

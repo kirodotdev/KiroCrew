@@ -125,12 +125,13 @@ def test_owner_ids_cover_every_local_subject_and_the_owners_tailnet_login():
     assert owner.is_owner_principal(Principal.system("internal")) is False
 
 
-def test_viewer_ids_are_the_owners_for_the_owner_and_empty_for_anyone_else():
+def test_writes_as_ids_are_the_owners_for_the_owner_and_only_their_own_for_anyone_else():
     startup = local_operator_principal("local-startup")
-    assert owner.owner_principal().id in owner.viewer_ids(startup)
+    assert owner.owner_principal().id in owner.writes_as_ids(startup)
     alice = tailnet_principal("alice@example.com", "a", Provenance.TAILSCALE_LISTENER)
-    assert owner.viewer_ids(alice) == frozenset()
-    assert owner.viewer_ids(Principal.unknown()) == frozenset()
+    assert owner.writes_as_ids(alice) == frozenset({alice.id})
+    unknown = Principal.unknown()
+    assert owner.writes_as_ids(unknown) == frozenset({unknown.id})
 
 
 def test_warming_fills_the_computer_name_cache_off_the_calling_thread(monkeypatch):

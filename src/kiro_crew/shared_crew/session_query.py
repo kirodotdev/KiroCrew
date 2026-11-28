@@ -107,7 +107,7 @@ def query_sessions(
     """Filter, count and page *rows* for *viewer*.
 
     *viewer_ids* are the other principal ids that name the viewer themself
-    (:func:`~kiro_crew.shared_crew.owner.viewer_ids`). *local_owner_ids* are
+    (:func:`~kiro_crew.shared_crew.owner.writes_as_ids`). *local_owner_ids* are
     the local owner principals represented by one folded People row.
 
     *exclude* drops rows that are not conversations (machine transcripts)

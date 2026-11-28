@@ -263,13 +263,21 @@ def creator_of_public(raw: object) -> Principal:
     return principal_or_unknown(raw.get("creator"))
 
 
-def author_meta(actor: ActorContext) -> dict[str, Any]:
-    """The value stored under ``meta[MESSAGE_AUTHOR_META_KEY]`` for a message.
+def author_stamp(principal: Principal) -> dict[str, Any]:
+    """The value stored under ``meta[MESSAGE_AUTHOR_META_KEY]`` for *principal*.
 
-    The public shape: a message row reaches every collaborator's browser, so it
-    carries the id and label only.
+    The public shape plus ``provider``: a message row reaches every
+    collaborator's browser, so it carries the id, label and provider only (no
+    issuer or subject). ``provider`` lets the edit rule tell a relay teammate's
+    row from the owner's with the preview off (``edit_rule``); a row stamped
+    before it has none and never reads as a relay teammate's.
     """
-    return actor.principal.to_public_dict()
+    return {**principal.to_public_dict(), "provider": principal.provider}
+
+
+def author_meta(actor: ActorContext) -> dict[str, Any]:
+    """The author stamp (:func:`author_stamp`) of *actor*'s principal."""
+    return author_stamp(actor.principal)
 
 
 def stamp_message_author(meta: dict[str, Any], actor: ActorContext) -> dict[str, Any]:
@@ -338,7 +346,7 @@ def stamp_principal_author(meta: dict[str, Any], principal: Principal) -> dict[s
     A channel sender has no Shared Crew principal and is stamped Unknown; Crew
     automation is stamped with its bounded system principal. Never a client claim.
     """
-    meta[MESSAGE_AUTHOR_META_KEY] = principal.to_public_dict()
+    meta[MESSAGE_AUTHOR_META_KEY] = author_stamp(principal)
     return meta
 
 

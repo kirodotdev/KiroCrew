@@ -32,7 +32,7 @@ from kiro_crew.shared_crew.contracts import (
     Transport,
 )
 from kiro_crew.shared_crew.identity import local_operator_principal, tailnet_principal
-from kiro_crew.shared_crew.owner import owner_principal, viewer_ids
+from kiro_crew.shared_crew.owner import owner_principal, writes_as_ids
 from kiro_crew.shared_crew.session_query import decode_cursor, encode_cursor, query_sessions
 
 pytestmark = pytest.mark.usefixtures("host_isolation")
@@ -121,7 +121,7 @@ def test_legacy_sessions_belong_to_the_owner_not_to_unattributed(catalog):
     owner = owner_principal()
     mine = SessionQuery.from_query({"creator": "mine", "limit": "50"})
     page = query_sessions(
-        _rows(catalog), mine, owner, exclude=_machine, viewer_ids=viewer_ids(owner)
+        _rows(catalog), mine, owner, exclude=_machine, viewer_ids=writes_as_ids(owner)
     )
     assert {i["key"] for i in page.items} == {"dashboard_l0", "dashboard_l1"}
     unattributed = SessionQuery.from_query({"creator": "unattributed", "limit": "50"})
@@ -134,12 +134,12 @@ def test_legacy_sessions_belong_to_the_owner_not_to_unattributed(catalog):
 
 def test_the_owner_under_another_local_subject_still_finds_their_sessions(catalog):
     startup = local_operator_principal("local-startup")
-    ids = viewer_ids(startup)
+    ids = writes_as_ids(startup)
     assert owner_principal().id in ids and startup.id in ids
     mine = SessionQuery.from_query({"creator": "mine", "limit": "50"})
     page = query_sessions(_rows(catalog), mine, startup, exclude=_machine, viewer_ids=ids)
     assert page.total_matching == 2
-    assert viewer_ids(ALICE) == frozenset()
+    assert writes_as_ids(ALICE) == frozenset({ALICE.id})
 
 
 def test_paging_walk_returns_every_match_once_newest_first(catalog):

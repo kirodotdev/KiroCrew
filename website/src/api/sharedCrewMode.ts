@@ -37,6 +37,9 @@ export interface CrewModeResponse {
   /** Every connection source at once (`crew_mode.sources_view`). Absent from an
    *  older gateway, which `connectionSources` reads from the setup paths. */
   sources?: ConnectionSource[]
+  /** The viewer's side of the edit rule (`shared_crew.edit_rule.edit_rule_view`),
+   *  read by `editRule.editRuleViewer`. Absent from an older gateway. */
+  edit_rule?: { preview: boolean; is_owner: boolean; relay_teammate: boolean }
 }
 
 /** A way people reach this Crew. `organization` is a console your organization

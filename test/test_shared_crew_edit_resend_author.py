@@ -1,8 +1,10 @@
-"""An edit-resend row names the collaborator who sent the edit.
+"""Only a row's author may edit it or rewind to it, and the edited row names them.
 
 The request's actor is published by a middleware in the request's own task,
-as ``identity.publish_actor`` does; the real ``api_chat_slot_edit_resend`` then
-writes the edited row. ``_run_chat`` is patched, so no backend session starts.
+as ``identity.publish_actor`` does; the real ``api_chat_slot_edit_resend`` and
+``api_chat_slot_rewind`` then judge and write the row. ``_run_chat`` is patched,
+so no backend session starts. The rule itself is pinned by
+``test_shared_crew_edit_rule.py``.
 """
 
 from __future__ import annotations
@@ -19,8 +21,10 @@ from kiro_crew.dashboard.chat_regenerate import (
     api_chat_slot_edit_resend,
     api_chat_slot_regenerate,
 )
-from kiro_crew.shared_crew import attribution
+from kiro_crew.dashboard.chat_rewind import api_chat_slot_rewind
+from kiro_crew.shared_crew import attribution, preview
 from kiro_crew.shared_crew.contracts import (
+    ACTOR_REQUEST_KEY,
     ActorContext,
     DisplaySnapshot,
     Principal,
@@ -62,15 +66,16 @@ def state(tmp_path, monkeypatch):
 def _client(state, actor: Principal) -> TestClient:
     @web.middleware
     async def as_actor(request: web.Request, handler):
-        attribution.bind_request_author(
-            ActorContext(principal=actor, request_id="r", transport=Transport.HTTP)
-        )
+        context = ActorContext(principal=actor, request_id="r", transport=Transport.HTTP)
+        request[ACTOR_REQUEST_KEY] = context
+        attribution.bind_request_author(context)
         return await handler(request)
 
     app = web.Application(middlewares=[as_actor])
     app["state"] = state
     app.router.add_post("/api/chat/slots/{slot}/edit-resend", api_chat_slot_edit_resend)
     app.router.add_post("/api/chat/slots/{slot}/regenerate", api_chat_slot_regenerate)
+    app.router.add_post("/api/chat/slots/{slot}/rewind", api_chat_slot_rewind)
     return TestClient(TestServer(app))
 
 
@@ -78,10 +83,40 @@ def _author_id(row: dict) -> str | None:
     return ((row.get("meta") or {}).get("author") or {}).get("id")
 
 
+@pytest.fixture
+def preview_on(monkeypatch):
+    monkeypatch.setattr(preview, "preview_enabled", lambda: True)
+
+
 @pytest.mark.asyncio
-async def test_bob_editing_alices_row_is_attributed_to_bob(state) -> None:
+@pytest.mark.parametrize("route", ["edit-resend", "rewind"])
+async def test_bob_cannot_edit_or_rewind_to_alices_row(state, preview_on, route) -> None:
     slot = state.get_or_create_slot("s1")
     slot.append("user", "alice asks", meta={"author": ALICE.to_public_dict()})
+    slot.append("assistant", "answer")
+    slot.drain()
+    run_chat = AsyncMock()
+
+    with (
+        patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=run_chat),
+        patch("kiro_crew.dashboard.chat_rewind._run_chat", new=run_chat),
+    ):
+        async with _client(state, BOB) as client:
+            resp = await client.post(
+                f"/api/chat/slots/s1/{route}", json={"index": 0, "content": "bob edits"}
+            )
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "not_message_author"
+
+    assert [m["content"] for m in slot.messages] == ["alice asks", "answer"]
+    run_chat.assert_not_called()
+    state.sessions.discard_conversation.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bob_editing_his_own_row_is_attributed_to_bob(state, preview_on) -> None:
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "bob asks", meta={"author": BOB.to_public_dict()})
     slot.append("assistant", "answer")
     slot.drain()
 

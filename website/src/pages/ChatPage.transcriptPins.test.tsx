@@ -34,6 +34,7 @@ vi.mock('../store/chatSlice', async (orig) => {
 })
 
 import { openPanelView } from '../hooks/usePanelTabs'
+import { sharedCrewKeys } from '../hooks/sharedCrew/sharedCrewSocket'
 import { i18nT } from '../i18n/t'
 import { isSupersededPagingRejection, openActivityPanel } from '../store/chatSlice'
 import type { ChatMessage } from '../types'
@@ -396,6 +397,19 @@ describe('the Cmd/Ctrl+Up edit request', () => {
     const { result } = renderHook(() => useTranscriptPins(p), { wrapper: withQueryClient() })
     act(() => { result.current.handleEditLastRequest() })
     expect(p.setEditLast).not.toHaveBeenCalled()
+  })
+
+  it('skips a newer row another person wrote and opens the viewer own newest row', () => {
+    const by = (ts: string, id: string) =>
+      ({ role: 'user', content: `user ${ts}`, ts, cls: '', meta: { author: { id, kind: 'human' } } }) as unknown as ChatMessage
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    client.setQueryData(sharedCrewKeys.mode, { viewer_ids: ['p_me'], edit_rule: { preview: true, is_owner: false, relay_teammate: false } })
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    const p = props({ messages: [by('u1', 'p_me'), msg('assistant', 'a1'), by('u2', 'p_other'), msg('assistant', 'a2')] })
+    const { result } = renderHook(() => useTranscriptPins(p), { wrapper })
+    act(() => { result.current.handleEditLastRequest() })
+    expect(p.navToMessage).toHaveBeenCalledWith(p.messages[0], { behavior: 'auto', align: 'center' })
+    expect(p.setEditLast).toHaveBeenCalledWith({ seq: 1, ts: 'u1', index: 0 })
   })
 
   it('opens no editor while the newest user message has no row on screen', () => {

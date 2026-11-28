@@ -5,9 +5,10 @@
  * same cache entries.
  */
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { api } from '../../api/client'
 import { noteSendRevision } from '../../api/sendRace'
+import { editRuleViewer, type EditRuleViewer } from '../../api/editRule'
 import type { SendState } from '../../api/sharedCrew'
 import { effectiveMode, showsTeamAttribution } from '../../api/sharedCrewMode'
 import { ALL_UNAVAILABLE, capabilityUsable, sharedAccessConfigured, sharedCrewPreviewOn, someoneJoined } from '../../api/sharedCrewUi'
@@ -44,6 +45,15 @@ export function useSharedCrewMode(enabled = true, { fetchOnMount = true }: { fet
     refetchOnMount: fetchOnMount,
     retryOnMount: fetchOnMount,
   })
+}
+
+/** The viewer's side of the edit rule (`api/editRule`). Reads the mode whatever
+ *  the preview is, because a relay teammate is judged with it off too; `null`
+ *  until it answers, which leaves every row editable for the gateway to judge. */
+export function useEditRuleViewer(): EditRuleViewer | null {
+  const data = useSharedCrewMode(true, { fetchOnMount: false }).data
+  // Stable while the mode answer is unchanged: the transcript renderers memo on it.
+  return useMemo(() => editRuleViewer(data), [data])
 }
 
 export function useSharedCrewPeople(enabled = true, { fetchOnMount = true }: { fetchOnMount?: boolean } = {}) {
