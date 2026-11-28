@@ -2688,6 +2688,65 @@ source `app_context`. Do not read an `.app_secret` file in your app's folder: an
 version left it there, the Gateway never accepts it, and the first load of your hooks
 removes it. Both methods need `ctx.sdk_level >= 5`.
 
+### Verified download (`ctx.verified_download`)
+
+Level 20. One file your app installs from the internet (a compiler, an engine archive),
+fetched the way the Gateway fetches its own pinned downloads, into your app's own data
+directory. It needs no permission. Feature-detect it with
+`getattr(ctx, "verified_download", None)`. A spawned backend makes the same call through
+the [backend SDK](#backend-sdk-kiro_crewappsbackend_sdk)'s `verified_download`.
+
+```python
+import asyncio
+
+ENGINE_URL = "https://downloads.example.com/engine-1.4.2.tar.gz"
+ENGINE_SHA256 = "<the file's 64 hex characters>"
+ENGINE_SIZE = 18_403_112
+
+async def install_engine(ctx) -> str | None:
+    fetch = getattr(ctx, "verified_download", None)
+    if fetch is None:
+        return None  # an older host: refuse rather than fetch unverified
+    # The folder must already exist; create it off the event loop.
+    await asyncio.to_thread((ctx.data_dir / "vendor").mkdir, exist_ok=True)
+    try:
+        path = await asyncio.to_thread(
+            fetch, ENGINE_URL, "vendor/engine.tar.gz", sha256=ENGINE_SHA256, size=ENGINE_SIZE
+        )
+    except (ValueError, OSError):  # a refused argument, or nothing was installed
+        return None
+    return str(path)
+```
+
+`ctx.verified_download(url, dest, *, sha256, size)` downloads `url` to `dest` and returns
+the installed `Path`:
+
+- `sha256` (64 hex characters) and `size` (the exact length in bytes) are required.
+  Nothing appears at `dest` until the bytes match both; on a mismatch `dest` stays as it
+  was. The file is owner-only.
+- `dest` is a path relative to your data directory, and its folders must already exist
+  (the call creates none). A link or a junction anywhere on the way to it refuses the
+  download, and nothing is written. So does a folder that is moved, or turned into a
+  junction, while the download runs: the lock, the staging file and the installed file
+  must each be in the folder that was checked.
+- `url` must be `https`. The certificate is always verified, and a redirect is followed
+  only on the same host and port, with no option to allow another one. A GitHub release
+  or `/archive/` url redirects to another host, so use a url that serves the file itself,
+  such as the `codeload.github.com` tarball.
+- One download runs in a folder at a time. A second one into the same folder, from
+  anywhere, raises `VerifiedDownloadError` at once instead of running beside the first;
+  try it again once the first ends, or give each file its own folder.
+- No other file of yours is replaced or removed. The bytes go to a hidden staging file the
+  call creates itself (`.<random>.kc-dl`, so a `<name>.part` of yours is left alone), which
+  is gone when the call returns or raises. The folder keeps an empty `.kc-dl.lock` file,
+  the lock every download there takes; leave it in place.
+
+It raises `ValueError` or `TypeError` for a refused argument before anything is opened,
+and `VerifiedDownloadError` (an `OSError`, from `kiro_crew.apps.backend_sdk`) when nothing
+was installed; its message names hosts and local folders, never the url's path. It blocks
+for the whole transfer and raises `RuntimeError` when called on the event loop, so run it
+through `asyncio.to_thread`.
+
 ### App Kit seam level (`ctx.sdk_level`)
 
 An `int`, the App Kit seam level this host provides. Level 1 means the owner gate,
@@ -2739,7 +2798,9 @@ its outbound URL check (`vet_public_url`, `UrlRejectedError` and
 `copy_file_pinned` and their helpers), and level 15 adds `permissions.browserRecipes`
 with [`runRecipe`](#browser-recipes), and level 18 adds the backend SDK's trusted tool
 lookups, host agent-template values, `address_covers_loopback` and `extra_hidden_dirs` on
-its spawns; each level includes every level below it. Several seams
+its spawns, and level 20 adds the [verified download](#verified-download-ctxverified_download)
+(`ctx.verified_download` and the backend SDK's `verified_download`); each level includes
+every level below it. Several seams
 share level 7, three share level 8, level 10 is shared by the seams of the batch it
 opens, and levels 14, 17 and 18 by the backend SDK names of their batches, so an app that needs one
 feature-detects it, never the level alone. Read it
@@ -2757,8 +2818,8 @@ sensitive-path check, the file path gate, a no-follow read, an atomic write, out
 redaction, a credential or exfiltration-URL check on text you hold, an audit row, a
 sandboxed child process with its environment, hidden paths, output cap and git hook
 overrides, the cross-platform process and lock helpers, the trusted location of a host
-tool, the public-address check for a URL your backend fetches, a media-type sniff and a
-descriptor-pinned path walk and copy. Each name calls the control the
+tool, the public-address check for a URL your backend fetches, a verified download, a
+media-type sniff and a descriptor-pinned path walk and copy. Each name calls the control the
 Gateway itself enforces, so a check tightened in a later release reaches your app with
 the upgrade. Use these instead of a private `kiro_crew` name: a private name moves
 between releases, and these do not.
@@ -2868,14 +2929,17 @@ def snapshot(sdk, path: str, into_dir: str, max_bytes: int) -> str | None:
 | `uv_executable()` | Level 18. The absolute path of a usable `uv` (the copy installed with Kiro Crew first, then an absolute `PATH` hit), or `None`: the `uv` the Gateway puts in an agent template's `{UV_BIN}`. |
 | `nvm_version_bin_dirs()` | Level 18. Every existing nvm Node version `bin` folder, newest first, from `~/.nvm` and the XDG config folder, as a tuple. |
 | `agent_template_host_values()` | Level 18. `{"{UV_BIN}": ..., "{HOST_PATH}": ..., "{PATH_SEP}": ...}`: what the Gateway renders for the agent-template placeholders that name no app, from the same function its renderer calls, with a value it cannot compute left out. `{APP_ROOT}` and `{APP_DATA}` are your own checkout and `ctx.data_dir`. |
+| `verified_download(url, dest, *, sha256, size)` | Level 20. In a spawned backend, the same call as [`ctx.verified_download`](#verified-download-ctxverified_download), into the data directory of the app the Gateway spawned (`KIROCREW_APP_NAME`). It takes no app name, and raises `LookupError` outside a spawned backend. |
+| `VerifiedDownloadError` | Level 20. Raised by the verified download when nothing was installed. An `OSError`. |
 | `vet_public_url(url)` | Level 14. The Gateway's check for a URL your backend is about to fetch: `http` or `https`, no user name or password, port 80 or 443, a host that is not a `.onion` or `.local` name, and every address the name resolves to public (an alternate or tunnel spelling of an address is unwrapped first). Returns the vetted URL, whose attributes are `url` (normalized, fragment stripped), `scheme`, `host` (for TLS and the `Host` header), `wire_host` (the name your HTTP client hands its resolver), `port`, `ip` (the first address), `addresses` (every approved address, in resolver order, without repeats) and `domain` (`host` without a leading `www.`); its class is not an SDK name, so read the attributes and never import it. Raises `UrlRejectedError` otherwise, and when the name does not resolve. It performs one DNS lookup and opens no connection, so call it from a worker thread, never on the event loop. It pins nothing: connect only to `.addresses`, through a resolver keyed on `.wire_host` that answers with them, because resolving the name again at connect time would dial an address the check never saw. A host below level 14 has the package without this name, so look it up with `getattr(sdk, "vet_public_url", None)` and refuse the URL when it is `None`. |
 | `UrlRejectedError` | Level 14. Raised by `vet_public_url`. `.code` is `"invalid_url"` (not an absolute `http(s)` URL, or one carrying credentials) or `"blocked_url"` (a well-formed URL the address, port or host rule refused, or one that did not resolve). |
 | `address_is_not_public(address)` | Level 14. `True` when an address you resolved yourself (a redirect hop, say) must be refused: anything that is not a globally reachable unicast address, an IPv4-mapped or 6to4 spelling included. A value that is not an IP literal also answers `True`. |
 | `sniff_raster_mime(head)`, `RASTER_SNIFF_BYTES` | Level 14. The raster type a file's leading bytes start with (`"image/png"`, `"image/jpeg"`, `"image/gif"`, `"image/webp"` or `"image/bmp"` today), or `None`. It decides from the bytes, never from a filename or a declared type: SVG is never an answer, and a RIFF file that is not WebP (a WAVE, say) is `None`. Pass at least `RASTER_SNIFF_BYTES` leading bytes; a longer buffer answers the same. The answer says what the bytes are, not what to accept: check it against your own allowlist, so a type the Gateway learns to sniff later does not widen what your app takes. On a gateway without it, refuse the file rather than trust its name. |
 
 The sandbox has no option to show a hidden directory or open a sealed one for
-writing (`extra_hidden_dirs` only hides more), and the URL check has no option to allow
-another port or a private address: those choices are the Gateway's. None of these names needs a permission, because none
+writing (`extra_hidden_dirs` only hides more), the URL check has no option to allow
+another port or a private address, and the verified download has no option to follow a
+redirect to another host or skip its digest: those choices are the Gateway's. None of these names needs a permission, because none
 of them adds reach. Your manifest declares nothing for them.
 
 ### Lessons

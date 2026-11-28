@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -202,6 +203,33 @@ class AppContext:
         must not guess one.
         """
         return loopback_gateway_origin()
+
+    def verified_download(
+        self, url: str, dest: str | os.PathLike[str], *, sha256: str, size: int
+    ) -> Path:
+        """Download one pinned https file into this app's ``data_dir`` (seam level 20).
+
+        *dest* is a path relative to ``data_dir`` whose folders already exist;
+        *sha256* and *size* are the file's digest and exact length, and nothing is
+        visible at *dest* until both match. One fetch runs in a folder at a time: a
+        second one is refused, never run beside it, and a refusal removes only the
+        files the fetch itself created. https only, the certificate verified, and a
+        redirect followed only on the same host. Returns the installed path.
+
+        Blocking for the whole transfer, so it raises ``RuntimeError`` on the event
+        loop: call it through ``asyncio.to_thread``. Raises ``ValueError`` or
+        ``TypeError`` for a refused argument before anything is opened, and
+        ``backend_sdk.VerifiedDownloadError`` when nothing was installed.
+
+        Not gated by a permission: it writes only into this app's own data directory,
+        which the app's code can already write. The import is lazy so this module keeps
+        its light import.
+        """
+        from kiro_crew.apps.download_sdk import download_into
+
+        return download_into(
+            self.data_dir, url, dest, sha256=sha256, size=size, label=f"{self.name} download"
+        )
 
     async def kiro_call(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Call one of this app's approved Kiro operations as the signed-in person.
