@@ -490,8 +490,10 @@ test("stopping on quit announces the change, so the quit label is rebuilt", asyn
   // this harness cannot fake. The announcement is the stop's own.
   built.spawnCalls[0].child.exitCode = 0;
   const before = changes;
-  built.supervisor.stopOnQuit();
+  const stopped = built.supervisor.stopOnQuit();
   assert.ok(changes > before, "the stop clears the owned child and announces it");
+  assert.ok(stopped instanceof Promise, "the quit waits for the stop it returns");
+  await stopped;
 });
 
 test("Settings' Restart gateway is not offered before the main window connects to the gateway this app spawned", async () => {

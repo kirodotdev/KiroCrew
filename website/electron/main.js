@@ -62,6 +62,7 @@ const { initGpuPolicy } = require("./disable-gpu");
 const { applyAuthServerAllowlist } = require("./auth-allowlist");
 const { initGpuCrashFallback } = require("./gpu-crash-fallback");
 const { isRelaunching, watchRelaunch } = require("./relaunch-intent");
+const { createQuitHold } = require("./quit-hold");
 const { cancelPendingTrayHide } = require("./hide-to-tray");
 const { exitImmersiveModes } = require("./blocking-prompt");
 const { createMetricsRecorder } = require("./perf-metrics");
@@ -1025,7 +1026,9 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on("before-quit", () => {
+// The quit waits for the gateway's graceful stop, or on Windows the app's exit
+// kills the gateway mid-shutdown and orphans its children (quit-hold.js).
+app.on("before-quit", createQuitHold({ app, log: glog, isUpdateQuit: () => quittingForUpdate, teardown: () => {
   isQuitting = true;
   shellBundleWatch.stop();
   // Flush the final metrics window before gateway teardown begins.
@@ -1048,8 +1051,8 @@ app.on("before-quit", () => {
   } catch {
     // Best effort during quit.
   }
-  gateway.stopOnQuit({ userStop: !quittingForUpdate && !osSessionEnding && !isRelaunching() });
-});
+  return gateway.stopOnQuit({ userStop: !quittingForUpdate && !osSessionEnding && !isRelaunching() });
+} }));
 
 // Release only the shell summon accelerator. Mochi owns and removes its own
 // shortcuts on the before-quit path above.

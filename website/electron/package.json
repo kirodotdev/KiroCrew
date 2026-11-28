@@ -275,6 +275,7 @@
       "disable-gpu.js",
       "gpu-crash-fallback.js",
       "relaunch-intent.js",
+      "quit-hold.js",
       "early-boot-guard.js",
       "memory-watch-log.js",
       "launch-log.js",

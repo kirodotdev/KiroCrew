@@ -1105,7 +1105,8 @@ function createGatewaySupervisor({
 
   function stopGatewayOnQuit({ userStop = false } = {}) { // true only for a Quit the user chose
     tunnelKeeper.stop();
-    stopGatewayGracefully({ userStop })
+    // Returned so the quit can wait for it (quit-hold.js); it never rejects.
+    return stopGatewayGracefully({ userStop })
       .catch((error) => console.error("Gateway stop failed:", error?.message));
   }
 
