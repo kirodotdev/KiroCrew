@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import threading
 from functools import partial
 from pathlib import Path
@@ -238,6 +239,63 @@ class TestMcpToolClient:
         # An exited server answers the bounded wait at once, so no kill follows.
         client._proc.wait.assert_called_once_with(timeout=5)
         client._proc.kill.assert_not_called()
+
+    def _spawn_patches(self, popen):
+        return (
+            patch(
+                "kiro_crew.cron_script._resolve_mcp_server",
+                return_value=(("some-mcp",), {}),
+            ),
+            patch("kiro_crew.cron_script.wrap_argv", return_value=(["some-mcp"], None)),
+            patch("kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: argv),
+            patch("kiro_crew.cron_script.popen_limited", popen),
+        )
+
+    def test_server_starts_in_an_empty_directory_of_its_own(self, tmp_path, monkeypatch):
+        """A server must not start in the script's directory, which is the gateway's home.
+
+        A server that indexes its working directory at start walked the whole home tree
+        on every run. Each server gets a fresh empty directory, removed with it.
+        """
+        from kiro_crew.cron_script import McpToolClient, _resolve_mcp_server
+
+        _resolve_mcp_server.cache_clear()
+        script_dir = tmp_path / "home"
+        script_dir.mkdir()
+        (script_dir / "big-tree").mkdir()
+        monkeypatch.chdir(script_dir)
+        seen = {}
+
+        def popen(*args, **kwargs):
+            seen["cwd"] = kwargs.get("cwd")
+            seen["entries"] = os.listdir(kwargs["cwd"]) if kwargs.get("cwd") else None
+            return self._mock_handshake_proc()
+
+        a, b, c, d = self._spawn_patches(popen)
+        with a, b, c, d:
+            client = McpToolClient("cwd-server")
+            client.close()
+
+        assert seen["cwd"] is not None
+        assert Path(seen["cwd"]).resolve() != script_dir.resolve()
+        assert seen["entries"] == []
+        assert not os.path.exists(seen["cwd"])
+
+    def test_server_directory_is_removed_when_the_spawn_fails(self, monkeypatch):
+        from kiro_crew.cron_script import McpToolClient, _resolve_mcp_server
+
+        _resolve_mcp_server.cache_clear()
+        seen = {}
+
+        def popen(*args, **kwargs):
+            seen["cwd"] = kwargs["cwd"]
+            raise OSError("no such launcher")
+
+        a, b, c, d = self._spawn_patches(popen)
+        with a, b, c, d, pytest.raises(OSError):
+            McpToolClient("cwd-server")
+
+        assert not os.path.exists(seen["cwd"])
 
     def test_init_passes_spec_env_to_popen_and_scrubs_secrets(self, monkeypatch):
         """Regression: McpToolClient must hand the spawned MCP subprocess the
