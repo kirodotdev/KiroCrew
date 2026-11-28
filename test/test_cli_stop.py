@@ -768,9 +768,10 @@ class TestStop:
     def test_a_recognised_listener_is_not_asked_over_the_endpoint(self, capsys):
         """The endpoint is the fallback, never a substitute for the usual path.
 
-        A listener the argv check DOES classify keeps the ordinary SIGTERM, and
-        the request is not made at all -- otherwise every stop would depend on an
-        HTTP round trip the pid path never needed.
+        A listener the argv check DOES classify keeps the ordinary SIGTERM on
+        POSIX, and the request is not made at all -- otherwise every stop would
+        depend on an HTTP round trip the pid path never needed. Windows has no
+        SIGTERM and asks the endpoint first; TestStopOnWindows covers that order.
         """
         from kiro_crew.cli_server import _stop
 
@@ -781,15 +782,15 @@ class TestStop:
             # flake-ok: pre-existing stdlib time.sleep stub scoped to this with block, moved verbatim; tracked for a de-flake pass
             # nosemgrep: kirocrew.test-stdlib-clock-rebound -- pre-existing patch of the stdlib time.sleep the code under test reads, moved verbatim; tracked for a de-flake pass
             patch("time.sleep"),
+            patch("kiro_crew.cli_server.platform_compat.IS_WINDOWS", False),
             patch("kiro_crew.cli_server.platform_compat.pid_exists", return_value=False),
             patch("kiro_crew.cli_server._stop_mcp_gateway_daemon"),
             patch("kiro_crew.cli_server._request_gateway_shutdown") as mock_endpoint,
-            self._kill_patch(),
+            patch("os.kill"),
         ):
             _stop(5476)
         mock_endpoint.assert_not_called()
-        out = capsys.readouterr().out
-        assert "SIGTERM" in out or "Terminated" in out
+        assert "SIGTERM" in capsys.readouterr().out
 
     def test_an_alias_holding_the_name_is_refused_before_the_foreground_path(self, capsys):
         """When ``kirocrew.service`` is an alias of another unit, ``stop_service()``

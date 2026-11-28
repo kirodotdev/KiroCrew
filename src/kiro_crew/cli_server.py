@@ -953,7 +953,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _restart,
         _signing_key_refusal_lines,
         _spawn_detached_gateway,
-        _wait_for_pids_exit,
         _wait_gateway_ready,
         _warn_restart_ready_override,
     )
@@ -980,6 +979,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _stop_mcp_gateway_daemon,
         _terminal_safe_name,
         _verified_loopback_gateway_pids,
+        _wait_for_pids_exit,
         desktop_app_supervisor,
     )
     from kiro_crew.cli_server_update import (  # noqa: F401
@@ -1004,5 +1004,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.tailnet import POLICY_OFF_DETAIL, policy_off  # noqa: F401
     from kiro_crew.env import node_augmented_path, node_bin_dirs  # noqa: F401
     from kiro_crew.gateway_lock import LockHolder  # noqa: F401
+    from kiro_crew.gateway_shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS  # noqa: F401
     from kiro_crew.git_tmp_packs import UPDATE_FETCH_TIMEOUT_S, reap_stale_tmp_packs  # noqa: F401
     from kiro_crew.platform import release_apply  # noqa: F401
