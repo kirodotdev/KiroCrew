@@ -1302,7 +1302,9 @@ revision, so lineage to a revision an upgrade replaced no longer resolves.
 The library reads every `*.json` file in its folder and keys each record by its
 `id` field, not by its file name, so a copied or restored record file is a live,
 runnable definition under whatever name it has, unless a removed record holds its
-id and slug (below).
+id and slug (below). A file saved as UTF-8 with a byte-order mark reads like one
+without it; a UTF-16 or UTF-32 file is skipped like any unreadable file, and its
+warning names the encoding and says to re-save it as UTF-8.
 
 Removal is a tombstone, not a file delete. `remove(ref)` sets `removed_at` on the
 record and keeps every revision on disk as stored, without re-running the

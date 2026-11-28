@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import json
 import threading
 
@@ -111,6 +112,44 @@ def test_version_one_definition_without_format_loads_as_python(tmp_path) -> None
 
     assert restored is not None
     assert restored["format"] == "python"
+
+
+def test_a_record_saved_with_a_utf8_mark_reads_and_a_utf16_one_is_named(tmp_path, caplog) -> None:
+    """A Windows editor saves a hand-placed record as UTF-8 with a mark, or as
+    UTF-16 (PowerShell 5.1's ``>``): the first is a record like any other, the
+    second is skipped with a warning that names its encoding."""
+    library = WorkflowDefinitionLibrary(tmp_path)
+    library.create(source=SOURCE_V1, name="Debug Project")
+    text = json.dumps(
+        {
+            "schema_version": 2,
+            "id": "wfd_marked",
+            "slug": "marked-flow",
+            "name": "Marked Flow",
+            "revision": 1,
+            "source": SOURCE_V1,
+            "revisions": [{"revision": 1, "source": SOURCE_V1}],
+        }
+    )
+    (library.library_dir / "marked.json").write_bytes(codecs.BOM_UTF8 + text.encode("utf-8"))
+    wide = library.library_dir / "wide.json"
+    wide.write_bytes(codecs.BOM_UTF16_LE + text.replace("marked", "wide").encode("utf-16-le"))
+
+    with caplog.at_level("WARNING", logger="kiro_crew.workflows.library"):
+        slugs = sorted(item["slug"] for item in library.list())
+        marked = library.get("marked-flow")
+        taken = library.slug_taken("marked-flow")
+
+    assert slugs == ["debug-project", "marked-flow"]
+    assert marked is not None and marked["id"] == "wfd_marked"
+    assert taken is True
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == workflow_library.logger.name and record.levelname == "WARNING"
+    ]
+    assert len(warnings) == 1 and str(wide) in warnings[0]
+    assert "it is saved as UTF-16; re-save it as UTF-8" in warnings[0]
 
 
 def test_task_plan_format_survives_create_and_revision_update(tmp_path) -> None:

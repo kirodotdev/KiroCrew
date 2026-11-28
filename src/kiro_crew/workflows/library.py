@@ -17,6 +17,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls, refuses
 from kiro_crew.slugs import slug_hash_fallback
+from kiro_crew.user_json import loads_user_json, wide_bom_reason
 from kiro_crew.workflows.store import default_workflow_library_dir
 from kiro_crew.workflows.validate import validate
 
@@ -402,8 +403,13 @@ class WorkflowDefinitionLibrary:
             return []
         entries: list[tuple[Path, dict[str, Any]]] = []
         for path in self._library_dir.glob("*.json"):
+            reason: Optional[str] = None
             try:
-                value = json.loads(path.read_text(encoding="utf-8"))
+                raw = path.read_bytes()
+                # A Windows editor saves UTF-8 with a mark, or UTF-16: one
+                # leading UTF-8 mark is dropped, a wide encoding is named.
+                reason = wide_bom_reason(raw)
+                value = None if reason else loads_user_json(raw.decode("utf-8"))
                 # A ``builtin:`` id belongs to the package tier alone: a folder
                 # record carrying one would run under a built-in's identity.
                 if (
@@ -423,10 +429,10 @@ class WorkflowDefinitionLibrary:
                     continue
             except Exception:  # noqa: BLE001 - one corrupt definition must not hide the library
                 logger.debug("workflow library: skip unreadable %s", path, exc_info=True)
-            self._warn_unreadable(path)
+            self._warn_unreadable(path, reason)
         return entries
 
-    def _warn_unreadable(self, path: Path) -> None:
+    def _warn_unreadable(self, path: Path, reason: Optional[str] = None) -> None:
         """Warn about a library file no read can use, once until it changes.
 
         A removed record's id and slug stay reserved only while its tombstone
@@ -443,9 +449,10 @@ class WorkflowDefinitionLibrary:
             return
         self._unreadable[key] = version
         logger.warning(
-            "workflow library: %s is not a readable workflow record and is skipped; "
+            "workflow library: %s is not a readable workflow record and is skipped%s; "
             "if it was a removed workflow, its id and slash-command name are free again",
             path,
+            f": {reason}" if reason else "",
         )
 
     def _load_all(self) -> list[dict[str, Any]]:
