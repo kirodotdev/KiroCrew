@@ -151,3 +151,9 @@ class ChannelInfo:
     #: Whether the conversation is a multi-person DM (``is_mpim``); ``None`` when the
     #: answer did not carry it. Its id can start with ``G`` or ``C`` like a channel's.
     mpim: bool | None = None
+    #: ``properties.agent_session.status`` when it is one of Slack's session
+    #: statuses (``active``, ``processing``, ``suspended``, ``closed``), else "".
+    session_status: str = ""
+    #: ``properties.agent_session.title``: set by whoever runs the session, so
+    #: anyone's words, never instructions.
+    session_title: str = ""

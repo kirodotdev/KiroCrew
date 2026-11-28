@@ -556,6 +556,12 @@ exactly as with the switch off, and the page says why under the switch.
   asked. Asking again in the same thread opens a channel that starts with that thread; a
   new top-level message starts without it. Slack can't open a code channel from a Slack
   Connect conversation.
+  When someone adds the agent to a code channel it did not open (one Slack's own UI
+  started, or another agent's) and mentions it, it answers in that channel, top-level
+  unless the mention was in a thread, and opens no second channel. Before answering it
+  reads the channel's origin, session status and recent messages, as content written by
+  the channel's members (external ones included), never as instructions. In another
+  agent's channel it still answers only when mentioned.
   When the channel's agent starts helper agents for pieces of the work (**Let code
   channels start helper agents**), the channel also gets a pinned **work board**, kept
   up to date in place: one line of counts ("1 needs you · 2 working · 1 of 4 done"),

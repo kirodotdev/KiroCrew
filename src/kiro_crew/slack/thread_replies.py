@@ -141,18 +141,27 @@ def _body(msg: dict) -> str:
     return _extract_blocks_text(blocks) or text.removesuffix(_BLOCKS_TEXT_TAIL)
 
 
-def _line(msg: dict, own_bot_id: str, *, session_key: str, channel: str, thread_ts: str) -> str:
+def _line(
+    msg: dict,
+    own_bot_id: str,
+    *,
+    session_key: str,
+    channel: str,
+    thread_ts: str,
+    text_cap: int = TEXT_CAP,
+    surface: str = "slack_thread_replies",
+) -> str:
     when = datetime.fromtimestamp(_ts(msg.get("ts")), tz=timezone.utc).strftime(
         "%Y-%m-%d %H:%M UTC"
     )
     text = redact(_body(msg)).strip() or "[no text]"
-    if len(text) > TEXT_CAP:
-        text = text[:TEXT_CAP] + "…[truncated]"
+    if len(text) > text_cap:
+        text = text[:text_cap] + "…[truncated]"
     line = f"[{when}] {redact(_author(msg, own_bot_id))}: {text}"
     # Screened as one string: the author name is as attacker-settable as the text.
     if contains_injection(line):
         audit_injection_dropped(
-            surface="slack_thread_replies",
+            surface=surface,
             session_key=session_key,
             channel_id=channel,
             thread_ts=thread_ts,
@@ -238,3 +247,99 @@ async def replies_since_last_turn(
     if omitted:
         kept.insert(0, _omitted_header(omitted))
     return ThreadReplies(text="\n".join(kept), read_ok=True)
+
+
+# ── A code channel's own history, for a session that starts in a channel it joined ──
+
+#: Newest channel messages kept for a code channel's first turn.
+CHANNEL_MAX_MESSAGES = 30
+#: Longest text kept from one channel message: another agent's summary runs long.
+CHANNEL_TEXT_CAP = 4000
+#: Most UTF-8 bytes the formatted channel messages may take together.
+CHANNEL_BYTE_CAP = 16000
+#: One ``conversations.history`` page.
+_CHANNEL_FETCH_LIMIT = 50
+#: Message subtypes that are someone saying something (join, topic and rename
+#: notices carry no conversation).
+_SPOKEN_SUBTYPES = frozenset({"", "bot_message", "thread_broadcast", "file_share", "me_message"})
+
+
+async def channel_messages_before(
+    slack: "SlackClientOps", channel: str, before_ts: str, *, session_key: str
+) -> str | None:
+    """The code channel's newest messages before *before_ts*, formatted oldest first.
+
+    For a session that starts in a code channel this app did not open (Slack's
+    lifecycle guide: read the channel before answering the mention that adds the
+    agent). Every author's message counts, other apps' included: another agent's
+    investigation is the point. Each line is redacted and screened like a thread
+    reply (one matching a prompt-injection pattern is withheld and audited),
+    bounded by :data:`CHANNEL_MAX_MESSAGES`, :data:`CHANNEL_TEXT_CAP` and
+    :data:`CHANNEL_BYTE_CAP`. Thread replies under those messages are not read.
+    None when the read failed or found nothing.
+    """
+    if not channel or not before_ts:
+        return None
+    try:
+        msgs = await slack.fetch_channel_messages(
+            channel, latest=before_ts, limit=_CHANNEL_FETCH_LIMIT
+        )
+    except Exception:
+        logger.debug("channel history: fetch failed %s", channel, exc_info=True)
+        return None
+    ceiling = _ts(before_ts)
+    # Each message as Slack sent it: ``_line`` reads its text through ``_body``,
+    # which recovers block content (a streamed table) that the ``text`` copy drops.
+    spoken = [
+        m
+        for m in msgs or []
+        if isinstance(m, dict)
+        and str(m.get("subtype") or "") in _SPOKEN_SUBTYPES
+        and _ts(m.get("ts")) < ceiling
+    ]
+    spoken.sort(key=lambda m: _ts(m.get("ts")))
+    if not spoken:
+        return None
+    own = validated_self_bot_id()
+    omitted = max(0, len(spoken) - CHANNEL_MAX_MESSAGES)
+    kept: list[str] = []
+    used = len(_omitted_channel_header(len(spoken)).encode("utf-8")) + 1
+    for msg in reversed(spoken[-CHANNEL_MAX_MESSAGES:]):
+        line = _line(
+            msg,
+            own,
+            session_key=session_key,
+            channel=channel,
+            thread_ts="",
+            text_cap=CHANNEL_TEXT_CAP,
+            surface="slack_code_channel_history",
+        )
+        size = len(line.encode("utf-8")) + 1
+        if used + size > CHANNEL_BYTE_CAP:
+            break
+        kept.append(line)
+        used += size
+    omitted += min(len(spoken), CHANNEL_MAX_MESSAGES) - len(kept)
+    kept.reverse()
+    if omitted:
+        kept.insert(0, _omitted_channel_header(omitted))
+    return "\n".join(kept)
+
+
+def screened(text: str, *, channel: str) -> str:
+    """One piece of channel-authored text (a code channel's title) as a line may
+    show it: redacted, and withheld whole when it matches a prompt-injection pattern."""
+    shown = redact(str(text or "")).strip()[:TEXT_CAP]
+    if shown and contains_injection(shown):
+        audit_injection_dropped(
+            surface="slack_code_channel_history", channel_id=channel, sample=shown
+        )
+        return "[withheld: this text matched a prompt-injection pattern]"
+    return shown
+
+
+def _omitted_channel_header(omitted: int) -> str:
+    return (
+        f"[{omitted} earlier message{'' if omitted == 1 else 's'} not shown — "
+        "use the Slack MCP server's channel-reading tool to read them]"
+    )

@@ -104,10 +104,16 @@ SLACK_SEED_FENCE_OPEN = "[SLACK THREAD — UNTRUSTED DATA]"
 SLACK_SEED_FENCE_CLOSE = "[END SLACK THREAD]"
 _SLACK_SEED_FENCE_OPEN_RE = re.compile(r"\[\s*SLACK\s*THREAD\b", re.IGNORECASE)
 _SLACK_SEED_FENCE_CLOSE_RE = re.compile(r"\[\s*END\s*SLACK\s*THREAD", re.IGNORECASE)
+# The labels around a joined code channel's record and messages
+# (``context_assembly.turn_message``, ``code_channel_text``), matched the same way.
+_SLACK_CODE_CHANNEL_OPEN_RE = re.compile(r"\[\s*SLACK\s*CODE\s*CHANNEL\b", re.IGNORECASE)
+_SLACK_CODE_CHANNEL_CLOSE_RE = re.compile(r"\[\s*END\s*SLACK\s*CODE\s*CHANNEL", re.IGNORECASE)
 
 _UNTRUSTED_FENCE_RES: tuple[re.Pattern[str], ...] = (
     _SLACK_SEED_FENCE_CLOSE_RE,
     _SLACK_SEED_FENCE_OPEN_RE,
+    _SLACK_CODE_CHANNEL_CLOSE_RE,
+    _SLACK_CODE_CHANNEL_OPEN_RE,
     _THREAD_FENCE_CLOSE_RE,
     _THREAD_FENCE_OPEN_RE,
     _CALENDAR_FENCE_CLOSE_RE,

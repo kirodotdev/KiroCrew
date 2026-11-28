@@ -574,7 +574,11 @@ async def test_slacks_origin_echo_is_suppressed_but_lookalikes_are_not(env: Env)
         assert (await _gate(env, echo(fake, n + 1))).gate is Gate.DIRECTED, fake
 
 
-async def test_channel_opened_from_slacks_ui_is_adopted_on_first_message(env: Env) -> None:
+async def test_channel_opened_from_slacks_ui_is_adopted_on_first_message(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seeded: list[str] = []
+    monkeypatch.setattr(routing, "_queue_seed_context", lambda _b, f: seeded.append(f) or True)
     env.info("C0UI", origin=("C0ORIGIN", "1700000000.000100"), name="ui-task")
     event = {"type": "message", "user": OWNER, "channel": "C0UI", "ts": "301.0", "text": "start"}
     result = await _gate(env, event)
@@ -588,12 +592,17 @@ async def test_channel_opened_from_slacks_ui_is_adopted_on_first_message(env: En
     assert binding.origin_link == ("C0ORIGIN", "1700000000.000100")
     assert env.routed == [("C0UI", "start", OWNER)]
     assert env.sel.ops("slack.code_channel.adopt")[0]["outcome"] == "allowed"
+    # Slack's lifecycle guide: the adopted session starts from the channel's record.
+    assert len(seeded) == 1 and "<#C0ORIGIN>" in seeded[0]
 
 
-async def test_a_reconnect_mid_route_does_not_lose_the_adopting_message(env: Env) -> None:
+async def test_a_reconnect_mid_route_does_not_lose_the_adopting_message(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A reconnect clears ``orch.slack`` after the gate admitted the message: the
     dispatch still posts the kickoff, binds and routes with the client the
     message was read with, instead of losing it to the cleared one."""
+    monkeypatch.setattr(routing, "_queue_seed_context", lambda _binding, _framing: True)
     env.info("C0UI", origin=("C0ORIGIN", "1700000000.000100"), name="ui-task")
     event = {"type": "message", "user": OWNER, "channel": "C0UI", "ts": "301.0", "text": "start"}
     result = await _gate(env, event)
