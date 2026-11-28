@@ -110,6 +110,7 @@ credential store) and overrides `weixin.token`.
 | Bot ignores DMs | Check `dm_policy` — under `allowlist` the sender must be listed |
 | Group messages ignored | Expected: iLink bot identities do not receive group events |
 | An image, voice note or file isn't read | The message arrived but the file was skipped — the security event log (`~/.kiro/crew/security_events.jsonl`) has a `weixin.attachment_skip` event with the file name and the reason. Video is never read; send a screenshot instead |
+| Cannot sign in or connect from a host that needs a forward proxy | Set `HTTPS_PROXY` in the gateway's environment; the QR sign-in, the long-poll and replies go through it, as do inbound images and files, and a host in `NO_PROXY` is reached directly |
 | Startup error about `aiohttp` | `aiohttp` is a core dependency, so the environment is broken; reinstall Kiro Crew |
 
 ## Related docs

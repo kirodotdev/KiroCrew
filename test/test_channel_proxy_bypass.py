@@ -1,4 +1,4 @@
-"""Discord, Webex and WeCom requests skip the forward proxy for a NO_PROXY host."""
+"""Discord, Webex, WeCom and WeChat requests skip the forward proxy for a NO_PROXY host."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from kiro_crew.discord.client import DiscordClient
 from kiro_crew.webex.client import _API_BASE as _WEBEX_API_BASE
 from kiro_crew.webex.client import WebexClient
 from kiro_crew.wecom.client import WeComClient
+from kiro_crew.weixin.client import WeixinClient
 
 _PROXY = "http://proxy.invalid:8080"
 _CHANNEL_HOSTS = "discord.com,discord.gg,discordapp.com,webexapis.com,wbx2.com,weixin.qq.com"
@@ -176,6 +177,38 @@ async def test_wecom_paths_honour_no_proxy(monkeypatch, no_proxy, expected):
 
     assert _hosts(session) == ["qyapi.weixin.qq.com", "openws.work.weixin.qq.com"]
     assert [proxy for _, proxy in session.calls] == [expected] * 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("no_proxy", "expected"), _CASES)
+async def test_weixin_paths_honour_no_proxy(monkeypatch, no_proxy, expected):
+    monkeypatch.setenv("HTTPS_PROXY", _PROXY)
+    monkeypatch.setenv("NO_PROXY", no_proxy)
+    client = WeixinClient(token="t")
+    session = _Session()
+    client._session = session
+
+    with pytest.raises(aiohttp.ClientError):
+        await client.get_bot_qrcode()
+    with pytest.raises(aiohttp.ClientError):
+        await client.get_updates("")
+
+    assert _hosts(session) == ["ilinkai.weixin.qq.com"] * 2
+    assert [proxy for _, proxy in session.calls] == [expected] * 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy"])
+async def test_weixin_reads_its_forward_proxy_from_the_environment(monkeypatch, name):
+    monkeypatch.setenv(name, _PROXY)
+    client = WeixinClient(token="t")
+    session = _Session()
+    client._session = session
+
+    with pytest.raises(aiohttp.ClientError):
+        await client.get_bot_qrcode()
+
+    assert [proxy for _, proxy in session.calls] == [_PROXY]
 
 
 @pytest.mark.asyncio
