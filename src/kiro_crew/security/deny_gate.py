@@ -759,7 +759,9 @@ def is_denied(
     # as git-publish, so a disabled row stays disabled.
     _argv_rules = _submodule("argv_rules")
     argv_enabled = {p for p in regex_patterns if p in _argv_rules.ARGV_RULE_PATTERNS}
-    regex_patterns = [p for p in regex_patterns if p not in _argv_rules.ARGV_RULE_PATTERNS]
+    # An operator's own copy of a row's text is not shipped-only, so it stays a regex.
+    stripped = argv_enabled & shipped if hasattr(denied_regexes, "shipped") else argv_enabled
+    regex_patterns = [p for p in regex_patterns if p not in stripped]
     # The two self-protection rules get an ADDITIONAL argv-structural floor
     # below, for the reason documented on ``_SELF_PROTECTION_FLOOR_PATTERNS``:
     # only a tokenized view can tell ``kirocrew "token"`` from
