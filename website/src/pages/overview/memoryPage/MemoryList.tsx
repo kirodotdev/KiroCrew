@@ -34,6 +34,7 @@ import { MANUAL_LIMIT, useMemoryRecordEdit, useMemoryRecordSelection } from '../
 import { activeFilterCount, byMeaning, effectiveSort, filtersForKind, loadView, saveView, setConfidenceBound, toggleFilter, type KindTab, type ListView, type SearchMode } from './memoryListView'
 import { ActiveFilters, FIRST_ROWS, FilterPanel, KindPills, RecordRow, SavedTopics, SearchModeSwitch, SortControl, useFrameBudget, type ChipFilter, type VirtualItemAttrs } from './MemoryListParts'
 import { useMemoryTopics } from './memoryTopics'
+import { createListStore, EMPTY_ANSWER, useListStore, type ListAnswer, type ListStore } from './memoryListStore'
 import { firstOfEach } from './memoryPaging'
 import { MemoryRecordDetail } from './MemoryRecordDetail'
 
@@ -75,19 +76,33 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
   const { t } = useTranslation()
   const client = useQueryClient()
   const phone = useIsMobile()
-  const [saved] = useState(() => loadView(store))
   // A landing reads its target by words over every date, so a saved meaning search or
   // date range cannot hide it; the saved view is kept until the user changes this one.
-  const [view, setView] = useState<ListView>(() => focusKey ? { ...saved, q: focusKey, kind: 'directive', filters: {}, mode: 'words', range: undefined } : focusLessons ? { ...saved, kind: 'directive', mode: 'words', range: undefined } : saved)
-  const firstView = useRef(view).current
+  // The view and the answers live in a store outside this component: it reads the
+  // view without the confidence range, so a confidence change or a new answer renders
+  // only the parts that show them (the list, the counts, the filters).
+  const [list] = useState(() => {
+    const saved = loadView(store)
+    return createListStore(focusKey ? { ...saved, q: focusKey, kind: 'directive', filters: {}, mode: 'words', range: undefined } : focusLessons ? { ...saved, kind: 'directive', mode: 'words', range: undefined } : saved)
+  })
+  const view = useListStore(list, state => state.base)
+  const pristine = useListStore(list, state => state.pristine)
   const [input, setInput] = useState(view.q)
-  const landing = (!!focusKey && view.q === focusKey && view.kind === 'directive') || (focusLessons && view === firstView)
-  useEffect(() => { if (!landing) saveView(store, view) }, [store, view, landing])
+  const landing = (!!focusKey && view.q === focusKey && view.kind === 'directive') || (focusLessons && pristine)
+  useEffect(() => {
+    const save = () => {
+      const { view: full, pristine: first } = list.get()
+      if (!((!!focusKey && full.q === focusKey && full.kind === 'directive') || (focusLessons && first))) saveView(store, full)
+    }
+    save()
+    let saved = list.get().view
+    return list.subscribe(() => { const next = list.get().view; if (next !== saved) { saved = next; save() } })
+  }, [list, store, focusKey, focusLessons])
   useEffect(() => {
     if (input.trim() === view.q) return
-    const timer = setTimeout(() => setView(old => ({ ...old, q: input.trim(), sort: input.trim() && !old.q ? 'match' : old.sort })), 250)
+    const timer = setTimeout(() => list.setView(old => ({ ...old, q: input.trim(), sort: input.trim() && !old.q ? 'match' : old.sort })), 250)
     return () => clearTimeout(timer)
-  }, [input, view.q])
+  }, [input, view.q, list])
   // Rows show keys and scopes in the mono face, which loads on first use. Load it
   // with the page: arriving later (a filter bringing the first keyed row into
   // view) it lays out every row again in the middle of that interaction.
@@ -132,10 +147,176 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
   const { all, isSelected } = picked
   const sort = effectiveSort(view)
   const meaning = byMeaning(view)
-  // Rows under the meaning cut-off stay counted, not listed, until "Show them".
-  const [weak, setWeak] = useState(false)
   const topics = useMemoryTopics()
   // The range filters on the time the list is sorted by: created under that sort, else updated.
+  const dateField = view.sort === 'created' ? 'created' : 'updated'
+  // The open record, as the latest answer lists it; the same object while it is unchanged.
+  const detail = useListStore(list, state => detailKey === null ? null : state.answer.rows.find(row => recordIdentity(row) === detailKey) ?? null)
+  // The store's fade rates, sent only by a store whose recall fades experiences.
+  const storeDecay = useListStore(list, state => state.answer.decay)
+  const [jumpFocus, setJumpFocus] = useState<string | null>(null)
+  // A selection from the graph replaces the search, kind and filters: it names exact
+  // records, which any of those would hide. Filters picked afterwards narrow it.
+  useEffect(() => {
+    if (!jump) return
+    setInput('')
+    list.setView(old => ({ ...old, q: '', kind: 'all', mode: 'words' as const, filters: jump.box ? { box: jump.box.bbox, box_layout: jump.box.layout, box_kinds: jump.box.kinds, box_count: jump.box.count } : { ref: jump.refs }, range: undefined }))
+    const open = jump.open ? recordIdentity(jump.open) : null
+    setDetailKey(open); setJumpFocus(open); focusScrolled.current = false
+  }, [jump, list])
+  const focusScrolled = useRef(false)
+
+  const selectedCount = picked.count
+  const refresh = () => {
+    void client.invalidateQueries({ queryKey: ['memory-records', store] })
+    void client.invalidateQueries({ queryKey: ['member-memory', store] })
+    void client.invalidateQueries({ queryKey: ['memory-record-history', store] })
+    for (const prefix of MEMORY_QUERY_PREFIXES) void client.invalidateQueries({ queryKey: prefix })
+  }
+  const [feedback, setFeedback] = useState('')
+  const edit = useMemoryRecordEdit({
+    store, refresh,
+    onApplied: changed => { setFeedback(t('memoryEditing.applied', { count: fmtNumber(changed) })); onSelectingChange(false); refresh() },
+    selection: picked.forEdit,
+  })
+  const dirty = !!edit.intent || !!all || selectedCount > 0
+  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false) }, [dirty, onDirtyChange])
+  // Leaving select mode drops the picks.
+  const stopSelecting = () => { picked.clear(); onSelectingChange(false) }
+  // Hand-picked rows belong to the list they were picked in: a kind, filter or
+  // search change drops them rather than acting on rows the new list hides
+  // (MemoryQueries clears them). "Select all matching" locks those controls instead, below.
+  const clearPicks = picked.clear
+
+  // A filter, search or kind change while rows are picked would hide them; the
+  // selection belongs to the list it was made in.
+  const locked = !!all
+  const change = (next: Partial<ListView>) => { if (locked) return; list.setView(old => ({ ...old, ...next })) }
+  // Each filter edit starts from the store's whole view, which holds the confidence range this component does not read.
+  const onToggleFilter = (group: MemoryRecordFacetGroup, value: string) => { if (!locked) list.setView(old => ({ ...old, filters: toggleFilter(old.filters, group, value) })) }
+  // Not a transition: a transition re-renders the page, and a query store
+  // changing during that render forces the whole batch, deferred rows included,
+  // into one blocking render. The rows' own deferral keeps this render small.
+  // Clamped against the other bound inside the update, as it is at that moment.
+  const onRange = (bound: 'conf_min' | 'conf_max', value: number | undefined) => list.setView(old => locked ? old : { ...old, filters: setConfidenceBound(old.filters, bound, value) })
+  // Bumped by every clear of the range, so a slider value still settling is dropped.
+  const [rangeReset, setRangeReset] = useState(0)
+  const clearFilters = () => { setRangeReset(n => n + 1); change({ filters: {}, range: undefined }) }
+  const clearRefs = () => { if (!locked) list.setView(old => ({ ...old, filters: Object.fromEntries(Object.entries(old.filters).filter(([key]) => !GRAPH_SELECTION_KEYS.includes(key))) })) }
+  const setRange = (range?: DateRange) => change({ range })
+  const clearSearch = () => { setInput(''); change({ q: '', sort: view.sort === 'match' ? 'updated' : view.sort }) }
+  const setMode = (mode: SearchMode) => change({ mode })
+  // A saved topic runs at once, as a search by meaning.
+  const runTopic = (topic: string) => { setInput(topic); change({ q: topic, mode: 'meaning' }) }
+
+  // The rows call their handlers through a ref, so they stay memoized across renders.
+  const rowActions = useRef<RowActions>({ toggle: picked.toggle, begin: edit.begin, onToggleFilter })
+  useLayoutEffect(() => { rowActions.current = { toggle: picked.toggle, begin: edit.begin, onToggleFilter } })
+  // The chips show only the ticked values, so a confidence change keeps the same chip object.
+  const chipKey = JSON.stringify(Object.entries(view.filters))
+  const rowChip = useMemo<ChipFilter | undefined>(() => locked || selecting ? undefined : { filters: Object.fromEntries(JSON.parse(chipKey)), onToggle: (group, value) => rowActions.current.onToggleFilter(group, value) }, [locked, selecting, chipKey])
+  // The toolbar's handlers, read through a ref, so its parts stay memoized
+  // when only the records or counts answer changes.
+  const ui = useRef({ change, setRange, clearSearch, setMode, runTopic, onToggleFilter, onRange, clearFilters, clearRefs, setRailOpen, onSelectingChange, topics, view, meaning, sheet })
+  useLayoutEffect(() => { ui.current = { change, setRange, clearSearch, setMode, runTopic, onToggleFilter, onRange, clearFilters, clearRefs, setRailOpen, onSelectingChange, topics, view, meaning, sheet } })
+  const stable = useMemo(() => ({
+    setRange: (range?: DateRange) => ui.current.setRange(range),
+    clearRange: () => ui.current.setRange(undefined),
+    clearSearch: () => ui.current.clearSearch(),
+    setMode: (mode: SearchMode) => ui.current.setMode(mode),
+    runTopic: (topic: string) => ui.current.runTopic(topic),
+    removeTopic: (topic: string) => ui.current.topics.remove(topic),
+    saveTopic: () => ui.current.topics.save(ui.current.view.q),
+    setKind: (kind: KindTab) => ui.current.change({ kind }),
+    sort: (next: MemoryRecordSort, order: 'asc' | 'desc') => ui.current.change({ sort: next, order, ...(ui.current.meaning && next !== 'match' ? { mode: 'words' as const } : {}) }),
+    toggle: (group: MemoryRecordFacetGroup, value: string) => ui.current.onToggleFilter(group, value),
+    range: (bound: 'conf_min' | 'conf_max', value: number | undefined) => ui.current.onRange(bound, value),
+    clearConfidence: (bound: 'conf_min' | 'conf_max') => { setRangeReset(n => n + 1); ui.current.onRange(bound, undefined) },
+    clear: () => ui.current.clearFilters(),
+    clearRefs: () => { setJumpFocus(null); ui.current.clearRefs() },
+    filters: () => ui.current.sheet ? openSheet.current() : ui.current.setRailOpen(true),
+    select: () => ui.current.onSelectingChange(true),
+  }), [])
+  // The search row reads no filter, so a filter or confidence change leaves it as it is.
+  const { q: viewQ, kind: viewKind, sort: viewSort, order: viewOrder, mode: viewMode, range: viewRange } = view
+  const sortView = useMemo<ListView>(() => ({ q: viewQ, kind: viewKind, sort: viewSort, order: viewOrder, mode: viewMode, range: viewRange, filters: {} }), [viewQ, viewKind, viewSort, viewOrder, viewMode, viewRange])
+  const searchRow = useMemo(() => <div ref={toolbarRef} className="@container min-w-0"><div className="flex min-w-0 flex-wrap gap-2" data-testid="memory-toolbar">
+      {/* A phone gives the search box its own row; the mode switch, then the filter and sort buttons, wrap below it.
+          Keyed on the phone layout, not on a width class: a 640-767 px phone would
+          otherwise keep every control on one row and squeeze the search box. A wide
+          screen keeps one row until the search box would drop below 22rem (its text
+          beside the mode switch), then wraps the buttons instead of squeezing it. */}
+      {/* A div, not a label: a label would also name the mode switch's buttons. */}
+      <div className={`relative flex-1 ${phone ? 'min-w-0 basis-full' : 'min-w-0 basis-full @[40rem]:min-w-[22rem] @[40rem]:basis-0'}`}>
+        <Search className="lucide-inline pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
+        <Input className={`min-h-11 w-full pl-9 sm:min-h-10 ${inlineSwitch ? 'pr-[188px]' : 'pr-10'}`} aria-label={t('memoryV2.search')} placeholder={t(viewMode === 'meaning' ? 'memoryPage.meaning_placeholder' : 'memoryEditing.search_hint')} value={input} onChange={event => setInput(event.target.value)} />
+        {/* Clear and the mode switch share one group: the switch sits flush at the box's end, clear 8 px before it. */}
+        <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-2">
+          {input && <IconButton aria-label={t('memoryV2.clear_search')} className="flex h-9 w-9 items-center justify-center sm:w-6" onClick={stable.clearSearch}><X className="lucide-inline" aria-hidden="true" /></IconButton>}
+          {inlineSwitch && <SearchModeSwitch mode={viewMode} onChange={stable.setMode} />}
+        </div>
+      </div>
+      {/* A phone puts the mode switch on its own row under the search box, above the filter and sort buttons. */}
+      {/* So does a toolbar too narrow for the switch inside the box, so it never sits on the text. */}
+      {!inlineSwitch && <div className="basis-full"><SearchModeSwitch wide={phone} mode={viewMode} onChange={stable.setMode} /></div>}
+      {/* A phone opens the filter sheet; a wide screen with the rail hidden shows it again. */}
+      {(sheet || !railOpen) && <Btn aria-label={t('memoryPage.filters')} aria-expanded={sheet ? undefined : false} className="relative min-h-11 min-w-11 shrink-0 justify-center sm:min-h-10 sm:min-w-10" onClick={stable.filters}><SlidersHorizontal className="lucide-inline" aria-hidden="true" /><FilterBadge list={list} /></Btn>}
+      {/* Picking another order leaves the search by meaning, which only ranks by match. */}
+      <DateRangeButton range={viewRange} onChange={stable.setRange} />
+      <SortControl view={sortView} decays={!!storeDecay} onChange={stable.sort} />
+      {!phone && <Btn className="min-h-10 shrink-0 whitespace-nowrap" onClick={stable.select}><ListChecks className="lucide-inline" />{t('memoryPage.select')}</Btn>}
+    </div></div>, [phone, inlineSwitch, viewMode, viewRange, sortView, storeDecay, input, sheet, railOpen, list, stable, t])
+  const topicsRow = useMemo(() => <SavedTopics topics={topics.topics} query={view.q} canSave={meaning} onRun={stable.runTopic} onRemove={stable.removeTopic} onSave={stable.saveTopic} />, [topics.topics, view.q, meaning, stable])
+  // Built once, so the rail's memoized panel is not re-rendered for a new button element.
+  const railHide = useMemo(() => <IconButton aria-label={t('memoryPage.hide_filters')} title={t('memoryPage.hide_filters')} aria-expanded className="pi-morph -mr-2.5 flex h-9 w-9 shrink-0 items-center justify-center text-muted" onClick={() => ui.current.setRailOpen(false)}><PanelLeftLight size={16} aria-hidden="true" /></IconButton>, [t])
+  const toolbar = <div className="space-y-3">
+    {selecting ? <SelectionBar list={list} picked={picked} meaning={meaning} onBegin={edit.begin} onCancel={stopSelecting} /> : searchRow}
+    {!selecting && topicsRow}
+    <LiveKindPills list={list} bot={botName} wrap={!phone} kind={view.kind} disabled={locked} onChange={stable.setKind} />
+    <LiveActiveFilters list={list} rangeField={dateField} onClearRange={stable.clearRange} onToggle={stable.toggle} onRange={stable.clearConfidence} onClear={stable.clear} onClearRefs={stable.clearRefs} />
+  </div>
+
+  const listPart = <div className="space-y-3">
+    {feedback && <div role="status" className="flex items-center gap-2 rounded-lg bg-ok-subtle px-3 py-2 text-[13px] text-ok-text">{feedback}<IconButton aria-label={t('components.errorNotice.dismiss')} className="ml-auto flex h-8 w-8 items-center justify-center" onClick={() => setFeedback('')}><X className="lucide-inline" aria-hidden="true" /></IconButton></div>}
+    <ListBody list={list} storeName={storeName} privateMemory={privateMemory} emptyActions={emptyActions} onRecovery={onRecovery} onClearSearch={stable.clearSearch} onClearFilters={stable.clear} onWords={() => stable.setMode('words')}
+      sort={sort} meaning={meaning} kind={view.kind} selecting={selecting} isSelected={isSelected} lockedRow={picked.lockedRow}
+      chip={rowChip} detailKey={detailKey} onOpen={setDetailKey} actions={rowActions} jumpFocus={jumpFocus} landingKey={landing ? focusKey : undefined} focusScrolled={focusScrolled} />
+  </div>
+
+  const detailPanel = detail && <MemoryRecordDetail store={store} row={detail} phone={phone} fadeLine={storeDecay?.fade_line}
+    onSaveAsLesson={onSaveAsLesson ? () => { setDetailKey(null); onSaveAsLesson(detail.text) } : undefined} chip={locked || selecting ? undefined : { filters: view.filters, onToggle: onToggleFilter }} onClose={() => setDetailKey(null)}
+    onEdit={() => { setDetailKey(null); edit.begin({ type: 'set', row: detail }) }} onForget={() => { setDetailKey(null); edit.begin({ type: 'forget', row: detail }) }}
+    onRestore={revisionId => { setDetailKey(null); edit.restore(detail, revisionId) }} onKeepCurrent={() => { setDetailKey(null); edit.keepCurrent(detail) }}
+    onProposal={(proposal, operation) => { setDetailKey(null); edit.takeProposal(detail, proposal, operation) }} />
+
+  return <div ref={rootRef} className="min-w-0" data-testid="memory-list">
+    <MemoryQueries list={list} store={store} typing={input.trim() !== view.q} selecting={selecting} onQueryChange={clearPicks} />
+    {stacked ? <div className="space-y-4">{toolbar}{listPart}{detailPanel}</div> : <div className="flex gap-6">
+      {/* The rail stays in view while the list scrolls, as tall as the window, and scrolls on its own. */}
+      {!compact && <FilterRail open={railOpen} width={railWidth} onResize={resizeRail}>
+        <LiveFilterPanel list={list} bot={botName} capped rangeReset={rangeReset} onToggle={stable.toggle} onRange={stable.range} trailing={railHide} />
+      </FilterRail>}
+      <div className="min-w-0 flex-1 space-y-4">{toolbar}{listPart}</div>
+      <MemoryDetailSlide contentKey={detail ? detailKey : null}>{detailPanel}</MemoryDetailSlide>
+    </div>}
+    {sheet && <FilterSheet list={list} openRef={openSheet} phone={phone} onClear={stable.clear}><LiveFilterPanel list={list} bot={botName} rangeReset={rangeReset} onToggle={stable.toggle} onRange={stable.range} /></FilterSheet>}
+    {edit.dialog}
+  </div>
+}
+
+/** Reads the records and the counts for the store's view and puts each answer in
+ *  the store. It renders nothing, so a new answer renders only the parts that show it. */
+function MemoryQueries({ list, store, typing, selecting, onQueryChange }: {
+  list: ListStore; store: string
+  /** Typed words the search has not picked up yet. */
+  typing: boolean
+  selecting: boolean
+  onQueryChange: () => void
+}) {
+  const view = useListStore(list, state => state.view)
+  const weak = useListStore(list, state => state.weak)
+  const sort = effectiveSort(view)
+  const meaning = byMeaning(view)
   const dateField = view.sort === 'created' ? 'created' : 'updated'
   // A quick range counts back from today, so it moves on at local midnight.
   const today = useLocalDay()
@@ -167,7 +348,7 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
   const shownKey = useRef<string | null>(null)
   useEffect(() => { if (records.data && !records.isPlaceholderData) shownKey.current = listKey })
   const narrowing = records.isPlaceholderData && !selecting && shownKey.current === listKey
-  const searching = input.trim() !== view.q || records.isPending || (records.isPlaceholderData && !narrowing)
+  const searching = typing || records.isPending || (records.isPlaceholderData && !narrowing)
   const pages = records.data?.pages
   // A write between two page reads can shift a row onto the next page too; it is shown once.
   // A new answer brings new objects for records already listed; an unchanged
@@ -183,223 +364,145 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
     lastRows.current = new Map(next.map(row => [recordIdentity(row), row]))
     return next
   }, [searching, records.error, pages])
-  const facets = counts.data?.facets
-  // Only a store whose recall fades experiences sends this.
-  const storeDecay = counts.data?.decay
-  const total = pages?.[0]?.total || 0
-  const weaker = meaning && !weak ? pages?.[pages.length - 1]?.hidden || 0 : 0
   // A new search or list shows only the strong matches again.
-  useEffect(() => { setWeak(false) }, [query, meaning])
+  useEffect(() => { list.setWeak(false) }, [list, query, meaning])
+  useEffect(() => { onQueryChange() }, [query, onQueryChange])
+  const { refetch: refetchRecords, fetchNextPage } = records
+  const { refetch: refetchCounts } = counts
+  const answer: ListAnswer = {
+    query, rows, searching, narrowing,
+    total: pages?.[0]?.total || 0,
+    weaker: meaning && !weak ? pages?.[pages.length - 1]?.hidden || 0 : 0,
+    recordsError: records.error, recordsFetching: records.isFetching, recordsFailed: queryReadFailed(records),
+    hasNextPage: records.hasNextPage, isFetchingNextPage: records.isFetchingNextPage,
+    facets: counts.data?.facets,
+    // Only a store whose recall fades experiences sends this.
+    decay: counts.data?.decay,
+    countsError: counts.error, countsFetching: counts.isFetching, countsFailed: queryReadFailed(counts),
+  }
+  // A list that opens on cached answers shows them in its first frame: the store
+  // takes the answer during this first render, before the parts after it read the
+  // store, and nothing has subscribed yet to be told. Without a cached answer the
+  // loading rows stay until one arrives.
+  if (list.get().answer === EMPTY_ANSWER && !searching) list.setAnswer(answer)
+  // Published before paint, so the parts that read it show it in this same frame.
+  useLayoutEffect(() => {
+    list.setActions({ refetchRecords: () => void refetchRecords(), refetchCounts: () => void refetchCounts(), fetchNextPage: () => void fetchNextPage() })
+    list.setAnswer(answer)
+  })
+  return null
+}
+
+/** The Filters button's count of active filters, the confidence range included. */
+function FilterBadge({ list }: { list: ListStore }) {
+  const filters = useListStore(list, state => state.view.filters)
+  const kind = useListStore(list, state => state.view.kind)
+  const count = activeFilterCount(filtersForKind(filters, kind))
+  return count > 0 ? <span className="absolute -right-1.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-accent px-1 text-[11px] text-accent-fg">{fmtNumber(count)}</span> : null
+}
+
+function LiveKindPills({ list, ...props }: { list: ListStore } & Omit<ComponentPropsWithoutRef<typeof KindPills>, 'counts'>) {
+  const counts = useListStore(list, state => state.answer.facets?.kind)
+  return <KindPills {...props} counts={counts} />
+}
+
+function LiveActiveFilters({ list, ...props }: { list: ListStore } & Omit<ComponentPropsWithoutRef<typeof ActiveFilters>, 'filters' | 'range'>) {
+  const filters = useListStore(list, state => state.view.filters)
+  const kind = useListStore(list, state => state.view.kind)
+  const range = useListStore(list, state => state.view.range)
+  const shown = useMemo(() => filtersForKind(filters, kind), [filters, kind])
+  return <ActiveFilters {...props} filters={shown} range={range} />
+}
+
+function LiveFilterPanel({ list, ...props }: { list: ListStore } & Omit<ComponentPropsWithoutRef<typeof FilterPanel>, 'view' | 'facets' | 'decay'>) {
+  const view = useListStore(list, state => state.view)
+  const facets = useListStore(list, state => state.answer.facets)
+  const decay = useListStore(list, state => state.answer.decay)
+  return <FilterPanel {...props} view={view} facets={facets} decay={decay} />
+}
+
+/** Select mode's bar: the page checkbox, the count and the bulk edits. */
+function SelectionBar({ list, picked, meaning, onBegin, onCancel }: { list: ListStore; picked: ReturnType<typeof useMemoryRecordSelection>; meaning: boolean; onBegin: RowActions['begin']; onCancel: () => void }) {
+  const { t } = useTranslation()
+  const { rows, total, searching, recordsError, query } = useListStore(list, state => state.answer)
+  const { all, isSelected, count: selectedCount } = picked
+  return <div className="flex min-h-[52px] flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-card px-3 py-2" role="toolbar" aria-label={t('memoryPage.selection_toolbar')}>
+    {rows.length > 0 && <label className="flex min-h-11 cursor-pointer items-center gap-2 text-[13px]"><input type="checkbox" className="h-4 w-4 accent-accent" aria-label={t('memoryEditing.select_page')} checked={rows.every(isSelected)} disabled={!!all && all.exclude.size >= MANUAL_LIMIT && rows.every(isSelected)} onChange={() => picked.choosePage(rows)} />{t('memoryEditing.select_page')}</label>}
+    <span className="text-[13px] font-medium tabular-nums text-text" role="status">{t('memoryEditing.selected', { count: fmtNumber(selectedCount) })}</span>
+    {!all && !meaning && selectedCount > 0 && total > rows.length && <Btn className="min-h-11 border-transparent text-accent" disabled={searching || !!recordsError || total > SELECT_ALL_LIMIT} onClick={() => picked.selectAll(query, total)}>{t('memoryEditing.select_all', { count: fmtNumber(total) })}</Btn>}
+    {!all && <span className="text-[12px] text-muted">{t('memoryPage.select_limit_hint', { limit: fmtNumber(MANUAL_LIMIT) })}</span>}
+    <div className="ml-auto flex flex-wrap items-center gap-2">
+      {/* Two controls a row: the bulk edits share one menu, so Forget is never one stray click away. */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild><Btn className="min-h-11" disabled={!selectedCount}>{t('memoryV2.edit_action')}<ChevronDown className="lucide-inline text-muted" aria-hidden="true" /></Btn></DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onSelect={() => onBegin({ type: 'replace_text' })}><Replace className="lucide-inline text-muted" aria-hidden="true" />{t('memoryEditing.replace')}</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onBegin({ type: 'forget' })}><span className="contents text-danger-text"><Trash2 className="lucide-inline" aria-hidden="true" />{t('memoryEditing.forget_count', { count: fmtNumber(selectedCount) })}</span></DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <Btn className="min-h-11" onClick={onCancel}>{t('pages.overview.memoryTab.cancel')}</Btn>
+    </div>
+    {all && <p className="basis-full text-[12px] text-muted">{t('memoryEditing.all_scope', { query: all.query.q || t('memoryV2.filter_all') })}</p>}
+    {!all && selectedCount >= MANUAL_LIMIT && <p role="status" className="basis-full text-[12px] text-muted">{t('memoryEditing.selection_limit')}</p>}
+    {total > SELECT_ALL_LIMIT && selectedCount > 0 && <p className="basis-full text-[12px] text-muted">{t('memoryEditing.narrow_selection')}</p>}
+  </div>
+}
+
+type RecordListProps = Omit<ComponentPropsWithoutRef<typeof RecordList>, 'rows' | 'loading' | 'busy' | 'footer' | 'onEnd' | 'onWindowed'>
+
+/** The list under the toolbar: read errors, the empty state, the rows and paging. */
+function ListBody({ list, storeName, privateMemory, emptyActions, onRecovery, onClearSearch, onClearFilters, onWords, ...rowProps }: {
+  list: ListStore; storeName: string; privateMemory: boolean; emptyActions?: ReactNode; onRecovery?: () => void
+  onClearSearch: () => void; onClearFilters: () => void; onWords: () => void
+} & RecordListProps) {
+  const { t } = useTranslation()
+  const answer = useListStore(list, state => state.answer)
+  const view = useListStore(list, state => state.view)
+  const { rows, total, weaker, searching, narrowing, recordsError, hasNextPage, isFetchingNextPage } = answer
+  const meaningUnavailable = byMeaning(view) && (recordsError as { status?: number } | null)?.status === 409
+  const narrowed = !!view.q || view.kind !== 'all' || activeFilterCount(view.filters) > 0 || !!view.range
   // The next page loads as the end of the list comes near the view. A windowed
   // list says so itself (its first frame is shorter than its rows); otherwise a
   // marker under the last row is watched.
   const [windowed, setWindowed] = useState(false)
   const end = useRef<HTMLDivElement>(null)
-  const { hasNextPage, isFetchingNextPage, fetchNextPage } = records
   useEffect(() => {
     const node = end.current
     if (!node || windowed || !hasNextPage || isFetchingNextPage || typeof IntersectionObserver === 'undefined') return
-    const observer = new IntersectionObserver(([entry]) => { if (entry.isIntersecting) void fetchNextPage() }, { rootMargin: LOAD_AHEAD })
+    const observer = new IntersectionObserver(([entry]) => { if (entry.isIntersecting) list.actions.fetchNextPage() }, { rootMargin: LOAD_AHEAD })
     observer.observe(node)
     return () => observer.disconnect()
-  }, [windowed, hasNextPage, isFetchingNextPage, fetchNextPage, rows.length])
-  const detail = rows.find(row => recordIdentity(row) === detailKey) ?? null
-  const [jumpFocus, setJumpFocus] = useState<string | null>(null)
-  // A selection from the graph replaces the search, kind and filters: it names exact
-  // records, which any of those would hide. Filters picked afterwards narrow it.
-  useEffect(() => {
-    if (!jump) return
-    setInput('')
-    setView(old => ({ ...old, q: '', kind: 'all', mode: 'words' as const, filters: jump.box ? { box: jump.box.bbox, box_layout: jump.box.layout, box_kinds: jump.box.kinds, box_count: jump.box.count } : { ref: jump.refs }, range: undefined }))
-    const open = jump.open ? recordIdentity(jump.open) : null
-    setDetailKey(open); setJumpFocus(open); focusScrolled.current = false
-  }, [jump])
-  const focusScrolled = useRef(false)
-
-  const selectedCount = picked.count
-  const refresh = () => {
-    void client.invalidateQueries({ queryKey: ['memory-records', store] })
-    void client.invalidateQueries({ queryKey: ['member-memory', store] })
-    void client.invalidateQueries({ queryKey: ['memory-record-history', store] })
-    for (const prefix of MEMORY_QUERY_PREFIXES) void client.invalidateQueries({ queryKey: prefix })
-  }
-  const [feedback, setFeedback] = useState('')
-  const edit = useMemoryRecordEdit({
-    store, refresh,
-    onApplied: changed => { setFeedback(t('memoryEditing.applied', { count: fmtNumber(changed) })); onSelectingChange(false); refresh() },
-    selection: picked.forEdit,
-  })
-  const dirty = !!edit.intent || !!all || selectedCount > 0
-  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false) }, [dirty, onDirtyChange])
-  // Leaving select mode drops the picks.
-  const stopSelecting = () => { picked.clear(); onSelectingChange(false) }
-  // Hand-picked rows belong to the list they were picked in: a kind, filter or
-  // search change drops them rather than acting on rows the new list hides.
-  // ("Select all matching" locks those controls instead, below.)
-  const clearPicks = picked.clear
-  useEffect(() => { clearPicks() }, [query, clearPicks])
-
-  // A filter, search or kind change while rows are picked would hide them; the
-  // selection belongs to the list it was made in.
-  const locked = !!all
-  const change = (next: Partial<ListView>) => { if (locked) return; setView(old => ({ ...old, ...next })) }
-  const onToggleFilter = (group: MemoryRecordFacetGroup, value: string) => change({ filters: toggleFilter(view.filters, group, value) })
-  // Not a transition: a transition re-renders this component, and a query store
-  // changing during that render forces the whole batch, deferred rows included,
-  // into one blocking render. The rows' own deferral keeps this render small.
-  // Clamped against the other bound inside the update, as it is at that moment.
-  const onRange = (bound: 'conf_min' | 'conf_max', value: number | undefined) => setView(old => locked ? old : { ...old, filters: setConfidenceBound(old.filters, bound, value) })
-  // Bumped by every clear of the range, so a slider value still settling is dropped.
-  const [rangeReset, setRangeReset] = useState(0)
-  const clearFilters = () => { setRangeReset(n => n + 1); change({ filters: {}, range: undefined }) }
-  const setRange = (range?: DateRange) => change({ range })
-  const clearSearch = () => { setInput(''); change({ q: '', sort: view.sort === 'match' ? 'updated' : view.sort }) }
-  const setMode = (mode: SearchMode) => change({ mode })
-  // A saved topic runs at once, as a search by meaning.
-  const runTopic = (topic: string) => { setInput(topic); change({ q: topic, mode: 'meaning' }) }
-  const meaningUnavailable = meaning && (records.error as { status?: number } | null)?.status === 409
-  const narrowed = !!view.q || view.kind !== 'all' || activeFilterCount(view.filters) > 0 || !!view.range
-  const filterCount = activeFilterCount(filtersForKind(view.filters, view.kind))
-
-  // The rows call their handlers through a ref, so they stay memoized across renders.
-  const rowActions = useRef<RowActions>({ toggle: picked.toggle, begin: edit.begin, onToggleFilter })
-  useLayoutEffect(() => { rowActions.current = { toggle: picked.toggle, begin: edit.begin, onToggleFilter } })
-  // The chips show only the ticked values, so a confidence change keeps the same chip object.
-  const chipKey = JSON.stringify(Object.entries(view.filters).filter(([key]) => key !== 'conf_min' && key !== 'conf_max'))
-  const rowChip = useMemo<ChipFilter | undefined>(() => locked || selecting ? undefined : { filters: Object.fromEntries(JSON.parse(chipKey)), onToggle: (group, value) => rowActions.current.onToggleFilter(group, value) }, [locked, selecting, chipKey])
-  // The toolbar's handlers, read through a ref, so its parts stay memoized
-  // when only the records or counts answer changes.
-  const ui = useRef({ change, setRange, clearSearch, setMode, runTopic, onToggleFilter, onRange, clearFilters, setRailOpen, onSelectingChange, topics, view, meaning, sheet })
-  useLayoutEffect(() => { ui.current = { change, setRange, clearSearch, setMode, runTopic, onToggleFilter, onRange, clearFilters, setRailOpen, onSelectingChange, topics, view, meaning, sheet } })
-  const stable = useMemo(() => ({
-    setRange: (range?: DateRange) => ui.current.setRange(range),
-    clearRange: () => ui.current.setRange(undefined),
-    clearSearch: () => ui.current.clearSearch(),
-    setMode: (mode: SearchMode) => ui.current.setMode(mode),
-    runTopic: (topic: string) => ui.current.runTopic(topic),
-    removeTopic: (topic: string) => ui.current.topics.remove(topic),
-    saveTopic: () => ui.current.topics.save(ui.current.view.q),
-    setKind: (kind: KindTab) => ui.current.change({ kind }),
-    sort: (next: MemoryRecordSort, order: 'asc' | 'desc') => ui.current.change({ sort: next, order, ...(ui.current.meaning && next !== 'match' ? { mode: 'words' as const } : {}) }),
-    toggle: (group: MemoryRecordFacetGroup, value: string) => ui.current.onToggleFilter(group, value),
-    range: (bound: 'conf_min' | 'conf_max', value: number | undefined) => ui.current.onRange(bound, value),
-    clearConfidence: (bound: 'conf_min' | 'conf_max') => { setRangeReset(n => n + 1); ui.current.onRange(bound, undefined) },
-    clear: () => ui.current.clearFilters(),
-    clearRefs: () => { setJumpFocus(null); ui.current.change({ filters: Object.fromEntries(Object.entries(ui.current.view.filters).filter(([key]) => !GRAPH_SELECTION_KEYS.includes(key))) }) },
-    filters: () => ui.current.sheet ? openSheet.current() : ui.current.setRailOpen(true),
-    select: () => ui.current.onSelectingChange(true),
-  }), [])
-  const shownFilters = useMemo(() => filtersForKind(view.filters, view.kind), [view.filters, view.kind])
-  // The search row reads no filter, so a filter or confidence change leaves it as it is.
-  const { q: viewQ, kind: viewKind, sort: viewSort, order: viewOrder, mode: viewMode, range: viewRange } = view
-  const sortView = useMemo<ListView>(() => ({ q: viewQ, kind: viewKind, sort: viewSort, order: viewOrder, mode: viewMode, range: viewRange, filters: {} }), [viewQ, viewKind, viewSort, viewOrder, viewMode, viewRange])
-  const searchRow = useMemo(() => <div ref={toolbarRef} className="@container min-w-0"><div className="flex min-w-0 flex-wrap gap-2" data-testid="memory-toolbar">
-      {/* A phone gives the search box its own row; the mode switch, then the filter and sort buttons, wrap below it.
-          Keyed on the phone layout, not on a width class: a 640-767 px phone would
-          otherwise keep every control on one row and squeeze the search box. A wide
-          screen keeps one row until the search box would drop below 22rem (its text
-          beside the mode switch), then wraps the buttons instead of squeezing it. */}
-      {/* A div, not a label: a label would also name the mode switch's buttons. */}
-      <div className={`relative flex-1 ${phone ? 'min-w-0 basis-full' : 'min-w-0 basis-full @[40rem]:min-w-[22rem] @[40rem]:basis-0'}`}>
-        <Search className="lucide-inline pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
-        <Input className={`min-h-11 w-full pl-9 sm:min-h-10 ${inlineSwitch ? 'pr-[188px]' : 'pr-10'}`} aria-label={t('memoryV2.search')} placeholder={t(viewMode === 'meaning' ? 'memoryPage.meaning_placeholder' : 'memoryEditing.search_hint')} value={input} onChange={event => setInput(event.target.value)} />
-        {/* Clear and the mode switch share one group: the switch sits flush at the box's end, clear 8 px before it. */}
-        <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-2">
-          {input && <IconButton aria-label={t('memoryV2.clear_search')} className="flex h-9 w-9 items-center justify-center sm:w-6" onClick={stable.clearSearch}><X className="lucide-inline" aria-hidden="true" /></IconButton>}
-          {inlineSwitch && <SearchModeSwitch mode={viewMode} onChange={stable.setMode} />}
-        </div>
-      </div>
-      {/* A phone puts the mode switch on its own row under the search box, above the filter and sort buttons. */}
-      {/* So does a toolbar too narrow for the switch inside the box, so it never sits on the text. */}
-      {!inlineSwitch && <div className="basis-full"><SearchModeSwitch wide={phone} mode={viewMode} onChange={stable.setMode} /></div>}
-      {/* A phone opens the filter sheet; a wide screen with the rail hidden shows it again. */}
-      {(sheet || !railOpen) && <Btn aria-label={t('memoryPage.filters')} aria-expanded={sheet ? undefined : false} className="relative min-h-11 min-w-11 shrink-0 justify-center sm:min-h-10 sm:min-w-10" onClick={stable.filters}><SlidersHorizontal className="lucide-inline" aria-hidden="true" />{filterCount > 0 && <span className="absolute -right-1.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-accent px-1 text-[11px] text-accent-fg">{fmtNumber(filterCount)}</span>}</Btn>}
-      {/* Picking another order leaves the search by meaning, which only ranks by match. */}
-      <DateRangeButton range={viewRange} onChange={stable.setRange} />
-      <SortControl view={sortView} decays={!!storeDecay} onChange={stable.sort} />
-      {!phone && <Btn className="min-h-10 shrink-0 whitespace-nowrap" onClick={stable.select}><ListChecks className="lucide-inline" />{t('memoryPage.select')}</Btn>}
-    </div></div>, [phone, inlineSwitch, viewMode, viewRange, sortView, storeDecay, input, sheet, railOpen, filterCount, stable, t])
-  const topicsRow = useMemo(() => <SavedTopics topics={topics.topics} query={view.q} canSave={meaning} onRun={stable.runTopic} onRemove={stable.removeTopic} onSave={stable.saveTopic} />, [topics.topics, view.q, meaning, stable])
-  // Built once, so the rail's memoized panel is not re-rendered for a new button element.
-  const railHide = useMemo(() => <IconButton aria-label={t('memoryPage.hide_filters')} title={t('memoryPage.hide_filters')} aria-expanded className="pi-morph -mr-2.5 flex h-9 w-9 shrink-0 items-center justify-center text-muted" onClick={() => ui.current.setRailOpen(false)}><PanelLeftLight size={16} aria-hidden="true" /></IconButton>, [t])
-  const toolbar = <div className="space-y-3">
-    {selecting ? <div className="flex min-h-[52px] flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-card px-3 py-2" role="toolbar" aria-label={t('memoryPage.selection_toolbar')}>
-      {rows.length > 0 && <label className="flex min-h-11 cursor-pointer items-center gap-2 text-[13px]"><input type="checkbox" className="h-4 w-4 accent-accent" aria-label={t('memoryEditing.select_page')} checked={rows.every(isSelected)} disabled={!!all && all.exclude.size >= MANUAL_LIMIT && rows.every(isSelected)} onChange={() => picked.choosePage(rows)} />{t('memoryEditing.select_page')}</label>}
-      <span className="text-[13px] font-medium tabular-nums text-text" role="status">{t('memoryEditing.selected', { count: fmtNumber(selectedCount) })}</span>
-      {!all && !meaning && selectedCount > 0 && total > rows.length && <Btn className="min-h-11 border-transparent text-accent" disabled={searching || !!records.error || total > SELECT_ALL_LIMIT} onClick={() => picked.selectAll(query, total)}>{t('memoryEditing.select_all', { count: fmtNumber(total) })}</Btn>}
-      {!all && <span className="text-[12px] text-muted">{t('memoryPage.select_limit_hint', { limit: fmtNumber(MANUAL_LIMIT) })}</span>}
-      <div className="ml-auto flex flex-wrap items-center gap-2">
-        {/* Two controls a row: the bulk edits share one menu, so Forget is never one stray click away. */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild><Btn className="min-h-11" disabled={!selectedCount}>{t('memoryV2.edit_action')}<ChevronDown className="lucide-inline text-muted" aria-hidden="true" /></Btn></DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => edit.begin({ type: 'replace_text' })}><Replace className="lucide-inline text-muted" aria-hidden="true" />{t('memoryEditing.replace')}</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => edit.begin({ type: 'forget' })}><span className="contents text-danger-text"><Trash2 className="lucide-inline" aria-hidden="true" />{t('memoryEditing.forget_count', { count: fmtNumber(selectedCount) })}</span></DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <Btn className="min-h-11" onClick={stopSelecting}>{t('pages.overview.memoryTab.cancel')}</Btn>
-      </div>
-      {all && <p className="basis-full text-[12px] text-muted">{t('memoryEditing.all_scope', { query: all.query.q || t('memoryV2.filter_all') })}</p>}
-      {!all && selectedCount >= MANUAL_LIMIT && <p role="status" className="basis-full text-[12px] text-muted">{t('memoryEditing.selection_limit')}</p>}
-      {total > SELECT_ALL_LIMIT && selectedCount > 0 && <p className="basis-full text-[12px] text-muted">{t('memoryEditing.narrow_selection')}</p>}
-    </div> : searchRow}
-    {!selecting && topicsRow}
-    <KindPills bot={botName} wrap={!phone} kind={view.kind} counts={facets?.kind} disabled={locked} onChange={stable.setKind} />
-    <ActiveFilters range={view.range} rangeField={dateField} onClearRange={stable.clearRange} filters={shownFilters} onToggle={stable.toggle} onRange={stable.clearConfidence} onClear={stable.clear} onClearRefs={stable.clearRefs} />
-  </div>
-
-  const list = <div className="space-y-3">
-    {feedback && <div role="status" className="flex items-center gap-2 rounded-lg bg-ok-subtle px-3 py-2 text-[13px] text-ok-text">{feedback}<IconButton aria-label={t('components.errorNotice.dismiss')} className="ml-auto flex h-8 w-8 items-center justify-center" onClick={() => setFeedback('')}><X className="lucide-inline" aria-hidden="true" /></IconButton></div>}
+  }, [windowed, hasNextPage, isFetchingNextPage, list, rows.length])
+  return <>
     {/* No hand-off: cross-page selection and editing drafts must stay attached to this store. */}
-    <ErrorNotice title={t(meaningUnavailable ? 'memoryPage.meaning_unavailable' : 'memoryPage.read_failed', { store: storeName })} message={errorText(records.error)} />
+    <ErrorNotice title={t(meaningUnavailable ? 'memoryPage.meaning_unavailable' : 'memoryPage.read_failed', { store: storeName })} message={errorText(recordsError)} />
     {/* The list can stand without its counts: say they failed and offer to read them again. */}
-    {!records.error && <ErrorNotice impact="partial" title={t('memoryPage.counts_failed')} message={errorText(counts.error)} askAgent={false}
-      actions={queryReadFailed(counts) ? <button type="button" aria-disabled={counts.isFetching || undefined} onClick={() => { if (!counts.isFetching) void counts.refetch() }}>{t('memoryV2.retry_read')}</button> : undefined} />}
-    {meaningUnavailable && <Btn className="min-h-11 w-fit" onClick={() => setMode('words')}>{t('memoryPage.search_words_instead')}</Btn>}
-    {queryReadFailed(records) && <div className="flex flex-wrap gap-2"><Btn className="min-h-11 aria-disabled:cursor-default aria-disabled:opacity-30" aria-disabled={records.isFetching || undefined} onClick={() => { if (!records.isFetching) void records.refetch() }}>{t('memoryV2.retry_read')}</Btn>{onRecovery && <Btn className="min-h-11" onClick={onRecovery}>{t('memoryPage.open_recovery')}</Btn>}</div>}
-    {!searching && !records.error && !rows.length && !weaker && <Card className="mb-0 py-6">
+    {!recordsError && <ErrorNotice impact="partial" title={t('memoryPage.counts_failed')} message={errorText(answer.countsError)} askAgent={false}
+      actions={answer.countsFailed ? <button type="button" aria-disabled={answer.countsFetching || undefined} onClick={() => { if (!answer.countsFetching) list.actions.refetchCounts() }}>{t('memoryV2.retry_read')}</button> : undefined} />}
+    {meaningUnavailable && <Btn className="min-h-11 w-fit" onClick={onWords}>{t('memoryPage.search_words_instead')}</Btn>}
+    {answer.recordsFailed && <div className="flex flex-wrap gap-2"><Btn className="min-h-11 aria-disabled:cursor-default aria-disabled:opacity-30" aria-disabled={answer.recordsFetching || undefined} onClick={() => { if (!answer.recordsFetching) list.actions.refetchRecords() }}>{t('memoryV2.retry_read')}</Btn>{onRecovery && <Btn className="min-h-11" onClick={onRecovery}>{t('memoryPage.open_recovery')}</Btn>}</div>}
+    {!searching && !recordsError && !rows.length && !weaker && <Card className="mb-0 py-6">
       <EmptyState icon={<Search className="lucide-inline" />} title={narrowed ? t('memoryV2.no_matches') : t(privateMemory ? 'memoryV2.empty_title' : 'memoryV2.store_empty_title')} subtitle={narrowed ? t('memoryV2.no_matches_hint') : t(privateMemory ? 'memoryV2.empty_body' : 'memoryV2.store_empty_body')} />
-      <div className="mt-3 flex flex-wrap justify-center gap-2">{narrowed ? <>{view.q && <Btn className="min-h-11" onClick={clearSearch}>{t('memoryV2.clear_search')}</Btn>}{(activeFilterCount(view.filters) > 0 || !!view.range) && <Btn className="min-h-11" onClick={clearFilters}>{t('memoryPage.clear_all')}</Btn>}</> : emptyActions}</div>
+      <div className="mt-3 flex flex-wrap justify-center gap-2">{narrowed ? <>{view.q && <Btn className="min-h-11" onClick={onClearSearch}>{t('memoryV2.clear_search')}</Btn>}{(activeFilterCount(view.filters) > 0 || !!view.range) && <Btn className="min-h-11" onClick={onClearFilters}>{t('memoryPage.clear_all')}</Btn>}</> : emptyActions}</div>
     </Card>}
-    {!records.error && <RecordList rows={rows} loading={searching} busy={narrowing} onWindowed={setWindowed}
-      onEnd={hasNextPage && !isFetchingNextPage ? () => void fetchNextPage() : undefined} sort={sort} meaning={meaning} kind={view.kind} selecting={selecting} isSelected={isSelected} lockedRow={picked.lockedRow}
-      chip={rowChip} detailKey={detailKey} onOpen={setDetailKey} actions={rowActions} jumpFocus={jumpFocus} landingKey={landing ? focusKey : undefined} focusScrolled={focusScrolled}
+    {!recordsError && <RecordList {...rowProps} rows={rows} loading={searching} busy={narrowing} onWindowed={setWindowed}
+      onEnd={hasNextPage && !isFetchingNextPage ? list.actions.fetchNextPage : undefined}
       footer={weaker > 0 && !hasNextPage ? <li className="flex min-h-[52px] items-center gap-2 bg-bg-hover px-4 text-[13px] text-muted sm:min-h-11">
         <span>{t('memoryPage.weaker_hidden', { count: fmtNumber(weaker) })}</span>
-        <Btn className="ml-auto min-h-11 border-transparent text-accent sm:min-h-8" onClick={() => setWeak(true)}>{t('memoryPage.show_weaker')}</Btn>
+        <Btn className="ml-auto min-h-11 border-transparent text-accent sm:min-h-8" onClick={() => list.setWeak(true)}>{t('memoryPage.show_weaker')}</Btn>
       </li> : undefined} />}
     {/* Watched for the next page; it sits under the last row. */}
     {hasNextPage && !searching && !windowed && <div ref={end} aria-hidden="true" className="h-px" />}
     {isFetchingNextPage && <LoadingRows count={2} />}
-    {!searching && !records.error && total > PAGE_SIZE && <p className="text-[12px] tabular-nums text-muted">{t('memoryEditing.page_range', { from: fmtNumber(1), to: fmtNumber(rows.length), total: fmtNumber(total) })}</p>}
-  </div>
-
-  const detailPanel = detail && <MemoryRecordDetail store={store} row={detail} phone={phone} fadeLine={storeDecay?.fade_line}
-    onSaveAsLesson={onSaveAsLesson ? () => { setDetailKey(null); onSaveAsLesson(detail.text) } : undefined} chip={locked || selecting ? undefined : { filters: view.filters, onToggle: onToggleFilter }} onClose={() => setDetailKey(null)}
-    onEdit={() => { setDetailKey(null); edit.begin({ type: 'set', row: detail }) }} onForget={() => { setDetailKey(null); edit.begin({ type: 'forget', row: detail }) }}
-    onRestore={revisionId => { setDetailKey(null); edit.restore(detail, revisionId) }} onKeepCurrent={() => { setDetailKey(null); edit.keepCurrent(detail) }}
-    onProposal={(proposal, operation) => { setDetailKey(null); edit.takeProposal(detail, proposal, operation) }} />
-
-  return <div ref={rootRef} className="min-w-0" data-testid="memory-list">
-    {stacked ? <div className="space-y-4">{toolbar}{list}{detailPanel}</div> : <div className="flex gap-6">
-      {/* The rail stays in view while the list scrolls, as tall as the window, and scrolls on its own. */}
-      {!compact && <FilterRail open={railOpen} width={railWidth} onResize={resizeRail}>
-        <FilterPanel bot={botName} capped view={view} facets={facets} decay={storeDecay} rangeReset={rangeReset} onToggle={stable.toggle} onRange={stable.range}
-          trailing={railHide} />
-      </FilterRail>}
-      <div className="min-w-0 flex-1 space-y-4">{toolbar}{list}</div>
-      <MemoryDetailSlide contentKey={detail ? detailKey : null}>{detailPanel}</MemoryDetailSlide>
-    </div>}
-    {sheet && <FilterSheet openRef={openSheet} phone={phone} canClear={activeFilterCount(view.filters) > 0} onClear={stable.clear}><FilterPanel bot={botName} view={view} facets={facets} decay={storeDecay} rangeReset={rangeReset} onToggle={stable.toggle} onRange={stable.range} /></FilterSheet>}
-    {edit.dialog}
-  </div>
+    {!searching && !recordsError && total > PAGE_SIZE && <p className="text-[12px] tabular-nums text-muted">{t('memoryEditing.page_range', { from: fmtNumber(1), to: fmtNumber(rows.length), total: fmtNumber(total) })}</p>}
+  </>
 }
-
 
 /** The Filters sheet on a narrow screen. It owns its open state: opening it
  *  through `openRef` renders the sheet alone, not the page and list behind it. */
-function FilterSheet({ openRef, phone, canClear, onClear, children }: { openRef: MutableRefObject<() => void>; phone: boolean; canClear: boolean; onClear: () => void; children: ReactNode }) {
+function FilterSheet({ list, openRef, phone, onClear, children }: { list: ListStore; openRef: MutableRefObject<() => void>; phone: boolean; onClear: () => void; children: ReactNode }) {
   const { t } = useTranslation()
+  const canClear = activeFilterCount(useListStore(list, state => state.view.filters)) > 0
   const [open, setOpen] = useState(false)
   // The dialog shell paints first and its body a frame later, so the tap
   // answers within one frame.
@@ -437,7 +540,7 @@ function RecordList({ rows, loading, busy, footer, onEnd, onWindowed, sort, mean
   footer?: ReactNode
   /** The end of the rows came near the view: load the next page (windowed list only). */
   onEnd?: () => void
-  /** Tells the page whether the rows are windowed, so it watches its own end only when they are not. */
+  /** Tells the list body whether the rows are windowed, so it watches its own end only when they are not. */
   onWindowed?: (windowed: boolean) => void
   sort: MemoryRecordSort; meaning: boolean; kind: KindTab; selecting: boolean
   isSelected: (row: MemoryRecord) => boolean; lockedRow: (row: MemoryRecord) => boolean
