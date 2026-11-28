@@ -1105,7 +1105,7 @@ def _infer_source(session_key: str) -> str:
         return "background"
     if session_key == "_hb":
         return "heartbeat"
-    if session_key == "cli_chat":
+    if session_key == "cli_chat" or session_key.startswith("cli_chat:"):
         return "cli"
     # Namespaced messaging channels carry their transport as the first key
     # segment (``{channel}:{agent}:...`` per messaging/link.build_dm_session_key,

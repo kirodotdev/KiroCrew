@@ -9,18 +9,21 @@ import os
 import re
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from kiro_crew.acp._dispatch import is_shell_kind
 from kiro_crew.acp.client import AcpError, AcpTimeoutError
 from kiro_crew.agent_sdk.drivers.acp_vocab import AcpRuntimeError, continue_timed_out_calls
 from kiro_crew.agent_sdk.host_auth import for_terminal
+from kiro_crew.cli_chat_run_session import CLI_SESSION_KEY as _CLI_SESSION_KEY
+from kiro_crew.cli_chat_run_session import bind_run_session, release_run_session, run_session_key
 from kiro_crew.cli_chat_runs import ChatRun, note_turn, start_run
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     CONTEXT_WARN_MARGIN_PCT,
     ConfigReadError,
+    _session_work_dir,
     build_provider_factory,
     config_path,
     crew_autocompact_pct,
@@ -76,12 +79,6 @@ if TYPE_CHECKING:
     from kiro_crew.messaging.tool_hooks import ChannelTurnHooks
 
 logger = logging.getLogger(__name__)
-
-#: Session key this surface presents everywhere it is identified: to the
-#: provider factory, to the PreToolUse gate, and to the SEL audit log. It is the
-#: value ``sel._infer_source`` and ``validation`` already recognise as the CLI,
-#: so the three must not drift apart.
-_CLI_SESSION_KEY = "cli_chat"
 
 #: The ACP runtime's canonical identity when no agent is configured.  The
 #: provider normalizes an empty agent to this name; the governance gate must see
@@ -389,11 +386,15 @@ async def _chat(
         except UnknownMemoryStore as exc:
             print(f"\n❌ {safe_terminal_line(str(exc))}", file=sys.stderr)
             sys.exit(1)
+    session_key = run_session_key(crew_agent, memory_store)
     provider: LLMProvider = build_provider_factory(cfg)(
-        _CLI_SESSION_KEY,
+        session_key,
         agent=kiro_agent,
         crew_agent=crew_agent,
         channel_id=channel_id,
+        # Named, not derived from the key: a Bot run's own key would otherwise move
+        # the chat into a new directory per run. Every run shares this one.
+        cwd=str(_session_work_dir(_CLI_SESSION_KEY)),
         # A member's session takes ``--model`` first, then the member's pin, as a
         # dashboard session does; a plain kiro agent keeps the global model path.
         model_override=(model or member_model or None) if crew_agent else None,
@@ -417,13 +418,15 @@ async def _chat(
     # Built once per process, not per request: a permission request must not
     # depend on a config read succeeding while the turn is parked.
     gate = _build_tool_gate(agent_name or "", kiro_agent)
+    if session_key != _CLI_SESSION_KEY:
+        gate = replace(gate, session_key=session_key)
     # Imported here so the other CLI commands do not pay for the context stack.
     from kiro_crew.cli_chat_context import build_cli_session_context
 
     context = await build_cli_session_context(
         hooks=gate.hooks,
         bot_name=cfg.agent.bot_name,
-        session_key=_CLI_SESSION_KEY,
+        session_key=session_key,
         agent=kiro_agent,
         memory_store=memory_store,
     )
@@ -442,6 +445,12 @@ async def _chat(
     # runs on a worker thread; the sweep never raises by contract, and a file
     # under the cap costs one ``stat`` and creates nothing.
     await asyncio.to_thread(rotate_shell_audit_log, data_home())
+    if crew_agent and session_key != _CLI_SESSION_KEY:
+        try:
+            await asyncio.to_thread(bind_run_session, cfg, crew_agent, session_key)
+        except ValueError as exc:
+            print(f"\n❌ {safe_terminal_line(str(exc))}", file=sys.stderr)
+            sys.exit(1)
     # A permission prompt cancelled at the terminal raises through the turn by
     # design (the request is deliberately left unanswered, see
     # `_answer_permission`), so the teardown belongs in `finally` rather than on
@@ -475,6 +484,8 @@ async def _chat(
             # still open, avoiding "Event loop is closed" noise on exit. Nested
             # so a raising shutdown cannot skip it.
             gc.collect()
+            if session_key != _CLI_SESSION_KEY:
+                await asyncio.to_thread(release_run_session, session_key)
 
 
 def _run_chat(

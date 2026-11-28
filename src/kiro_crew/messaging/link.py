@@ -132,6 +132,9 @@ _TELEMETRY_LOCAL_PREFIXES: tuple[tuple[str, str], ...] = (
     # ``channel:`` is a namespace of its own (reply-token-bound sends), distinct
     # from the per-transport namespaces above.
     ("channel", "channel"),
+    # A Bot's terminal chat runs under its own ``cli_chat:<run>`` key, bound to the
+    # Bot's memory store; the plain run keeps the exact ``cli_chat`` key below.
+    ("cli_chat", "cli"),
 )
 
 #: Exact keys for singleton sessions.

@@ -6275,8 +6275,8 @@ The ONE exception is not a transport failure: a dial that was **refused**
 (`_post` returns `refused=True` — no gateway is listening, so nothing was
 executed and nothing can be replayed) from a process with NO gateway-injected
 caller whose resolved session key is POSITIVELY the attended CLI's own
-(`validation.infer_use_case(key) == "cli"`, the `cli_chat` key `kirocrew chat`
-presents everywhere it is identified) dispatches to the direct host store, which
+(`validation.infer_use_case(key) == "cli"`: the `cli_chat` key `kirocrew chat`
+presents everywhere it is identified, or a member run's own `cli_chat:<id>`) dispatches to the direct host store, which
 is the behaviour that runtime always had before the transport was required. The
 absence of an injected caller alone is not enough: the non-pooled stdio gateway
 topology also has none, and a gateway-minted key (`dashboard:`, a channel, a

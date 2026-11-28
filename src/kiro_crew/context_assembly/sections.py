@@ -77,7 +77,7 @@ def _resolve_runtime_source(session_key: str, runtime_source: str | None = None)
         source = "background"
     elif session_key == "_hb":
         source = "heartbeat"
-    elif session_key == "cli_chat":
+    elif session_key == "cli_chat" or session_key.startswith("cli_chat:"):
         source = "cli"
     else:
         source = "slack"

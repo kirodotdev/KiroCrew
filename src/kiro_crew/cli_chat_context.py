@@ -89,8 +89,9 @@ class CliSessionContext:
     #: The store ``resolve_agent_bindings`` resolved for the session.
     memory_store: str
     #: ``None`` for every group. A member bound to a named store gets neither
-    #: memory nor lessons: the CLI does not bind that store, and Global memory is
-    #: not the member's to read.
+    #: memory nor lessons injected here: its tools use the store its run is bound
+    #: to (``cli_chat_run_session.bind_run_session``), and Global memory is not the
+    #: member's to read.
     context_groups: frozenset[str] | None
 
     @staticmethod
