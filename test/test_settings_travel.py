@@ -34,6 +34,7 @@ from test_snapshot import _make_snapshot, _setup_fake_kirocrew, unpinnable_argv
 from conftest import requires_symlinks
 from kiro_crew import portability
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.hooks import ScriptHookStore
 from kiro_crew.notifications.settings import ChannelSettings
 from kiro_crew.snapshot import restore_main
 from kiro_crew.snapshot_components import COMPONENT_JSON_OBJECTS, CORE_FILES
@@ -577,6 +578,54 @@ class TestCliRestoreAcceptsAByteOrderMarkTheReaderAccepts:
 
         assert ret == 0
         assert (dst / name).read_bytes() == saved
+
+
+class TestCliRestoreReadsAHooksFileAsItsStoreDoes:
+    """The hook store parses ``hooks.json`` from its bytes, so a file Windows PowerShell 5.1
+    saved as UTF-16 runs on the source machine and must not refuse the restore."""
+
+    def _restore(self, tmp_path, monkeypatch, saved: bytes) -> tuple[int, Path]:
+        src = tmp_path / "src"
+        _setup_fake_kirocrew(src)
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+        (src / "hooks.json").write_bytes(saved)
+        tarball = _make_snapshot(src, tmp_path / "out")
+        dst = tmp_path / "dst"
+        _setup_fake_kirocrew(dst)
+        (dst / "hooks.json").unlink()
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+        ret = restore_main(
+            [str(tarball), "--mode", "replace", "--components", "config", "--force"]
+            + unpinnable_argv()
+        )
+        return ret, dst
+
+    @pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be", "utf-32-le"])
+    def test_a_marked_utf16_or_utf32_file_installs_with_its_command_hook_off(
+        self, tmp_path, monkeypatch, encoding
+    ):
+        hook = {"id": "h1", "event": "UserPromptSubmit", "command": "echo x"}
+        saved = ("\ufeff" + json.dumps({"hooks": [hook]})).encode(encoding)
+
+        ret, dst = self._restore(tmp_path, monkeypatch, saved)
+
+        assert ret == 0
+        loaded = ScriptHookStore(config_dir=dst).list_all()
+        assert [(h.id, h.enabled) for h in loaded] == [("h1", False)]
+
+    @pytest.mark.parametrize(
+        "saved",
+        [b'{"hooks": [{"id": "caf\xe9"}]}', "\ufeff[]".encode("utf-16-le")],
+        ids=["no-encoding-decodes-it", "array"],
+    )
+    def test_a_file_the_store_cannot_load_is_still_refused(
+        self, tmp_path, monkeypatch, capsys, saved
+    ):
+        ret, dst = self._restore(tmp_path, monkeypatch, saved)
+
+        assert ret != 0
+        assert "hooks.json in this snapshot" in capsys.readouterr().out
+        assert not (dst / "hooks.json").exists()
 
 
 class TestCliMergeSaysWhatItKept:
