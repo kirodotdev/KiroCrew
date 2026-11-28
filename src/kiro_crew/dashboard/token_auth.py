@@ -38,7 +38,7 @@ from kiro_crew.dashboard.origin import (
     is_proxied_request,
     mark_audit_claimed,
 )
-from kiro_crew.dashboard.refresh_tokens import (
+from kiro_crew.dashboard.refresh_tokens import (  # noqa: F401  # REFRESH_COOKIE_PATH: re-export
     MAX_REFRESH_TTL_SECS,
     REFRESH_COOKIE_PATH,
     bind_chain_peer,
@@ -46,6 +46,7 @@ from kiro_crew.dashboard.refresh_tokens import (
     foreign_port_cookies,
     generate_refresh_token,
     refresh_cookie_name,
+    refresh_cookie_path,
 )
 
 # Canonical revocation-generation definitions live in revocation_gen so the
@@ -1478,10 +1479,12 @@ def token_auth_middleware(
             # co-existing gateways keep their sessions until accumulation
             # genuinely threatens overflow. This page request only carries
             # other-port ACCESS cookies (path "/"); other-port refresh cookies
-            # (path "/api/auth") are trimmed on the next refresh call.
+            # (path "<prefix>/api/auth") are trimmed on the next refresh call.
             if cookie_jar_needs_pruning(request.cookies):
                 for _stale_name, _stale_path in foreign_port_cookies(
-                    request.cookies, _cookie_port_from_host(request, port)
+                    request.cookies,
+                    _cookie_port_from_host(request, port),
+                    refresh_cookie_path(request),
                 ):
                     resp.set_cookie(_stale_name, "", max_age=0, path=_stale_path)
 
@@ -1526,7 +1529,7 @@ def token_auth_middleware(
                     refresh_cookie_name(_cookie_port_from_host(request, port)),
                     "",
                     max_age=0,
-                    path=REFRESH_COOKIE_PATH,
+                    path=refresh_cookie_path(request),
                 )
             elif not app_name and not credential_family_refusal(_family, _ancestors):
                 # An app session gets no chain either: a rotation mints a plain
@@ -1602,7 +1605,7 @@ def token_auth_middleware(
                             httponly=True,
                             samesite="Lax",
                             secure=is_https_request(request),
-                            path=REFRESH_COOKIE_PATH,
+                            path=refresh_cookie_path(request),
                             max_age=min(refresh_remaining, MAX_REFRESH_TTL_SECS),
                         )
                         # Audit the initial-mint event so forensics can trace any

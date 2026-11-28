@@ -986,6 +986,15 @@ segment stops the build.
 The proxy strips the prefix before forwarding, relays cookies, and rewrites
 `Location` headers on redirects. It does not need to rewrite the JavaScript.
 
+Set `dashboard.url` to the public URL including the prefix
+(`https://gateway.example.com/proxy/kirocrew`) and restart. The gateway then sets
+the refresh cookie at that prefix plus `/api/auth` itself, so sign-in renewal and
+sign-out work through the proxy. A proxy rule that adds the prefix to cookie paths
+must leave a path that already starts with the prefix alone; in nginx, put
+`proxy_cookie_path /proxy/kirocrew/ /proxy/kirocrew/;` before
+`proxy_cookie_path / /proxy/kirocrew/;`. A dashboard served at the root keeps
+`dashboard.url` free of a path, since any path there moves the refresh cookie.
+
 ---
 
 ### Share one Crew with teammates
