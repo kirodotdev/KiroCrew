@@ -10,18 +10,20 @@ import { renderWithProviders } from './helpers'
  */
 const { api, seen } = vi.hoisted(() => ({
   api: { memoryRecords: vi.fn(), memoryStores: vi.fn(), memoryRecordHistory: vi.fn() },
-  seen: { scrollParent: null as HTMLElement | null, count: 0, scrolledTo: [] as number[] },
+  seen: { scrollParent: null as HTMLElement | null, count: 0, scrolledTo: [] as number[], endReached: undefined as undefined | (() => void) },
 }))
 vi.mock('../api/client', () => ({ api }))
 // The test DOM has no layout, so Virtuoso itself would render no rows: this
 // stand-in renders every item through the list's own List and Item components.
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: forwardRef(function Virtuoso({ data, itemContent, components, context, customScrollParent }: {
+  Virtuoso: forwardRef(function Virtuoso({ data, itemContent, components, context, customScrollParent, endReached }: {
+    endReached?: () => void
     data: unknown[]; itemContent: (i: number, d: unknown) => React.ReactNode; context: unknown; customScrollParent: HTMLElement
     components: { List: React.ComponentType<{ children: React.ReactNode; context: unknown }>; Item: React.ComponentType<Record<string, unknown>> }
   }, ref) {
     useImperativeHandle(ref, () => ({ scrollToIndex: ({ index }: { index: number }) => { seen.scrolledTo.push(index) } }))
     seen.scrollParent = customScrollParent
+    seen.endReached = endReached
     seen.count = data.length
     const { List, Item } = components
     return <List context={context}>{data.map((item, i) => <Item key={i} data-index={i} data-item-index={i} data-known-size={0} item={item} context={context}>{itemContent(i, item)}</Item>)}</List>
@@ -88,5 +90,17 @@ describe('the windowed memory list', () => {
     expect(asked[1].filters).toEqual({ ref: jump.refs })
     expect(list.querySelector('[data-memory-focus]')?.textContent).toMatch(/Value 3/)
     expect(seen.scrolledTo).toEqual([2])
+  })
+
+  it('loads the next page when the windowed list reaches its end, not before', async () => {
+    const page = (from: number, n: number, more: boolean) => ({ entries: Array.from({ length: n }, (_, i) => row(from + i)), total: 65, has_more: more, facets: {} })
+    api.memoryRecords.mockImplementation((_store: string, _query: unknown, offset: number) => Promise.resolve(offset ? page(51, 15, false) : page(1, 50, true)))
+    renderWithProviders(<div data-scroller="1"><MemoryList store="member-x" storeName="x" privateMemory selecting={false} onSelectingChange={() => {}} /></div>)
+    const list = await screen.findByRole('list', { name: 'Memories' })
+    await within(list).findByText('Value 50')
+    expect(screen.getByText('1–50 of 65')).toBeInTheDocument()
+    expect(api.memoryRecords.mock.calls.filter(call => call[2] === 50)).toHaveLength(0)
+    seen.endReached!()
+    expect(await screen.findByText('1–65 of 65')).toBeInTheDocument()
   })
 })

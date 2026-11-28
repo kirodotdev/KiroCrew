@@ -190,16 +190,19 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
   const weaker = meaning && !weak ? pages?.[pages.length - 1]?.hidden || 0 : 0
   // A new search or list shows only the strong matches again.
   useEffect(() => { setWeak(false) }, [query, meaning])
-  // The next page loads as the end of the list comes near the view.
+  // The next page loads as the end of the list comes near the view. A windowed
+  // list says so itself (its first frame is shorter than its rows); otherwise a
+  // marker under the last row is watched.
+  const [windowed, setWindowed] = useState(false)
   const end = useRef<HTMLDivElement>(null)
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = records
   useEffect(() => {
     const node = end.current
-    if (!node || !hasNextPage || isFetchingNextPage || typeof IntersectionObserver === 'undefined') return
+    if (!node || windowed || !hasNextPage || isFetchingNextPage || typeof IntersectionObserver === 'undefined') return
     const observer = new IntersectionObserver(([entry]) => { if (entry.isIntersecting) void fetchNextPage() }, { rootMargin: LOAD_AHEAD })
     observer.observe(node)
     return () => observer.disconnect()
-  }, [hasNextPage, isFetchingNextPage, fetchNextPage, rows.length])
+  }, [windowed, hasNextPage, isFetchingNextPage, fetchNextPage, rows.length])
   const detail = rows.find(row => recordIdentity(row) === detailKey) ?? null
   const [jumpFocus, setJumpFocus] = useState<string | null>(null)
   // A selection from the graph replaces the search, kind and filters: it names exact
@@ -358,14 +361,15 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
       <EmptyState icon={<Search className="lucide-inline" />} title={narrowed ? t('memoryV2.no_matches') : t(privateMemory ? 'memoryV2.empty_title' : 'memoryV2.store_empty_title')} subtitle={narrowed ? t('memoryV2.no_matches_hint') : t(privateMemory ? 'memoryV2.empty_body' : 'memoryV2.store_empty_body')} />
       <div className="mt-3 flex flex-wrap justify-center gap-2">{narrowed ? <>{view.q && <Btn className="min-h-11" onClick={clearSearch}>{t('memoryV2.clear_search')}</Btn>}{(activeFilterCount(view.filters) > 0 || !!view.range) && <Btn className="min-h-11" onClick={clearFilters}>{t('memoryPage.clear_all')}</Btn>}</> : emptyActions}</div>
     </Card>}
-    {!records.error && <RecordList rows={rows} loading={searching} busy={narrowing} sort={sort} meaning={meaning} kind={view.kind} selecting={selecting} isSelected={isSelected} lockedRow={picked.lockedRow}
+    {!records.error && <RecordList rows={rows} loading={searching} busy={narrowing} onWindowed={setWindowed}
+      onEnd={hasNextPage && !isFetchingNextPage ? () => void fetchNextPage() : undefined} sort={sort} meaning={meaning} kind={view.kind} selecting={selecting} isSelected={isSelected} lockedRow={picked.lockedRow}
       chip={rowChip} detailKey={detailKey} onOpen={setDetailKey} actions={rowActions} jumpFocus={jumpFocus} landingKey={landing ? focusKey : undefined} focusScrolled={focusScrolled}
       footer={weaker > 0 && !hasNextPage ? <li className="flex min-h-[52px] items-center gap-2 bg-bg-hover px-4 text-[13px] text-muted sm:min-h-11">
         <span>{t('memoryPage.weaker_hidden', { count: fmtNumber(weaker) })}</span>
         <Btn className="ml-auto min-h-11 border-transparent text-accent sm:min-h-8" onClick={() => setWeak(true)}>{t('memoryPage.show_weaker')}</Btn>
       </li> : undefined} />}
     {/* Watched for the next page; it sits under the last row. */}
-    {hasNextPage && !searching && <div ref={end} aria-hidden="true" className="h-px" />}
+    {hasNextPage && !searching && !windowed && <div ref={end} aria-hidden="true" className="h-px" />}
     {isFetchingNextPage && <LoadingRows count={2} />}
     {!searching && !records.error && total > PAGE_SIZE && <p className="text-[12px] tabular-nums text-muted">{t('memoryEditing.page_range', { from: fmtNumber(1), to: fmtNumber(rows.length), total: fmtNumber(total) })}</p>}
   </div>
@@ -424,13 +428,17 @@ function LoadingRows({ count }: { count: number }) {
  * mid-drag never holds a frame; rows that did not change keep their place and
  * skip rendering (RecordRow is memoized).
  */
-function RecordList({ rows, loading, busy, footer, sort, meaning, kind, selecting, isSelected, lockedRow, chip, detailKey, onOpen, actions, jumpFocus, landingKey, focusScrolled }: {
+function RecordList({ rows, loading, busy, footer, onEnd, onWindowed, sort, meaning, kind, selecting, isSelected, lockedRow, chip, detailKey, onOpen, actions, jumpFocus, landingKey, focusScrolled }: {
   rows: MemoryRecord[]
   /** A new list is on its way and the rows shown belong to another one. */
   loading: boolean
   /** The rows shown are the same list before a narrower answer lands. */
   busy: boolean
   footer?: ReactNode
+  /** The end of the rows came near the view: load the next page (windowed list only). */
+  onEnd?: () => void
+  /** Tells the page whether the rows are windowed, so it watches its own end only when they are not. */
+  onWindowed?: (windowed: boolean) => void
   sort: MemoryRecordSort; meaning: boolean; kind: KindTab; selecting: boolean
   isSelected: (row: MemoryRecord) => boolean; lockedRow: (row: MemoryRecord) => boolean
   chip?: ChipFilter; detailKey: string | null; onOpen: (key: string) => void
@@ -459,6 +467,7 @@ function RecordList({ rows, loading, busy, footer, sort, meaning, kind, selectin
   const [scroller, setScroller] = useState<HTMLElement | null>(null)
   useLayoutEffect(() => { setScroller(scrollParent(hostRef.current)) }, [])
   const windowed = !!scroller
+  useLayoutEffect(() => { onWindowed?.(windowed) }, [onWindowed, windowed])
   const building = !windowed && build.count < build.rows.length
   const nextBatch = useFrameBudget()
   useEffect(() => {
@@ -514,7 +523,7 @@ function RecordList({ rows, loading, busy, footer, sort, meaning, kind, selectin
     {loading ? <LoadingRows count={3} />
       : !items.length ? null
       : scroller ? <Virtuoso<ListItem, ListContext> ref={virtuoso} customScrollParent={scroller} data={items} context={{ listProps }}
-          increaseViewportBy={VIEWPORT_MARGIN} components={VIRTUAL_COMPONENTS}
+          increaseViewportBy={VIEWPORT_MARGIN} components={VIRTUAL_COMPONENTS} endReached={onEnd}
           computeItemKey={(_index, item) => typeof item === 'string' ? item : recordIdentity(item)}
           itemContent={(_index, item) => renderItem(item)} />
       : <ul {...listProps}>{items.map(item => renderItem(item))}</ul>}

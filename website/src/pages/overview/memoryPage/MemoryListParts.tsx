@@ -230,7 +230,7 @@ export const FilterPanel = memo(function FilterPanel({ view, facets, decay, trai
   useLayoutEffect(() => { toggleRef.current = onToggle })
   const [handlers] = useState(() => new Map<string, () => void>())
   const handler = useCallback((group: MemoryRecordFacetGroup, value: string) => {
-    const key = `${group}\u0000${value}`
+    const key = JSON.stringify([group, value])
     let toggle = handlers.get(key)
     if (!toggle) { toggle = () => toggleRef.current(group, value); handlers.set(key, toggle) }
     return toggle
