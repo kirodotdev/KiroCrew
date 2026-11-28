@@ -501,8 +501,8 @@ describe('useMeetingTranscription — server frames', () => {
     expect(h.hook.result.current.connecting).toBe(false)
     // No second, generic error for the server's own close.
     expect(h.errors()).toEqual(['stt_max_duration_exceeded'])
-
-    await startCapture(h)
+    await act(async () => { void h.hook.result.current.start() })
+    await flush(readyFirst ? 1 : h.mod.REOPEN_BACKOFF_BASE_MS + 1)
     expect(sockets).toHaveLength(2)
   })
 

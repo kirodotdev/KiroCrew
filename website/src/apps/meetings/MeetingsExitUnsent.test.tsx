@@ -258,3 +258,17 @@ describe('MeetingView exits with unsent text', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 })
+
+describe('MeetingView transcription notice', () => {
+  it.each([
+    ['stt_no_wheel_for_platform', true],
+    ['stt_codex_login_required', true],
+    ['stt_model_missing', true],
+    ['stt_session_failed', false],
+  ])('offers Voice settings for %s: %s', (code, offered) => {
+    mount({ transcriptionErrorCode: code, transcriptionErrorMessage: 'Transcription is unavailable.' })
+
+    const link = screen.queryByRole('button', { name: M.session.openVoiceSettings })
+    expect(link !== null).toBe(offered)
+  })
+})

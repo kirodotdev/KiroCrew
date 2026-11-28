@@ -947,7 +947,30 @@ The shared STT settings choose among `local` (resident whisper.cpp, the default)
 `apple` (on-device SpeechAnalyzer on supported macOS), and `transcribe` (paid AWS
 Transcribe with recorded operator consent). `/api/ws/stt` requires both
 `stt.enabled` and `stt.streaming`; a selected provider that is unavailable returns
-a coded WS error that the hook surfaces as a toast. The default local path needs
+a coded WS error that the hook surfaces, inline while the meeting is active and as
+a toast otherwise. A code no retry can fix (`TERMINAL_ERROR_CODES` in
+`hooks/useMeetingTranscription.ts`: streaming off, consent or AWS access refused,
+the local recogniser missing or unable to run on this host, Apple Speech this
+macOS cannot run, a Codex adapter that is missing, signed out or unable to run on this host, a refused
+vocabulary or an old SDK) halts the hook until a pause or end. Any other failure
+of the live socket before `ready` (the model still downloading, a model load that
+timed out or is still running, Codex voice unavailable, a session that did not
+start, a socket that did not open) makes the next attempt wait `reopenDelayMs`:
+1 s, doubling per consecutive failure, capped at 5 s after `stt_model_missing` or
+`stt_import_failed` and at 30 s otherwise, so a repeating refusal neither
+reconnects nor reaches the user about once a second. The session effect makes
+that attempt after an error frame or a close; a socket that did not open, or a
+worklet that did not load, is reopened only by the next `start()`. A failure is
+reported once while it repeats: a lease whose first code matches the last failed
+lease's is not reported, a different code is, and a socket reaching `ready`, a
+pause or an end starts over. A failure on a lease the user is pausing or ending
+is reported and not counted, so the resume opens at once and reports again. A
+socket that was already live and then dropped reopens at once, and so does the
+stall watchdog's reconnect, which resets the wait. The notice names the reason
+when the shared speech-to-text sentence for the code reads true in a meeting
+(`STT_REASON_CODES` in `hooks/useMeetingSession.ts`), and otherwise says
+transcription is unavailable; a halting code or a missing model also links to
+Settings → Voice. The default local path needs
 neither an AWS account nor the optional `voice-aws` dependencies, and the typed
 broadcast bar remains available when speech input is unavailable.
 

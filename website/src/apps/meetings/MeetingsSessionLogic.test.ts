@@ -759,9 +759,9 @@ describe('the microphone waits for transcript ingress, not just for `active`', (
     expect(binding, 'status binding no longer gates on canOpenTranscription').not.toBeNull()
     // open branch: only start when not active, connecting or halted
     expect(binding![0]).toContain('if (mayOpen && !t.active && !t.connecting && !t.halted)')
-    // close branch: stop when not mayOpen and active, connecting, halted, or a
-    // start still waiting on the permission prompt
-    expect(binding![0]).toContain('if (!mayOpen && (t.active || t.connecting || t.halted || t.isStarting()))')
+    // close branch: stop when not mayOpen and active, connecting, halted, a
+    // start still waiting on the permission prompt, or an open failure run
+    expect(binding![0]).toContain('if (!mayOpen && (t.active || t.connecting || t.halted || t.isStarting() || t.isFailing()))')
   })
 
   it('readiness comes from the POLLED server flag, and unknown reads as not-ready', () => {
@@ -822,7 +822,7 @@ describe('STT error frame is terminal — no reconnect loop', () => {
     // the stop() branch never fires, and buffered PCM is flushed into the notes.
 
     // Hook must export connecting
-    expect(TranscriptionSource).toContain('connecting, halted, isStarting, start, stop, flush, supported: transcriptionSupported')
+    expect(TranscriptionSource).toContain('connecting, halted, isStarting, isFailing, start, stop, flush, supported: transcriptionSupported')
     // connecting is set to true just before the lease's ready gate is awaited
     expect(TranscriptionSource).toContain('setConnecting(true)')
     // connecting is cleared once the stream is live, after the ready gate
