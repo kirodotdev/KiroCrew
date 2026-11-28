@@ -143,6 +143,11 @@ SHARED_DATABASE_OPENERS = (
     "kiro_prerequisite_identity_store.py",
     "apps/builtins/aws_control/backend/backup_parts/conversations.py",
     "dashboard/handlers/kiro_usage_api.py",
+    # The memory graph reads a member's memory.db in the gateway while the store is open.
+    "memory_graph_layout.py",
+    "memory_graph_service.py",
+    "memory_graph_sidecar.py",
+    "dashboard/handlers/memory_graph_layout_api.py",
 )
 
 

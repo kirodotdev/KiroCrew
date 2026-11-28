@@ -76,6 +76,7 @@ export const saveView = (store: string, view: ListView) => safeSetSessionItem(VI
 export function filtersForKind(filters: MemoryRecordFilters, kind: KindTab): MemoryRecordFilters {
   if (kind === 'all') return filters
   const out: MemoryRecordFilters = filters.ref?.length ? { ref: filters.ref } : {}
+  if (filters.box) Object.assign(out, { box: filters.box, box_layout: filters.box_layout, box_kinds: filters.box_kinds, box_count: filters.box_count })
   for (const group of FACET_GROUPS) if (filters[group]?.length && GROUP_KINDS[group].includes(kind)) out[group] = filters[group]
   if (kind !== 'episode') { out.conf_min = filters.conf_min; out.conf_max = filters.conf_max }
   if (out.conf_min === undefined) delete out.conf_min
@@ -83,7 +84,7 @@ export function filtersForKind(filters: MemoryRecordFilters, kind: KindTab): Mem
   return out
 }
 export const activeFilterCount = (filters: MemoryRecordFilters) =>
-  FACET_GROUPS.reduce((count, group) => count + (filters[group]?.length || 0), 0) + (filters.conf_min !== undefined || filters.conf_max !== undefined ? 1 : 0) + (filters.ref?.length ? 1 : 0)
+  FACET_GROUPS.reduce((count, group) => count + (filters[group]?.length || 0), 0) + (filters.conf_min !== undefined || filters.conf_max !== undefined ? 1 : 0) + (filters.ref?.length || filters.box ? 1 : 0)
 
 export function toggleFilter(filters: MemoryRecordFilters, group: MemoryRecordFacetGroup, value: string): MemoryRecordFilters {
   const current = filters[group] || []

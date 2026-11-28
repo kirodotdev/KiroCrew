@@ -13,14 +13,15 @@ import type { MemoryRecord, MemoryRecordFacetGroup, MemoryRecordFacets, MemoryRe
 import { MEMORY_RECORD_ICONS, MEMORY_RECORD_LABELS, memoryRecordBody } from '../memoryRecordParts'
 import { rangeLabel } from './MemoryDateRange'
 import { useIsMobile } from '../../../hooks/useIsMobile'
-import { useScrollEdges } from '../../../hooks/useScrollEdges'
-import { kindTip, sourceTip } from './memoryTypeTips'
+import { sourceTip } from './memoryTypeTips'
 import type { DateRange } from './memoryDateRanges'
-import { FACET_GROUPS, GROUP_KINDS, SCOPE_UNUSABLE, STRENGTH_STATES, effectiveSort, facetLabel, fmtScore, sourceGroup, lessonFacts, recordTags, recordTitle, type KindTab, type ListView, type SearchMode } from './memoryListView'
+import { FACET_GROUPS, GROUP_KINDS, SCOPE_UNUSABLE, STRENGTH_STATES, effectiveSort, facetLabel, fmtScore, sourceGroup, lessonFacts, recordTags, recordTitle, type ListView, type SearchMode } from './memoryListView'
 import type { MemoryStoreDecay } from '../../../types/memoryEditing'
 import { StoreFadeChart, StrengthChip } from './MemoryStrength'
+import { KindPills, PILL_ON } from './KindPills'
 
-const KINDS: [KindTab, string][] = [['all', 'memoryV2.filter_all'], ['fact', 'memoryV2.facts_label'], ['directive', 'memoryV2.rules_label'], ['episode', 'memoryV2.experiences_label']]
+export { KindPills, PILL_ON }
+
 const SORT_KEYS: Record<MemoryRecordSort, string> = { updated: 'memoryPage.field_updated', created: 'memoryPage.field_created', confidence: 'memoryPage.facet_confidence', importance: 'memoryPage.facet_importance', strength: 'memoryPage.strength', key: 'memoryPage.sort_key', match: 'memoryPage.sort_match' }
 // The sort button's label: one sentence per field, so the field and its direction translate together.
 const SORT_LABEL_KEYS: Record<Exclude<MemoryRecordSort, 'match'>, string> = { updated: 'memoryPage.sort_by_updated', created: 'memoryPage.sort_by_created', confidence: 'memoryPage.sort_by_confidence', importance: 'memoryPage.sort_by_importance', strength: 'memoryPage.sort_by_strength', key: 'memoryPage.sort_by_key' }
@@ -38,8 +39,6 @@ const GROUP_KEYS: Record<MemoryRecordFacetGroup, string> = {
 const GROUP_KIND_KEYS: Partial<Record<MemoryRecordFacetGroup, string>> = { category: 'memoryPage.for_lessons', applies: 'memoryPage.for_lessons', scope: 'memoryPage.for_lessons', tag: 'memoryPage.for_experiences', strength: 'memoryPage.for_experiences' }
 // What a strength band means; Strong needs no tip.
 const STRENGTH_TIPS: Record<string, string> = { fading: 'memoryPage.strength_tip_fading', faded: 'memoryPage.strength_tip_faded' }
-// The picked kind pill: filled with the text colour on both themes (mock S2).
-export const PILL_ON = 'border-text bg-text font-medium text-bg'
 // Each kind's icon colour, so facts, lessons and experiences read apart at a glance.
 const KIND_TONE: Record<MemoryRecord['kind'], string> = { fact: 'text-info-text', directive: 'text-accent', episode: 'text-ok-text' }
 // An open or picked row: an 8% accent tint (mock S2).
@@ -51,31 +50,6 @@ const CHIP = 'inline-flex h-[22px] max-w-full items-center gap-1 whitespace-nowr
 const REVIEW_LINE = 0.5
 export { fmtScore }
 const SCORE_KEYS = { confidence: 'memoryPage.confidence_value', importance: 'memoryPage.importance_value', match: 'memoryPage.match_value' } as const
-
-/** The kind pills, one row with live counts; a phone scrolls the row sideways. */
-export function KindPills({ kind, counts, onChange, disabled, wrap = false, bot }: { kind: KindTab; counts?: Record<string, number>; onChange: (kind: KindTab) => void; disabled?: boolean; wrap?: boolean; bot?: string }) {
-  const { t } = useTranslation()
-  const total = counts ? (counts.fact || 0) + (counts.directive || 0) + (counts.episode || 0) : undefined
-  // A sideways row fades at each cut edge, so a pill past the edge still shows.
-  const [attachRow, edges] = useScrollEdges<HTMLDivElement>()
-  return <div className="relative min-w-0"><div ref={wrap ? undefined : attachRow} role="radiogroup" aria-label={t('memoryV2.group_kind')} title={t('memoryV2.memory_kinds_explanation')} className={`-mx-1 flex min-w-0 gap-2 px-1 ${wrap ? 'flex-wrap' : 'overflow-x-auto scrollbar-none'}`}>
-    {KINDS.map(([key, label]) => {
-      const on = key === kind
-      const count = key === 'all' ? total : counts ? counts[key] || 0 : undefined
-      const hint = key === 'all' ? undefined : kindTip(key, bot)
-      // The (?) sits beside the pill, not in it, so opening the tip never picks the kind.
-      return <div key={key} className="flex shrink-0 items-center gap-0.5">
-        <button type="button" role="radio" aria-checked={on} disabled={disabled} onClick={() => onChange(key)} className="flex min-h-11 shrink-0 items-center disabled:opacity-40 sm:min-h-8">
-          <span className={`flex h-8 items-center gap-1.5 rounded-full border px-3 text-[13px] ${on ? PILL_ON : 'border-border text-text'}`}>{t(label)}{count !== undefined && <span className={`tabular-nums ${on ? 'opacity-70' : 'text-muted'}`}>{fmtNumber(count)}</span>}</span>
-        </button>
-        {hint && <InfoTip text={hint} />}
-      </div>
-    })}
-  </div>
-    {!wrap && edges.left && <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 -left-1 w-8 bg-gradient-to-r from-bg to-transparent" />}
-    {!wrap && edges.right && <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 -right-1 w-8 bg-gradient-to-l from-bg to-transparent" />}
-  </div>
-}
 
 /** The sort menu with its direction, and a one-press Reverse beside it. */
 export function SortControl({ view, onChange, decays = false }: { view: ListView; onChange: (sort: MemoryRecordSort, order: 'asc' | 'desc') => void
@@ -239,7 +213,8 @@ export function ActiveFilters({ filters, range, rangeField, onClearRange, onTogg
   const { t } = useTranslation()
   const chips = FACET_GROUPS.flatMap(group => (filters[group] || []).map(value => ({ key: `${group}:${value}`, label: facetLabel(group, value), remove: () => onToggle(group, value) })))
   // A graph selection is one chip: removing it brings the whole list back.
-  if (filters.ref?.length && onClearRefs) chips.unshift({ key: 'ref', label: t('memoryPage.graph_selected', { count: filters.ref.length, formatted: fmtNumber(filters.ref.length) }), remove: onClearRefs })
+  const picked = filters.box ? filters.box_count ?? 0 : filters.ref?.length ?? 0
+  if ((filters.ref?.length || filters.box) && onClearRefs) chips.unshift({ key: 'ref', label: t('memoryPage.graph_selected', { count: picked, formatted: fmtNumber(picked) }), remove: onClearRefs })
   if (range && onClearRange) chips.unshift({ key: 'range', label: t('memoryPage.range_on_field', { field: t(rangeField === 'created' ? 'memoryPage.field_created' : 'memoryPage.field_updated'), range: rangeLabel(range) }), remove: onClearRange })
   if (filters.conf_min !== undefined || filters.conf_max !== undefined) chips.push({ key: 'conf', label: t('memoryPage.confidence_range', { low: fmtScore(filters.conf_min ?? 0), high: fmtScore(filters.conf_max ?? 1) }), remove: () => { onRange('conf_min', undefined); onRange('conf_max', undefined) } })
   if (!chips.length) return null

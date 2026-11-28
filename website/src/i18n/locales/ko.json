@@ -17647,23 +17647,19 @@
         "tools_count_other": "{{n}}개 도구"
       },
       "memoryGraphTab": {
-        "all_count": "전체 ({{count}})",
-        "gpu_rendered_visualization_of_all_kirocrew_memor": "모든 {{productName}} 메모리를 GPU로 렌더링한 시각화입니다. 노드는 유형별로 색상이 구분됩니다. 확대하면 레이블이 나타나고, 노드를 클릭하면 자세히 살펴볼 수 있으며, 필터로 범위를 좁힐 수 있습니다.",
-        "group_history_count": "기록 ({{count}})",
-        "group_lessons_count": "학습 내용 ({{count}})",
-        "group_preferences_count": "환경설정 ({{count}})",
-        "group_projects_count": "프로젝트 ({{count}})",
-        "group_semantic_count": "의미 기억 ({{count}})",
         "loading_graph_data": "그래프 데이터를 불러오는 중…",
         "memory_graph": "메모리 그래프",
         "no_memory_data_to_visualize_add_preferences_proj": "시각화할 메모리 데이터가 없습니다. 먼저 환경설정, 프로젝트 또는 학습 내용을 추가하세요.",
-        "partial_notice": "여기에는 메모리의 일부만 표시되므로 검색은 이 노드들만 찾습니다.",
         "refresh": "새로 고침",
         "search_memory_nodes": "메모리 노드 검색",
         "search_nodes": "노드 검색…",
         "load_failed": "메모리 그래프를 불러올 수 없습니다",
         "load_failed_unknown": "이유 없이 읽기에 실패했습니다.",
-        "retry": "다시 시도"
+        "retry": "다시 시도",
+        "canvas_unavailable": "이 브라우저에서는 그래프를 그릴 수 없습니다. 검색과 기억 탭은 계속 사용할 수 있습니다.",
+        "fit_view": "전체 보기",
+        "keyboard_hint": "화살표 키로 메모리 사이를 이동하고 Enter 키로 엽니다.",
+        "hold_space_to_pan": "Space 키를 누른 채 이동"
       },
       "memoryTab": {
         "actions": "작업",
@@ -24060,6 +24056,7 @@
     "scope_all_repos": "모든 저장소",
     "search_filters": "필터 검색",
     "scroll_more": "스크롤해서 더 보기",
+    "graph_changed": "이 영역을 그린 후 그래프가 변경되었어요. 영역을 다시 그려 주세요.",
     "graph_selected": "{{formatted}}개 선택됨",
     "show_in_memories": "메모리에서 보기",
     "filters_width": "필터 영역 너비",

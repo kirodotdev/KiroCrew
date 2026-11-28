@@ -23,7 +23,7 @@ const { api } = vi.hoisted(() => ({ api: {
   vectorSemanticWrite: vi.fn(), vectorSemanticDelete: vi.fn(), vectorEpisodicDelete: vi.fn(),
   memoryPreferences: vi.fn(), memoryProjects: vi.fn(), memoryHistory: vi.fn(),
   saveMemoryPreferences: vi.fn(), saveMemoryProjects: vi.fn(),
-  memoryCarve: vi.fn(), memoryGraph: vi.fn(), memoryRetired: vi.fn(), memoryRestoreRetired: vi.fn(), memoryBackups: vi.fn(), memoryBackupNow: vi.fn(), memoryRestoreBackup: vi.fn(), cancelMemberMemoryRestore: vi.fn(), memorySettings: vi.fn(), lessons: vi.fn(),
+  memoryCarve: vi.fn(), memoryGraphOverview: vi.fn(), memoryRetired: vi.fn(), memoryRestoreRetired: vi.fn(), memoryBackups: vi.fn(), memoryBackupNow: vi.fn(), memoryRestoreBackup: vi.fn(), cancelMemberMemoryRestore: vi.fn(), memorySettings: vi.fn(), lessons: vi.fn(),
   themes: vi.fn(), themeDetail: vi.fn(), themeBoot: vi.fn(),
   // The header's embedded-count line: no provider, so it stays hidden.
   vectorEmbeddingStatus: vi.fn(), vectorStats: vi.fn(),
@@ -307,14 +307,16 @@ describe('private member memory lifecycle', () => {
   })
 
   it('puts the graph after Memories and draws the picked bot store', async () => {
-    api.memoryGraph.mockResolvedValue({ nodes: [], edges: [] })
+    api.memoryGraphOverview.mockResolvedValue({ status: 'building' })
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
     const tabs = screen.getAllByRole('tab').map(tab => tab.textContent)
     expect(tabs.slice(0, 2)).toEqual(['Memories', 'Graph'])
-    expect(api.memoryGraph).not.toHaveBeenCalled()
+    expect(api.memoryGraphOverview).not.toHaveBeenCalled()
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Graph' }), { button: 0, ctrlKey: false })
-    await waitFor(() => expect(api.memoryGraph).toHaveBeenCalledWith(MEMBER_STORE))
+    // The Graph tab is a lazy chunk (MemoryGraphPanel -> MemoryGraphTab), loaded on this
+    // first visit before it asks for the overview: past RTL's default second on a loaded worker.
+    await waitFor(() => expect(api.memoryGraphOverview).toHaveBeenCalledWith(MEMBER_STORE), { timeout: 5000 })
   })
 
   it('opens the store picker from anywhere on its pill: the face and the subtitle too', async () => {

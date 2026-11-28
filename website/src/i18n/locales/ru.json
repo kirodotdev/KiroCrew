@@ -19087,23 +19087,19 @@
         "tools_count_other": "{{n}} инструмента"
       },
       "memoryGraphTab": {
-        "all_count": "Все ({{count}})",
-        "gpu_rendered_visualization_of_all_kirocrew_memor": "Визуализация всей памяти {{productName}} на GPU. Узлы раскрашены по типу. Приближай, чтобы увидеть подписи, нажми на узел для просмотра, используй фильтры для фокусировки.",
-        "group_history_count": "История ({{count}})",
-        "group_lessons_count": "Уроки ({{count}})",
-        "group_preferences_count": "Предпочтения ({{count}})",
-        "group_projects_count": "Проекты ({{count}})",
-        "group_semantic_count": "Семантика ({{count}})",
         "loading_graph_data": "Загрузка данных графа…",
         "memory_graph": "Граф памяти",
         "no_memory_data_to_visualize_add_preferences_proj": "Нет данных памяти для визуализации. Сначала добавьте предпочтения, проекты или уроки.",
-        "partial_notice": "Здесь показана только часть твоей памяти, поэтому поиск находит только эти узлы.",
         "refresh": "Обновить",
         "search_memory_nodes": "Поиск узлов памяти",
         "search_nodes": "Поиск узлов…",
         "load_failed": "Не удалось загрузить граф памяти",
         "load_failed_unknown": "Чтение не удалось, причина не указана.",
-        "retry": "Повторить"
+        "retry": "Повторить",
+        "canvas_unavailable": "Этот браузер не может нарисовать граф. Поиск и вкладка «Воспоминания» по-прежнему работают.",
+        "fit_view": "Показать всё",
+        "keyboard_hint": "Стрелки переключают между записями памяти, Enter открывает выбранную.",
+        "hold_space_to_pan": "Удерживай Пробел, чтобы двигать"
       },
       "memoryTab": {
         "actions": "Действия",
@@ -25860,6 +25856,7 @@
     "scope_all_repos": "Все репозитории",
     "search_filters": "Поиск по фильтрам",
     "scroll_more": "Прокрути, чтобы увидеть больше",
+    "graph_changed": "Граф изменился после выделения этой области. Выдели её заново.",
     "graph_selected": "Выбрано: {{formatted}}",
     "show_in_memories": "Показать в памяти",
     "filters_width": "Ширина панели фильтров",
