@@ -119,3 +119,29 @@ def _fresh_backend_tmp_socket_room_warnings(_floor_monkeypatch):
 
     _floor_monkeypatch.setattr(backend_tmp, "_warned_roots", set(), raising=False)
     _floor_monkeypatch.setattr(backend_tmp, "_SUN_PATH_BYTES", sys.maxsize, raising=False)
+
+
+@per_test_guard
+def _reset_mcp_folder_scope_folders():
+    """Start each test with no chat folders recorded by the MCP gateway.
+
+    ``mcp_gateway.folder_scope`` keeps each session's folder from its claim
+    frame. Tests reuse session keys with their own ``tmp_path`` folders, so a
+    folder one test left would scope the next test's calls to the wrong place.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.mcp_gateway.folder_scope")
+        if module is not None:
+            module.forget_session_folders()
+        scope = sys.modules.get("kiro_crew.mcp_gateway.backend_caller_scope")
+        if scope is not None:
+            # The owner's Shared Crew answer is daemon-wide: a test that set it
+            # would otherwise open roots sharing for the next.
+            scope.set_shared_roots(False)
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()

@@ -969,6 +969,181 @@ class TestBackendGoneHandling:
         }
         assert replacement.done(), "the replacement writer task is cancelled on exit"
 
+    async def _run_unsent_call(
+        self,
+        monkeypatch,
+        fresh_side_effect: Any,
+        method: str = "tools/call",
+        held: tuple[dict, ...] = (),
+        last: Any = None,
+    ) -> tuple[Any, Any]:
+        """A request that reaches a dead backend before any byte is written.
+
+        *held* are calls the dead backend kept for this stub (never written).
+        """
+        from kiro_crew.mcp_gateway import backend_caller_scope
+
+        backend = _fake_backend()
+        for frame in held:
+            backend_caller_scope.keep_for_resend(backend, _STUB, frame)
+        backend.forward_from_stub = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[None, backend_caller_scope.gone_before_send("exit rc=-9")]
+        )
+        monkeypatch.setattr(gw, "_acquire_backend", AsyncMock(return_value=(backend, True)))
+        fresh = _fake_backend(pid=5151)
+        fresh.forward_from_stub = AsyncMock(  # type: ignore[method-assign]
+            side_effect=fresh_side_effect
+        )
+        replacement = asyncio.create_task(asyncio.Event().wait(), name="cov-drain")
+
+        async def _respawn(*args: Any, **kwargs: Any):
+            if args[8] is not None:
+                args[8].cancel()
+            return fresh, asyncio.Queue(), replacement
+
+        monkeypatch.setattr(gw, "_respawn_backend_for_stub", _respawn)
+        writer = _FakeWriter()
+        await _handle(
+            _ScriptedReader(
+                _register_frame(),
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                last or {"jsonrpc": "2.0", "id": 2, "method": method},
+            ),
+            writer,
+            _fake_pool(),
+        )
+        return fresh, writer
+
+    @pytest.mark.asyncio
+    async def test_a_call_that_never_reached_the_dead_server_runs_on_the_replacement(
+        self, peer_ok, monkeypatch
+    ):
+        fresh, writer = await self._run_unsent_call(monkeypatch, [None])
+
+        fresh.forward_from_stub.assert_awaited_once()
+        assert fresh.forward_from_stub.await_args.args[1] == {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+        }
+        assert not any(f.get("id") == 2 for f in writer.frames()), "no error is owed"
+
+    @pytest.mark.asyncio
+    async def test_calls_the_dead_backend_held_run_after_it_on_the_replacement(
+        self, peer_ok, monkeypatch
+    ):
+        held = {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "w"}}
+        fresh, writer = await self._run_unsent_call(monkeypatch, [None, None], held=(held,))
+
+        sent = [c.args[1]["id"] for c in fresh.forward_from_stub.await_args_list]
+        assert sent == [2, 7]
+        assert not any("error" in f for f in writer.frames())
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_that_meets_the_dead_backend_drops_the_call_it_names(
+        self, peer_ok, monkeypatch
+    ):
+        held = (
+            {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "w"}},
+            {"jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": {"name": "w"}},
+        )
+        cancel = {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 7}}
+        fresh, writer = await self._run_unsent_call(monkeypatch, [None], held=held, last=cancel)
+
+        sent = [c.args[1].get("id") for c in fresh.forward_from_stub.await_args_list]
+        assert sent == [8], "the cancelled call never runs; the other one does"
+        assert not any("error" in f for f in writer.frames())
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_read_during_the_respawn_drops_the_unsent_calls_it_names(
+        self, peer_ok, monkeypatch
+    ):
+        from kiro_crew.mcp_gateway import backend_caller_scope
+
+        class _HoldingReader(_ScriptedReader):
+            """Blocks once its frames are read, until released, then EOFs."""
+
+            def __init__(self, *items: Any) -> None:
+                super().__init__(*items)
+                self.release = asyncio.Event()
+
+            async def readuntil(self, sep: bytes = b"\n") -> bytes:
+                if not self.remaining:
+                    await self.release.wait()
+                return await super().readuntil(sep)
+
+        backend = _fake_backend()
+        backend.forward_from_stub = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[None, backend_caller_scope.gone_before_send("exit rc=-9")]
+        )
+        held = {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "w"}}
+        backend_caller_scope.keep_for_resend(backend, _STUB, held)
+        monkeypatch.setattr(gw, "_acquire_backend", AsyncMock(return_value=(backend, True)))
+        fresh = _fake_backend(pid=5151)
+        fresh.forward_from_stub = AsyncMock()  # type: ignore[method-assign]
+        replacement = asyncio.create_task(asyncio.Event().wait(), name="cov-drain")
+        reader = _HoldingReader(
+            _register_frame(),
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call"},
+            {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 2}},
+            {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 7}},
+        )
+
+        async def _respawn(*args: Any, **kwargs: Any):
+            # The replacement takes a while: the stub's cancels are read meanwhile.
+            await async_wait_until(lambda: reader.remaining == 0)
+            if args[8] is not None:
+                args[8].cancel()
+            reader.release.set()
+            return fresh, asyncio.Queue(), replacement
+
+        monkeypatch.setattr(gw, "_respawn_backend_for_stub", _respawn)
+        writer = _FakeWriter()
+        await _handle(reader, writer, _fake_pool())
+
+        sent = [c.args[1].get("method") for c in fresh.forward_from_stub.await_args_list]
+        assert "tools/call" not in sent, "neither cancelled call reaches the replacement"
+        assert not any("error" in f for f in writer.frames()), "a cancelled call is owed nothing"
+
+    @pytest.mark.asyncio
+    async def test_the_unsent_call_is_retried_once_and_then_fails_as_before(
+        self, peer_ok, monkeypatch
+    ):
+        fresh, writer = await self._run_unsent_call(monkeypatch, [BackendGone("died again")])
+
+        fresh.forward_from_stub.assert_awaited_once()
+        assert writer.frames()[-1]["error"]["message"] == (
+            "backend restarted mid-call, retry: died again"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unsent_ping_still_fails_so_a_holder_sees_the_gap(self, peer_ok, monkeypatch):
+        fresh, writer = await self._run_unsent_call(monkeypatch, [None], method="ping")
+
+        fresh.forward_from_stub.assert_not_awaited()
+        assert writer.frames()[-1]["error"]["message"] == (
+            "backend restarted mid-call, retry: exit rc=-9"
+        )
+
+    @pytest.mark.asyncio
+    async def test_only_a_frame_refused_before_any_write_counts_as_never_sent(self):
+        from kiro_crew.mcp_gateway import backend_caller_scope
+
+        dead = _fake_backend()
+        dead._dead_reason = "exit rc=-9"
+        dead.process.returncode = -9
+        frame = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "t"}}
+        with pytest.raises(BackendGone) as refused:
+            await dead.forward_from_stub(_STUB, frame)
+        assert backend_caller_scope.never_sent(refused.value)
+
+        broken = _fake_backend()
+        broken.stdin.drain = AsyncMock(side_effect=BrokenPipeError("closed"))
+        with pytest.raises(BackendGone) as written:
+            await broken.forward_from_stub(_STUB, frame)
+        assert not backend_caller_scope.never_sent(written.value)
+
 
 # --- disconnect-time cancel / recycle ---------------------------------------
 

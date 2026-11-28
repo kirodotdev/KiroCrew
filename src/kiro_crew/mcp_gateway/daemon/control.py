@@ -18,7 +18,8 @@ from typing import TYPE_CHECKING, Any, Optional
 from kiro_crew import platform_compat
 from kiro_crew.code_fingerprint import code_fingerprint
 from kiro_crew.env import pinned_gateway_spec_path
-from kiro_crew.mcp_gateway import socketsec
+from kiro_crew.mcp_gateway import backend_caller_scope as _scope_hooks
+from kiro_crew.mcp_gateway import folder_scope, socketsec
 from kiro_crew.mcp_gateway.admission import Admission
 from kiro_crew.mcp_gateway.daemon import identity as _identity
 from kiro_crew.mcp_gateway.daemon import logger
@@ -81,6 +82,9 @@ def _pong_payload() -> dict[str, Any]:
         # tell a daemon that needs the announce again from one that has it.
         "owner_port": facade._OWNER_PORT,
         "owner_port_unverifiable": facade._OWNER_PORT_UNVERIFIABLE,
+        # Whether the owner's last verified announce said Shared Crew is off,
+        # so the owner re-sends it to a daemon that lost it (a respawn).
+        "shared_roots": _scope_hooks.shared_roots(),
         "pid": os.getpid(),
         # The daemon's own start-time identity, so a caller that decides to
         # signal this pid pins the signal on the process that ANSWERED, not on
@@ -221,7 +225,7 @@ def _apply_stand_down(frame: dict[str, Any], stop_event: Optional[asyncio.Event]
 
 
 async def _apply_claim(
-    frame: dict[str, Any], pool: Optional["BackendPool"] = None
+    frame: dict[str, Any], pool: Optional["BackendPool"] = None, *, folder_trusted: bool = False
 ) -> dict[str, Any]:
     """Apply a ``claim`` frame to every indexed connection of the target PID.
 
@@ -260,6 +264,13 @@ async def _apply_claim(
     raw_token = frame.get("pid_start_id")
     claim_token = raw_token if isinstance(raw_token, str) else None
     _bind_token(session_token, updated_caller, pid, claim_token)
+    # The session's own folder, Crew-authored on the claim (never the register
+    # frame). A shared backend scopes this caller's relative paths to it and
+    # may serve it as a root, so it is taken only from this daemon's owner
+    # (*folder_trusted*, ``_owner_sender_refusal``): any process at this uid
+    # can send a claim.
+    if folder_trusted:
+        folder_scope.record_session_folder(updated_caller.session_key, frame.get("work_dir"))
     # Does this runtime host more than one ACP session RIGHT NOW? The claiming
     # session is unioned in because its own stubs may not have registered yet --
     # a claim is pushed before they launch -- so the live index alone would miss
@@ -670,6 +681,18 @@ async def _apply_owner_port(
                 peer_pid,
                 retired,
             )
+    # The owner's Shared Crew state, taken only from this verified announce. With
+    # Shared Crew on, sessions may belong to different people, so a backend
+    # whose roots already carry several chats' folders is retired: its next
+    # acquisitions keep one copy per chat (``backend_caller_scope``).
+    was_shared = _scope_hooks.set_shared_roots(frame.get("shared_crew_off") is True)
+    if was_shared and not _scope_hooks.shared_roots():
+        retired = await pool.drain_matching_to_bluegreen(_scope_hooks.serves_shared_roots)
+        logger.info(
+            "gatewayd: Shared Crew is on for the owner; %d backend(s) serving chat-folder "
+            "roots moved to draining",
+            retired,
+        )
     _audit_owner_port(peer_pid, port, "allowed", "")
     return {"type": "owner-port-set", "port": port}
 
@@ -810,7 +833,15 @@ async def _serve_control_frame(
     # (fixes warm-pool re-claim staleness). Validation + auditing live in
     # ``_apply_claim``.
     if register.get("type") == "claim":
-        await _write_json_line(writer, await _apply_claim(register, pool))
+        folder_trusted = False
+        if register.get("work_dir"):
+            _peer, refusal = await _owner_sender_refusal(writer)
+            folder_trusted = not refusal
+            if refusal:
+                logger.warning("claim folder ignored: %s", refusal)
+        await _write_json_line(
+            writer, await _apply_claim(register, pool, folder_trusted=folder_trusted)
+        )
         return True
 
     # Agent-binding short-circuit (one-shot control connection from the owning

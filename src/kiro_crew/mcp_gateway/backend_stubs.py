@@ -15,8 +15,8 @@ Instance fields written: ``_dead_reason``, ``_forward_id_seq``, ``_grant_callers
 ``_rekey_generation``, ``_resource_subscriptions``, ``_served_tool_surfaces``,
 ``_stub_agents``, ``_stub_inboxes``, ``refcount``.
 
-Instance fields read: ``_inbox_lock``, ``_lease_awaiting_release``, ``pool_key``,
-``stdin``, ``supports_caller_identity``.
+Instance fields read: ``_gone_broadcast``, ``_inbox_lock``, ``_lease_awaiting_release``,
+``pool_key``, ``stdin``, ``supports_caller_identity``.
 """
 
 from __future__ import annotations
@@ -121,6 +121,10 @@ async def detach_stub(self: Backend, stub_uuid: str) -> int:
     owned by it. Returns the remaining refcount so the caller can
     decide whether to trigger a drain.
     """
+    from kiro_crew.mcp_gateway import (
+        backend_caller_scope as _scope_hooks,  # lazy: the facade binds no new name
+    )
+
     async with self._inbox_lock:
         self._stub_inboxes.pop(stub_uuid, None)
         # Under the same lock as the inbox it shadows, so a render spooled
@@ -174,6 +178,9 @@ async def detach_stub(self: Backend, stub_uuid: str) -> int:
         p = self._pending_requests.get(fid)
         if p is None:
             continue
+        # A gated call of a departed stub that is not written yet is never
+        # sent; one already running frees the slot on its reply or the grace.
+        _scope_hooks.cancel_gated(self, fid)
         if p.resource_uri and p.method == _RESOURCES_SUBSCRIBE_METHOD:
             # BOTH regimes: dropping the pending would drop the server's
             # verdict — a late identity grant would strand the upstream
@@ -262,6 +269,7 @@ async def detach_stub(self: Backend, stub_uuid: str) -> int:
     # Initialize-cache cleanup: if the departing stub was mid-wait for
     # a cached initialize reply, drop it from the pending list.
     self._init_pending = [entry for entry in self._init_pending if entry[0] != stub_uuid]
+    await _scope_hooks.forget_stub(self, stub_uuid)
     if self.refcount == 0:
         self.touch()  # start the idle clock fresh
     logger.debug(
@@ -310,10 +318,32 @@ async def forward_from_stub(
     state. Empty means "no separator available" and leaves the
     backend on its own per-process fallback.
     """
-    if not self.is_alive:
-        raise BackendGone(self._dead_reason or "backend is not alive")
+    from kiro_crew.mcp_gateway import (
+        backend_caller_scope as _scope_hooks,  # lazy: the facade binds no new name
+    )
 
+    if not self.is_alive or self._gone_broadcast:
+        # Nothing of this frame was written: the connection may resend it. A
+        # backend that told its stubs it is gone is terminal even while its
+        # process is still being shut down. The broadcast (idempotent) runs
+        # first, while every stub is still attached: it fails the calls the
+        # server had and holds the unsent ones before the respawn detaches.
+        reason = self._dead_reason or "backend is not alive"
+        await self._broadcast_backend_gone(reason)
+        raise _scope_hooks.gone_before_send(reason)
+
+    stub_frame = msg
     method = msg.get("method") if isinstance(msg, dict) else None
+    if isinstance(msg, dict):
+        # The single per-caller hook (``backend_caller_scope``): which session
+        # this stub speaks for, then the caller's own adjustments to the frame.
+        await _scope_hooks.note_caller(self, stub_uuid, caller)
+        if self._gone_broadcast:
+            # The caller's arrival retired this backend; nothing was written.
+            raise _scope_hooks.gone_before_send(self._dead_reason or "backend is not alive")
+        msg = _scope_hooks.scope_forward(self, stub_uuid, msg, caller)
+        if await _scope_hooks.answer_discover(self, stub_uuid, msg):
+            return
 
     if method == "initialize":
         await self._handle_initialize(stub_uuid, msg)
@@ -348,6 +378,7 @@ async def forward_from_stub(
     # answering a server-to-client request — the backend owns that id
     # table, not us.
     retry_fid: Optional[str] = None
+    gated_fid: Optional[str] = None
     if isinstance(msg, dict):
         orig_id = msg.get("id")
         has_method = "method" in msg
@@ -406,6 +437,8 @@ async def forward_from_stub(
                 list_paginated=list_paginated,
                 caller=(caller if resource_uri else None),
             )
+            if method == "tools/call" and _scope_hooks.gates_call(self, tool_name):
+                gated_fid = fid
         elif method == "notifications/cancelled":
             # A cancellation is a notification (method, no top-level id);
             # its target lives in params.requestId and still holds the
@@ -440,6 +473,10 @@ async def forward_from_stub(
                         # under this stub, exactly as when a server answers
                         # a request it was asked to cancel.
                         return
+                    if _scope_hooks.cancel_gated(self, cancel_fid):
+                        # Not written yet: it never reaches the server, so the
+                        # cancel goes nowhere and no reply is owed.
+                        return
                     msg = dict(msg)
                     new_params = dict(_cparams)
                     new_params["requestId"] = cancel_fid
@@ -471,6 +508,12 @@ async def forward_from_stub(
                 retry_pending.retry_frame = msg
 
     self.touch()
+    gate = _scope_hooks.state(self).call_gate
+    if gated_fid is not None and gate is not None:
+        # One call in flight at a time (``call_gate``); queued, never awaited
+        # here, so this stub's next frame (a cancel) is read at once.
+        gate.submit(gated_fid, msg, origin=stub_frame)
+        return
     try:
         await _write_json_line(self.stdin, msg)
     except (BrokenPipeError, ConnectionResetError) as exc:
@@ -686,12 +729,18 @@ async def cancel_in_flight_for_stub(self: Backend, stub_uuid: str) -> list[str]:
     the backend receives explicit cancellation so it can abort long-running
     tool work instead of running to completion with no consumer.
     """
+    from kiro_crew.mcp_gateway import (
+        backend_caller_scope as _scope_hooks,  # lazy: the facade binds no new name
+    )
+
     # Collect in-flight requests for this stub (before detach clears them)
     in_flight = [(fid, p) for fid, p in self._pending_requests.items() if p.stub_uuid == stub_uuid]
     cancelled_ids: list[str] = []
     for fid, pending in in_flight:
         if not self.is_alive:
             break
+        if _scope_hooks.cancel_gated(self, fid):
+            continue  # not written yet: the server never saw it
         cancel_notification = {
             "jsonrpc": "2.0",
             "method": "notifications/cancelled",

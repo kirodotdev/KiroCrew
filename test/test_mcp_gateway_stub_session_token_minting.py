@@ -365,7 +365,7 @@ async def test_the_runtime_names_the_session_before_its_stubs_can_register(
 
     sent: list[tuple[Any, ...]] = []
 
-    async def _record(socket_path, pid, session_key, channel_id, token):
+    async def _record(socket_path, pid, session_key, channel_id, token, work_dir=""):
         sent.append((socket_path, pid, session_key, token))
         return True
 
@@ -458,7 +458,7 @@ def test_the_shared_runtime_rekey_claims_its_own_session_not_the_runtime(
     monkeypatch.setattr(
         sp_mod,
         "schedule_claim",
-        lambda socket_path, pid, key, channel, token: pushed.append((pid, key, token)),
+        lambda socket_path, pid, key, channel, token, work_dir="": pushed.append((pid, key, token)),
     )
 
     class _Handle:
@@ -480,6 +480,7 @@ def test_the_shared_runtime_rekey_claims_its_own_session_not_the_runtime(
 
     class _Runtime:
         _mcp_gateway_socket = "/tmp/kirocrew-gw.sock"
+        _work_dir = "/tmp/ws"
         pid = 4242
         _crew_agent = ""
         _last_activity = 0.0
@@ -611,7 +612,7 @@ async def test_warm_reuse_claims_the_fresh_sessions_stubs(
     monkeypatch.setattr(
         sp_mod,
         "schedule_claim",
-        lambda socket_path, pid, key, channel, token: pushed.append((key, token)),
+        lambda socket_path, pid, key, channel, token, work_dir="": pushed.append((key, token)),
     )
     provider = sp_mod.AcpSessionProvider.__new__(sp_mod.AcpSessionProvider)
     provider._handle = _Handle(TOKEN_A)
@@ -646,13 +647,14 @@ async def test_a_cold_started_session_can_re_bind_after_a_respawn(
 
     class _Runtime:
         _mcp_gateway_socket = "/tmp/kirocrew-gw.sock"
+        _work_dir = "/tmp/ws"
         pid = _PID
 
     pushed: list[tuple[Any, ...]] = []
     monkeypatch.setattr(
         sp_mod,
         "schedule_claim",
-        lambda socket_path, pid, key, channel, token: pushed.append((pid, key, token)),
+        lambda socket_path, pid, key, channel, token, work_dir="": pushed.append((pid, key, token)),
     )
 
     # What a provider that never learned its key would have pushed — and what
@@ -723,6 +725,7 @@ async def test_a_subagents_own_turn_re_establishes_its_claim(
 
     class _Runtime:
         _mcp_gateway_socket = "/tmp/kirocrew-gw.sock"
+        _work_dir = "/tmp/ws"
         pid = _PID
         process_instance = "runtime-test-instance"
 
@@ -733,7 +736,7 @@ async def test_a_subagents_own_turn_re_establishes_its_claim(
     monkeypatch.setattr(
         sp_mod,
         "schedule_claim",
-        lambda socket_path, pid, key, channel, token: pushed.append((pid, key, token)),
+        lambda socket_path, pid, key, channel, token, work_dir="": pushed.append((pid, key, token)),
     )
     provider = sp_mod.AcpSessionProvider(_Handle(), _Runtime(), session_key=SUB_KEY)
     async for _event in provider.stream("go"):
@@ -748,7 +751,7 @@ def test_the_client_reclaim_names_its_own_token(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(
         client_mod,
         "schedule_claim",
-        lambda socket_path, pid, key, channel, token: pushed.append((key, token)),
+        lambda socket_path, pid, key, channel, token, work_dir="": pushed.append((key, token)),
     )
     client = client_mod.AcpClient.__new__(client_mod.AcpClient)
     client._stub_session_token = TOKEN_A
@@ -756,6 +759,7 @@ def test_the_client_reclaim_names_its_own_token(monkeypatch: pytest.MonkeyPatch)
     client._session_key = PARENT_KEY
     client._channel_id = None
     client._process = None
+    client._spawn_work_dir = "/tmp/ws"
     client.reclaim()
     assert pushed == [(PARENT_KEY, TOKEN_A)]
     # A client with no injected stubs pushes nothing: there is no token to name.

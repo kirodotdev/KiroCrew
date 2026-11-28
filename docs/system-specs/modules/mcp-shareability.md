@@ -134,6 +134,164 @@ Management, and the answer is stored in `mcp_gateway.cwd_use` (`uses_cwd`,
 The answer only gates routing today. Whether `work_dir` joins the pool signature
 for `uses_cwd` servers is a separate decision.
 
+## Serving several chats' folders from one backend
+
+The backend's own folder stays the neutral one (`_backend_work_dir`). Instead
+the gateway scopes each call to the chat that sent it
+(`mcp_gateway/folder_scope.py`, wired at `backend_caller_scope.scope_forward`,
+the one per-caller hook on the forward path):
+
+- **The chat's folder** reaches gatewayd on the Crew-authored `claim` frame
+  (`work_dir`), keyed by the attested session key, and only from this
+  daemon's owner (`_owner_sender_refusal`): any process at the gateway's uid
+  can reach the socket, so a claim from any other sender updates identities as
+  before but its folder is ignored. The stub's register frame
+  never names it. Only an absolute path is kept.
+- **Tool scopes** are learned from the backend's own complete `tools/list`
+  answers. A tool is confinable when its schema is readable and it has no
+  command or URL argument. A server is confinable when every tool is.
+- **`tools/call`** of a third-party server: a relative folder argument
+  (`repo_path`, `cwd`, ...) becomes absolute against the caller's folder, and a
+  missing required one is filled with it. Other path arguments (`path`,
+  `source`, ...) are rewritten only for a server whose roots the gateway serves,
+  because a server launched on a folder of its own resolves them there. That
+  holds from the moment a confinable server asks for its roots: the answer
+  waits on the tool list, and a call arriving first (two chats starting at once)
+  would otherwise resolve against another chat's folder.
+  Nothing is refused: an absolute path into another chat's folder, or through a
+  symlink, reads that file. All chats belong to one local user, so a shared
+  folder server can read any attached chat's folder.
+- **Shared Crew.** All of the roots handling below (the gateway answering
+  `roots/list` with a union, the roots offer in the upstream `initialize`, and
+  rewriting non-folder path arguments) applies only when the owning gateway
+  said Shared Crew is off. It says so on its owner-port announce
+  (`shared_crew_off`, from its running state via `folder_scope.shared_crew_off`),
+  and the daemon takes the answer only from that owner-verified frame
+  (`backend_caller_scope.set_shared_roots`); a daemon starts, and an unowned or
+  unverifiable one stays, at "on". Then every chat belongs to one local user.
+  When an announce turns it on, backends already serving chat-folder roots are
+  drained. The daemon's pong reports its value (`shared_roots`), so the owner's
+  liveness reconcile re-sends the announce to a respawned daemon that lost it.
+  Both must hold, per backend: Shared Crew off, and every attached chat a
+  local one (`backend_caller_scope.union_allowed`): a `dashboard:` key or the
+  `cli_chat` REPL. Any other key (a messaging channel, a cron, anything new or
+  not yet known) keeps that backend per chat, and its folder never joins the
+  roots. A non-local chat joining a backend already serving chat-folder roots
+  retires it before that chat's first frame is written; the frame runs on the
+  replacement. With Shared Crew on, sessions may belong to different people, so a roots request
+  takes the base route and the server stays one copy per chat with its own
+  roots (`roots_requested`). Folder arguments (`repo_path`, ...) are still
+  filled, since they name only the caller's own folder.
+- **`roots/list`**: when the server is confinable and at least one folder is
+  known, the gateway answers with its configured folders and every chat folder
+  it has served (one root each)
+  and sends `notifications/roots/list_changed` when a caller with a new folder
+  attaches. A folder stays served for the backend's life once a chat used it:
+  a chat's stub connection comes and goes inside one open session, so dropping
+  the folder with the stub would remove an open chat's folder (bounded at 64: the oldest folder no attached chat is in makes room; when all are in use the new one is left out, logged once per backend and counted in `folders_left_out`; the session-folder table drops its oldest session past 512 and logs that once). A roots answer replaces the
+  directories a server was started with (server-filesystem does), so the
+  existing directories named in its launch arguments come first in every
+  answer (`backend_caller_scope.launch_folders`, resolved by gatewayd before
+  the spawn and kept on the backend by `note_launch`). The backend is not recycled,
+  the request is not routed to a chat, and its `roots_requested` observation
+  for this launch is retracted (`hazards.retract_observed`). The backend's
+  upstream `initialize`, first start and respawn alike (`offer_roots` in both
+  `backend_handshake` paths), offers the roots capability whatever the first
+  chat's harness offered, because a server given no folder (server-filesystem
+  with no directory argument) otherwise has nothing to work on and exits. When
+  only the gateway offered roots and it cannot serve them, it answers the
+  request itself with an error (no routing to a harness that cannot answer, no
+  `roots_requested` evidence) and sends `notifications/roots/list_changed` once
+  every caller's folder is known. A respawn primes the replacement before the
+  stub attaches, so the chat's folder is seeded first
+  (`seed_caller_folder`, from `daemon/replacement.py`) and a roots request
+  during the replayed handshake is answered, not declined.
+- **Protocol 2026-07-28** has no handshake and no `roots/list`, so a server
+  given no folder can never receive one there (server-filesystem 2.4.1 refuses
+  every call). The gateway answers a stub's `server/discover` on a third-party
+  backend with "method not found", the answer Kiro Crew's own servers give, so
+  the harness falls back to `initialize` and the roots above apply
+  (`backend_caller_scope.answer_discover`). shortcut: a server that serves only
+  2026-07-28 and refuses `initialize` would fail on a shared backend; none is
+  known, revisit when one ships. Otherwise the
+  request is recorded and routed as before. If the tool list was not yet seen,
+  the gateway asks for it on an internal stub first.
+- Kiro Crew's own servers (`supports_caller_identity`) are never adjusted.
+
+shortcut: a `roots_requested` row recorded by an older build keeps a server per
+chat until its launch changes or the row is cleared, because a server kept per
+chat never reaches a shared backend that could retract it.
+
+## Serialized co-tenancy
+
+Some servers keep process-wide state and change it with awaits in between.
+server-memory loads, changes and saves its graph per call, so 50 parallel
+writes from two chats kept 1 entity on one backend. `mcp_gateway/call_gate.py`
+makes some calls take turns, chosen from the tool list and never from a server
+name (`serialized_tools`):
+
+- a browser with a tab per caller (below): every call, readers too, since each
+  acts on the current tab;
+- a server whose declared writers (`readOnlyHint: false`) include one that
+  names no target (no path, repository or URL argument): those writers only.
+  They write one store the process holds; the same run then kept 50 of 50;
+- nothing else. Readers never wait; writers that name a file or repository
+  (server-filesystem, mcp-server-git) run side by side; a server that declares
+  no annotations is plain request and response.
+
+Serializing every server with a tool lacking `readOnlyHint: true` would put 37
+of 41 measured servers in line (most internal servers declare no annotations),
+with chat B waiting 16.7 s behind another chat's filesystem search. The gate never awaits on the stub's read
+path: a queued call that is cancelled is dropped without reaching the server;
+an in-flight one keeps the slot until its reply or `CANCEL_GRACE_SECS` after
+the cancel. A call the server never saw runs once on the replacement instead
+of failing. A `tools/call` that arrives after the backend died is refused
+before any byte is written (`gone_before_send`), and the connection's
+transparent respawn forwards it to the replacement. One still waiting in the
+gate when the backend goes gets no `backend gone` error: the gate hands it
+back as the stub sent it (`CallGate.fail_all`, `hold_unsent`), the backend's
+`gone` event wakes its connection's read (`_read_line_or_gone` in
+`daemon/connection.py`), and the connection feeds it through that same forward
+and respawn. A cancel the stub sends for a held call drops it there, also
+when the cancel is the frame that meets the dead backend (`take_resend`) or
+is read while the replacement is made (`cancelled_ids`); such a call is never
+sent and gets no reply. A call already written, a cancelled one, a second loss on the
+replacement, and a `ping` (its failure is how a resource holder learns of a
+gap) still fail as before. A backend that broadcast `backend gone` refuses
+every later frame the same way, even while its process is still shutting down. Cost, on the servers it covers: a
+call waits for the ones ahead of it, so a slow browser call delays other chats;
+a stuck one is still bounded by the wedge recycle.
+
+A browser server acts on one current tab per process. Tab tenancy applies only
+to a pooled backend; a connection-private one (`exclusive_token`) serves one
+chat and forwards its browser calls as sent.
+`mcp_gateway/tab_tenancy.py` engages on tool SHAPE (a tabs tool whose `action`
+enum holds list/new/close/select and that takes `isolatedContext`). Inside the
+serialized slot the gateway lists the tabs, opens a tab for the caller when it
+has none, and selects the caller's tab when another chat's tab is current. The
+first caller keeps the browser's default context, which holds the user's
+persistent profile (cookies, logins), so a lone chat loses nothing; every later
+caller gets its own isolated context, named from a hash of its session key.
+The gateway's own tab calls are governed as the caller's call of the tabs
+tool: before preparing, `_tab_call_denial` runs the app-callback decision
+(`app_call._governance_denial`, policy ∩ profile on `@server/<tabs tool>`) for
+the agent the caller's stub attached under, or for its session's surface
+profile when the stub names none. A denial fails the caller's call closed with
+the reason and sends nothing; every tab call made or refused writes one SEL
+`log_api_access` event (`mcp-gateway.tab-call`). App callbacks keep refusing a
+record with no agent (`app_call._agent_for_call`), and an app callback's
+ephemeral stub attaches under the record's agent (`app_call._roundtrip`), so
+the tab calls made for it are governed by the producing agent's profile too. A caller's tab
+indices are its own, listings in replies show only its tabs renumbered from 0,
+and the sibling close tool closes only its tabs. The tab a caller was on is
+kept by index while another chat holds the page; after the caller closes an
+earlier tab of its own, that index moves down by one. A browser server with one page and no tab a caller could own (a
+`*navigate` tool taking `url`, and no tabs tool of that shape: puppeteer) is
+recorded as `single_page_browser` from its tool list, and the next chat gets its
+own copy through the hazard retreat. Tabs a departed chat left open
+stay until the backend goes (shortcut: closed on detach once a detach can queue
+work on the gate).
+
 ## Session-bound by construction, which is not the same as "ours"
 
 The `disqualified` reason `session_bound_by_construction` names a server that resolves the calling session from its own PROCESS — an env var, a pid walk — so one backend can only ever serve one session correctly. It is decided by which servers actually consume the injected caller block, not by matching a name against Kiro Crew's managed set, since keying it on authorship would disqualify a managed server that does consume the block. All eleven managed servers (`kirocrew-core`, `kirocrew-cron`, `kirocrew-computer`, `kirocrew-dashboard`, `kirocrew-work`, `kirocrew-crew-log`, `kirocrew-debug`, `kirocrew-panel`, `kirocrew-guide`, `kirocrew-mate`, `kirocrew-secrets`) advertise and consume the block, and all eleven are in `_MANAGED_SERVERS_CALLER_AWARE`. Advertising is necessary but not sufficient for the shareable classification, and `kirocrew-computer` is the case that shows why: a caller the gateway cannot name proceeds under `unresolved:<pid>`, each CONNECTION gets its own namespace only from the per-connection nonce, an ADOPTED pre-nonce daemon injects none, and this classification is what `seed.py` turns into a config write. It qualifies because that separation is negotiated at the handshake rather than assumed — `gatewayd` advertises `tenant_nonce`, and a stub that asked to pool this server against a daemon that does not advertise it execs a per-session backend instead (`stub.must_degrade_nonce_blind`). A server that cannot make the guarantee would be named in `_MANAGED_SERVERS_ADVERTISING_BUT_WITHHELD` in `mcp_discovery_managed.py` and stay session-bound; that set is empty. The classification stays per-server because a new managed server starts unadopted.
@@ -194,7 +352,8 @@ Codes are a closed vocabulary; an unknown code is refused on write and dropped o
 - `unroutable_server_request` — a server-initiated request arrived with no `relatedRequestId` while more than one stub shared the backend. Unroutable without a cross-tenant leak, so the backend is recycled.
 - `unattributable_notification` — a request-scoped notification could not be attributed to a pending call, so it was dropped rather than broadcast. A request-scoped frame on a 2026-07-28 `subscriptions/listen` stream (its acknowledgement, a list change) is attributed by the listen id its `_meta` carries (`io.modelcontextprotocol/subscriptionId`): the server saw the gateway's forward id, so the frame goes only to the stub whose pending listen that is, tagged back with the stub's own id (`backend_routing._listen_stream_frame`). A `notifications/resources/updated` on such a stream goes the same way, but only when its URI is one that listen named (`_PendingRequest.listen_uris`): the tag is the server's word, the URI list the stub's. Any other update is routed by URI through the `resources/subscribe` table, and dropped when no stub subscribed to it.
 
-- `roots_requested` — the server sent `roots/list`, asking its client for the chat's roots. It works on the project folder, so one copy for every chat would mix projects. The request is still routed to the chat that owns it. `hazards.retreat_codes` leaves this code out: whether it keeps the server per chat is `folder_use.roots_keeps_per_chat`'s call (above).
+- `single_page_browser` — the tool list shows one browser page per process and no tab a caller could own, so another chat's call would move that page. Recorded with one client attached too; `hazards.retreat_codes` keeps it, so the next chat gets a private backend.
+- `roots_requested` — the server sent `roots/list`, asking its client for the chat's roots. It works on the project folder, so one copy for every chat would mix projects. The request is routed to the chat that owns it unless the gateway answers it itself (above), which also retracts the observation for that launch. `hazards.retreat_codes` leaves this code out: whether it keeps the server per chat is `folder_use.roots_keeps_per_chat`'s call (above).
 
 The first two are recorded ONLY for a shared backend (`exclusive_token` empty). A 1:1 backend legitimately owns its single client, so the same frame there proves nothing, and recording it would disqualify servers for behaviour that is correct when unshared. `roots_requested` is recorded on any backend, with one client attached too (`_record_hazard(..., any_client=True)` in `backend_routing.py`): the request itself is the evidence.
 

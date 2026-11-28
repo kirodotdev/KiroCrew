@@ -380,7 +380,13 @@ async def _fail_unparseable_response(self: Backend, line: bytes) -> None:
     this a response nested past the decoder's ceiling would leave its
     caller waiting for the heartbeat's hard ceiling.
     """
+    from kiro_crew.mcp_gateway import (
+        backend_caller_scope as _scope_hooks,  # lazy: the facade binds no new name
+    )
+
     msg_id = recover_line_id(line) if line.lstrip().startswith(b"{") else None
+    if msg_id is not None:
+        _scope_hooks.end_call(self, str(msg_id))
     pending = self._pending_requests.pop(str(msg_id), None) if msg_id is not None else None
     if pending is None:
         logger.debug("backend non-JSON stdout line dropped: %r", line[:200])
@@ -441,6 +447,10 @@ async def _settle(
     the server's refusal, so a subscribe arm treats it like a malformed
     verdict and releases a lease nobody routes.
     """
+    from kiro_crew.mcp_gateway import (
+        backend_caller_scope as _scope_hooks,  # lazy: the facade binds no new name
+    )
+
     if pending.stub_uuid == _REHANDSHAKE_STUB_SENTINEL:
         # The gateway's own re-sent ``initialize``: its reply is swallowed,
         # never delivered to a stub.
@@ -495,6 +505,8 @@ async def _settle(
                 _log_safe_identifier(pending.session_key),
                 error_text,
             )
+    if pending.method == "tools/list":
+        _scope_hooks.note_tools_list(self, pending, msg)
     if pending.stub_uuid == "__init__":
         await self._on_upstream_initialize(msg)
         return
@@ -670,7 +682,7 @@ async def _settle(
     if await self._maybe_intercept_ui_result(pending, msg):
         self.touch()
         return
-    rewritten = dict(msg)
+    rewritten = dict(_scope_hooks.scope_reply(self, pending, msg))
     rewritten["id"] = pending.original_id
     await self._deliver_to_stub(pending.stub_uuid, rewritten)
     self.touch()
@@ -679,6 +691,10 @@ async def _settle(
 async def _route_backend_message(
     self: Backend, msg: dict[str, Any], msg_id: Any, method: Any
 ) -> None:
+    from kiro_crew.mcp_gateway import (
+        backend_caller_scope as _scope_hooks,  # lazy: the facade binds no new name
+    )
+
     if msg_id is not None and method is None:
         # Gateway-internal liveness pong: the heartbeat
         # ping is sent under HEARTBEAT_PING_ID and its reply (result or
@@ -689,6 +705,9 @@ async def _route_backend_message(
         # Response to a request this backend forwarded.
         pending = self._pending_requests.pop(str(msg_id), None)
         if pending is None:
+            # It still ends that call: the serialized slot is the server's,
+            # whether or not the stub that sent it is still here.
+            _scope_hooks.end_call(self, str(msg_id))
             logger.warning(
                 "backend pid=%s response to unknown id=%r; dropping",
                 self.pid,
@@ -698,9 +717,12 @@ async def _route_backend_message(
         if (
             pending.retry_frame is not None
             and _is_lost_session_error(msg)
+            and _scope_hooks.note_refused(self, str(msg_id))
             and await self._retry_after_rehandshake(pending)
         ):
+            # The serialized slot moved to the retry before its write.
             return
+        _scope_hooks.end_call(self, str(msg_id))
         await self._settle(pending, msg)
         return
     if method is not None and msg_id is None:
@@ -792,6 +814,9 @@ async def _route_backend_message(
     # Otherwise (multiple stubs, no relatedRequestId) we recycle the backend
     # rather than guess, to avoid a cross-tenant leak.
     if method is not None and msg_id is not None:
+        if method == "roots/list" and _scope_hooks.claim_roots_request(self, msg):
+            # The gateway answers it itself (``backend_caller_scope``).
+            return
         if method == "roots/list":
             # Still routed below: the chat that owns it answers with its folder.
             self._record_hazard(hazards.HAZARD_ROOTS_REQUESTED, any_client=True)
@@ -983,8 +1008,13 @@ async def _fail_oversize_request(self: Backend, head: bytes, tail: bytes = b"") 
     it: an oversize *initialize* reply fails the handshake and answers
     every queued waiter, an MCP Apps fetch is resolved at once.
     """
+    from kiro_crew.mcp_gateway import (
+        backend_caller_scope as _scope_hooks,  # lazy: the facade binds no new name
+    )
+
     msg_id = recover_top_level_id(head, tail)
     if msg_id is not None:
+        _scope_hooks.end_call(self, str(msg_id))
         pending = self._pending_requests.pop(str(msg_id), None)
         if pending is not None:
             await self._fail_claimed_request(

@@ -14,7 +14,10 @@ import asyncio
 import contextlib
 import json
 from dataclasses import dataclass, replace
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from kiro_crew.mcp_caller import (
     CALLER_META_KEY,
@@ -477,15 +480,27 @@ async def _write_json_line(writer: asyncio.StreamWriter, obj: Any) -> None:
     await _write_json_lines(writer, [obj])
 
 
-async def _write_json_lines(writer: asyncio.StreamWriter, objs: list[Any]) -> None:
+async def _write_json_lines(
+    writer: asyncio.StreamWriter,
+    objs: list[Any],
+    *,
+    before_write: Optional[Callable[[], bool]] = None,
+) -> bool:
     """:func:`_write_json_line` for several frames in ONE write and one drain,
-    so no other writer's frame can land between them."""
+    so no other writer's frame can land between them.
+
+    *before_write* runs once the write lock is held; when it returns False
+    nothing is written and this returns False (a serialized call cancelled
+    while it waited behind another write, ``backend_caller_scope``).
+    """
     payload = b"".join(
         json.dumps(obj, separators=(",", ":")).encode("utf-8") + b"\n" for obj in objs
     )
     lock = getattr(writer, "_mc_write_lock", None)
     guard: Any = lock if lock is not None else contextlib.nullcontext()
     async with guard:
+        if before_write is not None and not before_write():
+            return False
         writer.write(payload)
         # Bounded: a backend that stopped reading its stdin must not hang the
         # forwarding coroutine (and the heartbeat sweeper) forever. On timeout
@@ -495,3 +510,4 @@ async def _write_json_lines(writer: asyncio.StreamWriter, objs: list[Any]) -> No
             await asyncio.wait_for(writer.drain(), timeout=_WRITE_DRAIN_TIMEOUT_SECS)
         except asyncio.TimeoutError as exc:
             raise BrokenPipeError("backend stdin drain timed out") from exc
+    return True

@@ -214,6 +214,10 @@ async def _broadcast_backend_gone(self: Backend, reason: str) -> None:
     closing. Preserves the existing correlation between in-flight ids
     and stubs: each pending request gets its own error reply.
     """
+    from kiro_crew.mcp_gateway import (
+        backend_caller_scope as _scope_hooks,  # lazy: the facade binds no new name
+    )
+
     # Idempotent: reachable near-simultaneously from the stdout-pump
     # finally, _heartbeat_once, _fail_oversize_request and the init-fail
     # paths. Without this guard each invocation snapshots pending/init and
@@ -238,6 +242,9 @@ async def _broadcast_backend_gone(self: Backend, reason: str) -> None:
         self._init_done_event.set()
     async with self._inbox_lock:
         inboxes = dict(self._stub_inboxes)
+    # Serialized calls never written to the server get no error: each stub's
+    # connection takes them back and runs them once on the replacement.
+    unsent = _scope_hooks.hold_unsent(self)
     for fid, pending in list(self._pending_requests.items()):
         if pending.stub_uuid == _APPS_STUB_SENTINEL:
             # Wake a parked ui:// fetch immediately so its coroutine falls
@@ -268,6 +275,8 @@ async def _broadcast_backend_gone(self: Backend, reason: str) -> None:
         inbox = inboxes.get(pending.stub_uuid)
         if inbox is None:
             continue
+        if fid in unsent and _scope_hooks.keep_for_resend(self, pending.stub_uuid, unsent[fid]):
+            continue
         err = {
             "jsonrpc": "2.0",
             "id": pending.original_id,
@@ -293,6 +302,7 @@ async def _broadcast_backend_gone(self: Backend, reason: str) -> None:
         ):
             self._gone_replay_uris.setdefault(pending.replay_stub, set()).add(pending.resource_uri)
     self._pending_requests.clear()
+    _scope_hooks.wake_resenders(self)
     self._init_pending.clear()
     # Parked lease work is NOT in ``_pending_requests``: a rider waiting
     # on an in-flight grant, a replacement subscribe parked behind a

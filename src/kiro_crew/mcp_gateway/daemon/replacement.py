@@ -15,6 +15,7 @@ import time
 from typing import TYPE_CHECKING, Any, NoReturn, Optional
 
 from kiro_crew.mcp_caller import CallerContext
+from kiro_crew.mcp_gateway import backend_caller_scope as _scope_hooks
 from kiro_crew.mcp_gateway import hazards, tool_surface
 from kiro_crew.mcp_gateway.admission import Admission, SpawnGateClosed, SpawnGateTimeout
 from kiro_crew.mcp_gateway.backend import _DEFAULT_INITIALIZE_TIMEOUT_SECS, Backend, BackendGone
@@ -347,6 +348,9 @@ async def _respawn_backend_for_stub_unrecorded(
     # leaking a pool slot for every key that ever mid-call respawned.
     try:
         try:
+            # The chat's folder is known before the replayed handshake, which
+            # may ask for roots before this stub attaches.
+            _scope_hooks.seed_caller_folder(new_backend, caller)
             # The backend's own bound, so the replay expires together with the
             # first-handshake deadline the daemon configured this backend with.
             await new_backend.prime_initialize(captured_init, timeout=_init_timeout_of(new_backend))

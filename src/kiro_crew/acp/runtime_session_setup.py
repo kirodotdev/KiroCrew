@@ -806,7 +806,7 @@ async def _mirrored_session_mcp(
         # Its by-name lookup above answers nothing; the projection withholds
         # exactly the entries these stubs replace, from this one lookup.
         stubbed = frozenset(str(s["name"]) for s in stubs if s.get("name"))
-    stubs, stub_token = await self._own_stub_session(stubs, session_key)
+    stubs, stub_token = await self._own_stub_session(stubs, session_key, work_dir)
 
     def _project_and_snapshot() -> tuple[Any, Any, frozenset[str]]:
         # One hop, two reads of the same file: the projection the array is
@@ -1074,7 +1074,10 @@ async def _confirm_member_projection(self: AcpRuntime, handle: AcpSessionHandle)
 
 
 async def _own_stub_session(
-    self: AcpRuntime, entries: list[dict[str, Any]], session_key: str
+    self: AcpRuntime,
+    entries: list[dict[str, Any]],
+    session_key: str,
+    work_dir: str | Path = "",
 ) -> tuple[list[dict[str, Any]], str]:
     """Mint the token that names ONE session on this shared runtime.
 
@@ -1126,6 +1129,7 @@ async def _own_stub_session(
             session_key,
             None,
             token,
+            str(work_dir or ""),
         )
     return entries, token
 

@@ -65,12 +65,18 @@ HAZARD_UNATTRIBUTABLE_NOTIFICATION = "unattributable_notification"
 #: two above it is recorded with a single client attached too, because the request
 #: itself, not a second tenant, is the evidence (``mcp_gateway.folder_use``).
 HAZARD_ROOTS_REQUESTED = "roots_requested"
+#: The server drives ONE browser page for the whole process and offers no tab a
+#: caller could own (``tab_tenancy.single_page_browser``): another chat's call
+#: moves that page, so it runs one copy per chat. Recorded from its tool list,
+#: with a single client attached too.
+HAZARD_SINGLE_PAGE_BROWSER = "single_page_browser"
 
 _KNOWN_HAZARDS = frozenset(
     {
         HAZARD_UNROUTABLE_SERVER_REQUEST,
         HAZARD_UNATTRIBUTABLE_NOTIFICATION,
         HAZARD_ROOTS_REQUESTED,
+        HAZARD_SINGLE_PAGE_BROWSER,
     }
 )
 
@@ -84,9 +90,7 @@ _KNOWN_HAZARDS = frozenset(
 _SCHEMA = 1
 
 
-def launch_identity(
-    command_args_hash: str, env_hash: str, binary_version: str
-) -> str:
+def launch_identity(command_args_hash: str, env_hash: str, binary_version: str) -> str:
     """Stable string for what a launch actually ran.
 
     Built from fields ``PoolKey`` already carries, so the recording site can
@@ -216,6 +220,36 @@ class HazardLedger:
         self._generation += 1
         return True
 
+    def retract(self, server_name: str, code: str, identity: str = "") -> bool:
+        """Forget *code* for *server_name* under *identity* only. True if it was there.
+
+        For an observation that stopped being evidence because the gateway now
+        handles the behaviour itself (``roots_requested`` once the gateway
+        answers the server's roots). Copy-on-write like :meth:`record`.
+        """
+        records = self._records
+        per_identity = records.get(server_name, {})
+        old_rec = per_identity.get(identity)
+        if old_rec is None or code not in old_rec.codes:
+            return False
+        new_per_identity = dict(per_identity)
+        codes = old_rec.codes - {code}
+        if codes:
+            new_per_identity[identity] = _Record(
+                codes=codes, count=old_rec.count, last_seen=old_rec.last_seen
+            )
+        else:
+            del new_per_identity[identity]
+        new_records = dict(records)
+        if new_per_identity:
+            new_records[server_name] = new_per_identity
+        else:
+            del new_records[server_name]
+        self._records = new_records
+        self._dirty = True
+        self._generation += 1
+        return True
+
     def flush(self) -> None:
         """Persist if anything changed. Safe to call often; cheap when clean.
 
@@ -261,9 +295,7 @@ class HazardLedger:
                         # records above, in the same payload, so the two cannot
                         # disagree; a reader that understands ``identities``
                         # ignores these three.
-                        "codes": sorted(
-                            {c for rec in per_identity.values() for c in rec.codes}
-                        ),
+                        "codes": sorted({c for rec in per_identity.values() for c in rec.codes}),
                         "count": sum(rec.count for rec in per_identity.values()),
                         "lastSeen": max(
                             (rec.last_seen for rec in per_identity.values()),
@@ -462,6 +494,17 @@ def retreat_codes(server_name: str, identity: str = "") -> tuple[str, ...]:
     return tuple(
         code for code in observed_codes(server_name, identity) if code != HAZARD_ROOTS_REQUESTED
     )
+
+
+def retract_observed(server_name: str, code: str, identity: str = "") -> bool:
+    """Forget *code* for one launch of *server_name* on the process sink.
+
+    Only ``roots_requested`` is retractable: every other code stays until the
+    launch changes or an operator clears it.
+    """
+    if _sink is None or code != HAZARD_ROOTS_REQUESTED:
+        return False
+    return _sink.retract(server_name, code, identity)
 
 
 def clear_observed(server_name: str) -> bool:

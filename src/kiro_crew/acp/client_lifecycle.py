@@ -178,6 +178,7 @@ def rekey(
         session_key,
         channel_id,
         self._stub_session_token,
+        self._spawn_work_dir,
     )
     # The token deliberately SURVIVES a rekey (see __init__: a fresh one would
     # leave the live MCP children carrying a name no claim will ever mention
@@ -212,6 +213,7 @@ def reclaim(self: AcpClient) -> None:
         self._session_key or "",
         self._channel_id,
         self._stub_session_token,
+        self._spawn_work_dir,
     )
 
 

@@ -58,17 +58,22 @@ _LIST_TIMEOUT_SECS = 10.0
 _CALL_TIMEOUT_SECS = 20.0
 
 
-def _audit(outcome: str, reason: str, *, spool_id: str = "", server: str = "",
-           tool: str = "", session_key: str = "") -> None:
+def _audit(
+    outcome: str,
+    reason: str,
+    *,
+    spool_id: str = "",
+    server: str = "",
+    tool: str = "",
+    session_key: str = "",
+) -> None:
     try:
         SecurityEventLog().log_api_access(
             caller=session_key or "unknown",
             operation="mcp-gateway.app-call",
             outcome=outcome,
             source="gateway",
-            resources=(
-                f"spool_id={spool_id} server={server} tool={tool} reason={reason}"
-            ),
+            resources=(f"spool_id={spool_id} server={server} tool={tool} reason={reason}"),
         )
     except Exception:  # pragma: no cover — audit must never break the handler
         logger.debug("SEL audit emit for app-call failed", exc_info=True)
@@ -85,15 +90,21 @@ async def _roundtrip(
     *,
     caller: Optional[CallerContext],
     timeout: float,
+    agent: str = "",
 ) -> dict[str, Any]:
     """Forward one request through an ephemeral stub and await ITS response.
 
     Reuses the backend's id-rewrite + stdout-pump routing: the response for
     our stub-scoped id is delivered to our inbox with the original id
     restored. The stub detaches in all cases so refcounts never leak.
+
+    *agent* is the producing agent the callback was authorized for; the stub
+    attaches under it, so a call the gateway makes on the callback's behalf
+    (a browser tab, ``backend_caller_scope._tab_call_denial``) is governed by
+    the same profile.
     """
     stub_uuid = f"__app_call__{uuid.uuid4().hex[:12]}"
-    inbox = await backend.attach_stub(stub_uuid)
+    inbox = await backend.attach_stub(stub_uuid, agent=agent)
     try:
         # Own nonce per round-trip: this ephemeral stub is a distinct connection
         # from every real one, so an unnamed app-call must not land in a chat
@@ -108,8 +119,10 @@ async def _roundtrip(
                 raise asyncio.TimeoutError()
             data = await asyncio.wait_for(inbox.get(), timeout=remaining)
             msg = parse_json_object_line(data)
-            if msg is not None and msg.get("id") == frame["id"] and (
-                "result" in msg or "error" in msg
+            if (
+                msg is not None
+                and msg.get("id") == frame["id"]
+                and ("result" in msg or "error" in msg)
             ):
                 return msg
     finally:
@@ -122,9 +135,7 @@ async def _roundtrip(
         try:
             await backend.cancel_in_flight_for_stub(stub_uuid)
         except Exception:  # pragma: no cover — best-effort; detach still runs
-            logger.debug(
-                "cancel_in_flight_for_stub failed for %s", stub_uuid, exc_info=True
-            )
+            logger.debug("cancel_in_flight_for_stub failed for %s", stub_uuid, exc_info=True)
         await backend.detach_stub(stub_uuid)
 
 
@@ -154,11 +165,7 @@ async def _tools_by_name(
     }
     reply = await _roundtrip(backend, frame, caller=caller, timeout=_LIST_TIMEOUT_SECS)
     raw = reply.get("result", {}).get("tools", []) if "result" in reply else []
-    return {
-        t["name"]: t
-        for t in raw
-        if isinstance(t, dict) and isinstance(t.get("name"), str)
-    }
+    return {t["name"]: t for t in raw if isinstance(t, dict) and isinstance(t.get("name"), str)}
 
 
 def _tool_visible_to_app(tool: dict[str, Any]) -> bool:
@@ -362,8 +369,10 @@ async def handle_app_call(pool: Any, frame: dict[str, Any]) -> dict[str, Any]:
     record_secret = record.get("callback_secret")
     if not isinstance(record_secret, str) or not record_secret:
         return _rejected(
-            "spool record has no callback capability", spool_id=spool_id,
-            server=server if isinstance(server, str) else "", tool=tool_name,
+            "spool record has no callback capability",
+            spool_id=spool_id,
+            server=server if isinstance(server, str) else "",
+            tool=tool_name,
             session_key=session_key,
         )
     # Compare BYTES, not str: ``hmac.compare_digest`` raises TypeError on a str
@@ -379,8 +388,10 @@ async def handle_app_call(pool: Any, frame: dict[str, Any]) -> dict[str, Any]:
         record_secret.encode("utf-8", "surrogatepass"),
     ):
         return _rejected(
-            "invalid app callback capability", spool_id=spool_id,
-            server=server if isinstance(server, str) else "", tool=tool_name,
+            "invalid app callback capability",
+            spool_id=spool_id,
+            server=server if isinstance(server, str) else "",
+            tool=tool_name,
             session_key=session_key,
         )
 
@@ -391,20 +402,28 @@ async def handle_app_call(pool: Any, frame: dict[str, Any]) -> dict[str, Any]:
         # exact identity — deny rather than guess a backend by server name,
         # which could route the call into a co-pooled tenant's partition.
         return _rejected(
-            "spool record has no backend binding", spool_id=spool_id,
-            server=server, tool=tool_name, session_key=session_key,
+            "spool record has no backend binding",
+            spool_id=spool_id,
+            server=server,
+            tool=tool_name,
+            session_key=session_key,
         )
 
     backend = await pool.get_by_digest(pool_digest)
     if backend is None or backend.pool_key.server_name != server:
         return _rejected(
-            "producing backend no longer available", spool_id=spool_id,
-            server=server, tool=tool_name, session_key=session_key,
+            "producing backend no longer available",
+            spool_id=spool_id,
+            server=server,
+            tool=tool_name,
+            session_key=session_key,
         )
 
     audit_kw = {
-        "spool_id": spool_id, "server": server,
-        "tool": tool_name, "session_key": session_key,
+        "spool_id": spool_id,
+        "server": server,
+        "tool": tool_name,
+        "session_key": session_key,
     }
     # Originating identity for BOTH gateway-generated requests (tools/list and
     # the forwarded tools/call): a caller-aware backend scopes visibility to the
@@ -436,9 +455,7 @@ async def handle_app_call(pool: Any, frame: dict[str, Any]) -> dict[str, Any]:
     # checks against app-controlled values run with a bounded worker inside,
     # and even that bound must not be spent ON the gatewayd event loop.
     try:
-        await asyncio.to_thread(
-            validate_mcp_tool_arguments, arguments, tool.get("inputSchema")
-        )
+        await asyncio.to_thread(validate_mcp_tool_arguments, arguments, tool.get("inputSchema"))
     except ValidationError as exc:
         return _rejected(f"arguments failed schema validation: {exc}", **audit_kw)
 
@@ -451,9 +468,7 @@ async def handle_app_call(pool: Any, frame: dict[str, Any]) -> dict[str, Any]:
     # governed agent could write). See :func:`_agent_for_call`. Already in
     # memory, so it costs no read of its own.
     denial = await asyncio.to_thread(
-        lambda: _governance_denial(
-            server, tool_name, session_key, agent=_agent_for_call(record)
-        )
+        lambda: _governance_denial(server, tool_name, session_key, agent=_agent_for_call(record))
     )
     if denial is not None:
         return _rejected(denial, **audit_kw)
@@ -466,7 +481,11 @@ async def handle_app_call(pool: Any, frame: dict[str, Any]) -> dict[str, Any]:
     }
     try:
         reply = await _roundtrip(
-            backend, call_frame, caller=caller, timeout=_CALL_TIMEOUT_SECS
+            backend,
+            call_frame,
+            caller=caller,
+            timeout=_CALL_TIMEOUT_SECS,
+            agent=_agent_for_call(record) or "",
         )
     except asyncio.CancelledError:
         # The tool was already dispatched to the backend; a cancellation here
