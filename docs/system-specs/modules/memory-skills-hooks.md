@@ -7022,7 +7022,17 @@ alias was deleted or a symlink retargeted. Repeat calls avoid a re-walk only thr
     removes it (see [learn-cron-dashboard.md](learn-cron-dashboard.md)).
 - `delete_skill(name)` — removes entire skill directory; a directory with no
   `SKILL.md` entry of its own (a folder of nested skills such as `auto`) is not a skill
-  and is refused (`False`, so the DELETE route answers 404 as GET does). The removal is
+  and is refused (`False`, so the DELETE route answers 404 as GET does). A delete
+  removes exactly the skill it names: a skill with other skills installed under it
+  (`utils` holding `utils/tree`: a real folder whose `SKILL.md` is not a folder,
+  which `delete_skill` would accept by its own name; dot-named and vendored folders
+  do not count, and a link or junction is neither counted nor searched, as the
+  rmtree only unlinks it and leaves its target in place) raises
+  `SkillHasNestedSkills` and removes nothing, and the DELETE
+  route answers 409 `skill_has_nested_skills` with the `nested` keys, whose message
+  the Skills tab's delete banner shows. A folder under it the scan cannot read
+  raises its `OSError` before anything is removed. The family goes by deleting the
+  nested skills first, each by its own name. The removal is
   `platform_compat.rmtree_force`, so a read-only entry inside the skill (a Windows
   read-only file, a POSIX `0555` directory) does not keep it, and a folder that still
   stays raises `OSError` naming what is left: a delete never returns `True` over a

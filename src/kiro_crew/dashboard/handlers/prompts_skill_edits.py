@@ -31,6 +31,7 @@ from kiro_crew.dashboard.handlers.prompts_paths import _is_path_too_long_error
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, validate_file_path
+from kiro_crew.skills import SkillHasNestedSkills
 
 from ._shared import (
     _capability_manager,
@@ -359,7 +360,15 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
         # the ACL and renames it into place. On network-backed storage either can
         # stall long enough to matter to every other session sharing this loop, so
         # both go to a thread the way discover.py already routes the same two calls.
-        ok = await asyncio.to_thread(skills.delete_skill, name)
+        nested: list[str] = []
+        refusal = ""
+        try:
+            ok = await asyncio.to_thread(skills.delete_skill, name)
+        except SkillHasNestedSkills as exc:
+            ok, nested, refusal = False, exc.nested, str(exc)
+        metadata: dict[str, object] = {"name": name}
+        if nested:
+            metadata.update(reason="has_nested_skills", nested=nested)
         try:
             _sel().log_tool_invocation(
                 session_key="",
@@ -368,10 +377,17 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
                 tool_name="api_skill_delete",
                 tool_kind="skill",
                 outcome="ok" if ok else "rejected",
-                metadata={"name": name},
+                metadata=metadata,
             )
         except Exception:  # noqa: BLE001 — the mutation is committed; never 500 on an audit write
             logger.debug("Could not audit skill delete outcome", exc_info=True)
+        if nested:
+            # A delete removes exactly the skill it names: the nested skills live
+            # inside this one's directory, so they go first, each by its own name.
+            return web.json_response(
+                {"error": refusal, "code": "skill_has_nested_skills", "nested": nested},
+                status=409,
+            )
         if not ok:
             return web.json_response({"error": "not found", "code": "skill_not_found"}, status=404)
         return web.json_response({"ok": True})

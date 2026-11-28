@@ -226,6 +226,37 @@ class TestOwnerWritePathsStillWork:
             assert kwargs["tool_name"] == tool_name
             assert kwargs["outcome"] == "rejected"
 
+    @pytest.mark.asyncio
+    async def test_delete_of_a_skill_with_nested_skills_is_a_409_naming_them(self, audit, tmp_path):
+        from kiro_crew.skills import SkillsLoader
+
+        loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        assert loader.create_skill("utils", "parent") is True
+        assert loader.create_skill("utils/tree", "child") is True
+        state = SimpleNamespace(owner_id="owner", context_builder=SimpleNamespace(skills=loader))
+
+        response = await prompts.api_skill_detail(
+            _Request({"user": "owner"}, state, method="DELETE", name="utils")
+        )
+        assert response.status == 409
+        body = json.loads(response.body)
+        assert body["code"] == "skill_has_nested_skills"
+        assert body["nested"] == ["utils/tree"]
+        assert "utils/tree" in body["error"]
+        assert (tmp_path / "skills" / "utils" / "SKILL.md").read_text(encoding="utf-8") == "parent"
+        assert (tmp_path / "skills" / "utils" / "tree" / "SKILL.md").exists()
+        kwargs = audit.log_tool_invocation.call_args.kwargs
+        assert kwargs["outcome"] == "rejected"
+        assert kwargs["metadata"]["nested"] == ["utils/tree"]
+
+        # The family goes one named skill at a time, child first.
+        for name in ("utils/tree", "utils"):
+            response = await prompts.api_skill_detail(
+                _Request({"user": "owner"}, state, method="DELETE", name=name)
+            )
+            assert response.status == 200, name
+        assert not (tmp_path / "skills" / "utils").exists()
+
 
 class TestGetStaysOpen:
     """The read path keeps its existing behavior — no owner gate on GET."""
