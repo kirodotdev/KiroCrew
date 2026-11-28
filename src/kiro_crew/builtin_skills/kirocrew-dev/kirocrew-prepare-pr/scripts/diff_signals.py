@@ -184,6 +184,12 @@ def err(msg):
     sys.stderr.write(msg + "\n")
 
 
+def remote_ref(base):
+    """The ref the remote base lives at.  The short ``origin/<base>`` resolves a
+    local branch, tag or other ref of that name first, and git only warns."""
+    return "refs/remotes/origin/" + base
+
+
 def area_of(path):
     """The reviewer-sized unit a path belongs to; mirrors the PR Scope awk in pr-policy.yml.
 
@@ -485,7 +491,7 @@ def branch_title(base):
     refuses a cmd.exe metacharacter in any argument when git is a batch launcher. A
     failed read is an environment error to each check, never a pass.
     """
-    rng = "origin/{}..HEAD".format(base)
+    rng = remote_ref(base) + "..HEAD"
     rc, out, stderr = run(["git", "log", "--reverse", "--no-decorate", "--pretty=oneline", rng])
     if rc != 0:
         err("ERROR: cannot read the branch's first commit subject: " + stderr.strip())
@@ -523,7 +529,7 @@ def template_check(body, base):
 
     Absent on the base (another repo) is a silent skip.
     """
-    rc, script, _ = run(["git", "show", "origin/{}:{}".format(base, TEMPLATE_CHECK)])
+    rc, script, _ = run(["git", "show", "{}:{}".format(remote_ref(base), TEMPLATE_CHECK)])
     if rc != 0:
         return 0
     bash = shutil.which("bash")
@@ -584,7 +590,7 @@ def sibling_check(body, base):
     warn-mode finding is shown here and never stops the loop. Absent on the base
     (another repo, or before the check landed) is a silent skip.
     """
-    rc, script, _ = run(["git", "show", "origin/{}:{}".format(base, SIBLING_CHECK)])
+    rc, script, _ = run(["git", "show", "{}:{}".format(remote_ref(base), SIBLING_CHECK)])
     if rc != 0:
         return 0
     # The pull request title is the squash message of a one-commit branch; with the
@@ -592,7 +598,7 @@ def sibling_check(body, base):
     title = branch_title(base)
     if title is None:
         return 2
-    merge_base = run(["git", "merge-base", "origin/" + base, "HEAD"])[1].strip()
+    merge_base = run(["git", "merge-base", remote_ref(base), "HEAD"])[1].strip()
     head = run(["git", "rev-parse", "HEAD"])[1].strip()
     if not (title and merge_base and head):
         print("WARN: cannot resolve HEAD or the merge-base - sibling sweep check skipped")
@@ -634,7 +640,7 @@ def proof_check(body, base, gitdir):
     warn-mode finding is shown here and never stops the loop. Absent on the base
     (another repo, or before the check landed) is a silent skip.
     """
-    rc, script, _ = run(["git", "show", "origin/{}:{}".format(base, PROOF_CHECK)])
+    rc, script, _ = run(["git", "show", "{}:{}".format(remote_ref(base), PROOF_CHECK)])
     if rc != 0:
         return 0
     # The pull request title is the squash message of a one-commit branch; with the
@@ -700,14 +706,14 @@ def main(argv):
 
     base = args.base
     if not base:
-        sym = run(["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])[
-            1
-        ].strip()
-        base = sym[len("origin/") :] if sym.startswith("origin/") else ""
+        # The full target: ``--short`` prints ``remotes/origin/<base>`` once
+        # another ref named ``origin/<base>`` makes the short name ambiguous.
+        sym = run(["git", "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])[1].strip()
+        base = sym[len(remote_ref("")) :] if sym.startswith(remote_ref("")) else ""
     if not base:
         base = "main"
 
-    if run(["git", "rev-parse", "--verify", "--quiet", "origin/" + base])[0] != 0:
+    if run(["git", "rev-parse", "--verify", "--quiet", remote_ref(base)])[0] != 0:
         remote, _, branch = base.partition("/")
         if (
             branch
@@ -737,7 +743,7 @@ def main(argv):
             err("ERROR: cannot read body file {}: {}".format(path, exc))
             return 2
 
-    rng = "origin/{}...HEAD".format(base)
+    rng = remote_ref(base) + "...HEAD"
     print("=== Change vs origin/{} ===".format(base))
     stat = run(["git", "diff", "--stat", rng])[1].rstrip().splitlines()
     print(stat[-1] if stat else "(no changes)")

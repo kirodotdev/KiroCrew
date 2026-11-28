@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1055,3 +1056,90 @@ class TestRegressionGuard:
         assert "BLOCKER: gh not authenticated" in stdout
         # The write-access line is not printed when gh is unauthenticated.
         assert "write access:" not in stdout
+
+
+class TestShadowedBase:
+    """Any other ref named ``origin/<base>`` stands in for the remote base wherever a
+    gate or recipe spells it short, so preflight refuses the clone and prints the
+    command that removes each one. The script runs in this process with gh
+    answering "not logged in", so the only children are git's."""
+
+    @staticmethod
+    def _main_in(monkeypatch, cwd: str) -> int:
+        mod = _preflight_module()
+        real_run = mod.run
+
+        def no_gh(args, extra_env=None, timeout=None, stall=None):
+            if args[:1] == ["gh"]:
+                return 1, "", "not logged in"
+            return real_run(args, extra_env=extra_env, timeout=timeout, stall=stall)
+
+        monkeypatch.setattr(mod, "run", no_gh)
+        for name in _GIT_LOCATION_VARS:
+            monkeypatch.delenv(name, raising=False)
+        for name, value in _fixture_git_env().items():
+            if os.environ.get(name) != value:
+                monkeypatch.setenv(name, value)
+        monkeypatch.chdir(cwd)
+        return mod._main()
+
+    @pytest.mark.parametrize(
+        ("make_namesake", "namesake", "remedy"),
+        [
+            (
+                ("branch", "origin/main", "main"),
+                "refs/heads/origin/main",
+                "git branch -m origin/main <new-name>",
+            ),
+            (
+                ("tag", "origin/main", "main"),
+                "refs/tags/origin/main",
+                "git update-ref -d refs/tags/origin/main",
+            ),
+            (
+                ("update-ref", "refs/origin/main", "main"),
+                "refs/origin/main",
+                "git update-ref -d refs/origin/main",
+            ),
+        ],
+        ids=["branch", "tag", "other-ref"],
+    )
+    def test_a_namesake_under_refs_blocks_until_its_printed_remedy_runs(
+        self, feature_clone, monkeypatch, capsys, make_namesake, namesake, remedy
+    ) -> None:
+        _git(feature_clone, *make_namesake)
+
+        assert self._main_in(monkeypatch, feature_clone) == 30
+        out = capsys.readouterr().out
+        assert "BLOCKER: origin/main does not name refs/remotes/origin/main" in out
+        assert "  {}: {}\n".format(namesake, remedy) in out
+
+        _git(feature_clone, *remedy.replace("<new-name>", "renamed").split()[1:])
+        self._main_in(monkeypatch, feature_clone)
+        assert "does not name refs/remotes/origin/main" not in capsys.readouterr().out
+
+    def test_a_namesake_outside_refs_names_the_file_to_delete(
+        self, feature_clone, monkeypatch, capsys
+    ) -> None:
+        # git writes this name as a file in the git dir and refuses to delete it by name.
+        _git(feature_clone, "update-ref", "origin/main", "main")
+
+        assert self._main_in(monkeypatch, feature_clone) == 30
+        out = capsys.readouterr().out
+        printed = re.search(r"^  origin/main: delete the file (.+) \(git refuses", out, re.M)
+        assert printed is not None, out
+        ref_file = printed.group(1)
+        assert os.path.samefile(ref_file, os.path.join(feature_clone, ".git", "origin", "main"))
+
+        os.remove(ref_file)
+        self._main_in(monkeypatch, feature_clone)
+        assert "does not name refs/remotes/origin/main" not in capsys.readouterr().out
+
+    def test_a_clone_without_a_namesake_raises_no_such_blocker(
+        self, feature_clone, monkeypatch, capsys
+    ) -> None:
+        self._main_in(monkeypatch, feature_clone)
+
+        out = capsys.readouterr().out
+        assert "fetch origin:    ok" in out
+        assert "does not name refs/remotes/origin/main" not in out

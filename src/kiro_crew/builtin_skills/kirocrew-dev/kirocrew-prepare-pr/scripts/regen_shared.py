@@ -107,6 +107,10 @@ NOT_COVERED = {
 
 GENERATOR_TIMEOUT_SECONDS = 1800
 
+# Where the remote base lives, in full: the short ``origin/<base>`` resolves a local
+# branch, tag or other ref of that name first, and git only warns.
+REMOTE_PREFIX = "refs/remotes/origin/"
+
 # The sibling script the amend hint names. Absolute, because the author runs this from
 # the repository root and push_guard.py lives in the skill's scripts/ directory.
 PUSH_GUARD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "push_guard.py")
@@ -259,7 +263,8 @@ def regen(root, base, entries):
     lines = []
     if _git_lines(root, "rev-parse", "--is-inside-work-tree") is None:
         return 2, ["ERROR: not inside a git repository (or git not found)."]
-    if _git_lines(root, "rev-parse", "--verify", "--quiet", "origin/" + base) is None:
+    base_ref = REMOTE_PREFIX + base
+    if _git_lines(root, "rev-parse", "--verify", "--quiet", base_ref) is None:
         remote, _, branch = base.partition("/")
         if branch and _git_lines(root, "rev-parse", "--verify", "--quiet", "refs/remotes/" + base):
             # A remote ref (upstream/main from a fork clone): no fetch from origin brings it.
@@ -269,13 +274,13 @@ def regen(root, base, entries):
                 "fork's {2} with upstream first (CONTRIBUTING.md).".format(base, remote, branch)
             ]
         return 2, ["ERROR: origin/{0} not found - run: git fetch origin {0}".format(base)]
-    merge_base = _git_lines(root, "merge-base", "origin/" + base, "HEAD")
+    merge_base = _git_lines(root, "merge-base", base_ref, "HEAD")
     if not merge_base:
         return 2, ["ERROR: no merge base between origin/{} and HEAD".format(base)]
     mb = merge_base[0]
     # --no-renames lists both sides of a rename, so a baseline row for the old path is found.
     mine = _git_paths(root, "diff", "--name-only", "--no-renames", mb + "..HEAD")
-    theirs = _git_paths(root, "diff", "--name-only", "--no-renames", mb + "..origin/" + base)
+    theirs = _git_paths(root, "diff", "--name-only", "--no-renames", mb + ".." + base_ref)
     if mine is None or theirs is None:
         return 2, ["ERROR: git diff failed"]
     # A worktree edit counts as this branch's: the author may regenerate before committing.
@@ -357,10 +362,12 @@ def main(argv):
     root = root_out.strip()
     base = args[0] if args else ""
     if not base:
-        sym = run(
-            ["git", "-C", root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]
-        )[1].strip()
-        base = sym[len("origin/") :] if sym.startswith("origin/") else "main"
+        # The full target: ``--short`` prints ``remotes/origin/<base>`` once
+        # another ref named ``origin/<base>`` makes the short name ambiguous.
+        sym = run(["git", "-C", root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])[
+            1
+        ].strip()
+        base = sym[len(REMOTE_PREFIX) :] if sym.startswith(REMOTE_PREFIX) else "main"
     code, lines = regen(root, base, REGEN)
     print("\n".join(lines))
     return code

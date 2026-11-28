@@ -539,7 +539,9 @@ def summarize(base="main", pr="", head="HEAD", runner=None):
         if _run(["git", "rev-parse", "--is-inside-work-tree"])[0] != 0:
             raise EnvError("not inside a git repository")
         _fetch_base(base, _run)
-        base_ref = "origin/{}".format(base)
+        # The ref the fetch wrote, in full: the short ``origin/<base>`` resolves a
+        # local branch, tag or other ref of that name first.
+        base_ref = "refs/remotes/origin/{}".format(base)
         base_head = _rev_parse(base_ref, _run)
         head_sha = _rev_parse(head, _run)
         # The base this head was tested on top of. kirocrew-prepare-pr rebases before

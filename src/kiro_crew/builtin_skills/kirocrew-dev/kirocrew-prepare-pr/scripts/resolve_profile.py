@@ -425,13 +425,15 @@ def resolve(root, base_ref=None):
 def default_base_ref(root):
     """Trusted default base for CLI use: git's own record of the remote default
     branch, else origin/main when it resolves, else None (no remote to pin to,
-    so the working tree is the only source there is)."""
-    rc, out, _ = _git(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    so the working tree is the only source there is).  Both answers are full
+    refs: a short ``origin/main`` resolves a local branch, tag or other ref of
+    that name first."""
+    rc, out, _ = _git(root, "symbolic-ref", "refs/remotes/origin/HEAD")
     if rc == 0 and out:
         return out
-    rc, _, _ = _git(root, "rev-parse", "--verify", "origin/main~0")
+    rc, _, _ = _git(root, "rev-parse", "--verify", "refs/remotes/origin/main~0")
     if rc == 0:
-        return "origin/main"
+        return "refs/remotes/origin/main"
     return None
 
 

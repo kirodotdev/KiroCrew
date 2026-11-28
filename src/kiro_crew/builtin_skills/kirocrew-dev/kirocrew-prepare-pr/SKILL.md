@@ -273,7 +273,7 @@ full suites are CI's job and the Phase 3 poll is the authority on them.
      that applies to this diff.
 
 2. **Local review — one read-only, model-pinned subagent per profile
-   reviewer**, briefed by `local_review.py --base origin/<base>` from CI's own
+   reviewer**, briefed by `local_review.py --base refs/remotes/origin/<base>` from CI's own
    workflows. Read `references/local-review.md` before you dispatch them: the
    launch batch, exit 40, model fallback and the read-only charter. On exit 40, brief
    from `references/fallback-charters.md`.

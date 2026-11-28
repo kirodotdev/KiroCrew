@@ -193,6 +193,23 @@ def test_cli_without_base_ref_pins_to_the_remote_default_branch(tmp_path, monkey
     assert json.loads(proc.stdout)["single_commit"] is True
 
 
+def test_the_default_base_ref_names_the_remote_in_full(tmp_path, monkeypatch):
+    """A short ``origin/main`` reads a local branch of that name first, and beside
+    one, git's ``--short`` record of ``refs/remotes/origin/HEAD`` turns into
+    ``remotes/origin/main``. Both answers are the full remote ref."""
+    _hermetic_git(monkeypatch)
+    _seed_repo(tmp_path)
+    _git(tmp_path, "commit", "-q", "--allow-empty", "-m", "base")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _git(tmp_path, "branch", "origin/main", "HEAD")
+
+    assert resolve_profile.default_base_ref(str(tmp_path)) == "refs/remotes/origin/main"
+
+    _git(tmp_path, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+
+    assert resolve_profile.default_base_ref(str(tmp_path)) == "refs/remotes/origin/main"
+
+
 def test_autodetect_python_stack(tmp_path):
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
     prof = resolve_profile.resolve(str(tmp_path))
