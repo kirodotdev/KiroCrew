@@ -56,6 +56,55 @@ def test_the_launch_of_every_known_harness_matches_the_golden(backend, tmp_path)
     assert capture_mod.capture(backend, tmp_path) == golden[key]
 
 
+def test_a_capture_never_walks_or_signals_the_host_process_behind_its_fake_pid(
+    tmp_path,
+) -> None:
+    """The stand-in child's pid may be a live host process; a capture leaves it alone.
+
+    A completed spawn must not walk that pid's tree, and a spawn that fails after
+    the factory returned must not signal it: the cleanup kill there would reach
+    whatever host process holds the number, the worker's own group included.
+    """
+    from unittest.mock import patch
+
+    from kiro_crew import platform_compat
+    from kiro_crew.acp import runtime_process_tree
+
+    walked: list[object] = []
+    signalled: list[tuple[object, ...]] = []
+
+    async def _record_kill(*args: object) -> None:
+        signalled.append(args)
+
+    host_probes = (
+        patch.object(
+            runtime_process_tree,
+            "_get_child_pids",
+            side_effect=lambda pid, _visited=None: walked.append(pid) or [],
+        ),
+        patch.object(platform_compat, "kill_process_tree_async", side_effect=_record_kill),
+    )
+
+    capture_mod.capture(ACP_BACKEND_KIRO, tmp_path / "ok", extra_patches=host_probes)
+    assert walked == [], "a capture walked the descendants of a pid it does not own"
+
+    with pytest.raises(OSError, match="stand-in resume failed"):
+        capture_mod.capture(
+            ACP_BACKEND_KIRO,
+            tmp_path / "failed",
+            extra_patches=(
+                *host_probes,
+                patch.object(
+                    client_mod,
+                    "finish_suspended_spawn",
+                    side_effect=OSError("stand-in resume failed"),
+                ),
+            ),
+        )
+    assert signalled == [], f"a failed capture signalled a host pid: {signalled}"
+    assert walked == [], "a failed capture walked the descendants of a pid it does not own"
+
+
 #: Two operator defaults, at values no recording host carries.
 _CHILD_ENV_DEFAULTS = {"TOKIO_WORKER_THREADS": "3", "RAYON_NUM_THREADS": "5"}
 
