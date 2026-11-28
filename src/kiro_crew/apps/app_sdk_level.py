@@ -52,6 +52,8 @@ own lookups for the tools it runs; ``agent_template_host_values``, the values it
 renders for the agent-template placeholders that name no app;
 ``address_covers_loopback``, the bind-address predicate; and ``extra_hidden_dirs`` on
 the spawn names, more paths hidden from a child and nothing lifted.
+Level 19 adds the page's ``FileTree``: the dashboard's project file tree, behind the
+app's declared ``/api/project/tree``.
 """
 
-APP_SDK_LEVEL = 18
+APP_SDK_LEVEL = 19

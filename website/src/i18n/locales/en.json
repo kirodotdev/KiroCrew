@@ -67,6 +67,11 @@
     "pullRequestPanel": {
       "not_declared": "This app can't show pull requests: its permissions don't declare {{path}}."
     },
+    "fileTree": {
+      "not_declared": "This app can't show the project's files: its permissions don't declare {{path}}.",
+      "refresh_failed": "Couldn't refresh the file list; showing the last one.",
+      "status_failed": "Couldn't check which files changed, so changed files aren't marked."
+    },
     "projectPicker": {
       "not_declared": "This app can't show the project picker: its permissions don't declare {{path}}."
     },

@@ -37,5 +37,7 @@
  * Level 18 adds a batch of backend SDK names (the trusted tool lookups, the host
  * agent-template values, the bind-address predicate and hidden paths on a sandboxed
  * spawn); the dashboard gains nothing at that level.
+ * Level 19 adds `FileTree`: the dashboard's project file tree, behind the app's
+ * declared `/api/project/tree`.
  */
-export const APP_SDK_LEVEL = 18
+export const APP_SDK_LEVEL = 19

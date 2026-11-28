@@ -343,6 +343,11 @@
     "pullRequestPanel": {
       "not_declared": "此应用无法显示拉取请求：其权限未声明 {{path}}。"
     },
+    "fileTree": {
+      "not_declared": "此应用无法显示项目文件：其权限未声明 {{path}}。",
+      "refresh_failed": "无法刷新文件列表，正在显示上次的列表。",
+      "status_failed": "无法检查哪些文件已更改，因此未标记已更改的文件。"
+    },
     "projectPicker": {
       "not_declared": "此应用无法显示项目选择器：其权限未声明 {{path}}。"
     },

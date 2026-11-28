@@ -360,6 +360,11 @@
     "pullRequestPanel": {
       "not_declared": "Diese App kann keine Pull Requests anzeigen – ihre Berechtigungen deklarieren {{path}} nicht."
     },
+    "fileTree": {
+      "not_declared": "Diese App kann die Projektdateien nicht anzeigen – ihre Berechtigungen deklarieren {{path}} nicht.",
+      "refresh_failed": "Die Dateiliste konnte nicht aktualisiert werden; die letzte wird angezeigt.",
+      "status_failed": "Es ließ sich nicht prüfen, welche Dateien geändert wurden, daher sind geänderte Dateien nicht markiert."
+    },
     "projectPicker": {
       "not_declared": "Diese App kann die Projektauswahl nicht anzeigen, denn ihre Berechtigungen deklarieren {{path}} nicht."
     },
