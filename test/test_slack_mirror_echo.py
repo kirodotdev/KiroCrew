@@ -559,6 +559,29 @@ async def test_a_turn_ending_before_the_limit_stops_its_renewal() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_teardown_cancelled_before_the_timers_stop_still_cancels_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.dashboard import chat_runner
+
+    async def _cancelled_here(turn: Any) -> None:
+        # A cancellation delivered to teardown before it reaches the timer's stop.
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(chat_runner, "_stop_mirror_stream_renewal", _cancelled_here)
+
+    def _work_left_behind(ctx: TurnContext) -> None:
+        ctx.state._background_tasks.add(asyncio.ensure_future(asyncio.sleep(50)))
+
+    slack = await _linked_turn(
+        [_TOOL, Wait(STREAM_RENEW_AFTER_S - 10), Do(_work_left_behind), _ANSWER, _DONE]
+    )
+    # No timer outlives the turn to renew its stream past the age it was due at.
+    assert len(_streams(slack)) == 1
+    assert all(CONTINUES_BELOW not in title for _, _, title, _ in _titled_cards(slack))
+
+
+@pytest.mark.asyncio
 async def test_a_turn_ending_during_a_renewal_closes_the_stream_it_opened() -> None:
     class _SlowSecondStream(_SlackRecorder):
         def __getattr__(self, name: str) -> Any:

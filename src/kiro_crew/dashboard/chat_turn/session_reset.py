@@ -33,7 +33,10 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.directives import _report_unclaimed_directives
     from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
-    from kiro_crew.dashboard.chat_turn.mirror_stream_renewal import _stop_mirror_stream_renewal
+    from kiro_crew.dashboard.chat_turn.mirror_stream_renewal import (
+        _cancel_mirror_stream_renewal,
+        _stop_mirror_stream_renewal,
+    )
     from kiro_crew.dashboard.chat_turn.queue_cycle import _arm_synthesis_recheck
     from kiro_crew.dashboard.chat_turn.queue_drain import (
         _REPLAYS_COMPLETION_KEY,
@@ -714,6 +717,8 @@ async def _turn_release_session(turn: _ChatTurn) -> None:
             # _broadcast_expired_oauth_banners).
             _broadcast_expired_oauth_banners(state, slot)
     finally:
+        # A cancel landing before the renewal timer's stop above skipped it.
+        _cancel_mirror_stream_renewal(turn)
         if _acquired:
             # A successful reset() above already popped the key under its
             # own lock, so this is a no-op on that path (the popped

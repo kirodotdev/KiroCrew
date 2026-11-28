@@ -21,7 +21,9 @@ while it reads and changes them, and reads them afresh off the turn once it hold
 it: the timer runs on a task of its own. A renewal is shielded, and teardown first cancels
 the timer and then waits on the lock (:func:`_stop_mirror_stream_renewal`), so a
 renewal under way finishes and teardown closes the stream it opened, never the
-one it already closed.
+one it already closed. Teardown's ``finally`` cancels the timer once more
+(:func:`_cancel_mirror_stream_renewal`): a cancellation that reaches teardown
+before that wait would otherwise leave it renewing a finished turn's stream.
 """
 
 from __future__ import annotations
@@ -192,3 +194,18 @@ async def _stop_mirror_stream_renewal(turn: _ChatTurn) -> None:
         # No renewal can be due after this, so one shielded but not yet started
         # finds nothing to do.
         turn._mirror_stream_started_at = 0.0
+
+
+def _cancel_mirror_stream_renewal(turn: _ChatTurn) -> None:
+    """Cancel the renewal timer without waiting: teardown's backstop on every exit.
+
+    A cancellation delivered to teardown before :func:`_stop_mirror_stream_renewal`
+    runs skips it, and the timer, holding the turn, would renew a finished turn's
+    stream every ``STREAM_RENEW_AFTER_S`` for good. Synchronous, so a further
+    cancellation cannot skip it too.
+    """
+    renewal = turn._mirror_stream_renewal
+    turn._mirror_stream_renewal = None
+    turn._mirror_stream_started_at = 0.0
+    if renewal is not None:
+        renewal.cancel()
