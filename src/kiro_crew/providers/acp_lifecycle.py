@@ -9,7 +9,7 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_disposable_work_dir``, ``_effort_per_model``,
-``_work_dir_claim_probe``.
+``_start_effort_applied``, ``_work_dir_claim_probe``.
 
 Instance fields read: ``_client``, ``_configured_model``, ``essential_delivery``,
 ``member_context``, ``memory_mode``.
@@ -91,6 +91,8 @@ async def start(self: AcpProvider) -> None:
         # dead predecessor of this data home (session_work_dir); the shutdown
         # reclaim below keys on the flag and on the mark naming this process.
         await asyncio.to_thread(mark_run_dir, Path(self._client._work_dir))
+    # Set by a start that pushed its effort with the model (``kas_start_pin``).
+    self._start_effort_applied = False
     # The workspace cli.json is read and written here and nowhere on the event
     # loop: construction touches no file. Off the loop: the cli.json lock is
     # shared with sibling threads and processes, and an acquire on the loop
@@ -145,7 +147,8 @@ async def start(self: AcpProvider) -> None:
             await self._client.confirm_member_projection()
 
     await self._bind_unbound_effort()
-    await self._apply_initial_effort()
+    if not self._start_effort_applied:
+        await self._apply_initial_effort()
 
 
 async def shutdown(self: AcpProvider) -> None:

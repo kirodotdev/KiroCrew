@@ -71,6 +71,7 @@ from kiro_crew.acp.session_handle import (
     advertised_models_from_session,
 )
 from kiro_crew.acp.session_handle_agent_turns import AgentTurnQueue
+from kiro_crew.acp.session_handle_model_selection import START_WAIT_END
 from kiro_crew.acp.session_handle_runtime_contract import host_refused
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.types import (
@@ -230,6 +231,7 @@ async def create_session(
     member_context: bool | None = None,
     harness_options: Mapping[str, Any] | None = None,
     harness_state: Any = None,
+    on_mode_set: Callable[[AcpSessionHandle], None] | None = None,
 ) -> AcpSessionHandle:
     """Create a new ACP session on this runtime. Returns a session handle.
 
@@ -286,6 +288,13 @@ async def create_session(
     itself (:mod:`kiro_crew.acp.kas_memory`), and ``""`` states none. ``None``
     leaves it to :func:`~kiro_crew.acp.kas_memory.runtime_memory_mode`. The mode
     actually sent is recorded on the handle; other harnesses never send one.
+
+    ``on_mode_set(handle)`` is called once the session's mode is set, right
+    before the MCP start wait, so a caller can send session writes the engine
+    answers while that wait runs (the configured model). It must not wait: it
+    starts its own task and awaits it after this returns. A config-option write
+    such a task sends waits for its answer until that wait ends, if that is later
+    than its own bound (``START_WAIT_END``). A late adoption never calls it.
     """
     if memory_mode not in {"persistent", "incognito", "temporary"}:
         raise ValueError("Invalid session memory mode")
@@ -310,6 +319,7 @@ async def create_session(
             bg_runtime_start=bg_runtime_start,
             member_context=member_context,
             harness_options=harness_options,
+            on_mode_set=on_mode_set,
         )
     agent = await self._source_agent(agent)
     if memory_mode != "persistent":
@@ -873,6 +883,7 @@ async def create_session(
             withheld_notice=withheld_notice,
             start_priority=start_priority,
             prereg_clients=getattr(kas_extras, "mcp_prereg_clients", None),
+            on_mode_set=on_mode_set,
         )
         if pruned is not None:
             # On the report the session opened with: what the array left out failed.
@@ -1126,6 +1137,7 @@ async def _finish_create_session(
     withheld_notice: str = "",
     start_priority: StartPriority = StartPriority.BACKGROUND,
     prereg_clients: Mapping[str, Any] | None = None,
+    on_mode_set: Callable[[AcpSessionHandle], None] | None = None,
 ) -> AcpSessionHandle:
     """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
@@ -1369,21 +1381,39 @@ async def _finish_create_session(
     # A runtime declared MCP-free skips the ceiling — nothing can arm it.
     # After a real mode SWITCH, reports staged during session/new describe
     # the pre-switch roster, so they must not arm the idle shortcut.
-    if self._harness.notification_aliases.mcp_readiness:
-        readiness_params: dict[str, Any] = {"mcpServers": mcp_servers}
-        attach_kas_custom_agents(readiness_params, kas_agents)
-        await self._wait_managed_mcp(
-            handle,
-            readiness_params,
-            active_agent,
-            budget,
-            staged_before_switch if mode_switched else 0,
-            start_priority,
-        )
-    elif self._expect_mcp_reports and self._host_sends_mcp_init:
-        await handle.drain_init(stale_report_frames=staged_before_switch if mode_switched else 0)
-    else:
-        await handle.drain_init(no_report_ceiling=0.0)
+    # The caller's early writes go out first, so the engine answers them while
+    # this wait runs instead of after it (``on_mode_set``).
+    drain_done: asyncio.Event | None = None
+    if on_mode_set is not None:
+        drain_done = asyncio.Event()
+        # Only the tasks ``on_mode_set`` starts copy the event: a write the wait
+        # below sends itself keeps its own bound.
+        context_token = START_WAIT_END.set(drain_done)
+        try:
+            on_mode_set(handle)
+        finally:
+            START_WAIT_END.reset(context_token)
+    try:
+        if self._harness.notification_aliases.mcp_readiness:
+            readiness_params: dict[str, Any] = {"mcpServers": mcp_servers}
+            attach_kas_custom_agents(readiness_params, kas_agents)
+            await self._wait_managed_mcp(
+                handle,
+                readiness_params,
+                active_agent,
+                budget,
+                staged_before_switch if mode_switched else 0,
+                start_priority,
+            )
+        elif self._expect_mcp_reports and self._host_sends_mcp_init:
+            await handle.drain_init(
+                stale_report_frames=staged_before_switch if mode_switched else 0
+            )
+        else:
+            await handle.drain_init(no_report_ceiling=0.0)
+    finally:
+        if drain_done is not None:
+            drain_done.set()
     # The start has read every frame it counts: the queue now waits for a turn.
     # No turn can be running yet, since the handle has not been handed out.
     set_parked(self._session_queues.get(session_id), True)

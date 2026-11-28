@@ -1014,6 +1014,12 @@ class AcpSessionHandle:
         # matched kiro-cli v2's ``models`` block id for id, and the one catalog model
         # it left out failed the turn with ``InvalidModelError``.
         self._kas_served_ids: list[str] = []
+        # Set the first time a KAS ``model`` select is stored, whichever frame
+        # carried it: a start's early pin waits on it (``kas_start_pin``).
+        self.kas_select_seen = asyncio.Event()
+        # True while a start's early pin (``kas_start_pin``) is out: the served-default
+        # check is the pin task's to make once the write ends.
+        self.served_default_after_pin = False
         # Read-path revalidation bookkeeping (see maybe_refresh_available_models).
         # The session-init snapshot is one unconfirmed answer captured at one
         # instant, and the read path (the dashboard picker filter) has no

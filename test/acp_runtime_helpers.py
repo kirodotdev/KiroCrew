@@ -153,6 +153,27 @@ def _replying_send(queue_for, *, error: dict | None = None, req_id: int = 1) -> 
     return AsyncMock(side_effect=_send)
 
 
+def _answering_send_for_answer(
+    result: dict | None = None, *, error: Exception | None = None
+) -> AsyncMock:
+    """A ``send_request_for_answer`` stand-in whose answer is already in.
+
+    The future holds *result* (``{}`` by default), or fails with *error* the way
+    the reader loop fails one for an error answer (``AcpRuntimeError`` carrying
+    ``rpc_error``). ``session/set_config_option`` reads its answer this way.
+    """
+
+    def _send(_method, _params, **_kwargs):
+        answer = asyncio.get_running_loop().create_future()
+        if error is not None:
+            answer.set_exception(error)
+        else:
+            answer.set_result({} if result is None else result)
+        return answer
+
+    return AsyncMock(side_effect=_send)
+
+
 async def _start_reader(rt: AcpRuntime) -> asyncio.Task:
     # The fake stdout is a ``_RunningLoopStreamReader`` that binds its loop
     # lazily on its first suspending read, so its ``readuntil`` waiter is created

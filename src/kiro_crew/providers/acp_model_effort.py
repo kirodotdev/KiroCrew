@@ -428,8 +428,12 @@ async def set_fast_mode(self: AcpProvider, enabled: bool) -> bool | None:
     return self.fast_mode_enabled()
 
 
-def _resolve_effort(self: AcpProvider) -> str | None:
+def _resolve_effort(self: AcpProvider, *, model: str = "") -> str | None:
     """Resolve effort for the current model via the shared priority chain.
+
+    *model* names the model to key on when it is not the client's yet: a start
+    that pushes effort before the session replaces the placeholder client
+    (``_apply_initial_effort``'s *client*) passes the model the session runs.
 
     Both the slot overrides and the workspace defaults key on the model id as
     RECORDED, which on an ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS`` harness is the
@@ -454,7 +458,7 @@ def _resolve_effort(self: AcpProvider) -> str | None:
         # steps a level the model lacks down onto one it offers.
         levels = list(EFFORT_LEVELS) if self.supports_effort() else []
     return resolve_effort_for_model(
-        self._effort_model,
+        model or self._effort_model,
         slot_overrides=self._effort_per_model,
         defaults=self._effort_defaults,
         levels=levels,
@@ -464,9 +468,12 @@ def _resolve_effort(self: AcpProvider) -> str | None:
     )
 
 
-async def _set_effort_config_option(self: AcpProvider, level: str) -> None:
+async def _set_effort_config_option(self: AcpProvider, level: str, *, client: Any = None) -> None:
     """Push an effort level over ``session/set_config_option``, stepping down
     on reject.
+
+    *client* is the session to push to when it is not ``self._client`` yet (see
+    :func:`_apply_initial_effort`).
 
     Serves every member of ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION``.
 
@@ -487,8 +494,9 @@ async def _set_effort_config_option(self: AcpProvider, level: str) -> None:
     A session that advertises no effort option skips the push: the adapter would
     answer ``Unknown config option`` (-32603) and reset the session every turn.
     """
+    session = self._client if client is None else client
     effort_option = effort_config_option_id(self._client.backend)
-    if not self._client.supports_config_option(effort_option):
+    if not session.supports_config_option(effort_option):
         logger.debug("adapter exposes no %r config option; skipping effort push", effort_option)
         return
     advertised = self._advertised_effort_levels()
@@ -513,7 +521,7 @@ async def _set_effort_config_option(self: AcpProvider, level: str) -> None:
     try:
         start = EFFORT_LEVELS.index(target)
     except ValueError:
-        await self._client.set_config_option(effort_option, target)
+        await session.set_config_option(effort_option, target)
         return
     ladder = [lvl for lvl in reversed(EFFORT_LEVELS[: start + 1])]
     if advertised:
@@ -521,12 +529,12 @@ async def _set_effort_config_option(self: AcpProvider, level: str) -> None:
     last_exc: Exception | None = None
     for candidate in ladder:
         try:
-            await self._client.set_config_option(effort_option, candidate)
+            await session.set_config_option(effort_option, candidate)
             if candidate != target:
                 logger.info(
                     "CC effort %r unsupported by model %s — applied %r instead",
                     level,
-                    self._client._model,
+                    session._model,
                     candidate,
                 )
             return
@@ -981,8 +989,13 @@ async def _clear_launch_effort(provider: AcpProvider, model: str) -> bool:
     return True
 
 
-async def _apply_initial_effort(self: AcpProvider) -> None:
+async def _apply_initial_effort(self: AcpProvider, *, client: Any = None) -> None:
     """Apply the resolved effort to a fresh session on the config-option channel.
+
+    *client* is the session handle a KAS start pushes to right after its model
+    write is answered, while ``self._client`` is still the placeholder the start
+    replaces (``kas_start_pin``); the level is then keyed on the model that
+    session runs. ``None`` pushes to ``self._client``, as every later push does.
 
     claude-agent-acp does NOT read ``CLAUDE_CODE_EFFORT_LEVEL`` from the
     environment — effort only takes hold via settings.json files or a live
@@ -999,22 +1012,30 @@ async def _apply_initial_effort(self: AcpProvider) -> None:
     """
     if not self.capabilities.effort_via_config_option:
         return
-    level = self._resolve_effort()
+    session = self._client if client is None else client
+    level = (
+        self._resolve_effort()
+        if client is None
+        else self._resolve_effort(model=client.served_model)
+    )
     if not level:
         return
     try:
-        await self._set_effort_config_option(level)
+        if client is None:
+            await self._set_effort_config_option(level)
+        else:
+            await self._set_effort_config_option(level, client=client)
         logger.info(
             "ACP initial effort applied: backend=%s model=%s effort=%s",
             self._client.backend,
-            self._client._model,
+            session._model,
             level,
         )
     except Exception:
         logger.warning(
             "ACP initial effort apply failed (backend=%s model=%s effort=%s)",
             self._client.backend,
-            self._client._model,
+            session._model,
             level,
             exc_info=True,
         )

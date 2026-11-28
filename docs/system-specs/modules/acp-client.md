@@ -2830,6 +2830,23 @@ switched-off servers are still recorded from `_expect_mcp_reports` alone, so
 they keep their `disabled` row on these hosts too. Every other agent keeps the
 ceiling.
 
+Every one of these drains, and `wait_mcp_ready`, reads the session queue and
+discards the responses on it. So `AcpSessionHandle.set_config_option` never
+reads its answer there: it sends through `AcpRuntime.send_request_for_answer`
+and waits on that future, with the shared error mapping
+(`session_handle_model_selection.raise_answer_error`, which `_wait_for_response`
+also uses) and a timeout of `_CONFIG_OPTION_REPLY_TIMEOUT` (10 s) from the send.
+A caller can send writes while the start's MCP wait runs: `create_session`'s
+`on_mode_set(handle)` is called once the mode is set, right before that wait,
+and the tasks it starts copy `START_WAIT_END`, an event `create_session` sets
+when the wait ends. A config-option write one of them sends waits for its answer
+until the later of its timeout and that event. A write the wait sends itself (the
+served-default switch) keeps its plain timeout, since it could never outlast a
+wait that is waiting for it. A late adoption never calls `on_mode_set`. KAS answers late while it connects a new session's
+MCP servers, so the provider sends a start's configured model this way, once the
+drain has stored the session's `model` select
+([model-selection](../common/model-selection.md#one-function-applies-a-starting-sessions-model)).
+
 **An unattended run waits longer, for named servers.** The drain above gives a
 server about a second after the first report, which a slow `node` server can
 miss; the session then prompts without its tools. Chat lives with that, because

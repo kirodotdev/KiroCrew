@@ -28,15 +28,14 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew import mediated_request_capability, released_sessions, sandbox_launch_mark
 from kiro_crew.acp.client import (
-    AcpError,
     AcpProcessDied,
     AcpTimeoutError,
-    _jsonrpc_error_code,
     parse_slash_command,
     registration_rate_limited_error,
     registration_throttle_line,
 )
 from kiro_crew.acp.command_refused import AcpCommandRefused
+from kiro_crew.acp.session_handle_model_selection import raise_answer_error
 from kiro_crew.acp.session_handle_runtime_contract import host_checks_sessions
 from kiro_crew.acp.types import (
     METHOD_CANCEL,
@@ -521,9 +520,9 @@ async def _wait_for_response(
 ) -> JsonRpcMessage:
     """Drain queue until we get the response for req_id.
 
-    Non-matching frames are NOT dropped: a command/config call
-    (send_command / compact / set_config_option) can run concurrently with a
-    live prompt turn, and both read this shared queue. Silently discarding
+    Non-matching frames are NOT dropped: a command call (send_command /
+    compact) can run concurrently with a live prompt turn, and both read this
+    shared queue. Silently discarding
     non-matching frames here would steal the in-flight turn's text/tool
     frames (wedging its dispatch loop). Instead we buffer them and re-inject
     them in the finally so the turn's consumer still sees them (mirrors
@@ -548,41 +547,7 @@ async def _wait_for_response(
                 raise self._died("Runtime process died while waiting for response")
             if msg.is_response_for(req_id):
                 if msg.error:
-                    # Delegate to the shared raise helper so this path gets
-                    # the SAME treatment as AcpClient: actionable prose from
-                    # _format_acp_error (model-unavailable / throttle / auth /
-                    # 5xx), credential+URL redaction, the transient= verdict
-                    # for the chat_runner / llm_helpers retry ladder, and the
-                    # AcpPromptBusy subclass for a concurrent in-flight
-                    # prompt. Raising a bare f"ACP error: {msg.error}" here
-                    # put the raw JSON-RPC dict in front of the user.
-                    # The advertised ids let the shared entitlement
-                    # discriminator tell "your plan lacks this model"
-                    # (terminal) from a capacity blip (retryable).
-                    #
-                    # The raw JSON-RPC code is re-attached on the way out:
-                    # the shared helper decides everything from the frame's
-                    # prose, and a bare ``-32602 Invalid params`` carries no
-                    # prose to decide from. A config-option write is the one
-                    # request whose shape is fixed and whose value is the
-                    # only variable, so for it that code IS a value refusal
-                    # rather than a malformed request. Nothing else branches
-                    # on ``code``, so setting it cannot change any other
-                    # path's outcome.
-                    # Under KAS machine mode a refused credential is the host token's.
-                    from kiro_crew.agent_sdk.kas_machine import raise_turn_error
-
-                    try:
-                        raise_turn_error(
-                            self._runtime,
-                            msg.error,
-                            self._advertised_model_ids(),
-                            backend=self._runtime.acp_backend,
-                        )
-                    except AcpError as _exc:
-                        if getattr(_exc, "code", None) is None:
-                            _exc.code = _jsonrpc_error_code(msg.error)
-                        raise
+                    raise_answer_error(self, msg.error)
                 return msg
             # Not our response — buffer (do not drop) for re-injection,
             # and advance the ingress sequence for EVERY buffered frame:

@@ -462,6 +462,31 @@ cannot differ between a dedicated process and a shared one:
 4. Anything else goes to `AcpSessionHandle.set_model`. A write that fails is
    logged and never fails the start.
 
+On KAS the runtime's own first session sends it earlier. KAS answers every
+request late while it connects a new session's MCP servers, so a pin sent after
+the start's MCP wait could outlast its 10 s bound. `providers/kas_start_pin.py`
+starts a task from `create_session`'s `on_mode_set`, once the mode is set. The
+task waits for the session's own `model` select to name a concrete model
+(`kas_model_select_known`, the evidence `set_model` judges a pin by), which from
+engine 0.66.117 comes in a `config_option_update` the MCP wait's drain stores
+(`AcpSessionHandle.kas_select_seen`), then runs `apply_configured_model` while
+that wait runs, so an unserved pin is still refused before it is sent. A select
+that has not come when the wait ends sends nothing early, and the pin goes after
+the wait, as on every other start. The served-default switch
+(`ensure_served_default`) comes after the pin's write: until the pin's task has
+made that check itself (`kas_switch_off_unserved_auto`), the MCP wait leaves it
+to the task (`served_default_after_pin`), so the switch never lands on top of the
+pin, is never sent twice, and a refusal the pin recorded survives it. The MCP
+wait never waits for the pin, whose answer may wait for that wait's end. The
+check judges only a session still on `auto`. The start's effort
+follows the pin's answer at once (`AcpProvider._apply_initial_effort` with
+`client=handle`), because KAS offers `effortLevel` only once a concrete model
+is set, and `start()` then skips its own effort push. The config-option writes
+read their answers from the runtime, not the session queue, and wait until the
+later of 10 s and the end of the MCP wait ([acp-client](../modules/acp-client.md)).
+The `set_model` phase then records only the part of the pin's write that ran
+after `create_session` returned, without the effort write.
+
 Whether a model-pinned sub-agent takes the shared runtime at all is a separate,
 earlier question, answered by a named capability and not by which harness it is:
 `SessionCapabilities.takes_model_per_session` (`ACP_BACKENDS_MODEL_PER_SESSION`),

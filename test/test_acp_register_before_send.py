@@ -77,20 +77,28 @@ async def test_send_command_keeps_a_response_that_lands_during_the_drain():
 
 @pytest.mark.asyncio
 async def test_set_config_option_keeps_a_response_that_lands_during_the_drain():
+    """Its answer is a registered future the reader resolves, never a queue frame."""
     handle, rt, proc = _handle()
-    _answer_inside_drain(handle, rt, proc, {})
+
+    async def _drain() -> None:
+        (req_id,) = list(rt._pending_requests)
+        rt._pending_requests.pop(req_id).set_result({})
+        await _run_pre_turn_drain(handle, rt)
+
+    proc.stdin.drain = AsyncMock(side_effect=_drain)
 
     await finished(handle.set_config_option("effort", "high"), "the config option's response")
 
-    assert not handle._awaited_responses
+    assert not rt._pending_requests
 
 
 @pytest.mark.asyncio
 async def test_a_failed_send_does_not_leave_its_id_registered():
-    handle, _rt, proc = _handle()
+    handle, rt, proc = _handle()
     proc.stdin.drain = AsyncMock(side_effect=BrokenPipeError("gone"))
 
     with pytest.raises(AcpRuntimeDead):
         await handle.set_config_option("effort", "high")
 
     assert not handle._awaited_responses
+    assert not rt._pending_requests

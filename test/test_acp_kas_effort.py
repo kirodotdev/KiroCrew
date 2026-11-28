@@ -15,12 +15,12 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from acp_runtime_helpers import _answering_send_for_answer
 
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
-    JsonRpcMessage,
     effort_config_option_id,
 )
 from kiro_crew.providers.acp import AcpProvider
@@ -129,9 +129,8 @@ async def test_the_handle_adopts_the_options_a_config_write_returns() -> None:
     runtime.acp_backend = ACP_BACKEND_KAS
     handle = AcpSessionHandle("s1", asyncio.Queue(), runtime)
     handle._config_options = [{"type": "select", "id": "model", "currentValue": "auto"}]
-    handle._send_awaited = AsyncMock(return_value=7)  # type: ignore[method-assign]
-    handle._wait_for_response = AsyncMock(  # type: ignore[method-assign]
-        return_value=JsonRpcMessage(id=7, result={"configOptions": KAS_OPTIONS_WITH_MODEL})
+    runtime.send_request_for_answer = _answering_send_for_answer(
+        {"configOptions": KAS_OPTIONS_WITH_MODEL}
     )
     handle._sync_effort_levels = MagicMock()  # type: ignore[method-assign]
     assert handle.supports_config_option("effortLevel") is False
@@ -149,10 +148,7 @@ async def test_a_result_without_options_keeps_the_cached_list() -> None:
     runtime.acp_backend = ACP_BACKEND_KAS
     handle = AcpSessionHandle("s1", asyncio.Queue(), runtime)
     handle._config_options = list(KAS_OPTIONS_WITH_MODEL)
-    handle._send_awaited = AsyncMock(return_value=7)  # type: ignore[method-assign]
-    handle._wait_for_response = AsyncMock(  # type: ignore[method-assign]
-        return_value=JsonRpcMessage(id=7, result={})
-    )
+    runtime.send_request_for_answer = _answering_send_for_answer({})
 
     await handle.set_config_option("effortLevel", "high")
 

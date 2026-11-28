@@ -14,7 +14,9 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from acp_runtime_helpers import _answering_send_for_answer
 
+from kiro_crew.acp.runtime_reader_loop import _runtime_rpc_exception
 from kiro_crew.acp.session_handle import AcpError, AcpModelUnavailable, AcpSessionHandle
 from kiro_crew.acp.types import ACP_BACKEND_KAS, METHOD_SET_CONFIG_OPTION, MODEL_CONFIG_ID
 from kiro_crew.agent_sdk import kas_model_catalog as catalog
@@ -58,6 +60,8 @@ def _handle() -> tuple[AcpSessionHandle, MagicMock]:
     runtime.acp_backend = ACP_BACKEND_KAS
     runtime.is_alive.return_value = True
     runtime.send_request = AsyncMock(return_value=1)
+    # A config-option write reads its answer off the queue, through this.
+    runtime.send_request_for_answer = _answering_send_for_answer()
     handle = AcpSessionHandle("sess-kas", asyncio.Queue(), runtime)
     handle._wait_for_response = AsyncMock(return_value={})  # type: ignore[method-assign]
     handle.request_vault_identity = _ID
@@ -65,7 +69,13 @@ def _handle() -> tuple[AcpSessionHandle, MagicMock]:
 
 
 def _sent(runtime: MagicMock) -> list[tuple[str, dict]]:
-    return [(c.args[0], c.args[1]) for c in runtime.send_request.await_args_list]
+    return [
+        (c.args[0], c.args[1])
+        for c in (
+            *runtime.send_request.await_args_list,
+            *runtime.send_request_for_answer.await_args_list,
+        )
+    ]
 
 
 def test_a_reopened_chat_switches_to_a_model_its_load_select_omits() -> None:
@@ -155,8 +165,8 @@ def test_auto_on_a_reopened_chat_is_judged_by_the_accounts_recorded_catalog(
 def test_an_engine_error_on_the_switch_reaches_the_caller_as_itself() -> None:
     handle, runtime = _handle()
     handle.store_session_config(_RELOADED)
-    handle._wait_for_response = AsyncMock(  # type: ignore[method-assign]
-        side_effect=AcpError("Internal error", code=-32603)
+    runtime.send_request_for_answer = _answering_send_for_answer(
+        error=_runtime_rpc_exception({"code": -32603, "message": "Internal error"})
     )
     with pytest.raises(AcpError) as raised:
         asyncio.run(handle.set_model("claude-opus-5.5"))

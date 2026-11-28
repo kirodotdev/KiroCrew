@@ -1624,7 +1624,15 @@ def test_an_inheriting_session_is_sent_the_model_its_adapter_reports(harness, tm
         )
         return req_id
 
+    async def send_request_for_answer(method: str, params: dict, **_: Any) -> asyncio.Future:
+        # A config-option write reads its answer off the queue, as this future.
+        plane.sent.append((method, params))
+        answer = asyncio.get_running_loop().create_future()
+        answer.set_result({})
+        return answer
+
     rt.send_request = send_request  # type: ignore[method-assign]
+    rt.send_request_for_answer = send_request_for_answer  # type: ignore[method-assign]
     if path == "load":
         handle = asyncio.run(_load(rt, tmp_path, "s-21"))
     else:

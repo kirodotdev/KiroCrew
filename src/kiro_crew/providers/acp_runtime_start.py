@@ -77,6 +77,12 @@ from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.platform_compat import pid_exists
 from kiro_crew.providers.cleanup import _is_safe_path
+from kiro_crew.providers.kas_start_pin import (
+    EarlyPin,
+    drop_early_pin,
+    finish_early_pin,
+    start_pin_early,
+)
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.startup_deadline import cancel_outcome
 
@@ -1183,6 +1189,8 @@ async def _start_kiro_runtime_impl(
         meta["resumed"] = resumed
 
         _t_sess = time.monotonic()
+        # The configured pin's write when it went out during the MCP start wait.
+        _early_pin: list[asyncio.Task[EarlyPin]] = []
 
         if handle is None:
             self.kas_memory_mode = self.kas_memory_new_mode
@@ -1315,6 +1323,13 @@ async def _start_kiro_runtime_impl(
                     on_gate_acquired=self._on_gate_acquired,
                     on_gate_queued=self._on_gate_queued,
                     start_priority=start_priority,
+                    # A KAS pin goes out as soon as the mode is set, so the engine
+                    # answers it during the MCP start wait (``kas_start_pin``).
+                    on_mode_set=(
+                        functools.partial(start_pin_early, self, configured_model, _early_pin)
+                        if self._client.backend == ACP_BACKEND_KAS
+                        else None
+                    ),
                 )
             except AcpRuntimeError as exc:
                 sandbox_failure = await sandbox_init_failure_for_runtime(runtime)
@@ -1344,6 +1359,8 @@ async def _start_kiro_runtime_impl(
                     _name_credential_mask(runtime, exc)
                 raise
             finally:
+                if handle is None:
+                    await drop_early_pin(_early_pin)
                 # In a finally, mirroring session_load: a start that BLEW its
                 # budget is the one whose duration matters most, and recording
                 # it only after the try left startup telemetry with no row for
@@ -1352,7 +1369,6 @@ async def _start_kiro_runtime_impl(
                 # that would understate the phase's real distribution.
                 phases["session_new"] = (time.monotonic() - _t_sess) * 1000.0
                 turn_timing.phase("session_new", phases["session_new"])
-
         # The cloud session id this chat's row held before this start, when this
         # start replaced it with a new one (a new sandbox, without its files).
         replaced_cloud_session = ""
@@ -1370,23 +1386,32 @@ async def _start_kiro_runtime_impl(
                     # and a failed reopen falls back: each starts a new sandbox.
                     replaced_cloud_session = previous
             except BaseException:
-                if not resumed:
-                    # A sandbox this start created and could not record would be
-                    # left in Kiro's cloud with nothing pointing at it. It holds
-                    # no conversation yet, so it is deleted (bounded, best
-                    # effort) before the start fails. A reopened session is kept.
-                    # Shielded so a second cancel cannot skip the delete, and
-                    # waited for, so the failed start does not stop the runtime
-                    # under it.
-                    cleanup = asyncio.ensure_future(
-                        runtime.terminate_session(handle.session_id, delete_cloud_session=True)
-                    )
-                    try:
-                        await asyncio.shield(cleanup)
-                    except asyncio.CancelledError:
-                        await asyncio.wait({cleanup})
-                        raise
+                for task in _early_pin:
+                    task.cancel()
+                try:
+                    if not resumed:
+                        # A sandbox this start created and could not record would be
+                        # left in Kiro's cloud with nothing pointing at it. It holds
+                        # no conversation yet, so it is deleted (bounded, best
+                        # effort) before the start fails. A reopened session is kept.
+                        # Shielded so a second cancel cannot skip the delete, and
+                        # waited for, so the failed start does not stop the runtime
+                        # under it.
+                        cleanup = asyncio.ensure_future(
+                            runtime.terminate_session(handle.session_id, delete_cloud_session=True)
+                        )
+                        try:
+                            await asyncio.shield(cleanup)
+                        except asyncio.CancelledError:
+                            await asyncio.wait({cleanup})
+                            raise
+                finally:
+                    await drop_early_pin(_early_pin)
                 raise
+
+        # Record a cloud session before this wait so a cancellation cannot leave
+        # its sandbox both unrecorded and undeleted.
+        _sent_early, _early_pin_ms = await finish_early_pin(_early_pin)
 
         # kiro-cli starts an unpinned chat on its cli.json chat.defaultModel,
         # which KAS never reads, so Crew applies it here as an INHERITED model:
@@ -1410,8 +1435,14 @@ async def _start_kiro_runtime_impl(
         # Apply the configured model override: the one function a sub-agent's
         # session on its parent's runtime also goes through.
         # DEFAULT_MODEL ("auto") means "let kiro-cli pick per agent config".
-        _set_model_ms = await apply_configured_model(
-            handle, configured_model, backend=self._client.backend
+        # A pin sent during the MCP start wait is awaited instead, and its phase
+        # is only the wait it added after that.
+        _set_model_ms = (
+            _early_pin_ms
+            if _sent_early
+            else await apply_configured_model(
+                handle, configured_model, backend=self._client.backend
+            )
         )
         if _set_model_ms is not None:
             phases["set_model"] = _set_model_ms

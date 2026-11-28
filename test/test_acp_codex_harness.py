@@ -50,6 +50,7 @@ from kiro_crew.acp.harness import harness_for
 from kiro_crew.acp.harness.base import SpawnContext, TeardownPolicy
 from kiro_crew.acp.harness.codex import CodexHarness
 from kiro_crew.acp.runtime import AcpRuntime, _MirroredSessionMcp
+from kiro_crew.acp.runtime_reader_loop import _runtime_rpc_exception
 from kiro_crew.acp.session_handle import (
     AcpSessionHandle,
     advertised_models_from_session,
@@ -1346,8 +1347,9 @@ class TestWhatTheHandleAdvertisesForCodex:
 class _ControlPlane:
     """Every control-plane request one ``create_session`` issues, in order.
 
-    Three seams: ``_send_and_await`` (session/new, set_mode), ``send_request``
-    (set_config_option) and ``send_notification`` (``session/cancel``). codex's
+    Three seams: ``_send_and_await`` (session/new, set_mode),
+    ``send_request_for_answer`` (set_config_option) and ``send_notification``
+    (``session/cancel``). codex's
     ``session/close`` is a request; ``notifications`` stays separate from ``methods`` so
     a verb sent the wrong way fails.
     """
@@ -1372,20 +1374,30 @@ class _ControlPlane:
             self.params.append(params)
             return 999
 
+        async def _send_request_for_answer(method, params, **_kw):
+            self.methods.append(method)
+            self.params.append(params)
+            answer = asyncio.get_running_loop().create_future()
+            if self._reject_config:
+                # An error FRAME, as the reader loop fails the future for one: it
+                # travels the shared raise helper, which raises the AcpError the
+                # rejected-write branch of apply_session_permission_routing catches.
+                answer.set_exception(
+                    _runtime_rpc_exception({"code": -32602, "message": "Invalid params"})
+                )
+            else:
+                answer.set_result({})
+            return answer
+
         async def _send_notification(method, params):
             self.notifications.append((method, params))
 
         async def _wait_for_response(_self, req_id, timeout=None):
-            if self._reject_config:
-                # AcpError, not AcpRuntimeError: an error FRAME travels the shared
-                # raise helper, and the rejected-write branch of
-                # apply_session_permission_routing catches that class. A stand-in
-                # raising the wrong one would exercise no branch at all.
-                raise AcpError("-32602 Invalid params")
             return {}
 
         stack.enter_context(patch.object(rt, "_send_and_await", _send_and_await))
         stack.enter_context(patch.object(rt, "send_request", _send_request))
+        stack.enter_context(patch.object(rt, "send_request_for_answer", _send_request_for_answer))
         stack.enter_context(patch.object(rt, "send_notification", _send_notification))
         stack.enter_context(
             patch.object(AcpSessionHandle, "_wait_for_response", _wait_for_response)

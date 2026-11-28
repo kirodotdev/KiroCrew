@@ -12,6 +12,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from acp_runtime_helpers import _answering_send_for_answer
 
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.types import (
@@ -30,6 +31,8 @@ def _handle(backend: str) -> tuple[AcpSessionHandle, MagicMock]:
     runtime.acp_backend = backend
     # send_request returns a request id the caller may then await a response for.
     runtime.send_request = AsyncMock(return_value=1)
+    # A config-option write reads its answer off the queue, through this.
+    runtime.send_request_for_answer = _answering_send_for_answer()
     handle = AcpSessionHandle("sess-1", asyncio.Queue(), runtime)
     # Response plumbing is not what these tests are about; the wire call is.
     handle._wait_for_response = AsyncMock(return_value={})  # type: ignore[method-assign]
@@ -40,7 +43,15 @@ def _handle(backend: str) -> tuple[AcpSessionHandle, MagicMock]:
 
 
 def _sent_methods(runtime: MagicMock) -> list[str]:
-    return [call.args[0] for call in runtime.send_request.await_args_list]
+    return [call.args[0] for call in _sent(runtime)]
+
+
+def _sent(runtime: MagicMock) -> list:
+    """Every request the handle wrote, whichever way it reads the answer."""
+    return [
+        *runtime.send_request.await_args_list,
+        *runtime.send_request_for_answer.await_args_list,
+    ]
 
 
 class TestModelVerbPerBackend:
@@ -58,11 +69,7 @@ class TestModelVerbPerBackend:
     async def test_kas_names_the_model_config_id(self):
         handle, runtime = _handle(ACP_BACKEND_KAS)
         await handle.set_model(_MODEL)
-        params = next(
-            c.args[1]
-            for c in runtime.send_request.await_args_list
-            if c.args[0] == METHOD_SET_CONFIG_OPTION
-        )
+        params = next(c.args[1] for c in _sent(runtime) if c.args[0] == METHOD_SET_CONFIG_OPTION)
         assert params["configId"] == MODEL_CONFIG_ID
         assert params["value"] == _MODEL
         assert params["sessionId"] == "sess-1"
@@ -102,7 +109,7 @@ class TestSharedBookkeeping:
         """
         handle, runtime = _handle(backend)
         await handle.set_model("some-model-nobody-serves")
-        assert runtime.send_request.await_args_list == []
+        assert _sent(runtime) == []
         # The session stays on its backend default and records no refusal.
         assert handle._model == ""
         assert handle._resolved_model_id == ""
@@ -123,9 +130,7 @@ class TestKasModelSpelling:
     @staticmethod
     def _sent_value(runtime: MagicMock) -> str:
         return next(
-            c.args[1]["value"]
-            for c in runtime.send_request.await_args_list
-            if c.args[0] == METHOD_SET_CONFIG_OPTION
+            c.args[1]["value"] for c in _sent(runtime) if c.args[0] == METHOD_SET_CONFIG_OPTION
         )
 
     @pytest.mark.asyncio
