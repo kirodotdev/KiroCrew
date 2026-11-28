@@ -251,8 +251,9 @@ def _index_tree(root: Path) -> _TreeIndex:
     tree many times in one process -- once per changed-file batch in `classify()`,
     and dozens of times in `_self_test` (once per stem in its dependency-check
     loop, and again once per `test/test_*.py` candidate while it hunts for a clean
-    leaf). Nothing changes which files exist or what they contain within a single
-    process, so answering from one index is exact, not an approximation.
+    leaf). Nothing changes which files the checkout holds or what they contain
+    within a single process, so answering from one index of it is exact, not an
+    approximation (:func:`_tree_index` keeps no other root's).
 
     What is cached is the INDEX, not the text. Holding every scanned file's source
     (~140 MB across `src/`, `test/` and `scripts/`, and most of it stored two
@@ -286,7 +287,23 @@ def _index_tree(root: Path) -> _TreeIndex:
     return _TreeIndex(importers, mentioners, readers)
 
 
-_index_tree_cached = functools.lru_cache(maxsize=None)(_index_tree)
+def _tree_index(root: Path) -> _TreeIndex:
+    """``root``'s index: the checkout's is kept for the process, any other is built.
+
+    A root other than the checkout is a fixture tree under a test's ``tmp_path``,
+    and that path does not name one tree: pytest removes a passing test's
+    ``tmp_path`` (``tmp_path_retention_policy = failed``) and hands the same path
+    to a later test whose name shares its first 30 characters, so an index kept by
+    path would answer that test from the files of the one before it.
+    """
+    if root == REPO_ROOT:
+        return _checkout_index()
+    return _index_tree(root)
+
+
+@functools.lru_cache(maxsize=None)
+def _checkout_index() -> _TreeIndex:
+    return _index_tree(REPO_ROOT)
 
 
 def _run_git(argv: list[str]) -> str:
@@ -346,7 +363,7 @@ def importers_of(stems: set[str], root: Path) -> dict[str, str]:
     """
     if not stems:
         return {}
-    index = _index_tree_cached(root)
+    index = _tree_index(root)
     found: dict[str, str] = {}
     for stem in stems:
         if stem in index.importers:
@@ -376,7 +393,7 @@ def mentions_of(stems: set[str], root: Path) -> dict[str, str]:
     odd = sorted(stem for stem in stems if not _WORD.match(stem))
     if odd:
         raise SelectionUntrustworthy(f"{odd[0]!r} is not a module stem; cannot check mentions")
-    index = _index_tree_cached(root)
+    index = _tree_index(root)
     found: dict[str, str] = {}
     for stem in stems:
         if stem in index.mentioners:
@@ -410,7 +427,7 @@ def readers_of(stems: set[str], root: Path) -> list[str]:
     for path in sorted(test_dir.glob("*.txt")):
         if stems.intersection(_LISTED_MODULE.findall(_read(path))):
             names.add(path.name)
-    index = _index_tree_cached(root)
+    index = _tree_index(root)
     return sorted({reader for name in names for reader in index.readers.get(name, ())})
 
 

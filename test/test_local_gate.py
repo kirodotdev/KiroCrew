@@ -1004,6 +1004,35 @@ def test_an_empty_platform_list_drops_nothing(
     assert "not collected" not in verdict
 
 
+# ---------------------------------------------------------------------------
+# selection: a fixture tree is read from disk, never from a walk kept by its path
+# ---------------------------------------------------------------------------
+
+
+def test_a_second_tree_at_the_same_path_is_walked_afresh(
+    tmp_path, monkeypatch, collect_ignore_helpers
+) -> None:
+    """pytest hands a passing test's removed ``tmp_path`` to a later test whose name
+    shares its first 30 characters, so one path holds two trees in one worker. Both
+    readers of the test-tree walk must answer the second tree from its own files."""
+    selector = importlib.import_module("run_scoped_tests")
+    monkeypatch.setattr(collect_ignore_helpers, "PLATFORM_IGNORED", frozenset())
+    root = tmp_path / "repo"
+    (root / "src" / "kiro_crew").mkdir(parents=True)
+    (root / "src" / "kiro_crew" / "widget.py").write_text("X = 1\n", encoding="utf-8")
+    (root / "test").mkdir()
+    guard_text = "from source_corpus import iter_source_texts\n"
+    diff = ["src/kiro_crew/widget.py"]
+    (root / "test" / "test_widget.py").write_text(guard_text, encoding="utf-8")
+    assert selector.related_targets("backend", diff, root=root)[0] == ["test/test_widget.py"]
+    assert selector.tree_scan_targets(root) == ["test/test_widget.py"]
+
+    (root / "test" / "test_widget_extra.py").write_text(guard_text, encoding="utf-8")
+    both = ["test/test_widget.py", "test/test_widget_extra.py"]
+    assert selector.related_targets("backend", diff, root=root)[0] == both
+    assert selector.tree_scan_targets(root) == both
+
+
 _BARE_INTERPRETER_GROUP = "local_gate_bare_interpreter"
 
 # Every case that needs an interpreter without site-packages is answered by this
