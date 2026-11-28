@@ -196,6 +196,91 @@ class TestProbeTempContainment:
             await probe_server(server)
         alloc_spy.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_probed_server_starts_in_its_managed_scratch(self, tmp_path, monkeypatch) -> None:
+        """The spawn's ``cwd`` is the per-probe scratch, not the gateway's own directory.
+
+        A server that walks its working directory on start would otherwise pay for
+        the gateway's home tree on every probe. The scratch is the directory the
+        sandbox carves writable and the temp keys point at, and it exists when the
+        spawn happens.
+        """
+        import sys
+        from pathlib import Path
+
+        from kiro_crew import sandbox
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+        monkeypatch.setattr(sandbox, "config_dir", lambda: home)
+
+        captured_wrap: dict = {}
+
+        def _wrap(argv, *a, env=None, **k):
+            captured_wrap.update(k)
+            return list(argv), dict(env if env is not None else os.environ), None
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _wrap)
+
+        cwd_at_spawn: dict = {}
+
+        async def _spawn(*argv, **kwargs):
+            cwd = kwargs.get("cwd")
+            cwd_at_spawn["cwd"] = cwd
+            cwd_at_spawn["is_dir"] = cwd is not None and Path(cwd).is_dir()
+            raise OSError("stop after spawn capture")
+
+        server = McpServerInfo(name="probe-cwd", command=sys.executable, args=["-c", "pass"])
+        with patch("kiro_crew.mcp_discovery.create_subprocess_limited", side_effect=_spawn):
+            await probe_server(server)
+
+        carve = captured_wrap.get("extra_writable_dirs")
+        assert carve is not None and len(carve) == 1
+        assert cwd_at_spawn["cwd"] == carve[0]
+        assert cwd_at_spawn["is_dir"]
+
+    @pytest.mark.asyncio
+    async def test_a_relative_command_is_pinned_to_the_gateway_cwd(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """``which`` returns a command with a directory part as spelled, checked against
+        this process's cwd; the spawn gets the absolute spelling, since the child
+        starts in its scratch and would not find the relative name there."""
+        from pathlib import Path
+
+        from kiro_crew import sandbox
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+        monkeypatch.setattr(sandbox, "config_dir", lambda: home)
+        monkeypatch.chdir(tmp_path)
+        relative = Path("bin") / "srv"
+        (tmp_path / "bin").mkdir()
+        (tmp_path / relative).write_text("#!/bin/sh\n", encoding="utf-8")
+        (tmp_path / relative).chmod(0o700)
+        monkeypatch.setattr(
+            "kiro_crew.mcp_discovery.shutil.which", lambda cmd, path=None: str(relative)
+        )
+
+        def _wrap(argv, *a, env=None, **k):
+            return list(argv), dict(env if env is not None else os.environ), None
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _wrap)
+
+        server = McpServerInfo(name="relative-cmd", command=str(relative), args=[])
+        with patch(
+            "kiro_crew.mcp_discovery.create_subprocess_limited",
+            new_callable=AsyncMock,
+            side_effect=OSError("stop after argv capture"),
+        ) as spawn_mock:
+            await probe_server(server)
+
+        assert spawn_mock.call_args.args[0] == str(tmp_path / relative)
+
     @_NEEDS_A_SEALING_BACKEND
     @pytest.mark.asyncio
     async def test_sealed_spec_declared_temp_falls_back_to_managed(
