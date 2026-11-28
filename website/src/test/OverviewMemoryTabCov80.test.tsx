@@ -1038,6 +1038,21 @@ describe('MemoryTab — manual consolidation', () => {
     expect(within(notice).getByTestId('consolidate-failed-detail').textContent).toBe('zzq-first-failure')
   })
 
+  it('shows a tag- or placeholder-shaped session title and reply verbatim (#22834)', async () => {
+    const title = '<i>x</i> <session>y</session> {{count}}'
+    const reply = '<i>boom</i> <reply>z</reply> {{reply}}'
+    api.sessions.mockResolvedValue({ sessions: [{ key: 'zzq-s1', title }] })
+    api.consolidateMemory.mockRejectedValueOnce(new Error(reply))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
+    await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
+
+    const notice = await screen.findByRole('alert')
+    expect(notice.querySelector('i')).toBeNull()
+    expect(within(notice).getByTestId('consolidate-failed-session-link').textContent).toBe(title)
+    expect(within(notice).getByTestId('consolidate-failed-detail').textContent).toBe(reply)
+  })
+
   it('says what the button does, under it, before it is ever pressed', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     openTab('Settings')

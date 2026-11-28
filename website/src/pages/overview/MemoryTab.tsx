@@ -992,13 +992,13 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
                   {consolidateFailure.session !== undefined && (
                     /* The session by its TITLE, as the sidebar names it ("Untitled session"
                        when it has none), and a way to act on it: the same guarded navigation as
-                       the tab's other exits, since a click leaves the drafts this tab holds. */
+                       the tab's other exits, since a click leaves the drafts this tab holds.
+                       The title and the reply are each their slot's child, never a value:
+                       <Trans> parses its string as markup, so a value would be parsed with it. */
                     <span className="block text-[12px]" data-testid="consolidate-failed-session">
                       <Trans
                         i18nKey="pages.overview.memoryTab.consolidate_failed_session"
                         count={consolidateFailure.count}
-                        values={{ session: sessionDisplayTitle(consolidateFailure.session) }}
-                        // eslint-disable-next-line jsx-a11y/control-has-associated-label -- the control's label is the session title `Trans` renders inside it
                         components={{ session: <button
                           type="button"
                           className="p-0 border-none bg-transparent font-body text-[12px] text-inherit underline underline-offset-2 cursor-pointer hover:text-accent"
@@ -1007,15 +1007,14 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
                             const destination = `/chat?sid=${encodeURIComponent(consolidateFailure.session?.key ?? '')}`
                             leave(() => navigate(destination), destination)
                           }}
-                        /> }}
+                        >{sessionDisplayTitle(consolidateFailure.session)}</button> }}
                       />
                     </span>
                   )}
                   <span className="block text-[12px] text-muted" data-testid="consolidate-failed-reply">
                     <Trans
                       i18nKey="pages.overview.memoryTab.consolidate_failed_reply"
-                      values={{ reply: consolidateFailure.raw }}
-                      components={{ reply: <span className="font-mono" data-testid="consolidate-failed-detail" /> }}
+                      components={{ reply: <span className="font-mono" data-testid="consolidate-failed-detail">{consolidateFailure.raw}</span> }}
                     />
                   </span>
                 </>}
