@@ -18,7 +18,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const PW_VERSION = '1.58.2' // matches website/package.json; must be >= 1.48 for routeWebSocket (ssrf-guard.mjs refuses without it) and needs a modern Node (repo docs say >= 22)
@@ -52,6 +52,16 @@ function normalize(mod) {
   return null
 }
 
+// The Windows Node installer ships npm only as npm.cmd, which a shell-less spawn
+// cannot find (ENOENT) and current Node refuses to start without shell: true.
+// So on Windows run npm's own CLI through this Node when it sits beside the
+// binary, as the Chromium download below does; else call npm by name.
+export function npmLaunch(args, { execPath = process.execPath, platform = process.platform } = {}) {
+  const cli = join(dirname(execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')
+  if (platform === 'win32' && existsSync(cli)) return [execPath, [cli, ...args]]
+  return ['npm', args]
+}
+
 export async function getPlaywright({ autoInstall = true } = {}) {
   // 1. resolvable from the normal module paths (only when it can provide the
   //    routeWebSocket the SSRF guard requires)?
@@ -69,10 +79,11 @@ export async function getPlaywright({ autoInstall = true } = {}) {
   // 3. install into the cache dir on demand (one-time)
   console.error(`ensure-playwright: installing playwright@${PW_VERSION} into ${CACHE} (one-time, needs network)…`)
   try { mkdirSync(CACHE, { recursive: true }) } catch { /* ignore */ }
-  const r = spawnSync('npm', ['install', '--prefix', CACHE, `playwright@${PW_VERSION}`, '--no-audit', '--no-fund', '--silent'],
-    { stdio: 'inherit', timeout: 240000 })
+  const [npmCmd, npmArgs] = npmLaunch(['install', '--prefix', CACHE, `playwright@${PW_VERSION}`, '--no-audit', '--no-fund', '--silent'])
+  const r = spawnSync(npmCmd, npmArgs, { stdio: 'inherit', timeout: 240000 })
   if (r.status !== 0 || !existsSync(PW_ENTRY)) {
-    console.error('ensure-playwright: install failed — falling back to headless Chrome.')
+    const why = r.error ? ` (${r.error.code || r.error.message})` : ''
+    console.error(`ensure-playwright: install failed${why} — falling back to headless Chrome.`)
     return null
   }
   // The npm package ships no browser binaries, so installing it alone leaves
