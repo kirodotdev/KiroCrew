@@ -1001,6 +1001,12 @@ discarding a restored batch keeps it, and `empty_trash` **skips** that batch rat
 than aborting, so one unreadable batch cannot make the whole trash un-emptyable.
 Both directions delete nothing, which is the safe one.
 
+A link to a directory in the batch, symlink or junction, is reported as one unlisted
+entry and never entered. The name walk Windows takes prunes it from `os.walk`'s
+directory list, because `os.walk`'s own link test misses a junction and would count
+the target's files as staged ones. `test_a_linked_directory_is_reported_and_never_entered`
+fails if it is entered.
+
 ### The manifest is untrusted input
 
 It lives under the data home, which the agent can write, so restore validates both
