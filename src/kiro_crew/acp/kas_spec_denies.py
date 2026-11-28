@@ -7,8 +7,10 @@ that deny list is one Crew reads the way kiro-cli does, this module records the
 grants the deny alone held back under :data:`CREW_SPEC_DENIES_KEY`, together with
 the list, and the session handle reads them back as one
 :class:`~kiro_crew.platform.spec_denied_grant.SpecDeniedGrant`. See that module for
-how the gate uses it. Any other key beside a deny (``fallbackAction``, an
-authored ``ask``) keeps the grant withheld, as before; a boolean shell
+how the gate uses it. A shell ``ask`` or ``deny`` rule scoped by a ``match``
+Crew reads is lifted the same way, and the gate withholds the grant only from
+the commands it may match. Any other key beside a deny (``fallbackAction``, an
+unscoped authored ``ask``) keeps the grant withheld, as before; a boolean shell
 ``autoAllowReadonly`` does not, and ``denyByDefault`` withholds only the whole-tool
 shell grant, never the ``allowedCommands`` beside it.
 """
@@ -29,6 +31,7 @@ from kiro_crew.acp.kas_permissions import (
     CREW_SPEC_DENIES_KEY,
     CREW_UNJUDGED_DENIES_KEY,
     _chunked_rules,
+    _shell_glob_pattern,
     _url_glob,
     shell_denies_carried,
     shell_deny_carried,
@@ -46,6 +49,7 @@ from kiro_crew.platform.tools_settings_aliases import canonical_tools_settings
 _LIFTABLE: frozenset[str] = frozenset(
     {"execute_bash", "execute_pwsh", "fs_write", "fs_append", "str_replace"}
 )
+_SHELL_LIFTABLE: frozenset[str] = frozenset({"execute_bash", "execute_pwsh"})
 
 #: Bound on each recorded deny list, like the allowlists'.
 _MAX_DENIES = 64
@@ -477,6 +481,43 @@ def _without(tools_settings: Any, keys: tuple[str, ...], field: str) -> Any:
     return out
 
 
+def _without_scoped_shell_asks(block: Any) -> tuple[Any, list[str]]:
+    """*block* without each ``shell`` ``ask``/``deny`` rule scoped by a ``match``
+    Crew reads (``kas_permissions._shell_glob_pattern``, which also bounds each
+    glob's length), and those globs as ``allowedCommands``-style patterns.
+
+    The gate withholds a lifted shell grant from any command one of them may match
+    (``spec_denied_gate.denied_grant_applies``), so only the calls the rule covers
+    keep prompting. A rule with an unreadable glob, an unscoped one, or one on a
+    meta capability stays in *block* and still withholds the whole tool.
+    """
+    rules = block.get("rules") if isinstance(block, dict) else None
+    if not isinstance(rules, list):
+        return block, []
+    kept: list[Any] = []
+    asked: list[str] = []
+    for rule in rules:
+        match = rule.get("match") if isinstance(rule, dict) else None
+        patterns = (
+            [_shell_glob_pattern(glob) if isinstance(glob, str) else None for glob in match]
+            if isinstance(match, list)
+            else []
+        )
+        if (
+            isinstance(rule, dict)
+            and rule.get("capability") == "shell"
+            and rule.get("effect") in ("ask", "deny")
+            and patterns
+            and all(patterns)
+        ):
+            asked.extend(p for p in patterns if p)
+        else:
+            kept.append(rule)
+    if not asked:
+        return block, []
+    return {**block, "rules": kept}, list(dict.fromkeys(asked))
+
+
 def spec_denies_record(
     spec: dict[str, Any],
     *,
@@ -493,6 +534,8 @@ def spec_denies_record(
     ``permissions`` BEFORE the translated ``toolsSettings`` (whose denies are the
     ones lifted here; an authored rule still counts), *commands* the usable
     ``allowedCommands`` and *commands_answered* whether they are already answered.
+    A scoped shell ``ask``/``deny`` rule is lifted the same way, its globs recorded
+    as ``askedCommands`` (:func:`_without_scoped_shell_asks`).
     """
     # One key per kiro-cli alias group, the one kiro-cli itself keeps: a deny under
     # a spelling kiro-cli discards is not one it enforces.
@@ -503,7 +546,16 @@ def spec_denies_record(
     denied_paths = _checkable(
         tools_settings, _WRITE_SETTINGS_KEYS, "deniedPaths", allowed_paths.parse
     )
-    if not (denied_commands or denied_paths):
+    lifted_policy, policy_asked = _without_scoped_shell_asks(policy)
+    authored, authored_asked = _without_scoped_shell_asks(spec.get("permissions"))
+    asked = list(dict.fromkeys([*policy_asked, *authored_asked]))
+    if len(asked) > _MAX_DENIES:
+        # Every glob travels, or none is lifted and the shell keeps prompting.
+        asked = []
+    if asked:
+        policy = lifted_policy
+        spec = {**spec, "permissions": authored}
+    if not (denied_commands or denied_paths or asked):
         return None
     lifted_settings = without_grant_only_settings(tools_settings)
     if denied_commands:
@@ -516,7 +568,9 @@ def spec_denies_record(
         authored_permissions=spec.get("permissions"),
         tools_settings=lifted_settings,
     )
-    builtins = sorted((lifted & candidates & _LIFTABLE) - answered)
+    # A shell ask lifts only the shell: it never held any other built-in back.
+    liftable = _LIFTABLE if denied_commands or denied_paths else _SHELL_LIFTABLE
+    builtins = sorted((lifted & candidates & liftable) - answered)
     # The `allowedCommands` answer's own reading: `denyByDefault` refuses only a
     # command no entry matches, so it holds no matched one back.
     from kiro_crew.acp.kas_agents import _allowed_commands_withheld
@@ -530,12 +584,15 @@ def spec_denies_record(
     )
     if not (builtins or lifted_commands):
         return None
-    return {
+    record: dict[str, Any] = {
         "builtins": builtins,
         "commands": list(lifted_commands),
         "deniedCommands": denied_commands,
         "deniedPaths": denied_paths,
     }
+    if asked:
+        record["askedCommands"] = asked
+    return record
 
 
 def commands_lifted_by_denies(spec: dict[str, Any]) -> bool:
@@ -573,10 +630,11 @@ def _entry_spec_denies(entry: Any, cwd: str) -> SpecDeniedGrant | None:
     web_blocked = raw.get("webFetchBlocked", [])
     web_trusted = raw.get("webFetchTrusted", [])
     web_complete = raw.get("webFetchBlockedComplete", True)
+    asked = raw.get("askedCommands", [])
     if not (
         all(
             isinstance(v, list) and all(isinstance(x, str) for x in v)
-            for v in (web_blocked, web_trusted)
+            for v in (web_blocked, web_trusted, asked)
         )
         and isinstance(web_complete, bool)
     ):
@@ -598,6 +656,7 @@ def _entry_spec_denies(entry: Any, cwd: str) -> SpecDeniedGrant | None:
         web_fetch_blocked=tuple(web_blocked),
         web_fetch_blocked_complete=web_complete,
         web_fetch_trusted=tuple(web_trusted),
+        asked_commands=tuple(asked),
     )
 
 

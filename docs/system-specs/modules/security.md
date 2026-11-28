@@ -4288,7 +4288,16 @@ might never run; and inside a `[[ ... ]]` test a separator is part of the test,
 not a new command (`(( ... ))` already holds a parenthesis, so it never splits). `spec-builtin-grant` honours the recorded grant only after the same
 check answers a clear no; an unreadable entry, a command that is not plain, a
 target it cannot read or resolve, or an exhausted match budget grants nothing.
-Any other key beside the deny (`fallbackAction`, an authored `ask`) still withholds
+A shell `ask` or `deny` rule in the spec's `permissions` (or the merged policy)
+scoped by a `match` whose every glob `kas_permissions._shell_glob_pattern` reads
+(`sudo *`) is lifted the same way, with or without a deny list: its globs ride
+the record as `askedCommands` (at most 64), the rule still travels to KAS, and
+`spec-builtin-grant` honours the lifted shell grant only for a command none of
+them matches whole or in a leading piece (`denied_match`; unknown asks), so
+`ls` is answered and `sudo ls` prompts. An unscoped rule, an unreadable glob or a
+meta capability still withholds the whole shell. Pinned by
+`test_kas_scoped_shell_ask.py`.
+Any other key beside the deny (`fallbackAction`, an unscoped authored `ask`) still withholds
 the grant; a boolean shell `autoAllowReadonly` does not, and `denyByDefault` withholds
 only the whole-tool shell grant, never the `allowedCommands` beside it, which refuses
 only an unmatched command (`kas_grant_only_settings.without_shell_grant_keys`, the
