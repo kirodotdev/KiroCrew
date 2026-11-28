@@ -369,10 +369,22 @@ function Invoke-Test {
     Invoke-Step $VenvPytest @("-q") "pytest"
 }
 
+# Install the built-in KAS engine this checkout pins. A checkout prefers that
+# engine (acp\kas_build_default.py), so the build never ends without it:
+# `--if-in-use` installs the pin whatever agent.kas_bundle says, downloads nothing
+# when it is already there, exits 0 on a host that cannot run it, and 1 on any
+# other failure, which fails the build with the retry command.
+function Invoke-KasEngine {
+    Write-Step "installing the built-in KAS engine"
+    Invoke-Step $VenvPython @("-m", "kiro_crew", "kas", "install", "--if-in-use") `
+        "kirocrew kas install (retry when online: .venv\Scripts\kirocrew.exe kas install)"
+}
+
 function Invoke-Build {
     Invoke-Frontend
     Invoke-Backend
     Invoke-StageDashboard
+    Invoke-KasEngine
 }
 
 function Invoke-Wheel {

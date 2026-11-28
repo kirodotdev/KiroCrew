@@ -297,7 +297,11 @@ def _report_installed(installed: kas_bundle.InstalledKasBundle, *, already: bool
     # one), the route resolves to the bundle automatically, and telling the user to
     # "turn it on" would contradict doctor's "route: bundle" row.
     route = kas_bundle.kas_route()
-    if not route.bundle:
+    if not route.bundle and kas_bundle.crew_sign_in_moves_to_bundle():
+        # The build already prefers the engine and only Kiro Crew's sign-in is
+        # missing, so turning the switch on is not the step to name.
+        print("\nKiro Crew will use this engine once you sign in to Kiro Crew.")
+    elif not route.bundle:
         print(
             "\nThe bundle route is off. Turn it on, then restart:\n"
             "  kirocrew config set agent.kas_bundle true\n"

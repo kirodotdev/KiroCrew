@@ -27,11 +27,11 @@ mapping to get wrong. `test_publish_feed_contract.py` pins the channel set
 against `publish-cli.yml`, and `cli.sh` rejects anything outside it before
 touching the CDN.
 
-Every packaged build prefers Kiro Crew's own KAS engine for an unset
-`agent.kas_bundle`: the decision reads the distribution `scripts/stamp-distribution.sh`
-bakes (`beacon.baked_distribution()`, anything but `source`), not the lane, so
-nightly, insider and stable behave alike and a stable that ships the insider
-candidate's bytes behaves exactly as that candidate did
+Every build prefers Kiro Crew's own KAS engine for an unset
+`agent.kas_bundle`, a source checkout included: neither the distribution
+`scripts/stamp-distribution.sh` bakes nor the lane decides, so nightly, insider
+and stable behave alike and a stable that ships the insider candidate's bytes
+behaves exactly as that candidate did
 (`acp/kas_build_default.kas_bundle_preferred_by_build`). Pinned by
 `test_kas_bundle_nightly_default.py`.
 

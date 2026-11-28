@@ -407,7 +407,7 @@ other lacks. Differences are confined to what the platform forces: a Windows
 venv puts its executables in `.venv\Scripts\`, and the macOS-only
 `resign-macos-libs.sh` step has no Windows counterpart.
 
-`make build` runs three steps:
+`make build` runs four steps:
 
 1. **`frontend`**: `npm ci` (or `npm install`) + `npm run build` in `website/`,
    and installs `website/electron`'s own deps last — it is a separate npm
@@ -425,6 +425,13 @@ venv puts its executables in `.venv\Scripts\`, and the macOS-only
    directory keeps serving that old copy until a stage turns it into the link.
    A gateway already running when that happens, one whose build routes were
    resolved from the directory, needs a restart; the stage says so.
+4. **engine**: `.venv/bin/kirocrew kas install --if-in-use` installs the built-in
+   KAS engine this checkout pins (a no-op when it is already there). A source
+   checkout prefers that engine like every other build, so the build never ends
+   without it: a failed download fails `make build` with the retry command, and
+   a host that cannot run the engine passes with a note. `setup.sh`,
+   `minimal_install.sh` and `install.sh` install the engine too; a failed
+   download fails them at the very end, after their other steps.
 
 Both targets bootstrap their toolchain first (`ensure-node.sh`,
 `ensure-python.sh`) and fall back to whatever is on `PATH` if that fails. The
@@ -460,6 +467,7 @@ git clone https://github.com/kirodotdev/KiroCrew.git
 cd KiroCrew
 cd website && npm install && npm run build && cd ..
 pip install -e ".[dev]"      # contributor tooling, matching `make backend`
+kirocrew kas install         # the built-in KAS engine, matching `make build`
 ```
 
 ### c. Self-contained pip wheel
@@ -741,9 +749,9 @@ version that included kiro-cli and never installed your own, install it from
 <https://kiro.dev/cli/>; your sign-in carries over, since both copies read the
 same account store.
 
-The built-in KAS engine is an alternative that needs no Kiro CLI. A packaged
-install (the desktop app or the one-line install) prefers it once you are
-signed in to Kiro Crew; a host signed in only to kiro-cli keeps kiro-cli and the
+The built-in KAS engine is an alternative that needs no Kiro CLI. Every install
+(the desktop app, the one-line install or a source checkout) prefers it once you
+are signed in to Kiro Crew; a host signed in only to kiro-cli keeps kiro-cli and the
 chat asks you to sign in once. The one-line install (`cli.sh`) and `bash install.sh` download
 the engine version this release pins by default, by running `kirocrew kas
 install` once Kiro Crew is installed, unless the platform wheel already carries

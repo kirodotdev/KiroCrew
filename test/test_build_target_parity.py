@@ -251,3 +251,25 @@ def test_build_steps_are_judged_by_exit_code_not_by_stderr() -> None:
         "every native build step must go through Invoke-Step -- found a call site "
         "asserting $LASTEXITCODE on its own"
     )
+
+
+def test_both_drivers_end_a_build_with_the_kas_engine() -> None:
+    """A checkout prefers the built-in KAS engine, so a build never ends without it.
+
+    ``kas install --if-in-use`` is the step every update runs: it installs the pin
+    whatever ``agent.kas_bundle`` says, exits 0 on a host that cannot run the engine,
+    and 1 on any other failure, which must fail the build with the retry command.
+    """
+    text = (_REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+    match = re.search(r"^build:[^\n]*\n((?:\t.*\n)+)", text, re.MULTILINE)
+    assert match, "Makefile has no recipe for target 'build'"
+    recipe = match.group(1)
+    assert "kirocrew kas install --if-in-use ||" in recipe
+    assert "Retry when online: $(VENV)/bin/kirocrew kas install" in recipe
+    assert "exit 1" in recipe
+
+    code = _powershell_code()
+    build = code.split("function Invoke-Build {", 1)[1].split("}", 1)[0]
+    assert "Invoke-KasEngine" in build
+    engine = code.split("function Invoke-KasEngine {", 1)[1].split("}", 1)[0]
+    assert 'Invoke-Step $VenvPython @("-m", "kiro_crew", "kas", "install", "--if-in-use")' in engine

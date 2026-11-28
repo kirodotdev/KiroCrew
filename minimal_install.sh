@@ -146,6 +146,13 @@ fi
     || die "Install succeeded but aiohttp not importable — dependencies missing"
 echo "✓ Python package installed"
 umask "$_KC_PREV_UMASK"
+# A checkout prefers the built-in KAS engine (acp/kas_build_default.py), so the
+# install never ends without it. `--if-in-use` exits 0 on a host that cannot run it.
+# A failure is recorded here and fails the install at the very end, after the
+# remaining steps, so the retry is the only thing left to do.
+_kas_failed=0
+echo "→ Installing the built-in KAS engine (kirocrew kas install)…"
+"$_venv/bin/kirocrew" kas install --if-in-use || _kas_failed=1
 echo ""
 
 # ── 3. Optional alternate agent backend (claude-agent-acp) ──
@@ -192,3 +199,6 @@ echo "  Optional — local vector memory (embeddings):"
 echo "    Install ollama (https://ollama.com), then:"
 echo "      ollama pull qwen3-embedding:0.6b"
 echo ""
+if [ "$_kas_failed" -eq 1 ]; then
+    die "the built-in KAS engine is not installed. Retry when online: $HOME/.local/bin/kirocrew kas install"
+fi

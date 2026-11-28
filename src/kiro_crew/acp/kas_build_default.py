@@ -1,13 +1,13 @@
-"""A packaged build prefers Kiro Crew's own KAS engine when ``agent.kas_bundle`` is unset.
+"""Every build prefers Kiro Crew's own KAS engine when ``agent.kas_bundle`` is unset.
 
 A saved ``agent.kas_bundle`` always wins: ``true`` is the engine on every KAS spawn
 (``kas_route`` rule 1), ``false`` is the relay wherever it can run. With the key
-unset, a packaged build (one ``scripts/stamp-distribution.sh`` stamped: a desktop
-app, a wheel, an image; never a source checkout) PREFERS the engine: a KAS spawn
-takes it when Kiro Crew's own sign-in is usable, and otherwise keeps the rules it had
-(``kas_route`` rule 1b). Insider and stable ship the same bytes, so the stamp that
-decides is the distribution, not the release lane. A host the engine cannot run on
-never prefers it.
+unset, every build PREFERS the engine: a packaged one (a desktop app, a wheel, an
+image) and a source checkout alike, since each install path lays the engine down
+(the installers, ``make build``, and the gateway's first start). A KAS spawn takes
+it when Kiro Crew's own sign-in is usable, and otherwise keeps the rules it had
+(``kas_route`` rule 1b). The distribution and the release lane do not decide. A
+host the engine cannot run on never prefers it.
 
 kiro-cli's sign-in is never copied: a host signed in to kiro-cli and not to Kiro
 Crew stays on kiro-cli until someone signs in to Kiro Crew.
@@ -72,14 +72,9 @@ _ENGINE_RAN = False
 def kas_bundle_preferred_by_build() -> bool:
     """Whether this build prefers the engine for an unset ``agent.kas_bundle``.
 
-    True in a packaged build on a host the engine can run on. Blocking (a glibc
+    True on a host the engine can run on, whatever the build. Blocking (a glibc
     read on Linux); never raises, and an unanswerable probe answers False.
     """
-    from kiro_crew import beacon
-
-    # Every stamped distribution but ``source``, the one a checkout reads as.
-    if beacon.baked_distribution() not in beacon.KNOWN_DISTRIBUTIONS - {"source"}:
-        return False
     try:
         from kiro_crew.agent_sdk import kas_bundle as sdk_kas_bundle
 

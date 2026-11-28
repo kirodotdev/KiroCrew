@@ -20,13 +20,11 @@
 #   --voice   Install optional voice extras (pip install -e .[voice])
 #   --no-kas  Use Kiro CLI only: saves agent.kas_bundle off and skips
 #             downloading the KAS engine this release pins. By default
-#             the installer runs `kirocrew kas install` after installing, so
-#             the built-in engine route can be turned on with no download; a
-#             failed download only warns and prints the command to retry.
-#             The switch (agent.kas_bundle) is NOT turned on: a source
-#             checkout defaults to kiro-cli until you choose the engine
-#             yourself. (--kas, the former opt-in, is still
-#             accepted and changes nothing.)
+#             the installer runs `kirocrew kas install` after installing,
+#             because a checkout prefers the built-in engine once you sign in
+#             to Kiro; a failed download prints the command to retry and the
+#             install exits 1. The switch (agent.kas_bundle) is left unset.
+#             (--kas, the former opt-in, is still accepted and changes nothing.)
 #   --mise    Use mise (https://mise.jdx.dev) for Python and Node.js
 #             instead of system package managers. Does not modify your
 #             global mise config.
@@ -503,7 +501,7 @@ else
     detail "npm i -g $ACP_NPM_PKG"
 fi
 if [ "$WITH_KAS" -eq 1 ]; then
-    info "The built-in KAS engine will be downloaded after install (skip with --no-kas); the switch stays off until you turn it on."
+    info "The built-in KAS engine will be downloaded after install (skip with --no-kas); Kiro Crew uses it once you sign in to Kiro Crew."
 else
     warn "The default Kiro agent requires Kiro CLI; this installer does not install or sign in to it."
     detail "Install it separately from https://kiro.dev/cli/ and run: kiro-cli login"
@@ -871,10 +869,9 @@ if [ -n "$_kirocrew" ]; then
     if [ "$WITH_KAS" -eq 1 ]; then
         # The engine this release pins, fetched from the project's CDN and
         # verified against the pin baked into this checkout. The switch is left
-        # alone on purpose: the route is in shadow testing, so turning it on is
-        # the user's own step (Settings → Agent Harness, or `kirocrew config set
-        # agent.kas_bundle true`), never the installer's. A failed download
-        # (offline host, CDN outage) leaves a working install, so it only warns.
+        # unset: a checkout already prefers the engine (acp/kas_build_default.py).
+        # A failed download (offline host, CDN outage) fails the install at the
+        # end, after the next steps, so it is never "installed" without the engine.
         info "Downloading the built-in KAS engine (kirocrew kas install)…"
         # Exit 3 is `kas install`'s "this host cannot run the engine"
         # (cli_kas.py HOST_UNSUPPORTED_EXIT): it already printed why, and a
@@ -882,7 +879,7 @@ if [ -n "$_kirocrew" ]; then
         _kas_rc=0
         "$_kirocrew" kas install || _kas_rc=$?
         if [ "$_kas_rc" -eq 0 ]; then
-            ok "Built-in KAS engine installed (switch it on: kirocrew config set agent.kas_bundle true)"
+            ok "Built-in KAS engine installed"
         elif [ "$_kas_rc" -eq 3 ]; then
             KAS_HOST_UNSUPPORTED=1
             warn "This host cannot run the built-in KAS engine (see above); Kiro Crew is installed without it."
@@ -944,11 +941,10 @@ echo "    ${CYAN}2.${RESET} Set up the default Kiro agent (skip if you selected 
 echo "       ${GREEN}Install Kiro CLI from https://kiro.dev/cli/${RESET}"
 echo "       ${GREEN}kiro-cli login${RESET}"
 if [ "$WITH_KAS" -eq 1 ] && [ "$KAS_HOST_UNSUPPORTED" -eq 0 ]; then
-echo "       To try the built-in KAS engine instead (shadow testing, off by default):"
+echo "       Or use the built-in KAS engine (no Kiro CLI): sign in to Kiro from the dashboard."
 if [ "$KAS_DOWNLOAD_FAILED" -eq 1 ]; then
 echo "       ${GREEN}kirocrew kas install${RESET}  (the download failed during install; retry it first)"
 fi
-echo "       ${GREEN}kirocrew config set agent.kas_bundle true${RESET}  then sign in from the dashboard"
 fi
 echo ""
 echo "    ${CYAN}3.${RESET} Run the setup wizard:"
@@ -988,3 +984,9 @@ case "$(source_checkout_ref)" in
         detail "(git switch main) to follow one, or use the one-line install." ;;
 esac
 echo ""
+# Engine guarantee: a checkout prefers the built-in KAS engine, so a failed
+# download fails the install. The reason and the retry are printed above.
+if [ "$KAS_DOWNLOAD_FAILED" -eq 1 ]; then
+    echo "ERROR: the built-in KAS engine is not installed. Retry when online: kirocrew kas install" >&2
+    exit 1
+fi

@@ -1,4 +1,4 @@
-"""Rule 1b: an unset ``agent.kas_bundle`` in a packaged build moves KAS onto Crew's engine.
+"""Rule 1b: an unset ``agent.kas_bundle`` moves KAS onto Crew's engine.
 
 Only with Kiro Crew's own sign-in usable: kiro-cli's login is never copied, so a host
 signed in only to kiro-cli keeps the relay and the dashboard asks for one sign-in. A
@@ -22,7 +22,7 @@ from kiro_crew.config import loader_document
 
 @pytest.fixture
 def packaged(monkeypatch, tmp_path):
-    """A packaged build, nothing saved, the switch open, Crew signed in, a fresh data home."""
+    """The engine preferred, nothing saved, the switch open, Crew signed in, a fresh home."""
     state = {"vault": True, "declared": False, "preferred": True, "relay": True}
     monkeypatch.setattr(
         kas_build_default, "kas_bundle_preferred_by_build", lambda: state["preferred"]
@@ -57,7 +57,7 @@ class TestTheRule:
         packaged["declared"] = True
         assert not kas_route.build_default_selects_bundle(environ={})
 
-    def test_a_source_checkout_does_not_prefer_the_engine(self, packaged):
+    def test_a_host_the_engine_cannot_run_on_keeps_the_rules_below(self, packaged):
         packaged["preferred"] = False
         assert not kas_route.build_default_selects_bundle(environ={})
 

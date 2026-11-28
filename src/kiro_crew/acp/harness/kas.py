@@ -898,7 +898,7 @@ class KasHarness(MembershipHarness):
                 )
 
         if not preview_failed:
-            # Rule 1b: a packaged build prefers Crew's engine (``kas_build_default``).
+            # Rule 1b: the build prefers Crew's engine (``kas_build_default``).
             plan = await kas_build_default.build_default_plan(self, ctx)
             if plan is not None:
                 return plan
