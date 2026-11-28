@@ -15,7 +15,8 @@ The sub-agent notices a channel turn's build reads from its conversation's dashb
 tab ride the same per-turn settle, but their settle call goes to the turn that built,
 never into a record here: another turn on the session cannot take it.
 
-Builder state read and written: ``_lessons_shown`` and ``_lessons_shown_lock``;
+Builder state read and written: ``_lessons_shown``, ``_lessons_shadow_shown`` (the
+``shadow`` mode's own shown-lesson record) and ``_lessons_shown_lock``;
 ``_sent_skill_bodies``, ``_sent_skill_agents``, ``_sent_skill_bodies_undo`` and
 ``_sent_skill_bodies_lock``; ``tab_notices_for_session`` is read; the bounds ``_SENT_SKILL_BODY_SESSIONS`` and ``_SENT_SKILL_BODY_ENTRIES`` are read
 through the builder, so an instance override applies.
@@ -31,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.context_assembly import store_admission as _store_admission
 
 if TYPE_CHECKING:
+    from collections import OrderedDict
     from collections.abc import Callable
 
     from kiro_crew.context import _ShownLessons
@@ -38,16 +40,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.context")
 
 
-def _remember_startup_lessons(self, session_key: str, block: str) -> None:
+def _shown_records(builder: Any, shadow: bool) -> OrderedDict[str, _ShownLessons]:
+    """The real shown-lesson records, or the ``shadow`` mode's own.
+
+    Shadow mode keeps what ``enforce`` would have sent apart from what was sent, so
+    a later switch to ``enforce`` never skips a lesson the session was not shown.
+    """
+    return builder._lessons_shadow_shown if shadow else builder._lessons_shown
+
+
+def _remember_startup_lessons(self, session_key: str, block: str, *, shadow: bool = False) -> None:
     """Start *session_key*'s shown-lesson record from its session-start block."""
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
     key = self._cap_memo_key(session_key)
+    records = _shown_records(self, shadow)
     with self._lessons_shown_lock:
-        self._lessons_shown[key] = ctx._ShownLessons(startup_block=block)
-        self._lessons_shown.move_to_end(key)
-        while len(self._lessons_shown) > ctx._LESSONS_SHOWN_SESSIONS:
-            self._lessons_shown.popitem(last=False)
+        records[key] = ctx._ShownLessons(startup_block=block)
+        records.move_to_end(key)
+        while len(records) > ctx._LESSONS_SHOWN_SESSIONS:
+            records.popitem(last=False)
 
 
 def _forget_shown_lessons(self, session_key: str) -> None:
@@ -56,11 +68,12 @@ def _forget_shown_lessons(self, session_key: str) -> None:
 
     key = self._cap_memo_key(session_key)
     with self._lessons_shown_lock:
-        if key in self._lessons_shown:
-            self._lessons_shown[key] = ctx._ShownLessons()
+        for records in (self._lessons_shown, self._lessons_shadow_shown):
+            if key in records:
+                records[key] = ctx._ShownLessons()
 
 
-def _live_shown_lessons(self, session_key: str) -> _ShownLessons:
+def _live_shown_lessons(self, session_key: str, *, shadow: bool = False) -> _ShownLessons:
     """*session_key*'s record in place now, made the newest; the caller holds the lock.
 
     A session with none -- the setting turned on after it started, or its
@@ -69,13 +82,14 @@ def _live_shown_lessons(self, session_key: str) -> _ShownLessons:
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
     key = self._cap_memo_key(session_key)
-    record = self._lessons_shown.get(key)
+    records = _shown_records(self, shadow)
+    record = records.get(key)
     if record is None:
         record = ctx._ShownLessons()
-        self._lessons_shown[key] = record
-    self._lessons_shown.move_to_end(key)
-    while len(self._lessons_shown) > ctx._LESSONS_SHOWN_SESSIONS:
-        self._lessons_shown.popitem(last=False)
+        records[key] = record
+    records.move_to_end(key)
+    while len(records) > ctx._LESSONS_SHOWN_SESSIONS:
+        records.popitem(last=False)
     return record
 
 

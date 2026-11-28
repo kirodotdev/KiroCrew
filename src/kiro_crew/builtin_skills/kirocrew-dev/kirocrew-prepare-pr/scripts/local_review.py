@@ -159,7 +159,11 @@ _tool_argv = _load_sibling("_lr_tool_argv", "_tool_argv.py")
 # heredoc inside it), which a parsed representation would already have
 # normalised. Indentation-aware line scanning gives us exactly that.
 # --------------------------------------------------------------------------
-_NAME_RE = re.compile(r"^\s*(?:-\s+)?name:\s*(.+?)\s*$")
+# The capture ends on a non-space, so the trailing ``\s*`` is the only reader
+# of the whitespace after it: a lazy capture beside ``\s*$`` rescanned that run
+# once per captured character. A tail of whitespace alone still yields the one
+# character the lazy form took, so every match is unchanged.
+_NAME_RE = re.compile(r"^\s*(?:-\s+)?name:\s*(\S(?:.*\S)?|[^\S\n](?=\n*\Z))\s*$")
 
 
 def block_scalars(text: str, keys: tuple[str, ...] = ("run", "prompt", "claude_args")) -> list[BlockScalar]:

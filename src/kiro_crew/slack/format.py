@@ -962,7 +962,13 @@ def ends_inside_code_fence(text: str, start: bool = False) -> bool:
     return in_code
 
 
-def to_slack_mrkdwn(text: str, *, keep_tables: bool = False, in_code: bool = False) -> str:
+def to_slack_mrkdwn(
+    text: str,
+    *,
+    keep_tables: bool = False,
+    in_code: bool = False,
+    redactor: Callable[[str], str] | None = None,
+) -> str:
     """Convert LLM markdown to Slack mrkdwn format.
 
     **Do not call this to put text on Slack.** Use :func:`render_for_slack` (or
@@ -984,6 +990,9 @@ def to_slack_mrkdwn(text: str, *, keep_tables: bool = False, in_code: bool = Fal
     by inline conversion. A fenced region can be longer than any block size, so
     choosing cut points cannot avoid this -- the state has to be carried. Use
     :func:`ends_inside_code_fence` to compute it for the next block.
+
+    ``redactor`` is the caller's redactor, which :func:`_convert_tables` uses to
+    choose a table's shape.
     """
     text = strip_ansi(text)
 
@@ -1001,7 +1010,7 @@ def to_slack_mrkdwn(text: str, *, keep_tables: bool = False, in_code: bool = Fal
     # opening mid-fence would find INSIDE code. Skip both while in a fence.
     if not in_code:
         if not keep_tables:
-            text = _convert_tables(text)
+            text = _convert_tables(text, redactor)
         text = _convert_mermaid(text)
 
     out: list[str] = []
@@ -1118,14 +1127,12 @@ def _convert_inline_markup(line: str, *, bold: str) -> str:
     return line
 
 
-def _table_bullets(headers: list[str], data_rows: list[list[str]]) -> list[str]:
+def _labelled_bullets(headers: list[str], data_rows: list[list[str]]) -> list[str]:
     """One ``•`` line per data row, each cell labelled by its column header.
 
-    An empty row keeps its place as ``• —``. A table whose every row is
-    empty returns ``[]``, so the caller keeps the authored table instead.
+    An empty row keeps its place as ``• —``.
     """
     bullets: list[str] = []
-    any_cell = False
     for row in data_rows:
         parts: list[str] = []
         for i, cell in enumerate(row):
@@ -1135,9 +1142,40 @@ def _table_bullets(headers: list[str], data_rows: list[list[str]]) -> list[str]:
                 parts.append(f"*{headers[i]}:* {cell}")
             else:
                 parts.append(cell)
-        any_cell = any_cell or bool(parts)
         bullets.append("• " + (" | ".join(parts) if parts else "—"))
-    return bullets if any_cell else []
+    return bullets
+
+
+def _inside_bold(cell: str) -> str:
+    """*cell* without its ``**`` markers: Slack does not nest bold."""
+    hidden, spans = _hide_inline_code(cell)
+    return _restore_inline_code(hidden.replace("**", ""), spans)
+
+
+def _table_bullets(headers: list[str], data_rows: list[list[str]]) -> list[str]:
+    """The column headers on one bold line, then one ``•`` line per data row.
+
+    A row's first cell leads it in bold and the other cells follow in column
+    order, so an empty cell is written ``—`` to keep the later ones in their
+    columns. An empty row keeps its place as ``• —``. Headers that are all
+    empty get no line. A table whose every row is empty returns ``[]``, so
+    the caller keeps the authored table instead.
+    """
+    if not any(cell for row in data_rows for cell in row):
+        return []
+    lines: list[str] = []
+    if any(headers):
+        lines.append("*" + " | ".join(_inside_bold(h) or "—" for h in headers) + "*")
+    for row in data_rows:
+        if not any(row):
+            lines.append("• —")
+            continue
+        cells = [cell or "—" for cell in row]
+        # The label's own trailing colon would double the one written here.
+        label = _inside_bold(row[0]).strip().removesuffix(":") if len(headers) > 1 else ""
+        line = f"*{label}:* " + " | ".join(cells[1:]) if label else " | ".join(cells)
+        lines.append("• " + line.rstrip())
+    return lines
 
 
 def _starts_with_pipe(line: str) -> bool:
@@ -1159,7 +1197,7 @@ def _slack_table_end(lines: list[str], start: int) -> int | None:
     return end
 
 
-def _convert_tables(text: str) -> str:
+def _convert_tables(text: str, redactor: Callable[[str], str] | None = None) -> str:
     """Convert markdown tables to vertical list format for mobile readability.
 
     Only a real GFM table is converted: a header row, a separator row right
@@ -1169,6 +1207,12 @@ def _convert_tables(text: str) -> str:
     (backtick or tilde, in a list or not) is opaque, as it is to
     :func:`kiro_crew.messaging.tables.render_tables`. Cells are split by the
     same module, so ``\\|`` and a pipe inside inline code stay cell text.
+
+    A column header is written once, above the rows. A header beside each cell
+    is what lets a named-credential pattern match a value by its column name,
+    so a table that *redactor* (the platform redactor when ``None``) would
+    change with every cell labelled is written that way instead, where the
+    render helpers' redaction of converted text finds the value.
     """
     lines = text.split("\n")
     result: list[str] = []
@@ -1206,7 +1250,13 @@ def _convert_tables(text: str) -> str:
             index += 1
             continue
         run = lines[index:end]
-        bullets = _table_bullets(_table_cells(run[0]), [_table_cells(r) for r in run[2:]])
+        headers, rows = _table_cells(run[0]), [_table_cells(r) for r in run[2:]]
+        bullets = _table_bullets(headers, rows)
+        if bullets:
+            labelled = _labelled_bullets(headers, rows)
+            as_posted = "\n".join(_convert_inline(bullet) for bullet in labelled)
+            if _settled_slack_emission(as_posted, redactor or redact_via_context) != as_posted:
+                bullets = labelled
         result.extend(bullets if bullets else run)
         index = end
     return "\n".join(result)
@@ -1393,8 +1443,8 @@ def _slack_client_display(text: str) -> str:
 def _settled_slack_emission(text: str, redactor: Callable[[str], str]) -> str:
     """Return *text* unchanged unless its literal or Slack reading needs redaction.
 
-    A block dirty only as written keeps its markup. ``_convert_tables`` renders a
-    data row as ``*<header>:* <cell>``, writing the ``:`` a named-credential
+    A block dirty only as written keeps its markup. ``_convert_tables`` can render
+    a data row as ``*<header>:* <cell>``, writing the ``:`` a named-credential
     pattern needs after a ``SecretAccessKey`` header, and that match is in the
     bytes alone: the Slack reading of the redacted block scans clean, so the
     literal redaction is what gets posted, native links and emphasis intact.
@@ -1545,7 +1595,9 @@ def _render_blocks(
     # prose. A fenced region can exceed the block size, so no cut point avoids it.
     in_code = False
     for block in blocks:
-        converted = to_slack_mrkdwn(block, keep_tables=resolved_keep_tables, in_code=in_code)
+        converted = to_slack_mrkdwn(
+            block, keep_tables=resolved_keep_tables, in_code=in_code, redactor=redactor
+        )
         out.append(_settled_slack_emission(converted, _redact))
         in_code = ends_inside_code_fence(block, in_code)
     return out, changed
@@ -1593,11 +1645,10 @@ def render_for_slack(
     posted part is scanned as posted (:func:`_settled_pieces`).
 
     When — and only when — the pre-split produces more than one block, tables are
-    left as raw markdown. ``_convert_tables`` keys a table's labels off the first
-    ``|`` row it sees, so a block beginning part-way through a table adopts a
-    DATA row as its header: that row's values are then only emitted as labels
-    (and vanish entirely if no rows follow, because ``_flush_table`` returns
-    early on an empty body). Raw pipes read worse on mobile, which is why this is
+    left as raw markdown. ``_convert_tables`` takes the first ``|`` row it sees
+    as a table's header, so a block beginning part-way through a table adopts a
+    DATA row as its header: that row is then written as the header line, not as
+    a row. Raw pipes read worse on mobile, which is why this is
     not the default — but a message that never splits keeps the nicer rendering,
     and one that does keeps all of its rows.
 

@@ -1631,6 +1631,9 @@ class ContextBuilder:
         # block since, so `memory.inject_lessons_per_turn` skips them. In memory
         # and bounded; see `_ShownLessons`.
         self._lessons_shown: OrderedDict[str, _ShownLessons] = OrderedDict()
+        # The same, for `shadow` mode: what `enforce` would have sent, never
+        # what was sent, so turning `enforce` on later skips nothing unsent.
+        self._lessons_shadow_shown: OrderedDict[str, _ShownLessons] = OrderedDict()
         self._lessons_shown_lock = threading.Lock()
         # Per-session record of triggered-skill BODIES injected, so a later match
         # in the same provider window sends the cheap pointer line instead of the

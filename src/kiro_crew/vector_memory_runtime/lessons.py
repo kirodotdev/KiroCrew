@@ -36,6 +36,7 @@ from kiro_crew.lesson_validation import (
     LESSON_APPLIES_UNSTATED,
     LESSON_APPLIES_VALUES,
     LESSON_RULES_HEADER,
+    authored_lesson_applies,
     cjk_parts,
     contains_volatile_lesson_fact,
     render_lesson_tier,
@@ -1286,6 +1287,7 @@ def turn_lessons(
     max_rows: int,
     max_chars: int,
     render_lesson: Callable[[str], str] | None = None,
+    facts: dict[str, dict[str, str]] | None = None,
 ) -> list[tuple[str, str]]:
     """``(key, text)`` of the lessons a follow-up message should add, best first.
 
@@ -1302,6 +1304,9 @@ def turn_lessons(
     length, the startup order, and taken while their rendered forms fit
     *max_rows* and *max_chars*. A lesson too long for the room left is skipped,
     not a stop. No embedding is spent.
+
+    *facts*, when given, is filled with :func:`lesson_trace_facts` of each chosen
+    lesson, by key.
     """
     if not query_text.strip() or max_rows <= 0:
         return []
@@ -1345,8 +1350,32 @@ def turn_lessons(
         if used + size > max_chars:
             continue
         chosen.append((row["key"], text))
+        if facts is not None:
+            facts[row["key"]] = lesson_trace_facts(row)
         used += size
     return chosen
+
+
+def lesson_trace_facts(row: dict) -> dict[str, str]:
+    """A lesson row's ``tier``, ``source`` and ``created_at``, for a receipt; never its text.
+
+    ``tier`` is the authored ``applies`` value, ``unstated`` for a structured row
+    without one, or ``legacy`` for a row stored as a plain string. ``source`` is
+    the row's writer label (``user_explicit``, ``consolidation``, ...).
+    """
+    try:
+        decoded = json.loads(row.get("value_json") or "")
+    except (TypeError, ValueError, RecursionError):
+        decoded = None
+    if isinstance(decoded, dict):
+        tier = authored_lesson_applies(decoded.get("applies")) or LESSON_APPLIES_UNSTATED
+    else:
+        tier = "legacy"
+    return {
+        "tier": tier,
+        "source": str(row.get("source") or ""),
+        "created_at": str(row.get("created_at") or ""),
+    }
 
 
 _EXPLICIT_LESSONS_FOOTER = "[End of learned corrections]\n"

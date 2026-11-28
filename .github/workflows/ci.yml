@@ -3600,7 +3600,12 @@ jobs:
           url="$(python3 -c 'import json; print(json.load(open("goose.json"))["url"])')"
           sha="$(python3 -c 'import json; print(json.load(open("goose.json"))["sha256"])')"
           mkdir -p .harness-bin
-          curl -fsSL --retry 3 -o .harness-bin/goose.tar.bz2 "$url"
+          # --retry-all-errors is required in addition to --retry: a bare
+          # --retry covers transient HTTP statuses and timeouts but not a
+          # connection reset (curl exit 35), which is how the Releases CDN
+          # fails here. The sha256sum check below still gates the download.
+          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
+            -o .harness-bin/goose.tar.bz2 "$url"
           echo "$sha  .harness-bin/goose.tar.bz2" | sha256sum -c -
           tar -xjf .harness-bin/goose.tar.bz2 -C .harness-bin
           rm .harness-bin/goose.tar.bz2
