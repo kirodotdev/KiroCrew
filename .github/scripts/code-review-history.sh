@@ -10,12 +10,13 @@
 #
 # This script adds the two things the jobs read beyond those three commits:
 #
-#   1. The commit history of BASE_TIP and HEAD_SHA, with their trees but no
-#      blobs (`--filter=blob:none`). `git merge-base` and `git rev-list` read
-#      commits only, so they see the same graph a full clone has. The filter
-#      is not `tree:0`: on git 2.56, deepening a shallow clone with `tree:0`
-#      aborts in index-pack ("BUG: builtin/pack-objects.c: should_include_obj
-#      should only be called on existing objects").
+#   1. The commit history of BASE_TIP, HEAD_SHA and the merge commit's first
+#      parent, with their trees but no blobs (`--filter=blob:none`).
+#      `git merge-base` and `git rev-list` read commits only, so they see the
+#      same graph a full clone has. The filter is not `tree:0`: on git 2.56,
+#      deepening a shallow clone with `tree:0` aborts in index-pack ("BUG:
+#      builtin/pack-objects.c: should_include_obj should only be called on
+#      existing objects").
 #   2. The tree and blobs of the merge-base. The diffs below read them, and
 #      git fetches each missing object on demand while they run.
 #
@@ -32,6 +33,29 @@ set -euo pipefail
 
 : "${BASE_TIP:?BASE_TIP is required}" "${HEAD_SHA:?HEAD_SHA is required}"
 : "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}"
+
+# base.sha is the base branch tip when the pull request was opened or last
+# retargeted, not when this event fired: GitHub does not refresh it on
+# `synchronize`. Once the branch is rebased past it, the merge-base with it IS
+# that stale tip, and the diff from there charges every base commit in between
+# to the pull request. The checkout is GitHub's merge commit, whose first parent
+# is the base tip it was built on, so the merge-base is taken against that
+# parent, as resolve-i18n-base.sh does for the diff-scoped gates. Only when the
+# second parent is this PR's head: a checkout of the head itself, or a merge ref
+# GitHub has since re-minted for a newer head (a re-run of a superseded event),
+# keeps base.sha. `cat-file` reads the commit object, so it sees both parents
+# even where the shallow checkout grafted them away.
+base_now="$BASE_TIP"
+read -r -a parents <<<"$(git cat-file -p HEAD | sed -n 's/^parent //p' | tr '\n' ' ')"
+if [ "${#parents[@]}" -eq 2 ] && [ "${parents[1]}" = "$HEAD_SHA" ] \
+  && [ "${parents[0]}" != "$BASE_TIP" ]; then
+  echo "::notice::Resolving the diff base from the merge commit's first parent ${parents[0]}, not base.sha $BASE_TIP"
+  base_now="${parents[0]}"
+fi
+history="$BASE_TIP and $HEAD_SHA"
+if [ "$base_now" != "$BASE_TIP" ]; then
+  history="$BASE_TIP, $HEAD_SHA and $base_now"
+fi
 
 # The repository is public, so every fetch here is anonymous: this script runs
 # from the pull request's own commit, and the job hands it no token. A private
@@ -66,24 +90,24 @@ fetch_history() {
     set --
   fi
   git fetch --no-tags --no-recurse-submodules --quiet --filter=blob:none "$@" \
-    origin "$BASE_TIP" "$HEAD_SHA"
+    origin "$BASE_TIP" "$HEAD_SHA" "$base_now"
 }
 
 if ! retry fetch_history; then
-  echo "::error::Could not fetch the history of $BASE_TIP and $HEAD_SHA. The history is" \
+  echo "::error::Could not fetch the history of $history. The history is" \
     "fetched without credentials, so the repository must be public or readable without them."
   exit 1
 fi
 # A history still shallow here would give a wrong merge-base.
 if [ "$(git rev-parse --is-shallow-repository)" != false ]; then
-  echo "::error::The history of $BASE_TIP and $HEAD_SHA is still shallow after the fetch"
+  echo "::error::The history of $history is still shallow after the fetch"
   exit 1
 fi
 
-# base.sha is the base branch tip when the PR event fired, not the branch-off
-# point, so diffing it directly pulls in sibling commits.
-if ! merge_base="$(git merge-base "$BASE_TIP" "$HEAD_SHA")"; then
-  echo "::error::Could not resolve the merge-base of $BASE_TIP and $HEAD_SHA"
+# The base tip is not the branch-off point, so diffing it directly pulls in
+# sibling commits.
+if ! merge_base="$(git merge-base "$base_now" "$HEAD_SHA")"; then
+  echo "::error::Could not resolve the merge-base of $base_now and $HEAD_SHA"
   exit 1
 fi
 

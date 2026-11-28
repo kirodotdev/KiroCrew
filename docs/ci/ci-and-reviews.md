@@ -3738,6 +3738,17 @@ Its three diff jobs read the diff and nothing else. `pr-hygiene`, which judges
 the title and body, is the whole of `pr-hygiene.yml`. Both are readiness lanes;
 only `pr-hygiene.yml` hears `edited`.
 
+Every one of those jobs diffs from the merge-base its first step,
+`.github/scripts/code-review-history.sh`, resolves. The base tip that merge-base
+is taken against is the checked-out merge commit's first parent, the base the
+merge was built on, not the event's `pull_request.base.sha`: GitHub pins that
+value when the PR opens and does not refresh it on `synchronize`, so once a
+branch is rebased past it the merge-base with it is that stale tip and the diff
+charges every base commit since to the PR. `base.sha` stays the fallback for a
+checkout that is not a merge commit of the PR head, and the base-owned scripts
+PR Hygiene runs (`proof_line_check.py`, `adopted_wheel_copy_check.py`,
+`sibling_list_check.py`) are still read from it.
+
 A title or body edit starts no Code Review run, so the last scan stays the
 lane's verdict, a failed one included. A base retarget is an `edited` event too,
 and it moves the diff the scans read. So each run records the base it scanned in

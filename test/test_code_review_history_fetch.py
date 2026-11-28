@@ -202,6 +202,19 @@ def _world(tmp: Path) -> tuple[_Origin, list[dict]]:
     cases.append(
         {"name": "stale-base-sha", "base_tip": fork_point, "parent": moved, "head": behind}
     )
+    # The branch was rebased onto the moved main while the event still carries
+    # the old base.sha: its merge-base with the head is that stale tip, and a
+    # diff from there reads every main commit since as the PR's own.
+    o.branch("rebased", moved)
+    rebased = o.commit({"src/rebased.py": "r = 1\n"})
+    cases.append(
+        {
+            "name": "rebased-past-stale-base",
+            "base_tip": fork_point,
+            "parent": moved,
+            "head": rebased,
+        }
+    )
 
     # A fork head is reachable only through refs/pull/<n>/head.
     o.git("checkout", "-q", "--detach", moved)
@@ -212,7 +225,7 @@ def _world(tmp: Path) -> tuple[_Origin, list[dict]]:
         case["pr"] = pr
         case["merge"] = o.pull(pr, case["parent"], case["head"])
     o.git("checkout", "-q", "main")
-    for name in ("normal", "multi", "behind"):
+    for name in ("normal", "multi", "behind", "rebased"):
         o.git("branch", "-q", "-D", name)
     return o, cases
 
@@ -292,7 +305,9 @@ def test_every_read_matches_a_full_clone_with_no_further_fetch(world, job: str) 
     for case in cases:
         work, res, sha = _diff_base(o, case, job)
         assert res.returncode == 0, f"{case['name']}\n{res.stdout}\n{res.stderr}"
-        expected_mb = o.git("merge-base", case["base_tip"], case["head"]).strip()
+        # The merge-base with the base tip the merge commit was built on, not
+        # with the event's base.sha, which can be older than the branch.
+        expected_mb = o.git("merge-base", case["parent"], case["head"]).strip()
         assert sha == expected_mb, case["name"]
         # Nothing to fetch from any more: a read that needed a fetch would fail.
         o.git("remote", "set-url", "origin", (o.tmp / "gone").as_uri(), cwd=work)
@@ -302,6 +317,33 @@ def test_every_read_matches_a_full_clone_with_no_further_fetch(world, job: str) 
             args = [a.replace("BASE", names["BASE"]).replace("MERGE", names["MERGE"]) for a in args]
             got = o.git(*args, cwd=work, env={"GIT_NO_LAZY_FETCH": "1"})
             assert got == o.git(*args, cwd=full), (case["name"], read)
+
+
+def test_only_a_merge_commit_of_the_pr_head_moves_the_base_off_base_sha(world) -> None:
+    o, cases, _ = world
+    rebased = next(c for c in cases if c["name"] == "rebased-past-stale-base")
+    _, res, sha = _diff_base(o, rebased, "pr-hygiene")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert sha == rebased["parent"]
+    notice = (
+        "::notice::Resolving the diff base from the merge commit's first parent"
+        f" {rebased['parent']}, not base.sha {rebased['base_tip']}"
+    )
+    assert notice in res.stdout.splitlines(), res.stdout
+    # A checkout of the PR head itself has no parent to read the base from, and
+    # a merge commit of some other head (a re-run of a superseded event, whose
+    # merge ref GitHub has re-minted since) is not this PR's merge.
+    behind = next(c for c in cases if c["name"] == "stale-base-sha")
+    for checkout, head in ((rebased["head"], rebased["head"]), (rebased["merge"], behind["head"])):
+        work = _checked_out(o, {**rebased, "merge": checkout}, "pr-hygiene")
+        out = o.tmp / f"out-{work.name}"
+        out.write_text("", encoding="utf-8")
+        step = next(s for s in _steps("pr-hygiene") if s.get("name") == DIFF_STEP)
+        env = {"BASE_TIP": rebased["base_tip"], "HEAD_SHA": head, "GITHUB_OUTPUT": str(out)}
+        res = _run(o, work, step["run"], env)
+        assert res.returncode == 0, res.stdout + res.stderr
+        assert "::notice::" not in res.stdout, res.stdout
+        assert out.read_text(encoding="utf-8") == f"sha={rebased['base_tip']}\n"
 
 
 def test_the_rule_greps_run_on_the_fetched_history(world) -> None:
@@ -430,9 +472,9 @@ def test_a_refused_history_fetch_fails_the_step_and_names_the_anonymous_fetch(wo
     _, res, sha = _diff_base(o, stale, "pr-hygiene", script)
     assert res.returncode != 0, res.stdout + res.stderr
     says = (
-        f"::error::Could not fetch the history of {stale['base_tip']} and {stale['head']}."
-        " The history is fetched without credentials, so the repository must be public"
-        " or readable without them."
+        f"::error::Could not fetch the history of {stale['base_tip']}, {stale['head']} and"
+        f" {stale['parent']}. The history is fetched without credentials, so the repository"
+        " must be public or readable without them."
     )
     assert says in res.stdout.splitlines(), res.stdout + res.stderr
     assert len(log.read_text(encoding="utf-8").splitlines()) == 3

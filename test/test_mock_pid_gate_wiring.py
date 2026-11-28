@@ -141,7 +141,7 @@ class TestTheScanStaysDiffScoped:
         assert len(resolvers) == 1, f"expected one diff-base step, found {len(resolvers)}"
         assert resolvers[0]["run"].strip() == f"bash {HISTORY_SCRIPT.relative_to(ROOT).as_posix()}"
         script = HISTORY_SCRIPT.read_text(encoding="utf-8")
-        assert 'merge_base="$(git merge-base "$BASE_TIP" "$HEAD_SHA")"' in script
+        assert 'merge_base="$(git merge-base "$base_now" "$HEAD_SHA")"' in script
         assert 'echo "sha=$merge_base" >> "$GITHUB_OUTPUT"' in script
         (scan,) = [step for step in steps if "semgrep scan" in str(step.get("run"))]
         assert scan["env"]["SEMGREP_BASELINE_REF"] == "${{ steps.diffbase.outputs.sha }}"
