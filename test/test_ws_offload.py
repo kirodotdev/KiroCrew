@@ -740,6 +740,11 @@ async def test_status_snapshot_reads_the_background_turn_cap_off_event_loop(monk
 
     snap = await sc_module.cached_status_snapshot(state)
 
-    assert snap["background_turns"] == {"cap": 7, "running": 0, "waiting": 0}
+    turns = snap["background_turns"]
+    assert {k: turns[k] for k in ("cap", "running", "waiting")} == {
+        "cap": 7,
+        "running": 0,
+        "waiting": 0,
+    }
     assert readers, "the cap was not read from config.json at all"
     assert loop_thread not in readers, "the background-turn cap read config.json on the loop"

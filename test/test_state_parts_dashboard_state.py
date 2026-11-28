@@ -59,7 +59,8 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, session_key: 'str', approval_id: 'str', approved: 'bool', "
         "decision: 'str' = '') -> 'None'",
     ),
-    "_background_turn_sema": ("function", False, False, "(self) -> 'asyncio.Semaphore'"),
+    "_background_turn_admit_extra": ("function", False, False, "(self) -> 'bool'"),
+    "_background_turn_sema": ("function", False, False, "(self) -> 'TurnLimiter'"),
     "_bridge_note": (
         "function",
         False,
@@ -181,6 +182,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "_reload_cron_folders_if_unknown": ("function", False, False, "(self) -> 'None'"),
     "_reload_folders_if_unknown": ("function", False, False, "(self) -> 'None'"),
+    "_refresh_background_turn_cap": ("function", False, False, "(self) -> 'None'"),
     "_remove_ws": ("function", False, False, "(self, ws: 'web.WebSocketResponse') -> 'None'"),
     "_reproject_slots": (
         "function",
@@ -292,7 +294,8 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "approval_timeout_for": ("function", False, False, "(self, slot: \"'_ChatSlot'\") -> 'float'"),
     "arm_slot_list_rebuild_deadline": ("function", False, False, "(self) -> 'None'"),
-    "background_turn_stats": ("function", False, False, "(self) -> 'dict[str, int]'"),
+    "background_turn_sizing": ("function", False, False, "(self) -> 'CapSizing'"),
+    "background_turn_stats": ("function", False, False, "(self) -> 'dict[str, Any]'"),
     "begin_slot_construction": ("function", False, False, "(self, key: 'str') -> 'None'"),
     "begin_slot_list_rebuild": ("function", False, False, "(self) -> 'None'"),
     "bind_serving_loop": (

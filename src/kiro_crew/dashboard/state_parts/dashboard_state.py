@@ -20,6 +20,7 @@ from aiohttp import web
 from kiro_crew._facade_bindings import own_methods
 from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
 from kiro_crew.dashboard import pinned_session_order
+from kiro_crew.dashboard.background_turn_cap import TurnLimiter
 from kiro_crew.dashboard.folder_repository import FOLDERS_FILE
 from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator, QuestionCoordinator
 from kiro_crew.dashboard.repeated_failures_notice import RepeatedFailuresNotifier
@@ -904,11 +905,12 @@ class DashboardState:
         # successful exec replaces this state with the successor process.
         self._gateway_restart_task: asyncio.Task[None] | None = None
         self._gateway_restart_in_progress: bool = False
-        # Unattended-turn concurrency cap. Semaphore is created lazily
+        # Unattended-turn concurrency cap. The limiter is created lazily
         # (see _background_turn_sema) because this object outlives / predates
         # the event loop in some hosts. The counters exist so a queued fleet is
         # observable — see background_turn_stats().
-        self._bg_turn_sema: asyncio.Semaphore | None = None
+        self._bg_turn_sema: TurnLimiter | None = None
+        self._bg_turn_sizing_cache: tuple[float, Any] | None = None
         self._bg_turn_cap: int = 0
         self._bg_turns_running: int = 0
         self._bg_turns_waiting: int = 0
@@ -1169,7 +1171,11 @@ class DashboardState:
     # ``MAX_CONCURRENT_CEIL`` clamp): configurable, but never unbounded.
     MAX_BACKGROUND_TURNS = 4  # default in-flight unattended turns
 
-    MAX_BACKGROUND_TURNS_CEIL = 16  # hard ceiling — config can raise up to here
+    # Highest cap any host gets. The cap actually allowed on a host is sized
+    # from its memory, between 16 and this figure: see
+    # dashboard/background_turn_cap.py. ``dashboard.max_background_turns: 0``
+    # asks for that memory-sized ceiling.
+    MAX_BACKGROUND_TURNS_CEIL = 64
 
     # Longest a queued turn may sit waiting for a permit. Needed because the
     # queue wait happens INSIDE the coroutine ``spawn_guarded_turn`` already
@@ -1294,8 +1300,11 @@ class DashboardState:
 
     # state_parts/dashboard_services.py
     approval_timeout_for = _dashboard_services.approval_timeout_for
+    background_turn_sizing = _dashboard_services.background_turn_sizing
     effective_max_background_turns = _dashboard_services.effective_max_background_turns
+    _background_turn_admit_extra = _dashboard_services._background_turn_admit_extra
     _background_turn_sema = _dashboard_services._background_turn_sema
+    _refresh_background_turn_cap = _dashboard_services._refresh_background_turn_cap
     background_turn_stats = _dashboard_services.background_turn_stats
     run_background_turn = _dashboard_services.run_background_turn
     enable_yolo = _dashboard_services.enable_yolo
