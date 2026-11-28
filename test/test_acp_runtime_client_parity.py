@@ -994,6 +994,8 @@ async def test_runtime_spawn_scrubs_sensitive_env_on_default_auto(monkeypatch):
         "SLACK_BOT_TOKEN",
         "KIROCREW_OWNER_ID",
         "AWS_SECRET_ACCESS_KEY",
+        # The key id goes with its secret: alone it makes every ``aws`` call fail.
+        "AWS_ACCESS_KEY_ID",
         "PYTHONPATH",
         "PYTHONPYCACHEPREFIX",
         "PYTHONDONTWRITEBYTECODE",
@@ -1007,7 +1009,6 @@ async def test_runtime_spawn_scrubs_sensitive_env_on_default_auto(monkeypatch):
     else:
         assert env.get("SSH_AUTH_SOCK") == "/tmp/fake-agent.sock"
     assert env.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
-    assert env.get("AWS_ACCESS_KEY_ID") == "FAKE-akid"
     assert env.get("KIROCREW_RUNTIME_PYTHON") == runtime_mod.sys.executable
 
 

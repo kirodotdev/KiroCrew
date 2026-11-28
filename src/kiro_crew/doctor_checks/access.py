@@ -312,12 +312,12 @@ def _doctor_credentials(issues: list[str]) -> None:
             print("  profiles:    ✅ default (from ~/.aws/credentials)")
         else:
             print("  profiles:    ⚠️  ~/.aws present but `aws configure` lists no profile")
-        # credential_process is the setup worth calling out: it vends short-lived
-        # credentials on demand, so the agent's AWS calls keep working across a
-        # token expiry without anyone re-running a login.
+        # Reported as a fact about the profile in use, with no mark either way: a
+        # credential_process is one way to refresh credentials, not the setup to
+        # have, and a profile without one (SSO, a signed-in session) is not a fault.
         refreshes = cli_doctor._aws_auto_refreshes()
         if refreshes:
-            print("  refresh:     ✅ credential_process configured (auto-refreshing)")
+            print("  refresh:     ℹ  credential_process configured for the profile in use")
         elif refreshes is None:
             # Nothing here establishes whether credentials expire. Printing the ⏹
             # line anyway told operators with a working credential_process that
@@ -337,7 +337,7 @@ def _doctor_credentials(issues: list[str]) -> None:
             else:
                 print("  refresh:     ℹ️  install the AWS CLI to check for credential_process")
         else:
-            print("  refresh:     ⏹ no credential_process — credentials may expire mid-task")
+            print("  refresh:     ℹ  no credential_process for the profile in use")
     vendor = cli_doctor._credential_vendor_line()
     if vendor:
         print("  vending MCP: ✅ available")

@@ -292,8 +292,13 @@ async def test_cancel_recovery_text_only_respawn_gets_resume_preamble():
         )
 
         # First attempt: bare prompt. Respawn: preamble present.
-        assert not build_msgs[0].startswith(_CANCEL_RESUME_PREFIX)
-        assert build_msgs[1].startswith(_CANCEL_RESUME_PREFIX)
+        # Each attempt is a fresh session, so each opens with its one AWS line.
+        from kiro_crew.context_assembly import aws_access
+
+        aws_line = aws_access.subagent_line()
+        assert build_msgs[0].startswith(aws_line)
+        assert not build_msgs[0].removeprefix(aws_line).startswith(_CANCEL_RESUME_PREFIX)
+        assert build_msgs[1].removeprefix(aws_line).startswith(_CANCEL_RESUME_PREFIX)
 
         task2 = mgr._tasks.get(info.id)
         if task2 is not None:

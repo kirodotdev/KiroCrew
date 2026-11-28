@@ -1544,8 +1544,10 @@ class AwsConfig:
             "Project AWS Profiles",
             "Binds an AWS named profile to a project directory, so the agent in a "
             "session working there starts with AWS_PROFILE and AWS_DEFAULT_PROFILE "
-            "set to it and an AWS "
-            "command reaches the intended account without --profile. Keys are "
+            "set to it. This sets a profile NAME, not a credential: an AWS command "
+            "reaches that account only where the session can read the AWS files "
+            "that define the profile, and where they are hidden from it the command "
+            "fails with a profile that could not be found. Keys are "
             "absolute directory paths, values are profile names from your own AWS "
             "config (IAM or SSO), e.g. "
             '{"/home/me/src/billing": "billing-prod", "/home/me/src/sandbox": "dev"}. '

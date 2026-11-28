@@ -313,10 +313,10 @@ def test_successful_list_launches_resolved_binary_in_place(tmp_path, monkeypatch
     assert "pass_fds" not in spawn.await_args.kwargs
     env = spawn.await_args.kwargs["env"]
     assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert "AWS_ACCESS_KEY_ID" not in env
     assert "PYTHONPATH" not in env
     assert "SLACK_BOT_TOKEN" not in env
     assert env["KIRO_API_KEY"] == "model-list-key"
-    assert env["AWS_ACCESS_KEY_ID"] == "FAKE-akid"
     assert env["KIROCREW_UNRELATED_KEEPME"] == "keep-this-value"
 
 

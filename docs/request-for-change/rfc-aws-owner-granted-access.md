@@ -1,12 +1,12 @@
 ---
 title: Agent AWS access from an owner's grant -- no forced named profile, credentials vended by Kiro Crew after the owner confirms
-status: accepted
+status: partial
 author: iamwhatever
 created: 2026-11-27
 last-audited: 2026-11-27
-audited-at: 0baf480a06
+audited-at: c48cd2bdcb
 doc-pr: 43318
-implementation-prs: []
+implementation-prs: [43560]
 tracking-issues: [43263]
 supersedes: []
 superseded-by: []
@@ -14,13 +14,19 @@ superseded-by: []
 
 # RFC: Agent AWS access from an owner's grant
 
-**Status:** accepted. Maintainer bolichen97 accepted this document as a whole
+**Status:** partial. Maintainer bolichen97 accepted this document as a whole
 on 2026-11-27, in
-[the sign-off on this PR](https://github.com/kirodotdev/KiroCrew/pull/43318#pullrequestreview-6086476618),
-and ruled that all three PRs may be built (§16). Nothing here is built, and no
-implementation PR is open. The maintainer who asked for this design asked that
-building wait for their word; that hold is theirs to lift. Every
-code reference below was read at `origin/main` `0baf480a06`. A citation names
+[the sign-off on #43318](https://github.com/kirodotdev/KiroCrew/pull/43318#pullrequestreview-6086476618),
+and ruled that all three PRs may be built (§16). The maintainer who asked for
+this design had asked that building wait for their word; they gave it on
+2026-11-27 and ruled that the build stay lean. PR 1 is built by
+[#43560](https://github.com/kirodotdev/KiroCrew/pull/43560), with M3 cut down
+on that ruling: §6.1 and §11.2 say what was built and what was left out. PR 2
+is not built and still waits on what §11.1 lists; its two probes were run on
+2026-11-27 as far as a chat can run them, and §11.3 holds the verdicts. PR 3 is
+recorded here when its own pull request lands. The design sections below were read at
+`origin/main` `0baf480a06` and describe main before PR 1; the PR 1 parts marked
+"as built" were read at `c48cd2bdcb`. A citation names
 the file and the symbol or heading, not a line number, as the docs rules ask.
 Paths that start with `src/`, `docs/` or `test/` are from the repository root;
 every other path is under `src/kiro_crew/`.
@@ -230,7 +236,7 @@ tell the agent to call an outside tool.
 |---|---|---|---|---|
 | M1 | **Refusal advice without the profile push.** The text is chosen by what this spawn's own mask hid; the default chain first, `--profile` only to choose between profiles the owner has. Where `aws` finds no credentials or no profile, the advice says that something outside Kiro Crew may be hiding the owner's AWS files from this chat, that `--profile` and `ada` inside the chat will not help, and to say so once. The fifteen profile sentences on main are fixed, kept on purpose, or left for PR 2 (list below). One test fails when the AWS advice a session gets holds `--profile`, `list-profiles` or `credential_process` outside the lines that are true for that session's mask. | G1, G4, G5 | Half exists: `REMEDIATION[DENY_CLASS_AWS_CREDENTIAL]` in `deny_guidance.py`. A spawn's tier is on `AcpRuntime.sandbox_mode` and its extra masks on `AcpRuntime.sandbox_hidden_dirs` (`acp/runtime_class.py`); the hidden set is the tier's list plus those extras, and deriving it is work this PR does. | Which of its own folders this tier hides, by name. Nothing else. |
 | M2 | **The profile setting stays as it is in code.** `aws.project_profiles` always sets both selectors. Its help text and doc say it sets a name, not a credential. | G4, G1 | Text only: the "Project AWS Profiles" help in `config/integration_sections.py`; "An AWS profile per project" in `src/kiro_crew/docs/configuration.md`. | Nothing. |
-| M3 | **`kirocrew doctor` and one doc section.** `doctor` reports the tier and what it hides, and key variables that are set and not passed. Its `refresh` line stops presenting a `credential_process` profile as the setup to have. The doc section holds the route tables of §7, the list of §10, and the four gateway-side features as unchanged. No line names a route or a switch before its PR ships. | G2, G1, G5 | Half exists: the `refresh:` lines of `_doctor_credentials` in `doctor_checks/access.py`. | Nothing. |
+| M3 | **`kirocrew doctor`'s `refresh` lines only.** As built, on the maintainer's ruling of 2026-11-27 that the build stay lean: the two `refresh:` lines of `_doctor_credentials` say whether the profile in use has a `credential_process` as a plain fact, with no mark that presents one as the setup to have or its absence as a fault. Left out: `doctor` lines for the tier, for what it hides and for key variables that are set and not passed, and the doc section with the route tables of §7 and the list of §10. What takes their place: M5's log line names the key variables, and "The most common false alarm" in `src/kiro_crew/docs/blocked-commands.md` has a short table of what each tier shows. | G1 | Half exists: the `refresh:` lines of `_doctor_credentials` in `doctor_checks/access.py`. | Nothing. |
 | M4 | **An `[AWS ACCESS]` note on the turn's context**, once per context window. "Told" is recorded only when the note was sent. It carries M1's line for this session's mask, the sentence about an outside sandbox, and the bound-folder sentence of M2. A Bot's service agent: "my worker does AWS work". Not built for the guest agent or on a minimal-context turn. A sub-agent gets one line as its own prefix. PR 2 changes its text to name the vending route. | G1, G2 | The rail exists: `turn_block` in `context_assembly/mcp_servers.py`, called from `build_message` in `context_assembly/turn_message.py`; the sub-agent prefix goes where the spawn notice is put, the `_spawn_mcp_notice` call in `subagent_manager/run_turn.py`. | One fact about its own tier. |
 | M5 | **Agent children lose the whole key set**: id, secret, session token and the old token alias. One gateway log line names the variables, not their values. The same list scrubs the gateway's own `aws` runs (`run_aws` in `cloud/aws.py`), so they lose the key id too; they already could not use credentials that exist only as environment variables, so nothing that works today stops. | G1, G6 | New. `_SENSITIVE_ENV_PREFIXES` in `sandbox_tiers.py`; `_SPAWN_SCRUB_ENV_PREFIXES` in `sandbox_spawn.py`. | Less than today. |
 
@@ -254,6 +260,30 @@ Build notes for PR 1:
 - If no reader links a session to its hidden set, M1's text names all three
   tiers.
 - PR 1 adds one small helper the later PRs use: "what this spawn's mask hid".
+
+As built:
+
+- **M1 and M4 name every tier.** No reader links a session to its hidden set
+  where a refusal or a prompt is built, so the fallback above applies. The text
+  says what `standard`, `strict` and `cc` show, that some agent harnesses are
+  masked on every tier, and that a chat reads its own tier from
+  `KIROCREW_SANDBOX_LEVEL` (`_IN_SANDBOX_LEVEL_VAR` in `sandbox_tiers.py`). The
+  lines are `AWS_PROFILE_LINE`, `AWS_TIER_LINE` and `AWS_HIDDEN_LINE` in
+  `deny_guidance.py`, and every surface quotes them.
+- **The helper "what this spawn's mask hid" was not built**, for the same
+  reason. PR 2 adds it if it needs it.
+- **The `cc` line** (§7.3): a chat reaches `cc` only through a governance floor.
+  Both renderers hide `~/.aws` on `cc` and show only its `config`
+  (`RendererCapabilities.cc_unmaskable_dirs` in `sandbox_plan.py` is empty for
+  both), so the line holds on macOS as on Linux.
+- **M4's "told"** is recorded when a turn's settle says the turn landed
+  (`settle` in `context_assembly/aws_access.py`, called from
+  `rollback_skill_bodies` and `commit_skill_bodies`). Until then every build
+  for that session carries the note, so a caller that never settles its turns
+  sends it on each of them. A turn with no session key gets no note. The bound-folder sentence rides when `aws.project_profiles`
+  binds any folder, and does not say that this chat's folder is bound.
+- **The outside-tool sentence of `REMEDIATION[DENY_CLASS_AWS_CREDENTIAL]`**
+  lost its words "instead of a named profile" and is otherwise as it was.
 
 ### 6.2 PR 2: owner-confirmed credential vending
 
@@ -613,7 +643,7 @@ only for M1 and M9.
 
 | PR | Done when |
 |---|---|
-| 1 | A test fails when the AWS advice a session gets holds `--profile`, `list-profiles` or `credential_process` outside the lines that are true for that session's mask. The text of `credential_tool_hint`, which holds `--profile` and stays until PR 2, is exempt until then. No text added by this PR tells an agent to call a tool that Kiro Crew does not own. Each of sentences 1 to 5, 11 to 13 and 15, and the three named skill sentences, is changed as the table in §6.1 says. `doctor` prints M3's lines with a fake tier, and the doc section names no route that is not built. The note is sent once per context window, is not sent to the guest agent or on a minimal-context turn, and "told" is not recorded when it was not sent; a sub-agent's first message carries the one line. With all four key variables in the gateway's environment, an agent child has none of them, and the log line names the variables without their values. |
+| 1 | A test fails when the AWS advice a session gets holds `--profile`, `list-profiles` or `credential_process` outside the lines that say when each applies (as built, those lines name every tier, §6.1). The text of `credential_tool_hint`, which holds `--profile` and stays until PR 2, is exempt until then, and so is the skill's section on a host that vends credentials through an MCP tool. No text added by this PR tells an agent to call a tool that Kiro Crew does not own. Each of sentences 1 to 5, 11 to 13 and 15, and the three named skill sentences, is changed as the table in §6.1 says. The two `refresh:` lines of `doctor` no longer mark a `credential_process` as the setup to have; M3's new `doctor` lines and its doc section were left out on the maintainer's ruling of 2026-11-27 (§6.1). The note is sent once per context window, is not sent to the guest agent or on a minimal-context turn, and "told" is not recorded when it was not sent; a sub-agent's first message carries the one line. With all four key variables in the gateway's environment, an agent child has none of them, and the log line names the variables without their values. |
 | 2 | Probes S0-6 and S0-1 are recorded in this document. A session whose `~/.aws` is hidden by Kiro Crew's mask, and a session spawned through a launcher shim, each get the grant; a default-tier session with no shim does not, and neither does a delegated spawn. A direct shell run of the vend helper is refused. The listener refuses an identity that is not confirmed, and the refusal names the access tool. No approval mode answers a new identity on any caller of the held check; an identity on the record is answered yes under any mode; an error never ends in a yes; a scheduled run is refused at once. A bound profile name resolves. The existing sentences about an outside tool (§3.2) are gone. Every vend leaves a record with no credential in it (the neighbour's criterion). |
 | 3 | The 22 must-stay cases are still refused and the known false refusals are allowed, as tests. Each command M10 lists is refused. |
 
@@ -626,6 +656,36 @@ writes its verdict into this document before the PR that waits on it opens.
 |---|---|---|---|
 | S0-6 | PR 2 (M6) | On a host with an outside sandbox, start one session through the gateway with four made-up things in place: a harmless value in `AWS_CONFIG_FILE`; a small file in a per-session folder under the data home, opened by Kiro Crew's launcher, where the helper's config would sit; a small runnable file in a pre-created read-only directory, where the neighbour puts the helper; and a test socket under `<data home>/mcp-gateway` that answers one fixed word. Inside the session: read the variable, read the first file, run the second, connect to the socket. | Per link, as the table in §9 says. If the variable is reset: the agent is given the config path to put in front of its command. If the file or the socket cannot be reached: vending does not reach such a host, PR 2 ships for the other hosts, and a maintainer rules what such a host gets. |
 | S0-1 | PR 2 (M7) | A session started through the gateway with the access tool held. One call with made-up arguments. Pass: a permission request reaches the owner's surface, with a trusted tool identity, and carries the call's arguments. | The listener still refuses every unconfirmed identity (§8), so nothing is vended unasked. The owner then approves on the dashboard page, which is the record's other writer, and the tool's refusal says so. |
+
+**Verdicts, 2026-11-27.** Both probes were run as far as a chat can run them,
+on one host with one version of each layer: a gateway, an outside sandbox, and
+`kiro-cli` on its v3 engine. A worker's shell on that host is inside the outside
+sandbox, so the parts that need a process outside it were not run. No credential
+was used and no AWS call was made.
+
+| Probe part | Verdict | What was seen |
+|---|---|---|
+| S0-6, file link | pass | A made-up config file was read, and a made-up script was run, directly and from a child process with no shell, in a per-session folder under the data home that Kiro Crew's launcher opened. Kiro Crew's read-only folder that holds the gate artifacts, beside which the neighbour puts the helper, is visible inside and mounted read-only. The two files were written from inside; a helper written by the gateway was not made. |
+| S0-6, socket link, weak form | pass | Kiro Crew's own tool processes inside a session each hold a live connection to the gateway's socket under `<data home>/mcp-gateway`, and its listener runs outside. This also answers §9's "which one carried them was not checked": the socket in the data home. The socket existed before the session started. |
+| S0-6, socket link, strict form | not run | A new socket made after the session started, with its listener outside, was not tried. It needs a person to start the listener in a terminal. |
+| S0-6, pointer variable link | not tested | On the probed host the outside sandbox sets both pointer variables itself, so a value Kiro Crew set would likely be replaced. §9's fallback (the agent is given the config path to put in front of its command) is expected to be the working path there. |
+| S0-1, Kiro Crew's half | pass, with fakes | A made-up held tool was sent through every caller of the held check. At each one the trusted tool identity and the arguments reach the ask, and no approval mode answers it. An identity that is only in the request payload is not trusted, and such a call is still held. |
+| S0-1, live half | not run | A real card on the owner's surface was not raised. It needs the owner. |
+
+Two notes for PR 2, from the S0-1 run:
+
+- The background card and the channel card name the tool by its title string
+  only. The trusted server and tool pair is in the caller's hands at the held
+  check and is not passed on to those two cards, so the card text for a first
+  use has to take its identity from the event's trusted fields on those paths.
+- A tool on a pre-approved server raises no permission request at all, so the
+  held check never runs for it. The default agent's spec pre-approves every
+  tool on Kiro Crew's core server today. The access tool must be kept out of
+  that pre-approval.
+
+None of the parts that were not run can stop the build of PR 2: each decides
+which written fallback applies. Nothing here covers another host kind, another
+version of the outside sandbox, macOS, Windows or a delegated spawn.
 
 Not in this plan, named so they are not lost:
 
@@ -845,5 +905,4 @@ Questions the probes answer: S0-6 and S0-1 (§11.3).
 [the sign-off on this PR](https://github.com/kirodotdev/KiroCrew/pull/43318#pullrequestreview-6086476618).
 All three PRs may be built: PR 1, PR 2 and PR 3. The sign-off does not rule on
 questions 2 to 8 above; each is settled in the PR that meets it, and PR 2 still
-waits on what §11.1 lists. No implementation PR is open yet (see the status line
-at the top).
+waits on what §11.1 lists. PR 1 is built (see the status line at the top).

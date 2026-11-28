@@ -522,6 +522,40 @@ def _rule_class(reason: str) -> "str | None":
     return _rule_class_index().get(identity)
 
 
+#: The one case for a profile flag: the owner picked the name.
+AWS_PROFILE_LINE = (
+    "Pass `--profile <name>` only with a name the owner gave you, to choose between "
+    "profiles they have."
+)
+
+#: What ``aws`` can read in a chat, by the sandbox tier Kiro Crew spawned it under.
+#: It names every tier because nothing that builds advice is handed the tier a
+#: session got; the chat reads its own from ``sandbox_tiers._IN_SANDBOX_LEVEL_VAR``.
+AWS_TIER_LINE = (
+    "What `aws` can read depends on the sandbox tier Kiro Crew started this chat "
+    "under, which `KIROCREW_SANDBOX_LEVEL` in this chat's shell names. On "
+    "`standard`, the default tier, `~/.aws` is visible and the owner's setup works "
+    "as it does in their terminal. On `strict` `~/.aws` is hidden, so no file route "
+    "works. On `cc` only `~/.aws/config` is shown, so the supported route is a "
+    "`credential_process` in that file. `strict` comes from the owner's sandbox "
+    "settings (`agent.sandbox`, `agent.harness_sandbox`) or from an organization's "
+    "sandbox floor, `cc` only from such a floor, and the owner's settings do not "
+    "lower a floor. On some "
+    "agent harnesses Kiro Crew hides `~/.aws` on every tier, and on `codex` it "
+    "shows `~/.aws/config` only."
+)
+
+#: What a failed lookup means, and what not to try next.
+AWS_HIDDEN_LINE = (
+    "If `aws` finds no credentials, or says a profile could not be found, this chat "
+    "may not be able to see the owner's AWS files: one of those tiers hides them, or "
+    "something outside Kiro Crew does, such as a sandbox the host runs agents in. "
+    "Then `--profile` will not help, and neither will a credential command run in "
+    "this chat's shell (such as `ada`), which cannot reach the owner's files or "
+    "sign-in from here. Say once which command you ran and what it said, and do not "
+    "retry it or conclude that this host has no AWS access."
+)
+
 #: agent, in the present tense, naming the sanctioned path concretely enough to
 #: act on without a further round-trip to the user.
 REMEDIATION: dict[str, str] = {
@@ -541,22 +575,18 @@ REMEDIATION: dict[str, str] = {
         "You do not need to read AWS credential material, and no reader of it is "
         "allowed — trying head/less/python instead of cat hits the same rule. What "
         "is refused is YOU opening the file; the SDK inside the `aws` process still "
-        "reads it for you, so an already-configured profile works without you ever "
+        "reads it for you, so a setup the owner already has works without you ever "
         "touching it. AWS CLI calls themselves are NOT blocked by this rule, so run "
-        "the command you actually wanted: to list configured profiles use `aws configure "
-        "list-profiles`, to confirm the identity in effect use `aws sts "
-        "get-caller-identity`, and to select one of several configured profiles "
-        "pass `--profile <name>`. Do "
+        "the command you actually wanted, plainly: it uses the owner's default "
+        "setup, and `aws sts get-caller-identity` confirms the identity in effect. "
+        f"{AWS_PROFILE_LINE} Do "
         "NOT assume the SDK will find a credential just because the user has one — "
         "your environment can point at a session-scoped credentials location rather "
         "than the user's own, so a credential they minted by hand in their terminal "
-        "may be invisible to you even though it exists on the host. If the identity "
-        "check comes back with none, report which check you ran and what it said "
-        "rather than concluding this host has no AWS access: the durable setup is a "
-        "profile whose `credential_process` vends credentials on demand, which is "
-        "the user's step to take (for example `aws sso login` first). On a host "
-        "that provides a credential-vending tool that tool is the sanctioned path "
-        "instead of a named profile, and the credential it supplies lands on the "
+        "may be invisible to you even though it exists on the host. "
+        f"{AWS_TIER_LINE} {AWS_HIDDEN_LINE} On a host "
+        "that provides a credential-vending tool that tool is the sanctioned path, "
+        "and the credential it supplies lands on the "
         "DEFAULT profile — there, run the command plainly and do not pass "
         "`--profile`."
     ),
@@ -578,8 +608,7 @@ REMEDIATION: dict[str, str] = {
         "remote-shell, container and package clients alike — resolves its own "
         "credentials without your help. When the refused thing was a command that "
         "would have obtained a credential, the supported route is that client's own "
-        "credential helper (for a cloud CLI, a configured profile whose "
-        "`credential_process` vends one on demand) or the credential-vending tool "
+        "credential helper, as the user set it up, or the credential-vending tool "
         "this host provides — both of which are the user's "
         "setup, not something to re-attempt from here. If the task genuinely cannot "
         "proceed without the material, name the STEP that needs it and let the user "
@@ -727,10 +756,7 @@ _S3_UNREAD_DOWNLOAD_WINDOWS = (
 #: "example" for one of those is an alternative SPELLING of the refused action,
 #: which is the one thing this module must never hand back.
 SUGGESTED_COMMANDS: dict[str, tuple[str, ...]] = {
-    DENY_CLASS_AWS_CREDENTIAL: (
-        "aws configure list-profiles",
-        "aws sts get-caller-identity",
-    ),
+    DENY_CLASS_AWS_CREDENTIAL: ("aws sts get-caller-identity",),
 }
 
 #: Substrings that identify an installed MCP server as a credential vendor.

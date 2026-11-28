@@ -546,10 +546,10 @@ class TestAnAcpTurnHasNoInheritedAwsCredentials:
 
         assert "AWS_SECRET_ACCESS_KEY" not in scrubbed
         assert "AWS_SESSION_TOKEN" not in scrubbed
-        # The key id survives (no AWS_ACCESS prefix in the sensitive list) but a
-        # key id without its secret is not a credential -- which is the whole
-        # reason the corrected posture says "no credentials on any path".
-        assert scrubbed.get("AWS_ACCESS_KEY_ID") == "AKIAEXAMPLE"
+        # The key id goes with them: alone it is not a credential, and it makes
+        # every ``aws`` call in the child fail on a partial key.
+        assert "AWS_ACCESS_KEY_ID" not in scrubbed
+        assert scrubbed == {"PATH": "/usr/bin"}
 
     def test_the_prefixes_the_posture_depends_on_are_pinned(self) -> None:
         """If either prefix left the list, the corrected claim would silently

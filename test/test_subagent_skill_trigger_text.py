@@ -129,7 +129,10 @@ def test_the_prefix_carries_the_trigger_words():
 async def test_child_triggers_read_the_raw_task():
     task = "pick the better of two designs"
     args, kwargs = await _child_build_call(task)
-    assert args[0].startswith(_SYSTEM_PREFIX)
+    # A child's first message opens with its one AWS line, then Kiro Crew's prefix.
+    from kiro_crew.context_assembly import aws_access
+
+    assert args[0] == aws_access.subagent_line() + _SYSTEM_PREFIX + task
     assert kwargs.get("skill_trigger_text") == task
 
 

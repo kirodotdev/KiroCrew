@@ -25,6 +25,7 @@ import logging
 from collections.abc import Callable, Collection
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.context_assembly import aws_access as _aws_access
 from kiro_crew.context_assembly import inclusion as _inclusion
 from kiro_crew.context_assembly import markers as _markers
 from kiro_crew.context_assembly import mcp_servers as _mcp_servers
@@ -889,6 +890,14 @@ def build_message(
         )
     ):
         parts.append(_mcp_block)
+    # What works for AWS in this chat, once per context window, so the model does
+    # not reach for a profile flag after a failed lookup.
+    if not minimal_context and (
+        _aws_block := _aws_access.turn_block(
+            self, session_key, agent, rebuilt=is_new_session or needs_reinjection
+        )
+    ):
+        parts.append(_aws_block)
 
     # Reset the per-session skill-body record on any turn that owns the one-shot
     # window-rebuild flag (fresh session or first turn after a compaction), match

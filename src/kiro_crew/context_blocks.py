@@ -64,6 +64,7 @@ _MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("folder_path", r"\[FOLDER\]"),
     ("resource_advisory", r"\[RESOURCES\]"),
     ("mcp_servers", r"\[MCP SERVERS\]"),
+    ("aws_access", r"\[AWS ACCESS\]"),
     ("user_display", r"\[CURRENT USER\]"),
     ("user_profile", r"\[USER PROFILE\]"),
     ("ui_language", r"\[UI LANGUAGE\]"),

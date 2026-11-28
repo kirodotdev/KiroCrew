@@ -720,6 +720,8 @@ def test_memory_is_injected_on_the_first_message_only(seeded: Seeded) -> None:
     first, _ = seeded.builder.build_message(QUERY, True, session_key=SESSION_KEY)
     for marker in _MEMORY_MARKERS:
         assert marker in first, marker
+    # The first turn landed: what a build sends once per context window is told.
+    seeded.builder.commit_skill_bodies(SESSION_KEY)
 
     follow_up, _ = seeded.builder.build_message(
         "and what about the rollback?", False, session_key=SESSION_KEY

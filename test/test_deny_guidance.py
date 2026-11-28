@@ -1200,7 +1200,8 @@ class TestRemediationText:
         """
         text = dg.REMEDIATION[dg.DENY_CLASS_AWS_CREDENTIAL]
         assert "session-scoped" in text
-        assert "credential_process" in text, "the supported durable setup must be named"
+        assert dg.AWS_HIDDEN_LINE in text, "what a failed lookup means must be said"
+        assert "durable setup" not in text, "no one setup is named as the one to have"
         assert "resolves credentials on its own" not in text
 
     def test_credential_material_guidance_covers_a_refused_command(self):
@@ -1213,7 +1214,7 @@ class TestRemediationText:
         """
         text = dg.REMEDIATION[dg.DENY_CLASS_SECRET_FILE]
         assert "a command that mints it" in text
-        assert "credential_process" in text
+        assert "credential helper, as the user set it up" in text
         assert not text.startswith("This path holds")
 
     def test_exfil_guidance_names_the_no_local_file_over_block(self):
@@ -1271,22 +1272,26 @@ class TestRemediationText:
             for command in commands:
                 assert command in dg.REMEDIATION[deny_class]
 
-    def test_the_skill_carries_the_named_profile_path_too(self):
+    def test_the_skill_carries_the_same_aws_lines(self):
         """The skill is what a triggered agent actually reads, so it cannot lag.
 
-        The named-profile half was missing from both surfaces at once, which is how
-        it went unnoticed: the vending-tool exception was added to the skill first
-        and the supported case was never written down in either place.
+        It says when a profile flag applies, what each tier shows and what a failed
+        lookup means in the refusal's own sentences, so the two cannot drift apart.
         """
-        skill = (
-            Path(__file__).resolve().parents[1]
-            / "src"
-            / "kiro_crew"
-            / "builtin_skills"
-            / "blocked-by-policy"
-            / "SKILL.md"
-        ).read_text(encoding="utf-8")
-        assert "`--profile <name>`" in skill, "the skill leaves the supported path implied"
+        skill = " ".join(
+            (
+                Path(__file__).resolve().parents[1]
+                / "src"
+                / "kiro_crew"
+                / "builtin_skills"
+                / "blocked-by-policy"
+                / "SKILL.md"
+            )
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        for line in (dg.AWS_PROFILE_LINE, dg.AWS_TIER_LINE, dg.AWS_HIDDEN_LINE):
+            assert line in skill, f"the skill lost: {line[:60]}"
         assert "SDK inside the `aws` process" in skill
 
     def test_the_other_two_surfaces_quote_the_same_commands(self):
@@ -1573,7 +1578,7 @@ class TestNoticeIntegration:
     def test_policy_notice_carries_the_remediation(self):
         notice = build_refusal_steer_notice("Running: cat creds", self._AWS_REASON)
         assert "How to do this properly:" in notice
-        assert "aws configure list-profiles" in notice
+        assert "aws sts get-caller-identity" in notice
 
     @pytest.mark.parametrize("cause", [DENY_CAUSE_INVALID_NAME, DENY_CAUSE_HOOK_ERROR])
     def test_non_policy_causes_get_no_remediation(self, cause):
@@ -1603,7 +1608,7 @@ class TestNoticeIntegration:
                 ("Running: head creds", self._AWS_REASON),
             ]
         )
-        assert body.count("aws configure list-profiles") == 1
+        assert body.count("aws sts get-caller-identity") == 1
 
     def test_guidance_is_not_shaped_like_a_blocked_item(self):
         """RecoveryCard counts bullet-shaped lines in this body as blocked calls.
@@ -1619,7 +1624,7 @@ class TestNoticeIntegration:
         bullets = [line for line in body.splitlines() if bullet.match(line)]
         assert len(bullets) == 1, f"expected only the blocked item to be a bullet: {bullets}"
         assert "How to do this properly:" in body
-        assert "aws configure list-profiles" in body
+        assert "aws sts get-caller-identity" in body
 
     def test_recovery_prompt_keeps_distinct_classes(self):
         body = build_refusal_recovery_prompt(
@@ -1631,7 +1636,7 @@ class TestNoticeIntegration:
                 ),
             ]
         )
-        assert "aws configure list-profiles" in body
+        assert "aws sts get-caller-identity" in body
         assert "move a local file's contents off this host" in body
 
     def test_recovery_prompt_without_classified_refusals_is_unchanged(self):

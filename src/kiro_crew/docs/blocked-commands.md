@@ -15,9 +15,40 @@ report that the host has no AWS access at all — while `aws sts
 get-caller-identity` works the whole time.
 
 The refusal carries the sanctioned path with it, so the agent is told to run
-`aws configure list-profiles` and `aws sts get-caller-identity` instead of
-reading the file. If you still see that conclusion, run `kirocrew doctor` —
-its **Credentials** section reports whether anything is actually configured.
+the command it wanted plainly, on your default setup, and to confirm the
+identity with `aws sts get-caller-identity` instead of reading the file. It is
+told to pass a profile flag only with a name you gave it. If you still see that
+conclusion, run `kirocrew doctor` — its **Credentials** section reports whether
+anything is actually configured.
+
+Whether your setup reaches the agent depends on what its chat can see:
+
+| The chat runs on | What `aws` in the chat can read |
+|---|---|
+| The `standard` sandbox tier (the default) | `~/.aws`. Your setup works as it does in your terminal. |
+| The `strict` tier | Nothing of `~/.aws`. No file route works. |
+| The `cc` tier | Only `~/.aws/config`. The supported route is a `credential_process` in that file. |
+| An agent harness Kiro Crew masks | Nothing of `~/.aws` on any tier; on `codex` only `~/.aws/config`. |
+
+`strict` comes from your sandbox settings (`agent.sandbox`,
+`agent.harness_sandbox`) or from an organization's sandbox floor, `cc` only
+from such a floor, and your settings do not lower a floor. Something outside
+Kiro Crew can hide your AWS files too, such as a sandbox the host runs agents
+in. When `aws` in a chat finds no credentials, or says a profile could not be
+found, the agent is told to say so once and not to retry that command: a
+profile flag does not help there, and neither does a credential command run in
+the chat's shell (such as `ada`), which cannot reach your files or sign-in from
+there. Kiro Crew has no
+route of its own that hands a chat credentials.
+
+Each chat is also told this once, before any refusal, in an `[AWS ACCESS]` note
+on its first turn and again after a compaction. A Bot's own chat is told that
+its worker does AWS work.
+
+AWS keys set in the environment the gateway runs in are not passed to agents:
+the key id, the secret key, the session token and the older security token
+variable are all dropped, and the gateway log names the variables it dropped,
+never their values. Keep keys in your own AWS files instead.
 
 ## What is refused, and why
 
@@ -108,8 +139,7 @@ The **Credentials** section reports:
   `~/.aws` you lack permission on), it says it could not check and why, tells you
   to run `kirocrew doctor` from your own terminal or check the folder's
   permissions, and the rest of the report still runs
-- whether a `credential_process` entry is configured (short-lived, auto-refreshing
-  credentials — the recommended setup)
+- whether the profile in use has a `credential_process` entry
 - whether this host mounts an MCP server that vends credentials directly, which
   some managed and enterprise editions install
 - on Linux, whether sandboxed agents can see your Kerberos ticket. The sandbox

@@ -381,6 +381,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _CGROUP_SCOPE_BUS_ENV_KEYS cgroup_scope_bus_env without_python_env
         _namespace_launcher_child_is_confined _NAMESPACE_LAUNCHERS
         _NAMESPACE_LAUNCHERS_LOCK remember_namespace_launcher
+        _AWS_KEY_ENV_NAMES _aws_key_drop_logged _aws_key_drop_lock _log_dropped_aws_keys
         """.split()),
 }
 

@@ -39,29 +39,43 @@ trying to accomplish, and what is the sanctioned path to it".
 **You do not need to read them, and running AWS CLI commands is not blocked by the rule that refused the read.**
 This is the single most common misdiagnosis: the read is refused, and the
 conclusion "this host has no AWS access" is drawn from it. The SDK resolves
-credentials itself, including refreshing them through a `credential_process`
-entry.
+credentials itself.
 
-- List profiles: `aws configure list-profiles`
+- Run the command you wanted, plainly. It uses the owner's default setup.
 - Confirm the identity in effect: `aws sts get-caller-identity`
-- Select one of several configured profiles: `--profile <name>`
-- Then just run the command you wanted.
+- Pass `--profile <name>` only with a name the owner gave you, to choose between
+  profiles they have.
 
 **What is refused is YOU opening the credential file, not the credential being
-used.** The SDK inside the `aws` process still reads it, so an already-configured
-profile works without you ever touching the file — which is why the command you
-actually wanted is the way forward and a different reader never is.
+used.** The SDK inside the `aws` process still reads it, so a setup the owner
+already has works without you ever touching the file — which is why the command
+you actually wanted is the way forward and a different reader never is.
 
 **A resolved credential is not guaranteed just because the user has one.** Your
 environment can point at a session-scoped credentials location rather than the
 user's own, so a credential they minted by hand in their terminal may be
-invisible to you while still existing on the host. When the identity check comes
-back empty, report which check you ran and what it returned — that is a different
-finding from "no access", and it is the one a user can act on.
+invisible to you while still existing on the host.
 
-If nothing is configured, that is the user's action in their own terminal (for
-example `aws sso login`) — report that, do not conclude the capability is
-missing. Destructive AWS operations are separately denied on purpose.
+What `aws` can read depends on the sandbox tier Kiro Crew started this chat
+under, which `KIROCREW_SANDBOX_LEVEL` in this chat's shell names. On `standard`,
+the default tier, `~/.aws` is visible and the owner's setup works as it does in
+their terminal. On `strict` `~/.aws` is hidden, so no file route works. On `cc`
+only `~/.aws/config` is shown, so the supported route is a `credential_process`
+in that file. `strict` comes from the owner's sandbox settings (`agent.sandbox`,
+`agent.harness_sandbox`) or from an organization's sandbox floor, `cc` only from
+such a floor, and the owner's settings do not lower a floor. On some agent
+harnesses Kiro Crew hides `~/.aws` on every tier, and on `codex` it shows
+`~/.aws/config` only.
+
+If `aws` finds no credentials, or says a profile could not be found, this chat
+may not be able to see the owner's AWS files: one of those tiers hides them, or
+something outside Kiro Crew does, such as a sandbox the host runs agents in.
+Then `--profile` will not help, and neither will a credential command run in
+this chat's shell (such as `ada`), which cannot reach the owner's files or
+sign-in from here. Say once which command you ran and what it said, and do not
+retry it or conclude that this host has no AWS access.
+
+Destructive AWS operations are separately denied on purpose.
 
 #### If this host vends credentials through an MCP tool
 
@@ -132,8 +146,8 @@ transcript, in the model's context, and in everything derived from both. Hand
 back the step, not a request for the material.
 
 A refusal in this family is not always about a path: a command whose job is to
-**obtain** a credential lands here too. The supported route for that is a
-configured profile whose `credential_process` vends one on demand, or the
+**obtain** a credential lands here too. The supported route for that is the
+owning client's own credential helper, as the user set it up, or the
 credential-vending tool the host provides — both are the user's setup step, so
 report what you needed instead of re-attempting the acquisition yourself.
 
