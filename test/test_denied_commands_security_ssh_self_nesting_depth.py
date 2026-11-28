@@ -33,9 +33,9 @@ class TestSshFloorNestingDepth:
         real = ssh._double_quoted_substitution_bodies
         calls = [0]
 
-        def counting(text):
+        def counting(text, *rest):
             calls[0] += 1
-            return real(text)
+            return real(text, *rest)
 
         cmd = _nested_double_quoted(1000, "true; echo ssh")
         with patch.object(ssh, "_double_quoted_substitution_bodies", counting):
@@ -59,9 +59,9 @@ class TestSshFloorNestingDepth:
         real = ssh._double_quoted_substitution_bodies
         deepest = [0]
 
-        def counting(text):
+        def counting(text, *rest):
             deepest[0] = max(deepest[0], ssh._ssh_reading_depth.get())
-            return real(text)
+            return real(text, *rest)
 
         with patch.object(ssh, "_double_quoted_substitution_bodies", counting):
             assert (
