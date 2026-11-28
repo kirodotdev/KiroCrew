@@ -91,6 +91,20 @@ with Playwright's own message naming the exact `apt-get install` line. The
 one-time host setup: on a fresh Linux host run
 `sudo npx playwright install --with-deps chromium` once, alongside `npm ci`.
 
+## A package with its own lockfile needs its own install
+
+`npm --prefix website run test:electron` runs `npm test` in `website/electron`,
+which locks its own dependencies in `website/electron/package-lock.json`, and its
+specs `require("electron")`. `npm ci` in `website/` does not install that folder.
+CI's Electron jobs run `npm ci` there before `npm test`, so a floor carrying only
+the npm script fails every fresh worktree with `Cannot find module 'electron'`.
+
+`setup[]` therefore runs that install, from the lockfile and with CI's
+`ELECTRON_SKIP_BINARY_DOWNLOAD=1`, but only when `website/electron` has no
+`node_modules` yet. `npm ci` deletes an existing `node_modules` first, and a
+developer's own install there is something they rely on (constraint 2), so it is
+left alone.
+
 ## For a pinned external tool, run it ephemerally rather than installing it
 
 `uv tool run --from "cfn-lint==1.22.3" cfn-lint …` fetches CI's exact version,
