@@ -20340,6 +20340,7 @@
         "remove_failed": "移除 {{id}} 失败：{{error}}",
         "retry": "重试",
         "ssh_host_alias": "SSH 主机 / 别名",
+        "ssh_host_alias_hint": "与你在 ssh 后输入的内容完全相同：主机名、user@host，或 ~/.ssh/config 中的 Host 别名。请在此处或该别名中指定镜像所需的用户，例如 Ubuntu AMI 上的 ubuntu。",
         "ssh_tunnel": "SSH 隧道",
         "ssh_tunnel_not_supported_windows": "Windows 上不支持",
         "ssh_tunnel_not_supported_windows_hint": "{{productName}} 在 Windows 上运行时暂不支持 SSH 隧道：它需要 PATH 中有 OpenSSH 客户端，并且可能无法连接。请改用 AWS SSM Session Manager。",

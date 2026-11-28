@@ -21981,6 +21981,7 @@
         "remove_failed": "Не удалось удалить {{id}}: {{error}}",
         "retry": "Повторить",
         "ssh_host_alias": "SSH-хост / алиас",
+        "ssh_host_alias_hint": "Ровно то, что ты ввёл бы после ssh: имя хоста, user@host или алиас Host из ~/.ssh/config. Укажи здесь или в этом алиасе пользователя, которого ожидает образ, например ubuntu на AMI Ubuntu.",
         "ssh_tunnel": "SSH-туннель",
         "ssh_tunnel_not_supported_windows": "Не поддерживается в Windows",
         "ssh_tunnel_not_supported_windows_hint": "SSH-туннели пока не поддерживаются, когда {{productName}} работает в Windows: нужен клиент OpenSSH в PATH, и подключение может не установиться. Используй вместо этого AWS SSM Session Manager.",

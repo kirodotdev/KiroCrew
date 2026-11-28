@@ -653,6 +653,9 @@ export function InstanceFormFields({
         <label htmlFor={`${idPrefix}-ssh-host`} className="flex flex-col gap-1 text-[13px] text-muted">
           {i18nT('pages.settings.instancesPanel.ssh_host_alias')}
           <input id={`${idPrefix}-ssh-host`} aria-label={i18nT('pages.settings.instancesPanel.ssh_host_alias')} className={inputCls} value={values.sshHost} onChange={e => set('sshHost', e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.host_1_alias')} />
+          <span className="text-[12px] text-muted leading-snug">
+            {i18nT('pages.settings.instancesPanel.ssh_host_alias_hint')}
+          </span>
         </label>
       )}
       <label htmlFor={`${idPrefix}-remote-port`} className="flex flex-col gap-1 text-[13px] text-muted">

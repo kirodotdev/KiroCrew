@@ -20340,6 +20340,7 @@
         "remove_failed": "{{id}} の削除に失敗しました: {{error}}",
         "retry": "再試行",
         "ssh_host_alias": "SSH ホスト / エイリアス",
+        "ssh_host_alias_hint": "ssh の後に入力するものとまったく同じです: ホスト名、user@host、または ~/.ssh/config の Host エイリアス。イメージが想定するユーザーをここかそのエイリアスで指定してください（例: Ubuntu AMI では ubuntu）。",
         "ssh_tunnel": "SSH トンネル",
         "ssh_tunnel_not_supported_windows": "Windows では未対応",
         "ssh_tunnel_not_supported_windows_hint": "{{productName}} を Windows で実行している場合、SSH トンネルはまだサポートされていません。PATH 上の OpenSSH クライアントが必要で、接続に失敗することがあります。代わりに AWS SSM Session Manager を使用してください。",

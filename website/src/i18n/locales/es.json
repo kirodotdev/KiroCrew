@@ -21434,6 +21434,7 @@
         "remove_failed": "No se pudo eliminar {{id}}: {{error}}",
         "retry": "Reintentar",
         "ssh_host_alias": "Host / alias SSH",
+        "ssh_host_alias_hint": "Exactamente lo que escribirías después de ssh: un nombre de host, user@host o un alias Host de ~/.ssh/config. Indica aquí o en ese alias el usuario que espera la imagen, por ejemplo ubuntu en las AMI de Ubuntu.",
         "ssh_tunnel": "Túnel SSH",
         "ssh_tunnel_not_supported_windows": "No compatible con Windows",
         "ssh_tunnel_not_supported_windows_hint": "Los túneles SSH aún no son compatibles cuando {{productName}} se ejecuta en Windows: necesita el cliente OpenSSH en el PATH y puede fallar al conectar. Usa AWS SSM Session Manager en su lugar.",
