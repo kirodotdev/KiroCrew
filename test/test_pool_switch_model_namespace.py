@@ -107,3 +107,94 @@ async def test_the_spelling_follows_the_capability_not_the_backend_name(monkeypa
     monkeypatch.setattr(caps_mod, "capabilities_for", _codex_on_claude_ids)
     set_model = await _switch(ACP_BACKEND_CODEX)
     set_model.assert_awaited_once_with(CLAUDE_SPELLING)
+
+
+_SNAPSHOT = [{"modelId": "claude-opus-5.5"}]
+
+
+async def _claim_unserved(fresh) -> MagicMock:
+    """Claim a pooled process whose snapshot lacks the pin; *fresh* is the live answer."""
+    mgr, _factory = _make_manager(pool_agent="kirocrew")
+    pooled = _pooled("")
+    pooled.client.model_pin_refused = ""
+    if isinstance(fresh, BaseException):
+        pooled.client.refresh_available_models = AsyncMock(side_effect=fresh)
+    else:
+        pooled.client.refresh_available_models = AsyncMock(return_value=fresh)
+    pooled.available_models = MagicMock(return_value=_SNAPSHOT)
+    mgr._drain_and_claim = AsyncMock(return_value=pooled)
+    mgr._schedule_replenish = MagicMock()
+    with patch.object(type(mgr), "_resolve_agent_model", return_value="claude-opus-5.5"):
+        await mgr.get_or_create("test-key", agent="kirocrew", model="gpt-6.1-sol")
+    pooled.client.refresh_available_models.assert_awaited_once()
+    return pooled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fresh",
+    [_SNAPSHOT, [], RuntimeError("probe failed")],
+    ids=["fresh-answer-lacks-it", "empty-answer", "probe-failed"],
+)
+async def test_a_claim_refuses_an_unserved_model_only_after_a_fresh_answer(fresh) -> None:
+    """A run that named the model can then tell it never ran, as after a cold start.
+
+    An empty or failed probe is no evidence, so the snapshot's verdict stands.
+    """
+    pooled = await _claim_unserved(fresh)
+
+    pooled.client.set_model.assert_not_awaited()
+    assert pooled.client.model_pin_refused == "gpt-6.1-sol"
+
+
+@pytest.mark.asyncio
+async def test_a_claim_switches_to_a_model_the_fresh_answer_serves() -> None:
+    """A startup snapshot that missed an entitled model does not refuse it."""
+    pooled = await _claim_unserved(_SNAPSHOT + [{"modelId": "gpt-6.1-sol"}])
+
+    pooled.client.set_model.assert_awaited_once_with("gpt-6.1-sol")
+    assert pooled.client.model_pin_refused == ""
+
+
+#: Every claim state, with the refusal the claim must leave: (pool pin, startup
+#: refusal, requested model, harness, advertised, expected record, switch sent).
+_CLAIM_STATES = [
+    # Asks for the pool's own pin, which the account is not served: it never runs.
+    ("gpt-6.1-sol", "gpt-6.1-sol", "gpt-6.1-sol", "", _SNAPSHOT, "gpt-6.1-sol", None),
+    # Asks for the pool's own pin, served: nothing to record.
+    ("claude-opus-5.5", "", "claude-opus-5.5", "", _SNAPSHOT, "", None),
+    # Asks for another served model: the switch decides, the old refusal goes.
+    ("gpt-6.1-sol", "gpt-6.1-sol", "claude-opus-5.5", "", _SNAPSHOT, "", "claude-opus-5.5"),
+    # Another harness's model inherits the pooled one: not a refusal of this pin.
+    ("claude-opus-5.5", "template-pin", "another-harness-model", "", _SNAPSHOT, "", None),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("pool_pin", "startup", "requested", "backend", "advertised", "record", "switched"),
+    _CLAIM_STATES,
+    ids=["own-pin-refused", "own-pin-served", "switch-served", "foreign-harness"],
+)
+async def test_a_claim_leaves_the_refusal_that_describes_its_own_model(
+    pool_pin, startup, requested, backend, advertised, record, switched, monkeypatch
+) -> None:
+    from kiro_crew import model_scope
+
+    foreign = requested == "another-harness-model"
+    monkeypatch.setattr(model_scope, "pin_applies", lambda *_a, **_k: not foreign)
+    mgr, _factory = _make_manager(pool_agent="kirocrew")
+    pooled = _pooled(backend)
+    pooled.client.model_pin_refused = startup
+    pooled.client.refresh_available_models = AsyncMock(return_value=advertised)
+    pooled.available_models = MagicMock(return_value=advertised)
+    mgr._drain_and_claim = AsyncMock(return_value=pooled)
+    mgr._schedule_replenish = MagicMock()
+    with patch.object(type(mgr), "_resolve_agent_model", return_value=pool_pin):
+        await mgr.get_or_create("test-key", agent="kirocrew", model=requested)
+
+    assert pooled.client.model_pin_refused == record
+    if switched is None:
+        pooled.client.set_model.assert_not_awaited()
+    else:
+        pooled.client.set_model.assert_awaited_once_with(switched)

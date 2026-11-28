@@ -61,6 +61,7 @@ if TYPE_CHECKING:
         SubagentInfo,
         _context_groups_of,
         _redact,
+        _refused_spawn_pin,
         _resolved_model_of,
         _route_unpinned_start,
         _RunCreditAccounting,
@@ -490,6 +491,18 @@ async def _run_inner_impl(
             "follow-up without its prior context. The conversation "
             "may be locked by a live process or its files corrupt; "
             "re-spawn with a fresh task carrying a summary."
+        )
+    # Fail CLOSED on a spawn whose own model pin the session withheld: the
+    # backend default would answer in its place, and the parent would read
+    # that answer as the named model's.
+    refused_pin = _refused_spawn_pin(info, client)
+    if refused_pin:
+        info.error_code = "model_unavailable"
+        raise RuntimeError(
+            f"model_unavailable: model {_redact(refused_pin)!r} is not served to this "
+            "account on this backend, so the run stopped before its prompt instead of "
+            "running on the backend default. Spawn again with a model from the "
+            "backend's list, or without model."
         )
     # Intentionally check info.agent (not resolved `agent`) so only
     # explicitly requested agents skip _SYSTEM_PREFIX (defense-in-depth).

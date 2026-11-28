@@ -43,6 +43,44 @@ def _resolved_model_of(client: object) -> str:
     return "" if model == DEFAULT_MODEL else model
 
 
+def _refused_spawn_pin(info: SubagentInfo, client: object) -> str:
+    """The model this spawn named when its session refused to serve it, else ``""``.
+
+    A session withholds a startup pin the account is not served and stays on the
+    backend default without raising (``model_pin_refused``). For a run the caller
+    pinned that default would answer as if it were the named model, so a review
+    "on model X" would really be a second review by the default. Only the spawn's
+    own pin (``info.model``) counts: a configured role pin or a routed tier is
+    the operator's default choice, and a session that stays on the backend
+    default in its place keeps working as before. A refusal of another model
+    (the default a foreign pin fell back to) is not this pin's either. Never raises.
+    """
+    pinned = str(info.model or "").strip()
+    if not pinned or pinned == DEFAULT_MODEL:
+        return ""
+    try:
+        refused = getattr(client, "model_pin_refused", "")
+    except Exception:
+        return ""
+    if not isinstance(refused, str) or not _names_one_model(refused, pinned):
+        return ""
+    return refused
+
+
+def _names_one_model(a: str, b: str) -> bool:
+    """Whether *a* and *b* spell one model: equal past case and a ``<namespace>::``
+    qualifier, or one registered model in two harnesses' spellings."""
+    from kiro_crew import model_registry
+
+    left, right = (x.strip().lower().rpartition("::")[2] for x in (a, b))
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    key = model_registry.registered_model_key(left)
+    return key is not None and key == model_registry.registered_model_key(right)
+
+
 def _subagent_default_model(cfg: Any = None) -> str:
     """Explicit sub-agent model pin (``agent.role_models['subagent']``), or ``""``.
 
