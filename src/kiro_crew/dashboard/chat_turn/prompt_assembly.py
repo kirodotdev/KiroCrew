@@ -35,6 +35,7 @@ from kiro_crew.dashboard.chat_utils import (
     user_text_span,
 )
 from kiro_crew.dashboard.handlers import _prompt_read_within_root
+from kiro_crew.dashboard.responsive_chat import _held_row
 from kiro_crew.dashboard.state import TURN_OPENING_INJECT_KINDS
 from kiro_crew.executors import (
     EmbedAdmissionTimeout,
@@ -187,8 +188,8 @@ async def _session_replay_history(
             _budget = {"budget_chars": _context_cap_tail_chars(session_key)} if _trim_seed else {}
             # Merge the disk transcript and a frozen live-window tail
             # before one budget pass. Exclude this request by identity,
-            # whether or not the periodic flush has persisted it yet, and
-            # the previous reply a Regenerate turn is replacing.
+            # whether or not the periodic flush has persisted it yet, the previous
+            # reply a Regenerate replaces, and put-backs still queued for their own turns.
             compressed = (
                 await asyncio.to_thread(
                     build_session_replay,
@@ -196,7 +197,8 @@ async def _session_replay_history(
                     session_key,
                     pending_messages=list(slot.messages),
                     current_message=_current_replay_message,
-                    exclude_messages=regenerate_replaced_rows(slot),
+                    exclude_messages=regenerate_replaced_rows(slot)
+                    + [q["_responsive_row"] for q in slot._queue if _held_row(slot, q)],
                     model_window=window_for_provider_client(client),
                     **_budget,
                 )

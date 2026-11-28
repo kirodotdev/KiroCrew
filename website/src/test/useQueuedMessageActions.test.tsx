@@ -509,12 +509,13 @@ describe('useQueuedMessageActions — cancel all', () => {
     expect(queueIdsIn(store)).toEqual(['sys'])
   })
 
-  it('sends no cancel for a card already in the conversation, and leaves it', async () => {
+  it('sends no cancel for a card already in the conversation, and leaves it, unless it is held', async () => {
     const done = { ...queued('q1', 'run the tests'), meta: { queueId: 'q1', written: true } } as ChatMessage
-    const rows = [done, queued('q2', 'then deploy')]
+    const held = { ...queued('q3', 'held'), meta: { queueId: 'q3', written: true, withdrawable: true } } as ChatMessage
+    const rows = [done, queued('q2', 'then deploy'), held]
     const { get, store } = renderActions({ rows })
-    await act(async () => { get().onCancelAll(['q1', 'q2']) })
-    expect(apiMocks.cancelQueuedMessage.mock.calls).toEqual([['chat-1', 'q2']])
+    await act(async () => { get().onCancelAll(['q1', 'q2', 'q3']) })
+    expect(apiMocks.cancelQueuedMessage.mock.calls).toEqual([['chat-1', 'q2'], ['chat-1', 'q3']])
     expect(queueIdsIn(store)).toEqual(['q1'])
   })
 

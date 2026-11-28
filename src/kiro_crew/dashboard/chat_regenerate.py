@@ -33,6 +33,7 @@ from kiro_crew.dashboard.kiro_readiness import (
     turn_gate_target,
 )
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
+from kiro_crew.dashboard.responsive_chat import withdraw_put_backs
 from kiro_crew.dashboard.slot_buffers import flush_restored_hold
 from kiro_crew.dashboard.slot_ownership import (
     checkpoint_slot_replaced,
@@ -739,6 +740,7 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                 status=400,
             )
         index = edited_at
+        gone = {id(row) for row in slot.messages[index:]}
 
         # Capture routing state BEFORE any live mutation, exactly like rewind:
         # the truncation is a real conversation boundary, so the native ACP
@@ -1171,6 +1173,7 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                     if slot._question_pending.pop(question_id, None) is not None
                 ]
                 slot.messages = prospective_slot.messages + arrived_rows
+                withdraw_put_backs(state, slot, gone)
                 delivered_pending_ids = pre_await_pending_ids - {id(row) for row in slot._pending}
                 slot._pending[:] = [
                     row

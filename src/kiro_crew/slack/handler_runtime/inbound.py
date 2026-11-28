@@ -1239,7 +1239,7 @@ async def _route_linked_thread(
     # broadcast_user=True: append delivers the ONE identity-carrying frame
     # (a frame without ``meta.mid`` lets a client receiving the row through a
     # second door render it a second time as a duplicate).
-    append_and_surface(
+    _linked_row = append_and_surface(
         _dashboard_state,  # type: ignore[arg-type]
         _linked_slot,
         "user",
@@ -1252,6 +1252,12 @@ async def _route_linked_thread(
     # Conductor mode "Pause all" holds this session: the message queues as it does
     # behind a running turn, and Resume all (or its own Continue) runs it.
     _starts = not _linked_slot.running and not crew_pause.holds_slot(_linked_slot)
+    # Queues behind sign-in-held prompts unless a no-model command (with commands on).
+    from kiro_crew.dashboard.chat_utils_injected_rows import signout_gate
+
+    _behind_signout = _starts and signout_gate(_linked_slot, text if interpret_commands else "")
+    if _behind_signout:
+        _starts = False
     if turn_context:
         from kiro_crew.context import _neutralize_structural_markers
 
@@ -1299,6 +1305,7 @@ async def _route_linked_thread(
                 _slack_voice=(
                     None if had_voice_input is None else (session_key, user_id, had_voice_input)
                 ),
+                _current_message=_linked_row,
             )
         )
         _linked_slot.task = _chat_task
@@ -1336,7 +1343,7 @@ async def _route_linked_thread(
         # only a constraint that appears AFTER this enqueue drops the entry.
         # *user_meta* rides on the entry too: the drain writes the turn's own
         # user row from the entry's meta.
-        _linked_slot.queue_append(
+        _queue_id = _linked_slot.queue_append(
             _queued_text,
             meta={
                 **{k: dict(v) if isinstance(v, dict) else v for k, v in (user_meta or {}).items()},
@@ -1353,6 +1360,20 @@ async def _route_linked_thread(
             # drained turn by. On the entry when it joins the queue.
             source_channels=(channel,),
         )
+        if _behind_signout:
+            import uuid
+
+            from kiro_crew.dashboard import responsive_chat
+            from kiro_crew.dashboard.chat_runner import _drain_parked_queues
+            from kiro_crew.dashboard.slot_queue_repository import MODEL_AS_TYPED_KEY, PUT_BACK_KEY
+
+            # The drain reuses the row already written, so it writes no second one.
+            for _waiting in _linked_slot._queue:
+                if _waiting.get("id") == _queue_id:
+                    _waiting[PUT_BACK_KEY] = uuid.uuid4().hex
+                    _waiting[MODEL_AS_TYPED_KEY] = True
+                    responsive_chat.remember_row(_linked_slot, _waiting, _linked_row)
+            await _drain_parked_queues(_dashboard_state, [_linked_slot.key], signout_drain=True)  # type: ignore[arg-type]
     _dashboard_state.push_slots_update()  # type: ignore[attr-defined]
     sel().log_tool_invocation(
         session_key=session_key,

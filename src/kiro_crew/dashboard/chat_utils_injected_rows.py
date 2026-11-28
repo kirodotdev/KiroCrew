@@ -16,7 +16,11 @@ import json
 from enum import Enum
 from typing import Any
 
-from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS, source_channels_of
+from kiro_crew.dashboard.slot_queue_repository import (
+    ATTACHMENT_META_KEYS,
+    PUT_BACK_KEY,
+    source_channels_of,
+)
 from kiro_crew.dashboard.state import (
     BUSY_RECOVERY_PREFIX,
     COMPACTION_RECOVERY_PREFIX,
@@ -716,8 +720,53 @@ def teardown_hold_active(state, slot) -> bool:
     return not _slot_has_pending_interaction(state, slot)
 
 
-def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
+#: Set on every entry queued when a turn hit a signed-out CLI, by that turn.
+SIGNOUT_RETAINED_KEY = "_signout_retained"
+
+
+def mark_signout_retained(slot) -> None:
+    """Mark what is queued as held by the sign-in failure the calling turn just hit."""
+    for item in slot._queue:
+        item[SIGNOUT_RETAINED_KEY] = True
+
+
+def signout_held(slot) -> bool:
+    """Whether *slot*'s queue holds entries a sign-in failure marked."""
+    return bool(slot._last_turn_auth_required) and any(
+        item.get(SIGNOUT_RETAINED_KEY) for item in slot._queue
+    )
+
+
+def persons_send(item: dict) -> bool:
+    return bool(
+        not item.get("kind")
+        and item.get("_directive_user_origin") is True
+        and _stamped_turn_actor(item) in ("", "user")
+    )
+
+
+def _resumes_signout(item: dict) -> bool:
+    return persons_send(item) and not item.get(SIGNOUT_RETAINED_KEY)
+
+
+def signout_gate(slot, message: str) -> bool:
+    """Whether *message* waits behind sign-in-held prompts; only a no-model command does not."""
+    words = message.split()
+    return signout_held(slot) and not (words and words[0] in {"/usage", "/context", "/help"})
+
+
+def signout_hold_active(slot) -> bool:
+    """Whether a sign-in failure still holds the queue, until a person's send queues after it."""
+    if not slot._last_turn_auth_required:
+        return False
+    return not any(_resumes_signout(item) for item in slot._queue)
+
+
+def _dequeue_next_message(slot, merge_enabled: bool, *, selected: bool = False) -> tuple:
     """Drain the queue: merge non-cron messages or pop the first one.
+
+    A put-back group drains whole even with merging off, unless one card of it
+    was *selected* to run: that card runs alone.
 
     A merge run stops at a system injection, at an attachment-bearing entry
     (see :func:`carries_attachments`), at a possibly-delivered steer
@@ -732,7 +781,8 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     expansions; an entry that starts no run
     pops alone.
     """
-    if merge_enabled and len(slot._queue) > 1:
+    group = not selected and slot._queue and slot._queue[0].get(PUT_BACK_KEY)
+    if len(slot._queue) > 1 and (merge_enabled or group):
         # Local: a module-level import would serve the name through the chat_utils facade.
         from kiro_crew.dashboard.channel_prompt import entry_prompt_on_channel
 
@@ -752,6 +802,9 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
                 # A decision's receipt names one message; a merged row has one meta.
                 or (item.get("meta") or {}).get("decisions_strip")
             ):
+                break
+            # A put-back group drains as the run it was, under its one row.
+            if to_merge and item.get(PUT_BACK_KEY) != to_merge[0].get(PUT_BACK_KEY):
                 break
             if to_merge and _stamped_turn_actor(item) != _stamped_turn_actor(to_merge[0]):
                 break

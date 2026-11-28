@@ -11,6 +11,7 @@ from chat_test_helpers import _make_state, chat_done_frames
 
 from kiro_crew import autonudge
 from kiro_crew.dashboard import chat_runner as cr
+from kiro_crew.dashboard.chat_utils_injected_rows import mark_signout_retained
 
 
 @pytest.fixture
@@ -123,6 +124,7 @@ async def test_auth_blocked_queue_requires_input_not_automatic_work(completion_s
     state, slot = completion_state
     slot.queue_append("held until the user signs in")
     slot._last_turn_auth_required = True
+    mark_signout_retained(slot)
     frame = await finish_frame(state, slot)
     assert frame.get("continuing", False) is False
 

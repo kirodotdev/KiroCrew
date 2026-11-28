@@ -609,7 +609,7 @@ function QueueStackInner({ messages, onCancel, onCancelAll, onInterrupt, onEdit,
 
   // Discard all: the ids are read on the press, so a card queued while the
   // dialog is open is not discarded with the ones the dialog counted. A card
-  // whose user row is already written (`meta.written`) is left out, as its own
+  // whose row is written (`meta.written`) and not held is left out, as its own
   // cancel is: the server refuses to cancel it, and it will still run.
   const { confirm, confirmDialog } = useConfirm()
   // The cancels that did not go through. The line names those still shown, so
@@ -620,7 +620,7 @@ function QueueStackInner({ messages, onCancel, onCancelAll, onInterrupt, onEdit,
     ? messages.filter(m => discardFailure.ids.includes(m.meta?.queueId as string)).length
     : 0
   const discardableIds = () => messages
-    .filter(m => m.meta?.written !== true)
+    .filter(m => m.meta?.written !== true || m.meta?.withdrawable === true)
     .map(m => m.meta?.queueId as string | undefined)
     .filter((id): id is string => !!id && !pendingIds?.has(id))
   const discardAll = async () => {
@@ -802,9 +802,11 @@ function QueueStackInner({ messages, onCancel, onCancelAll, onInterrupt, onEdit,
             const isAppEntry = isAppMessageQueued(m)
             const isServerWritten = isServerWrittenQueued(m)
             // Its user row is already in the conversation (the server's
-            // `meta.written`): the queue refuses an edit or cancel of it, so the
-            // card offers only Send now.
+            // `meta.written`): the queue refuses an edit of it, and a cancel
+            // unless it is a sign-in put-back (`meta.withdrawable`), whose
+            // place is its row's, so it trades the reorder arrows for Cancel.
             const isWritten = m.meta?.written === true
+            const withdrawable = isWritten && m.meta?.withdrawable === true
             const displayText = queuedDisplayText(m)
             const notDurable = m.meta?.durable === false
             // The card hides the knowledge envelope, so this chip is what says
@@ -940,7 +942,7 @@ function QueueStackInner({ messages, onCancel, onCancelAll, onInterrupt, onEdit,
                           Index 0 runs first and renders at the BOTTOM of the
                           expanded stack, so "run sooner" moves the card DOWN
                           visually: ArrowDown = sooner, ArrowUp = later. */}
-                      {onReorder && expanded && messages.length > 1 && (
+                      {onReorder && expanded && messages.length > 1 && !withdrawable && (
                         <>
                           <button
                             className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
@@ -986,7 +988,7 @@ function QueueStackInner({ messages, onCancel, onCancelAll, onInterrupt, onEdit,
                           <Zap size={13} fill="currentColor" />
                         </button>
                       )}
-                      {onCancel && showActions && !isWritten && (
+                      {onCancel && showActions && (!isWritten || withdrawable) && (
                         <button
                           className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           title={i18nT(isServerWritten ? 'components.queueStack.cancel_queued_message' : 'components.queueStack.cancel_and_move_back_to_input')}
