@@ -575,6 +575,20 @@ def _same_git_target(a: str, b: str) -> bool:
     return bool(a) and _normalize_git_target(a) == _normalize_git_target(b)
 
 
+def _same_git_url_text(a: str, b: str) -> bool:
+    """Whether two clone URLs are the same text apart from credentials.
+
+    Stricter than :func:`_same_git_target`, for the URL git fetches an INSTALLED
+    app's code from: a server may serve different repositories at ``/repo.git`` and
+    ``/repo``, so that fetch must use exactly the URL the app was installed from.
+    Credentials select who fetches, not what, so rotating them is not a change.
+    """
+
+    if _git_target_is_unsupported(a) or _git_target_is_unsupported(b):
+        return False
+    return bool(a) and _strip_git_target_userinfo(a) == _strip_git_target_userinfo(b)
+
+
 # Auth/permission failure classes on the clone-failure surface. The clone
 # subprocess merges stderr into stdout (``stderr=STDOUT``), so this classifier
 # sees git's auth-failure text. Kept as a STRICT allowlist of known

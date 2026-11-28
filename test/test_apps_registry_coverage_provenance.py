@@ -231,6 +231,49 @@ class TestResolveInstallEntry:
         assert entry is None
         assert "refusing to update it from a different source" in err
 
+    def test_a_seed_install_the_catalog_respelled_resolves_and_fetches_the_seed_url(
+        self, monkeypatch
+    ):
+        # Installed from the bundled seed (no .git); the catalog later lists the
+        # same app as .git and supersedes the seed row in the candidate set.
+        seed_url = "https://example.com/o/demo"
+        catalog_url = "https://example.com/o/demo.git"
+        monkeypatch.setattr(
+            registry,
+            "_load_registry_file",
+            lambda: [{"name": "demo", "gitUrl": seed_url, "repo": seed_url, "branch": "main"}],
+        )
+        monkeypatch.setattr(
+            registry,
+            "_registry_app_candidates",
+            lambda name: [{"name": "demo", "gitUrl": catalog_url, "commit": "a" * 40}],
+        )
+        monkeypatch.setattr(registry, "get_app", lambda name: {"sourceUrl": seed_url})
+        entry, err = registry._resolve_install_entry("demo")
+        assert err == ""
+        assert entry is not None
+        # The pin comes from the catalog row, but the fetch stays on the consented URL.
+        assert entry["commit"] == "a" * 40
+        assert registry._entry_git_url(entry) == seed_url
+
+    def test_a_respelled_catalog_row_without_a_matching_seed_is_not_reused(self, monkeypatch):
+        monkeypatch.setattr(
+            registry,
+            "_load_registry_file",
+            lambda: [{"name": "demo", "gitUrl": "https://example.com/o/other", "repo": "o/other"}],
+        )
+        monkeypatch.setattr(
+            registry,
+            "_registry_app_candidates",
+            lambda name: [{"name": "demo", "gitUrl": "https://example.com/o/demo.git"}],
+        )
+        monkeypatch.setattr(
+            registry, "get_app", lambda name: {"sourceUrl": "https://example.com/o/demo"}
+        )
+        entry, err = registry._resolve_install_entry("demo")
+        assert entry is None
+        assert "refusing to update it from a different source" in err
+
     def test_missing_pin_error_never_returns_embedded_credentials(self, monkeypatch):
         secret = "PinMismatchSecret"
         raw_url = f"https://user:{secret}@example.com/o/demo.git"
@@ -608,7 +651,8 @@ class TestReadCloneBranch:
         assert (
             await registry._clone_origin_matches(tmp_path, "https://github.com/o/demo.git") is True
         )
-        assert await registry._clone_origin_matches(tmp_path, "https://github.com/o/demo") is True
+        # A server may serve another repository at the path without ``.git``.
+        assert await registry._clone_origin_matches(tmp_path, "https://github.com/o/demo") is False
         assert (
             await registry._clone_origin_matches(
                 tmp_path, "https://rotated:new-secret@github.com/o/demo.git"
