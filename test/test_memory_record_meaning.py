@@ -113,6 +113,27 @@ def test_graph_search_uses_list_kind_filter_without_embedding(store, monkeypatch
     assert meaning is False
 
 
+@pytest.mark.parametrize("kind", ["all", "fact", "directive", "episode"])
+def test_graph_search_by_meaning_lights_the_lists_rows_and_scores(store, kind):  # noqa: F811
+    _seed(store)
+    query = {"q": "worktree habits", "kind": kind}
+    listed = memory_edit.list_records(store, query, meaning=True, limit=100)
+    lit, meaning = memory_edit.matching_scores(store, query, meaning=True)
+    assert meaning is True
+    assert lit == {row["id"]: row["match"] for row in listed["entries"]}
+    assert len(lit) == listed["total"]
+    assert all(score >= memory_record_meaning.MEANING_CUTOFF for score in lit.values())
+
+
+def test_graph_search_by_meaning_refuses_without_an_embedding_model(store):  # noqa: F811
+    _seed(store)
+    store.embed_fn = None
+    store.embed_fn_factory = None
+    with pytest.raises(memory_edit.MemoryEditError) as refused:
+        memory_edit.matching_scores(store, {"q": "worktree"}, meaning=True)
+    assert (refused.value.code, refused.value.status) == ("meaning_unavailable", 409)
+
+
 def test_graph_search_finds_by_words_alone_without_an_embedding_model(store):  # noqa: F811
     _seed(store)
     store.embed_fn = None

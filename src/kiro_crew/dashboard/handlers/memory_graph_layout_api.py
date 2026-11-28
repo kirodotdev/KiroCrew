@@ -4,7 +4,7 @@
 ``{"status": "building"}`` while the first build runs.
 ``GET /api/memory/graph/nodes`` -- the nodes inside a box, heaviest first, paged.
 ``GET /api/memory/graph/search`` -- id, position, cluster and score of every
-record the Memories list's default word search finds.
+record the Memories list lists for the same words and ``mode`` (words or meaning).
 ``GET /api/memory/graph/select`` -- how many nodes a box holds, loaded or not.
 
 Each route resolves its store the way ``GET /api/memory/graph`` does, brings the
@@ -222,8 +222,11 @@ async def api_memory_graph_nodes(request: web.Request) -> web.Response:
 
 
 async def api_memory_graph_search(request: web.Request) -> web.Response:
-    """The list's word-search matches for ``q``, each with its place and cluster."""
+    """What the list lists for ``q`` in ``mode``, each with its place and cluster."""
     q = request.query.get("q", "")
+    mode = request.query.get("mode", "words")
+    if mode not in ("words", "meaning"):
+        return _bad("mode is words or meaning")
     try:
         kinds = _kinds(request)
     except ValueError as exc:
@@ -234,7 +237,9 @@ async def api_memory_graph_search(request: web.Request) -> web.Response:
     if status != STATUS_READY:
         return web.json_response({"status": status, "matches": [], "total": 0})
     try:
-        scores, meaning = await asyncio.to_thread(memory_edit.matching_scores, tier, {"q": q})
+        scores, meaning = await asyncio.to_thread(
+            memory_edit.matching_scores, tier, {"q": q}, meaning=mode == "meaning"
+        )
     except memory_edit.MemoryEditError as exc:
         return web.json_response({"error": str(exc), "code": exc.code}, status=exc.status)
 

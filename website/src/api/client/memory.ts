@@ -308,9 +308,9 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
       fetch('/api/memory/graph/overview?' + graphParams(store, {})).then(j) as Promise<GraphOverview>,
     memoryGraphNodes: (store: string, bbox: GraphBbox, opts: { kinds?: string[]; cursor?: string | null; limit?: number } = {}) =>
       fetch('/api/memory/graph/nodes?' + graphParams(store, { bbox: String(bbox), kind: opts.kinds, cursor: opts.cursor || undefined, limit: opts.limit ? String(opts.limit) : undefined })).then(j) as Promise<{ status: string; nodes: GraphNodeRow[]; cursor: string | null; layout?: string }>,
-    /** The list's word-search matches for `q`, each fully lit with `score: 1`. */
-    memoryGraphSearch: (store: string, q: string, opts: { kinds?: string[] } = {}) =>
-      fetch('/api/memory/graph/search?' + graphParams(store, { q, kind: opts.kinds })).then(j) as Promise<{ status: string; matches: GraphMatch[]; total: number; meaning?: boolean; layout?: string }>,
+    /** What the list lists for `q` in `mode`: a word match scores 1, a meaning match its `match`. */
+    memoryGraphSearch: (store: string, q: string, opts: { kinds?: string[]; mode?: 'words' | 'meaning' } = {}) =>
+      fetch('/api/memory/graph/search?' + graphParams(store, { q, kind: opts.kinds, mode: opts.mode === 'meaning' ? 'meaning' : undefined })).then(j) as Promise<{ status: string; matches: GraphMatch[]; total: number; meaning?: boolean; layout?: string }>,
     memoryGraphSelect: (store: string, bbox: GraphBbox, kinds?: string[]) =>
       fetch('/api/memory/graph/select?' + graphParams(store, { bbox: String(bbox), kind: kinds })).then(j) as Promise<{ status: string; count: number; layout?: string }>,
     consolidateMemory: (key: string, includeHistory: boolean) => post('/api/memory/consolidate', { key, include_history: includeHistory }).then(j),

@@ -18,7 +18,8 @@ import { useEscapeLayer } from '../../hooks/useEscapeLayer'
 import { useJumpToMemories, type GraphBoxPick } from './memoryPage/memoryJump'
 import { MemoryGraphDetail } from './memoryPage/MemoryGraphDetail'
 import { KindPills } from './memoryPage/KindPills'
-import type { KindTab } from './memoryPage/memoryListView'
+import { SearchModeSwitch } from './memoryPage/MemoryListParts'
+import type { KindTab, SearchMode } from './memoryPage/memoryListView'
 import { attachGraphGestures, type Box } from './memoryGraphGestures'
 import {
   FETCH_MARGIN, LABEL_PX, MAX_LABELS, LINK_BUDGET, TOPIC_LINE_HEIGHT, labelGrid, topicLinePx, topicLines, topicOrder, NODE_BUDGET, canvasLabel, memoryLines, contains, dotPxAt, drawnLinks, fitBox, linkAlpha, linkLevel, linkRule, linksInView, inkAlpha, topicLinkAlpha, topicLinks, labelBudget, zoomFromFit, nextInDirection, panBy, placeLabels, screenRectToBox, showsNodes,
@@ -151,6 +152,10 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
   kindsRef.current = kinds
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
+  /** Words or Meaning, as the Memories list reads its search box. */
+  const [mode, setMode] = useState<SearchMode>('words')
+  /** A search by meaning the server refused: the embedding model is not ready. */
+  const [meaningUnavailable, setMeaningUnavailable] = useState<unknown>(null)
   /** What a search lit, and how many memories that is. */
   const [lit, setLit] = useState<{ set: Lit; total: number } | null>(null)
   /** The lighting on the canvas: fading from one lit set (or none) to the next. */
@@ -887,9 +892,10 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
   useEffect(() => { const t = setTimeout(() => setSearch(searchInput.trim()), SEARCH_DEBOUNCE_MS); return () => clearTimeout(t) }, [searchInput])
   useEffect(() => {
     if (!ready) return
+    setMeaningUnavailable(null)
     if (!search) { setLit(null); return }
     let live = true
-    void api.memoryGraphSearch(store, search, { kinds }).then(r => {
+    void api.memoryGraphSearch(store, search, { kinds, mode }).then(r => {
       if (!live) return
       if (r.layout !== layoutRef.current) { liveFns.current.relayout(); return }
       setLit({ set: litFrom(r.matches), total: r.total })
@@ -899,9 +905,15 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
         for (const m of r.matches) { x0 = Math.min(x0, m.x); y0 = Math.min(y0, m.y); x1 = Math.max(x1, m.x); y1 = Math.max(y1, m.y) }
         flyTo(fitBox([x0, y0, x1, y1], sizeRef.current, 64))
       }
-    }).catch(error => { if (live) { setLit(null); setLiveError({ error, retry: () => setReloads(n => n + 1) }) } })
+    }).catch(error => {
+      if (!live) return
+      setLit(null)
+      // As the list does: say the model is not ready and offer words instead.
+      if (mode === 'meaning' && (error as { status?: number } | null)?.status === 409) setMeaningUnavailable(error)
+      else setLiveError({ error, retry: () => setReloads(n => n + 1) })
+    })
     return () => { live = false }
-  }, [search, kinds, ready, store, flyTo, reloads, overview?.layout])
+  }, [search, mode, kinds, ready, store, flyTo, reloads, overview?.layout])
 
   /** Fade the canvas to the new lit set (or back to none) over one camera move's
    *  ease; at once with reduced motion. Names hide while it fades and come back
@@ -1013,15 +1025,24 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
   return <Card className="mb-0 max-w-none">
     {title}
     <div className="mb-3 flex flex-wrap items-center gap-2">
-      {/* type=search: the browser's own clear button and Escape empty it, and the graph fades back. */}
-      <input type="search" aria-label={i18nT('pages.overview.memoryGraphTab.search_memory_nodes')}
-        className="bg-bg-elevated border border-border rounded-md px-3 py-1.5 text-text text-sm font-body outline-hidden transition-colors focus-ring min-w-[200px] flex-1"
-        placeholder={i18nT('pages.overview.memoryGraphTab.search_nodes')} value={searchInput} onChange={e => setSearchInput(e.target.value)} />
+      {/* The Memories list's mode switch, in the same place: flush at the box's end, or on its own row on a phone. */}
+      {/* 22rem, as the list keeps: room for the typed words beside the switch; the kind pills wrap below instead. */}
+      <div className={`relative flex-1 ${phone ? 'min-w-0 basis-full' : 'min-w-[22rem]'}`}>
+        {/* type=search: the browser's own clear button and Escape empty it, and the graph fades back. */}
+        <input type="search" aria-label={i18nT('pages.overview.memoryGraphTab.search_memory_nodes')}
+          className={`w-full bg-bg-elevated border border-border rounded-md px-3 py-1.5 text-text text-sm font-body outline-hidden transition-colors focus-ring ${phone ? '' : 'pr-[188px]'}`}
+          placeholder={i18nT(mode === 'meaning' ? 'memoryPage.meaning_placeholder' : 'pages.overview.memoryGraphTab.search_nodes')} value={searchInput} onChange={e => setSearchInput(e.target.value)} />
+        {!phone && <div className="absolute right-1 top-1/2 -translate-y-1/2"><SearchModeSwitch mode={mode} onChange={setMode} /></div>}
+      </div>
+      {phone && <div className="basis-full"><SearchModeSwitch wide mode={mode} onChange={setMode} /></div>}
       <KindPills wrap={!phone} kind={kind} counts={counts} marks={KIND_MARKS} onChange={k => { setKind(k); setPicked(null) }} />
     </div>
     {failed && isError && <ErrorNotice askAgent testId="memory-graph-load-error" className="mb-3 w-full" messagePlacement="below"
       title={i18nT('pages.overview.memoryGraphTab.load_failed')} message={errMessage(error) || i18nT('pages.overview.memoryGraphTab.load_failed_unknown')}
       actions={<button type="button" disabled={isFetching} onClick={() => { void refetch() }}><RefreshCw className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.retry')}</button>} />}
+    {meaningUnavailable != null && <ErrorNotice askAgent testId="memory-graph-meaning-unavailable" className="mb-3 w-full" messagePlacement="below"
+      title={i18nT('memoryPage.meaning_unavailable')} message={errMessage(meaningUnavailable)}
+      actions={<button type="button" onClick={() => setMode('words')}>{i18nT('memoryPage.search_words_instead')}</button>} />}
     {liveError && <ErrorNotice askAgent testId="memory-graph-read-error" className="mb-3 w-full" messagePlacement="below"
       title={i18nT('pages.overview.memoryGraphTab.load_failed')} message={errMessage(liveError.error) || i18nT('pages.overview.memoryGraphTab.load_failed_unknown')}
       actions={<button type="button" onClick={() => { const { retry } = liveError; setLiveError(null); retry() }}><RefreshCw className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.retry')}</button>} />}

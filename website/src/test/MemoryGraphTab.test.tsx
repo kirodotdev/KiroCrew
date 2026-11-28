@@ -393,7 +393,7 @@ describe('the memory graph over every memory', () => {
     const solid = alphaOf(g, 'bb')
     const [r, gr, b] = g.colors.slice(indexOf('aa') * 4, indexOf('aa') * 4 + 3)
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'needle' } })
-    await waitFor(() => expect(api.memoryGraphSearch).toHaveBeenCalledWith('member-a', 'needle', { kinds: undefined }), { timeout: 3000 })
+    await waitFor(() => expect(api.memoryGraphSearch).toHaveBeenCalledWith('member-a', 'needle', { kinds: undefined, mode: 'words' }), { timeout: 3000 })
     await waitFor(() => expect(alphaOf(g, 'aa')).toBeCloseTo(DIM_ALPHA))
     // The best hit is brightest; the weaker one still stands out from the dimmed.
     expect(alphaOf(g, 'bb')).toBeGreaterThanOrEqual(solid)
@@ -433,7 +433,7 @@ describe('the memory graph over every memory', () => {
     const clock = cameraClock()
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'needle' } })
     await clock.frame(SEARCH_DEBOUNCE_MS)
-    expect(api.memoryGraphSearch).toHaveBeenCalledWith('member-a', 'needle', { kinds: undefined })
+    expect(api.memoryGraphSearch).toHaveBeenCalledWith('member-a', 'needle', { kinds: undefined, mode: 'words' })
     expect(alphaOf(g, 'aa')).toBeCloseTo(solid)
     await clock.frame(MOTION_MS / 2)
     expect(alphaOf(g, 'aa')).toBeCloseTo(solid + (DIM_ALPHA - solid) * 0.875)
@@ -749,6 +749,36 @@ describe('the memory graph over every memory', () => {
     expect(alphaOf(g, 'aa')).toBe(solid)
     fireEvent.click(within(notice).getByRole('button', { name: /Retry/ }))
     await waitFor(() => expect(api.memoryGraphSearch).toHaveBeenCalledTimes(2))
+  })
+
+  it('searches by meaning with the Memories list switch, lit by score, and counts what the list counts', async () => {
+    vi.mocked(api.memoryGraphSearch).mockResolvedValue({ status: 'ready', layout: 'L1', meaning: true, matches: [{ id: 'bb', x: 50, y: 0, cluster: 0, score: 0.8 }, { id: 'cc', x: 0, y: 40, cluster: 0, score: 0.5 }], total: 2 } as never)
+    renderTab()
+    const g = await drawn()
+    fireEvent.click(screen.getByRole('radio', { name: /Meaning/ }))
+    expect(screen.getByRole('radio', { name: /Meaning/ }).getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByRole('searchbox').getAttribute('placeholder')).toBe('Describe a topic')
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'needle' } })
+    await waitFor(() => expect(api.memoryGraphSearch).toHaveBeenCalledWith('member-a', 'needle', { kinds: undefined, mode: 'meaning' }), { timeout: 3000 })
+    expect((await screen.findByTestId('memory-graph-lit')).textContent).toBe('2 found')
+    await waitFor(() => expect(alphaOf(g, 'cc')).toBeLessThan(alphaOf(g, 'bb')))
+    // Back to words searches the same box again by words.
+    fireEvent.click(screen.getByRole('radio', { name: /Words/ }))
+    await waitFor(() => expect(api.memoryGraphSearch).toHaveBeenLastCalledWith('member-a', 'needle', { kinds: undefined, mode: 'words' }))
+  })
+
+  it('says search by meaning is not available, as the list does, and offers words instead', async () => {
+    vi.mocked(api.memoryGraphSearch).mockRejectedValueOnce(Object.assign(new Error('model not ready'), { status: 409 }))
+    renderTab()
+    await drawn()
+    fireEvent.click(screen.getByRole('radio', { name: /Meaning/ }))
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'needle' } })
+    const notice = await screen.findByTestId('memory-graph-meaning-unavailable', {}, { timeout: 3000 })
+    expect(screen.queryByTestId('memory-graph-read-error')).toBeNull()
+    fireEvent.click(within(notice).getByRole('button', { name: 'Search by words' }))
+    await waitFor(() => expect(api.memoryGraphSearch).toHaveBeenLastCalledWith('member-a', 'needle', { kinds: undefined, mode: 'words' }))
+    await waitFor(() => expect(screen.queryByTestId('memory-graph-meaning-unavailable')).toBeNull())
+    expect(screen.getByRole('radio', { name: /Words/ }).getAttribute('aria-checked')).toBe('true')
   })
 
   it('reports a failed box count and counts it again on Retry', async () => {
