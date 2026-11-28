@@ -586,8 +586,19 @@ covered), so neither file shows in the user's `git status`. A subfolder or a
 Crew run dir inside a repository is left alone, so per-run dirs never grow a
 repository's exclude list. Only missing lines are appended, the
 user's own lines are never rewritten, and a failed exclude write never blocks
-the overlay. A repository that already tracks `.kiro/settings/cli.json` still
-sees it modified: git's exclude list does not hide tracked files (known limit).
+the overlay. The append never leaves the git dir through a link: a linked
+`info` (a symlink, or a Windows junction, which `pathlib` does not report as a
+symlink; `platform_compat.is_link_or_junction`) is refused. On POSIX, `exclude`
+is opened with `platform_compat.open_create_or_existing`, `O_NOFOLLOW`, and
+`O_APPEND`, so concurrent external appends cannot be overwritten. On Windows,
+`platform_compat.win_open_no_reparse(..., append=True)` opens `exclude` with
+append-only access and refuses a reparse point at the name, so both platforms
+append atomically. On both platforms, the lines are written only when
+what was opened is a regular file with a single name, so a hardlinked `exclude`
+is left alone too. A user who links their own `exclude` on purpose therefore
+sees the overlay in `git status` instead. A repository that already tracks
+`.kiro/settings/cli.json` still sees it modified: git's exclude list does not
+hide tracked files (known limit).
 Crew records the original local inheritance key's presence and value in
 `kirocrew.skillDiscovery.previousInheritance`. Rollback restores that snapshot
 only while the native key still equals Crew's asserted `true`, removes Crew's

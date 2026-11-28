@@ -623,7 +623,11 @@ of the runner's temporary directory.
 one file.** `open(path, "a")` is race-free on POSIX because `O_APPEND` makes the
 seek-to-end and the write one kernel step; the Windows CRT emulates append with a
 separate seek and write, so two processes that reach the end offset together write
-over each other and one line is simply GONE. A harness that counts lines to observe
+over each other and one line is simply GONE. (A product writer that needs an atomic
+append on Windows opens the file with
+`platform_compat.win_open_no_reparse(..., append=True)`, whose `FILE_APPEND_DATA`-only
+access makes the filesystem position the write; a test harness does not get that
+option, so the rule here stands.) A harness that counts lines to observe
 "how many backends launched" or "how many handshakes completed" then reports a number
 short of the truth, and the test reads it as the behaviour being broken —
 `test_mcp_gateway_pool_integ` counted 11 of 12 windows on Windows while all 12 stubs

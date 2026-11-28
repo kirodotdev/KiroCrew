@@ -197,6 +197,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         first_linked_ancestor unlink_link_or_junction _windows_handle_identity
         _windows_file_identity opened_file_identity opened_path_identity_matches _WIN_DELETE
         _WIN_FILE_WRITE_ATTRIBUTES _WIN_GENERIC_READ _WIN_GENERIC_WRITE
+        _WIN_FILE_APPEND_DATA _WIN_SYNCHRONIZE
         _WIN_FILE_SHARE_READ_WRITE _WIN_FILE_SHARE_READ _WIN_OPEN_EXISTING
         _WIN_FILE_FLAG_BACKUP_SEMANTICS _WIN_FILE_FLAG_OPEN_REPARSE_POINT
         _WIN_FILE_ATTRIBUTE_DIRECTORY _WIN_FILE_ATTRIBUTE_REPARSE_POINT

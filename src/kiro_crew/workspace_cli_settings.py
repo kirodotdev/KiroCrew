@@ -104,13 +104,15 @@ def _exclude_from_git(work_dir: Path) -> None:
     common = _git_common_dir(work_dir)
     # The work dir is agent-writable, so a planted ``.git`` file can name any
     # directory. Only write where a real git dir already keeps its ``info/``
-    # (``git init`` creates it): never create directories on that path.
+    # (``git init`` creates it): never create directories on that path, and
+    # never write through a linked ``info`` (a Windows junction is not a symlink
+    # to ``pathlib``, so the platform predicate is the one that sees it).
     if (
         common is None
         or not (common / "HEAD").is_file()
         or not (common / "objects").is_dir()
         or not (common / "info").is_dir()
-        or (common / "info").is_symlink()
+        or platform_compat.is_link_or_junction(common / "info")
     ):
         return
     info = common / "info"
@@ -125,16 +127,26 @@ def _exclude_from_git(work_dir: Path) -> None:
         return
     lead = "\n" if existing and not existing.endswith("\n") else ""
     text = lead + "\n".join([_EXCLUDE_COMMENT, *missing]) + "\n"
-    fd = os.open(
-        exclude,
-        os.O_WRONLY
-        | os.O_APPEND
-        | os.O_CREAT
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_NONBLOCK", 0),
-        0o644,
-    )
+    # Both opens keep append positioning in the kernel: POSIX uses ``O_APPEND``
+    # and Windows uses append-only access, so a line another writer appends
+    # between this process's open and write is never overwritten. Neither open
+    # follows a link at the name. A hardlink is a second name for the same file,
+    # which no open flag refuses, so a file with another name is left alone
+    # rather than carrying the lines to it.
+    if platform_compat.IS_POSIX:
+        fd = platform_compat.open_create_or_existing(
+            exclude,
+            os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            0o644,
+        )
+    else:
+        fd = platform_compat.win_open_no_reparse(
+            exclude, directory=False, links_only=True, append=True
+        )
     with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as handle:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+            return
         handle.write(text)
 
 
