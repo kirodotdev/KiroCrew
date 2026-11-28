@@ -104,13 +104,12 @@ def test_block_past_max_block_is_unterminated() -> None:
     assert secret_rules(spans) == ["pem.private_key_unterminated"]
 
 
-def test_quoted_assignment_on_a_longer_line_is_a_known_false_negative() -> None:
-    # Owner ruling: the assignment parser is not widened. An AWS label assignment that
-    # sits inside a quoted string, glued to the quote, is not one of the read forms
-    # (line start, or after a blank or ``;``), so the value stays visible.
+def test_quoted_assignment_on_a_longer_line_is_masked() -> None:
+    # An assignment glued to an opening quote is a read form, like one after a blank or
+    # ``;``.
     secret = aws_secret()
-    missed = f'run("AWS_SECRET_ACCESS_KEY={secret}") now'
-    assert redact(missed)[0] == missed
+    glued = f'run("AWS_SECRET_ACCESS_KEY={secret}") now'
+    assert redact(glued)[0] == f'run("AWS_SECRET_ACCESS_KEY={TAG}") now'
     # The same assignment led by a blank inside the quotes is a read form.
     caught = f'run("x AWS_SECRET_ACCESS_KEY={secret}") now'
     assert redact(caught)[0] == f'run("x AWS_SECRET_ACCESS_KEY={TAG}") now'
