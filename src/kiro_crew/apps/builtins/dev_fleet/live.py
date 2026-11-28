@@ -36,7 +36,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator, Awaitable, Callable, Iterator
 
 from kiro_crew import _facade_mirror
-from kiro_crew.apps.builtins.dev_fleet import gateway_service, repository, runtime
+from kiro_crew.apps.builtins.dev_fleet import (
+    gateway_service,
+    installer_launcher,
+    repository,
+    runtime,
+)
 from kiro_crew.apps.builtins.dev_fleet.live_leases import (
     _LEASE_CONFIRMS,
     _LEASE_LOSS_EVENTS,
@@ -105,6 +110,12 @@ class PointerState:
     staged_cancel_available: bool
     previous: str | None = None
     live_verified: bool = True
+    #: The pointer names a checkout (usable or not): the gateway's next start is
+    #: decided by Dev Fleet, not the installer. Gates "Restore installed build".
+    pinned: bool = False
+    #: A staged-only Restore cleared the pointer in this gateway process, which still
+    #: runs the worktree until it restarts. Keeps the restart command on the page.
+    restore_restart_pending: bool = False
 
 
 class PointerUnavailable(RuntimeError):
@@ -159,13 +170,17 @@ async def pointer_state(*, fresh: bool = False) -> PointerState:
     # await, so it describes the path just returned.
     live_verified = _LIVE_VERIFIED
 
-    def _pointer_fields() -> tuple[str | None, str | None]:
+    def _pointer_fields() -> tuple[str | None, str | None, bool]:
         # Staged target and undo history come from the same pointer read: one hop,
         # one document, so the two fields cannot describe different pointers.
         previous = live_target.read_previous_target()
-        return _staged_target(), (str(previous) if previous is not None else None)
+        return (
+            _staged_target(),
+            (str(previous) if previous is not None else None),
+            live_target.is_pinned(),
+        )
 
-    staged, previous = await loop.run_in_executor(subprocess_executor(), _pointer_fields)
+    staged, previous, pinned = await loop.run_in_executor(subprocess_executor(), _pointer_fields)
     # The cancel-availability probe reaches the service manager (a subprocess). The
     # fleet endpoint that consumes this is polled, so it is only paid while a stage
     # exists — with none, the control it gates cannot render and the answer is False.
@@ -176,6 +191,9 @@ async def pointer_state(*, fresh: bool = False) -> PointerState:
         staged_cancel_available=cancel,
         previous=previous,
         live_verified=live_verified,
+        pinned=pinned,
+        # A later Make Live pins again, and its own controls take over.
+        restore_restart_pending=_RESTORE_RESTART_PENDING and not pinned,
     )
 
 
@@ -541,6 +559,8 @@ _MAKE_LIVE_LOCK = LoopBoundLock()
 # restart spawns starts with it clear. Failure paths BEFORE successful
 # scheduling never set it, and ``dry_run`` never sets it.
 _MAKE_LIVE_COMMITTED = False
+#: Set by a staged-only Restore; process-local, so the restart it waits for clears it.
+_RESTORE_RESTART_PENDING = False
 
 
 async def _gateway_service_reason() -> str | None:
@@ -1307,6 +1327,25 @@ async def _make_live_inner(
                         f"rolled back: {runtime._redact(str(exc))}"
                     ),
                 }
+        if can_restart and isinstance(svc, gateway_service.LaunchdBackend):
+            # The launcher about to be rewritten may be the installer's; keep it for
+            # "Restore installed build", which cannot re-derive it from a worktree.
+            # A failed record never blocks the cutover: Restore then answers
+            # restore_no_installer_record and the owner reinstalls by hand.
+            try:
+                await _off(
+                    subprocess_executor(),
+                    installer_launcher.record_first_cutover,
+                    svc.live_program(),
+                    prior_definition,
+                )
+            except OSError as exc:
+                runtime.logger.warning(
+                    "make-live: the installed build's launchd launcher could not be "
+                    "recorded, so Restore installed build will not be able to put it "
+                    "back: %s",
+                    runtime._redact(str(exc)),
+                )
 
         def _unwind_sync() -> bool:
             """Restore both staged surfaces. False when either did not land."""

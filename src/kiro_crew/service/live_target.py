@@ -228,6 +228,32 @@ def read_target_reason() -> tuple[Path | None, str | None]:
         return None, str(exc)
 
 
+def is_pinned() -> bool:
+    """Whether the pointer names ANY checkout, usable or not.
+
+    Distinct from :func:`read_target`, which answers ``None`` for a pointer whose
+    checkout fails validation (a pruned worktree): that pointer is still state
+    the operator may want cleared, so "Restore installed build" keys off this.
+    An unreadable or malformed pointer counts as pinned for the same reason.
+    """
+    data, reason = _read_pointer_object()
+    if data is None:
+        return reason is not None
+    return data.get("checkout") is not None or "checkout" not in data
+
+
+def pinned_checkout() -> Path | None:
+    """The checkout path the pointer names, whether or not it still validates.
+
+    :func:`read_target` answers ``None`` for a pruned or half-provisioned worktree;
+    callers asking WHICH checkout the pointer names (not whether it can boot) use this.
+    ``None`` when the pointer is absent, unreadable, or names no string path.
+    """
+    data, _reason = _read_pointer_object()
+    checkout = data.get("checkout") if data is not None else None
+    return Path(checkout) if isinstance(checkout, str) and checkout else None
+
+
 def read_previous_target() -> Path | None:
     """Return the validated one-level undo target, or ``None`` when unavailable.
 
@@ -335,7 +361,44 @@ def _publish_pointer(payload: str) -> None:
     the safe default.
     """
     path = pointer_path()
-    staging = path.parent / _STAGING_LEAF
+    staging = ensure_staging_dir()
+    staged = staging / f"pointer-{os.getpid()}-{uuid.uuid4().hex}.json"
+    atomic_write(staged, payload, restrict_to_owner=True)
+    try:
+        replace_with_retry(staged, path)
+    except OSError:
+        staged.unlink(missing_ok=True)
+        raise
+    try:
+        final = os.lstat(path)
+    except FileNotFoundError:
+        # Replaced from under us before we could look: someone else owns the pointer
+        # now, and nothing of ours is published. Nothing to verify.
+        return
+    if not stat.S_ISREG(final.st_mode) or final.st_nlink != 1:
+        path.unlink(missing_ok=True)
+        raise OSError(
+            errno.EMLINK,
+            f"refusing to publish {path}: the written pointer has {final.st_nlink} hard "
+            "link(s), so a second name would reach the checkout the gateway starts next "
+            "outside the sandbox mask; the pointer was removed",
+        )
+
+
+def staging_path() -> Path:
+    """The masked, gateway-only directory beside the pointer (see :func:`_publish_pointer`).
+
+    Masked in every agent namespace and fenced by ``security.paths`` as a whole
+    DIRECTORY, so a file kept in it is as unreachable from a sandbox as the pointer.
+    Dev Fleet also keeps its record of the installer's launchd launcher here.
+    """
+    return pointer_path().parent / _STAGING_LEAF
+
+
+def ensure_staging_dir() -> Path:
+    """Create :func:`staging_path` if needed and refuse one an agent could have planted."""
+    path = pointer_path()
+    staging = staging_path()
     # Refuse to stage through a name an agent could have planted: the directory must be
     # a real directory (not a symlink), owner-only where modes exist.
     try:
@@ -360,27 +423,7 @@ def _publish_pointer(payload: str) -> None:
             f"{staging} is not owner-only (mode {stat.S_IMODE(st.st_mode):o}); "
             "chmod 700 it or remove it, then retry the cutover",
         )
-    staged = staging / f"pointer-{os.getpid()}-{uuid.uuid4().hex}.json"
-    atomic_write(staged, payload, restrict_to_owner=True)
-    try:
-        replace_with_retry(staged, path)
-    except OSError:
-        staged.unlink(missing_ok=True)
-        raise
-    try:
-        final = os.lstat(path)
-    except FileNotFoundError:
-        # Replaced from under us before we could look: someone else owns the pointer
-        # now, and nothing of ours is published. Nothing to verify.
-        return
-    if not stat.S_ISREG(final.st_mode) or final.st_nlink != 1:
-        path.unlink(missing_ok=True)
-        raise OSError(
-            errno.EMLINK,
-            f"refusing to publish {path}: the written pointer has {final.st_nlink} hard "
-            "link(s), so a second name would reach the checkout the gateway starts next "
-            "outside the sandbox mask; the pointer was removed",
-        )
+    return staging
 
 
 def snapshot() -> str | None:

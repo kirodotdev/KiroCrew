@@ -290,8 +290,10 @@ def _reset_make_live_committed_latch():
     In-process pytest would leak that latched state into later tests, so reset
     it around every test to mirror a fresh gateway process."""
     live_mod._MAKE_LIVE_COMMITTED = False
+    live_mod._RESTORE_RESTART_PENDING = False
     yield
     live_mod._MAKE_LIVE_COMMITTED = False
+    live_mod._RESTORE_RESTART_PENDING = False
 
 
 @pytest.fixture(autouse=True)

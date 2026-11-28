@@ -251,6 +251,16 @@ export default function DevFleetPage() {
   // so they cannot be selected or copied and a long message vanishes mid-read —
   // keep the text on the page until it is dealt with.
   const [gatewayError, setGatewayError] = useState<string | null>(null)
+  // A staged-only Restore cleared the pointer while this gateway still runs the
+  // worktree. The local flag bridges the gap until the fleet payload's
+  // restore_restart_pending (server state, cleared by the restart) takes over.
+  const [restoreStaged, setRestoreStaged] = useState(false)
+  const [restoreBannerDismissed, setRestoreBannerDismissed] = useState(false)
+  const [restoreRestartCmd, setRestoreRestartCmd] = useState<string | null>(null)
+  const restorePending = restoreStaged || fleet?.restore_restart_pending === true
+  useEffect(() => {
+    if (fleet?.restore_restart_pending === true) setRestoreStaged(false)
+  }, [fleet?.restore_restart_pending])
   // Dismissal is scoped to one current→previous pair. A later Make Live changes
   // the key and automatically reveals the new banner without persisting UI-only
   // state into the keystone live-target pointer.
@@ -1023,6 +1033,9 @@ export default function DevFleetPage() {
           : 'pages.devFleetPage.make_live_failed')
         notify(msg, { type: 'error' }); setGatewayError(msg); setFlag(w.name + ':makelive', false); return
       }
+      // Any accepted cutover pins the pointer again, so a pending Restore's
+      // instruction no longer applies (the server's flag already says so).
+      setRestoreStaged(false)
       // Stage cancelled: the pointer is re-pinned at the running checkout and
       // no process is coming or going, so the restart overlay and the identity
       // handshake must both be skipped — waiting would strand the user on the
@@ -1058,6 +1071,67 @@ export default function DevFleetPage() {
         : 'pages.devFleetPage.make_live_failed')
       const msg = `${operation}: ${(e as Error)?.message || String(e)}`
       notify(msg, { type: 'error' }); setGatewayError(msg); setRestarting(false); setFlag(w.name + ':makelive', false)
+    }
+  }
+
+  // The way back from Make Live to the build the installer put on this host.
+  // Persistent (not the dismissible Switch back banner) because Undo only goes
+  // one level back, to a checkout, and never to a wheel install. Same restart
+  // handshake as a cutover; '<key>:makelive' so every other gateway control
+  // locks while it runs.
+  async function restoreInstalled() {
+    // Ask the server how it would restart (dry run, nothing written) so the confirm
+    // text matches what happens: a foreground gateway reports itself as active but is
+    // never restarted by Restore.
+    let canRestart = false
+    try {
+      const plan = await api.postGateway<{ ok?: boolean; error?: string; plan?: { restart?: string } }>(
+        '/restore-installed', { dry_run: true })
+      if (!plan?.ok) {
+        const msg = plan?.error || i18nT('pages.devFleetPage.restore_installed_build_failed')
+        notify(msg, { type: 'error' }); setGatewayError(msg); return
+      }
+      canRestart = plan.plan?.restart === 'service'
+    } catch (e: unknown) {
+      const msg = `${i18nT('pages.devFleetPage.restore_installed_build_failed')}: ${(e as Error)?.message || String(e)}`
+      notify(msg, { type: 'error' }); setGatewayError(msg); return
+    }
+    const ok = await askConfirm(i18nT('pages.devFleetPage.restore_installed_build'),
+      canRestart
+        ? i18nT('pages.devFleetPage.restore_installed_build_confirm_restart')
+        : i18nT('pages.devFleetPage.restore_installed_build_confirm_manual', { cmd: fleet?.manual_restart || 'kirocrew restart' }),
+      // Without a managed restart the click only releases the worktree; the label
+      // says that rather than promising the whole restore.
+      { confirmLabel: i18nT(canRestart
+        ? 'pages.devFleetPage.restore_installed_build'
+        : 'pages.devFleetPage.restore_installed_build_stop_worktree') })
+    if (!ok) return
+    const flag = 'restore-installed:makelive'
+    setFlag(flag, true)
+    setGatewayError(null)
+    try {
+      const r = await api.postGateway<{
+        ok?: boolean; error?: string; start_id?: string | null; staged_only?: boolean; notice?: string
+        manual_restart?: string
+      }>('/restore-installed', {})
+      if (!r?.ok) {
+        const msg = r?.error || i18nT('pages.devFleetPage.restore_installed_build_failed')
+        notify(msg, { type: 'error' }); setGatewayError(msg); setFlag(flag, false); return
+      }
+      if (r.staged_only) {
+        setRestoreBannerDismissed(false)
+        setRestoreRestartCmd(r.manual_restart ?? null)
+        setRestoreStaged(true)
+        setFlag(flag, false)
+        invalidateFleet()
+        return
+      }
+      setRestarting(true)
+      await awaitGatewayBack(r.start_id ?? null)
+      setFlag(flag, false)
+    } catch (e: unknown) {
+      const msg = `${i18nT('pages.devFleetPage.restore_installed_build_failed')}: ${(e as Error)?.message || String(e)}`
+      notify(msg, { type: 'error' }); setGatewayError(msg); setRestarting(false); setFlag(flag, false)
     }
   }
 
@@ -1407,7 +1481,7 @@ export default function DevFleetPage() {
               actionErrorRef={actionErrorRef} dismissActionError={dismissActionError}
               gatewayError={gatewayError} setGatewayError={setGatewayError}
               setDismissedUndoKey={setDismissedUndoKey} gatewayMutating={gatewayMutating}
-              makeLive={makeLive} wts={wts} running={running} needsProv={needsProv}
+              makeLive={makeLive} restoreInstalled={restoreInstalled} restorePending={restorePending} restoreBannerDismissed={restoreBannerDismissed} setRestoreBannerDismissed={setRestoreBannerDismissed} restoreRestartCmd={restoreRestartCmd} wts={wts} running={running} needsProv={needsProv}
               undoTarget={undoTarget} undoCurrent={undoCurrent} undoKey={undoKey}
               showUndoBanner={showUndoBanner} podsAvailable={podsAvailable} podsReason={podsReason}
               gatewayReason={gatewayReason} servingReason={servingReason} noFleet={noFleet}

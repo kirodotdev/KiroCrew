@@ -1505,6 +1505,13 @@ async def _build_fleet() -> dict:
         # packaged gateway cannot confirm it runs that checkout, so the row shows
         # "live?". An outage is live_state_known above, not this field.
         "live_verified": live_path is None or pointer.live_verified,
+        # True while the pointer names a checkout: the dashboard then shows the
+        # persistent "Restore installed build" control (False on a broker outage,
+        # with live_state_known saying why).
+        "live_target_pinned": pointer.pinned,
+        # A staged-only Restore cleared the pointer; this gateway still runs the
+        # worktree until the owner restarts it.
+        "restore_restart_pending": pointer.restore_restart_pending,
         "manual_restart": live._manual_restart_command(),
         # WHY the gateway cannot be restarted/repointed from here, when it
         # cannot. Same lesson as pods_unavailable_reason below: the previous
