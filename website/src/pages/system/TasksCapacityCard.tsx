@@ -502,16 +502,19 @@ function SectionBlock({ title, rows }: { title: string; rows: Row[] }) {
   return (
     <div className="mb-4" style={{ breakInside: 'avoid' }}>
       <h4 className="text-[11.5px] font-semibold text-muted uppercase tracking-wide mb-2">{title}</h4>
+      {/* `flex-wrap` + `ml-auto min-w-0`: a value too wide to sit beside its
+          label drops under it, right-aligned, and wraps inside its own column
+          rather than printing over the column beside it. */}
       {rows.map(row => (
         <div
           key={row.label}
-          className="flex justify-between gap-3 py-1.5 border-b border-border text-[12.5px] last:border-b-0"
+          className="flex flex-wrap justify-between gap-x-3 gap-y-0.5 py-1.5 border-b border-border text-[12.5px] last:border-b-0"
         >
           <span className="text-muted shrink-0 inline-flex items-center gap-1">
             {row.label}
             {row.tip && <InfoTip text={row.tip} />}
           </span>
-          <span className="text-text-strong font-mono tabular-nums text-right break-words">{row.value}</span>
+          <span className="text-text-strong font-mono tabular-nums text-right break-words ml-auto min-w-0">{row.value}</span>
         </div>
       ))}
     </div>
@@ -672,10 +675,13 @@ export default function TasksCapacityCard() {
       {d && !d.available && (
         <p className="text-[12.5px] text-muted mb-3">{i18nT('pages.tasksCapacityCard.no_store')}</p>
       )}
-      <div className="columns-3 gap-6 max-[900px]:columns-2 max-[600px]:columns-1">
-        <SectionBlock title={i18nT('pages.tasksCapacityCard.section_queue')} rows={queueRows} />
-        <SectionBlock title={i18nT('pages.tasksCapacityCard.section_capacity')} rows={laneRows} />
-        <SectionBlock title={i18nT('pages.tasksCapacityCard.section_recovery')} rows={recoveryRows} />
+      {/* Column breakpoints read the card's own width, as ServicesTab's do. */}
+      <div className="@container">
+        <div className="columns-1 gap-6 @min-[480px]:columns-2 @min-[840px]:columns-3">
+          <SectionBlock title={i18nT('pages.tasksCapacityCard.section_queue')} rows={queueRows} />
+          <SectionBlock title={i18nT('pages.tasksCapacityCard.section_capacity')} rows={laneRows} />
+          <SectionBlock title={i18nT('pages.tasksCapacityCard.section_recovery')} rows={recoveryRows} />
+        </div>
       </div>
 
       <h4 className="text-[11.5px] font-semibold text-muted uppercase tracking-wide mb-2 mt-1 flex items-center gap-1">

@@ -298,7 +298,9 @@ export class AcpAdapter implements ProviderAdapter {
     // Getters, not literals: these are shown inside translated copy, and the
     // adapter is built once, so they must read the language at use time.
     get sessionProcess() { return i18nT('providers.adapters.acp.session_process') },
-    processCountLabel: 'acp_cli',
+    // Printed in the Services tab's MCP Processes breakdown, beside "sandbox"
+    // and "mcp": a readable name, not the internal provider id.
+    processCountLabel: 'acp',
     configFile: 'kirocrew.json',
     get pluginRegistryName() { return i18nT('providers.adapters.acp.plugin_registry_name') },
     get hooksSection() { return i18nT('providers.adapters.acp.hooks_section') },

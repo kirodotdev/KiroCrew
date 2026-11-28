@@ -4944,6 +4944,17 @@ more" / "Show fewer" button carrying `aria-expanded` and `aria-controls` on the
 list): a count of rows the reader cannot reach is a dead end, and the bounded
 default is what keeps a 2000-row queue from becoming the whole card.
 
+**Column layout follows the card, not the viewport** (this card and the
+Services plane's Gateway process card, `ServicesTab.tsx`). A grouped settings
+frame caps a card at 720px, so the column count is a container query on the
+card's own width: one column below 480px, two from 480px, three from 840px.
+Each label/value row wraps: a value too wide to sit beside its label drops
+under it, right-aligned, and shrinks to its column (`ml-auto min-w-0`) rather
+than printing over the column beside it. The MCP Processes value breaks only
+at its ` · ` separators (each part is unbreakable), and names the ACP
+provider `acp`, not its internal id. Pinned by `systemCardColumns.test.ts`,
+`ServicesTab.mcpBreakdown.test.tsx` and `TasksCapacityCard.test.tsx`.
+
 **The capacity column states a relationship, never two numbers.** Two maxima
 printed as two labelled facts are read as two unrelated answers, and this column
 answers one question. So `effective == user_max` is ONE fact ("Your full limit",
