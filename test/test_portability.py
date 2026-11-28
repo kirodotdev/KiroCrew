@@ -1397,6 +1397,80 @@ class TestImportMerge:
         finally:
             os.unlink(str(zip_path))
 
+    def test_import_merge_holds_back_archive_skills(self, patched_config_dir, tmp_path):
+        """Merge never installs an archive's skills into the live ``skills/`` folder.
+
+        A skill carries instructions and scripts an agent runs, and a Merge has no
+        pick for them, so a skill folder or a loose file this install lacks is held
+        back and named in the summary as not installed.
+        """
+        (patched_config_dir / "skills" / "helper").mkdir()
+        (patched_config_dir / "skills" / "helper" / "run.sh").write_text("echo hi\n")
+        (patched_config_dir / "skills" / "loose.sh").write_text("echo loose\n")
+        zip_path = self._make_export(patched_config_dir)
+        try:
+            target = tmp_path / "target_mc"
+            target.mkdir()
+
+            with patch("kiro_crew.portability.config_dir", return_value=target):
+                with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                    summary = apply_import_zip(zip_path, mode="merge")
+
+            skills = target / "skills"
+            assert not skills.exists() or not any(skills.iterdir()), list(skills.iterdir())
+            held = [i for i in summary["items"] if i.startswith("skills (")]
+            assert len(held) == 1, summary["items"]
+            assert held[0].startswith("skills (skipped: "), held[0]
+            for name in ("my-skill", "helper", "loose.sh"):
+                assert name in held[0], held[0]
+            # The dashboard reads the names from this field, not from the item text.
+            assert summary["skills_held"] == ["helper", "loose.sh", "my-skill"], summary
+            assert "skills_held_more" not in summary
+        finally:
+            os.unlink(str(zip_path))
+
+    def test_import_merge_skills_hold_leaves_the_live_ones(self, patched_config_dir, tmp_path):
+        """The hold changes nothing this install already has, and names only the new ones."""
+        (patched_config_dir / "skills" / "helper").mkdir()
+        (patched_config_dir / "skills" / "helper" / "run.sh").write_text("echo hi\n")
+        zip_path = self._make_export(patched_config_dir)
+        try:
+            target = tmp_path / "target_mc"
+            live = target / "skills" / "my-skill"
+            live.mkdir(parents=True)
+            (live / "SKILL.md").write_text("# Existing skill content\n")
+
+            with patch("kiro_crew.portability.config_dir", return_value=target):
+                with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                    summary = apply_import_zip(zip_path, mode="merge")
+
+            assert (live / "SKILL.md").read_text(encoding="utf-8") == "# Existing skill content\n"
+            assert not (target / "skills" / "helper").exists()
+            held = [i for i in summary["items"] if i.startswith("skills (")]
+            assert len(held) == 1 and "helper" in held[0] and "my-skill" not in held[0], held
+            assert summary["skills_held"] == ["helper"], summary
+        finally:
+            os.unlink(str(zip_path))
+
+    def test_import_merge_skills_held_names_are_capped(self, patched_config_dir, tmp_path):
+        """The summary names the first 20 held skills and counts the rest."""
+        for n in range(22):
+            (patched_config_dir / "skills" / f"extra-{n:02d}").mkdir()
+            (patched_config_dir / "skills" / f"extra-{n:02d}" / "SKILL.md").write_text("# x\n")
+        zip_path = self._make_export(patched_config_dir)
+        try:
+            target = tmp_path / "target_mc"
+            target.mkdir()
+
+            with patch("kiro_crew.portability.config_dir", return_value=target):
+                with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                    summary = apply_import_zip(zip_path, mode="merge")
+
+            assert len(summary["skills_held"]) == 20, summary["skills_held"]
+            assert summary["skills_held_more"] == 3, summary
+        finally:
+            os.unlink(str(zip_path))
+
 
 class TestImportReplace:
     def _make_export(self, source_dir):
