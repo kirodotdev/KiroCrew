@@ -69,6 +69,23 @@ class TestHoldRunningTreeLock:
         finally:
             os.close(prober)
 
+    @pytest.mark.skipif(IS_POSIX and os.geteuid() == 0, reason="root ignores file modes")
+    def test_holds_a_lock_file_it_cannot_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A sandboxed child finds its tree read-only; the shared hold needs no write.
+        tree = _tree(tmp_path)
+        lock = tree / tree_liveness.LIVENESS_LOCK
+        lock.chmod(0o444)
+        monkeypatch.setattr(tree_liveness.sys, "prefix", str(tree))
+        tree_liveness.hold_running_tree_lock()
+        assert tree_liveness._HELD_FD is not None
+        prober = os.open(str(lock), os.O_RDONLY)
+        try:
+            assert not try_acquire_lock(prober, exclusive=True), "the prune must see it held"
+        finally:
+            os.close(prober)
+
     def test_a_second_call_keeps_the_first_hold(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
