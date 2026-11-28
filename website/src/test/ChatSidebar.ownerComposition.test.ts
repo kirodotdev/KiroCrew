@@ -112,7 +112,7 @@ describe('the facade composition', () => {
   // row-status store; the outer layer (`useStableKeySet`, `useRowStatusStore`) owns it.
   const CALL_ORDER = [
     'useRowStatusSelect', 'useSessionSources', 'useDebouncedSessionSearchState', 'useSessionRename', 'useSessionAutoTitle', 'useSessionSort', 'useSidebarLane',
-    'useSessionFilterState', 'useSessionStatusFilters', 'useSharedCrewListView', 'useHistoryPane', 'useRowStatusSelect', 'useSessionCleanup', 'useBulkModelSwitch', 'useResumeAll', 'usePinnedSessionOrder',
+    'useSessionFilterState', 'useSessionStatusFilters', 'useSharedCrewListView', 'useHistoryPane', 'useRowStatusSelect', 'useSessionCleanup', 'useBulkModelSwitch', 'useResumeAll', 'useBulkTitles', 'usePinnedSessionOrder',
     'useManualSessionOrder',
     'useStaleCollapse', 'useFolderSort', 'useUnfiledAboveFolders', 'useFolderRename', 'useSidebarTags',
     'useSidebarModels', 'useSidebarCreators', 'useBoardColumns', 'useSidebarResize', 'useFullTitlesOnScrollSetting', 'useNeedsMeHoverCardSetting', 'usePinnedOrderAuthority', 'useColumnPopover', 'useBoardColumnMutations',
