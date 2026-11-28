@@ -618,6 +618,8 @@ class AcpClient:
         # the later permission_request event (which carries no kind) can inherit
         # the canonical shell signal. Mirrors _tool_call_inputs lifecycle.
         self._tool_call_is_shell: dict[str, bool] = {}
+        # Cache each tool call's raw ACP kind so unasked completion checks enforce it.
+        self._tool_call_kind: dict[str, str] = {}
         # Map toolCallId → "no channel classified this call". A tool_call frame
         # answers the question "is this a command?" through an ACP ``kind`` or
         # through a harness ``_meta`` channel; a frame carrying NEITHER leaves the

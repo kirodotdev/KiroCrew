@@ -703,6 +703,17 @@ the parent, and no recovery path sends it. Pinned by
 `test_claude_raw_sdk_tasks_lifecycle.py::test_a_workflow_agent_is_refused_after_its_record_goes`
 and `test_claude_native_child_stop.py`.
 
+### Antigravity: version floor, cross-folder load, and unattributed turn failures
+
+Google Antigravity (`ACP_BACKEND_ANTIGRAVITY`) checks `ANTIGRAVITY_MIN_VERSION` (`1.4.4`) at the handshake.
+Runtimes outside `ANTIGRAVITY_TESTED_RANGE` (`1.4.4` to `< 2.0.0`, verified through `1.5.0`) log one warning per process.
+Cross-folder `session/load` works across directories, so `ACP_BACKEND_ANTIGRAVITY` stays outside `ACP_BACKENDS_CWD_BOUND_SESSIONS`.
+
+Antigravity receives `mcpServers` on each `session/new` and `session/load` through `ACP_BACKENDS_SESSION_MCP_ARRAY`.
+Guard `ACP_BACKENDS_MCP_RELAUNCH_RELOAD` stays exclusive to Strands under H6 and H9.
+On `session/prompt`, `AcpClient` catches unattributed Antigravity MCP and invalid-API-key failures that end immediately with `end_turn`.
+Function `is_antigravity_unattributed_terminal_error` matches those failures, while `ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR` stays limited to Codex and Kiro stays untouched (H5, H13).
+
 ## The CI half
 
 The added-line gate that enforces Group B on a diff is

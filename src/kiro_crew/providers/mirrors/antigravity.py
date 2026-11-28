@@ -4,10 +4,9 @@ Antigravity reads the ACP ``mcpServers`` array and no Kiro agent file. Its
 single-binary array mechanics match goose and Copilot, so this mirror delegates
 to the same placement function and keeps Antigravity's own rulings beside it.
 
-The runtime was driven far enough against 1.4.4 to establish the transport: a
-stdio server on ``session/new`` was started and asked ``server/discover`` and
-``tools/list``. A completed model turn requires an authenticated Google account
-and is not claimed here.
+Live 1.4.4 captures verify signed-in tool calls, and live 1.4.5 and 1.5.0
+captures verify stdio MCP discovery. Authenticated enterprise tool coverage
+remains unmeasured here.
 """
 
 from __future__ import annotations
@@ -81,7 +80,7 @@ class AntigravityMirror(AgentConfigMirror):
                 _D.DELIVERED,
                 "the session/new and session/load mcpServers array, translated by the "
                 "shared session-MCP projection and placed by the same function used "
-                "for goose and Copilot. Driven on Antigravity ACP 1.4.4: a stdio "
+                "for goose and Copilot. Driven on Antigravity ACP 1.4.4 through 1.5.0: a stdio "
                 "server on the array was started and asked server/discover and "
                 "tools/list by the Antigravity client",
             ),
@@ -90,7 +89,7 @@ class AntigravityMirror(AgentConfigMirror):
                 "into the shared server allowlist that decides which MCP servers enter "
                 "the array; native-tool restrictions continue through Crew's permission "
                 "gate rather than being projected into a second Antigravity setting. "
-                "File reads are the exception: Antigravity 1.4.4 runs them without a "
+                "File reads are the exception: Antigravity 1.4.4+ runs them without a "
                 "permission request, so the gate and its sensitive-path check never "
                 "see them",
             ),
@@ -139,12 +138,12 @@ class AntigravityMirror(AgentConfigMirror):
                 "(agent_sdk/spec_hooks.py, ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS). "
                 "A call that asks is named for their matchers through Antigravity's row "
                 "in acp/harness_tool_names.py, an MCP call by its trusted _meta mcp "
-                "identity. preToolUse is the gap: Antigravity 1.4.4 runs file reads "
+                "identity. preToolUse is the gap: Antigravity 1.4.4+ runs file reads "
                 "without a permission request, so a Crew-fired gating hook would be "
                 "skipped on those, and a new session whose spec has one gets a notice. "
                 "Crew's OWN hooks (hooks.py, fired on ACP tool events) are unaffected",
                 channel="a permission request for every Antigravity tool call, file "
-                "reads included, which 1.4.4's default mode does not send",
+                "reads included, which default mode does not send on 1.4.4+",
             ),
             Concern.TOOLS_SETTINGS: Ruling(
                 _D.NO_CHANNEL,

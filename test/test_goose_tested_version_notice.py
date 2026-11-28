@@ -58,6 +58,7 @@ def test_a_tested_or_unreadable_version_is_silent_and_does_not_raise(version):
         set(sdk_backends.ACP_BACKENDS_KNOWN)
         - {
             GOOSE,
+            sdk_backends.ACP_BACKEND_ANTIGRAVITY,
             sdk_backends.ACP_BACKEND_CODEX,
             sdk_backends.ACP_BACKEND_CLAUDE,
             sdk_backends.ACP_BACKEND_PI,

@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Collection
 from kiro_crew import mediated_request_capability
 from kiro_crew import sel as sel_module
 from kiro_crew.acp import batch_guard, launch_tuning, pi_steer_turn, transport_framing
+from kiro_crew.acp.client_antigravity import _parse_antigravity_version
 from kiro_crew.acp.client_claude_session import (  # noqa: F401 -- CLAUDE_ACP_TESTED_VERSION
     CLAUDE_ACP_STEERING_MIN_VERSION,
     CLAUDE_ACP_TESTED_INSTALL,
@@ -51,6 +52,11 @@ from kiro_crew.acp.client_timeouts import (
 )
 from kiro_crew.acp.command_refused import AcpCommandRefused
 from kiro_crew.acp.end_token import drop_end_token
+from kiro_crew.acp.harness.antigravity import (  # noqa: F401 - re-exported for callers and tests
+    ANTIGRAVITY_INSTALL_HINT,
+    ANTIGRAVITY_TESTED_RANGE,
+    ANTIGRAVITY_TESTED_VERSION,
+)
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.transport_errors import AcpError, AcpProcessDied, AcpTimeoutError
 from kiro_crew.acp.transport_framing import write_notification_best_effort
@@ -86,6 +92,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_sdk.backend_cards import LINE_MID_TURN_STEER, card_for
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
@@ -230,6 +237,10 @@ _TESTED_VERSION_RANGES: dict[str, tuple[tuple[tuple[int, int, int], tuple[int, i
         DEEPSEEK_DSH_TESTED_RANGE,
         ACP_BACKEND_LAUNCH[ACP_BACKEND_DEEPSEEK].install_command,
     ),
+    ACP_BACKEND_ANTIGRAVITY: (
+        ANTIGRAVITY_TESTED_RANGE,
+        "",
+    ),
 }
 
 #: Backends whose handshake version names no release, so the tested range is read
@@ -239,14 +250,23 @@ _TESTED_VERSION_RANGES: dict[str, tuple[tuple[tuple[int, int, int], tuple[int, i
 #: on the session handle if that preview turns on by default.
 TESTED_VERSION_READ_AT_SPAWN: frozenset[str] = frozenset({ACP_BACKEND_DEEPSEEK})
 
+#: Advice shown when a release sits below the tested range for harnesses with no single command.
+_OLDER_THAN_TESTED_ADVICE: dict[str, str] = {
+    ACP_BACKEND_ANTIGRAVITY: f"{ANTIGRAVITY_INSTALL_HINT} Then start a new chat.",
+}
+
 #: What a release above the range is told instead of the install command, for a
 #: harness whose installer cannot go back to a tested release.
 _NEWER_THAN_TESTED_ADVICE: dict[str, str] = {
     ACP_BACKEND_KIRO: "A Kiro Crew update moves the tested range.",
+    ACP_BACKEND_ANTIGRAVITY: "A Kiro Crew update moves the tested range.",
 }
 
 #: The name a notice gives a backend whose id is not its name.
-_NOTICE_NAMES: dict[str, str] = {ACP_BACKEND_KIRO: "kiro-cli"}
+_NOTICE_NAMES: dict[str, str] = {
+    ACP_BACKEND_KIRO: "kiro-cli",
+    ACP_BACKEND_ANTIGRAVITY: "Google Antigravity",
+}
 
 
 def _tested_range_label(low: tuple[int, int, int], high: tuple[int, int, int]) -> str:
@@ -262,25 +282,31 @@ def _tested_range_label(low: tuple[int, int, int], high: tuple[int, int, int]) -
 
 
 def untested_version_issue(backend: str, agent_version: str) -> str:
-    """The notice for an *agent_version* outside *backend*'s tested range, else ``""``.
-
-    A warning only: the session still runs. A backend with no tested range, and an
-    absent or unreadable version, gets none. Parsed by :func:`_adapter_version_at_least`,
-    the reader the goose steer floor uses, so the two notices read one version alike.
-    """
+    """Return a warning when *agent_version* sits outside the tested range for *backend*."""
     range_and_fix = _TESTED_VERSION_RANGES.get(backend)
-    if range_and_fix is None or not _adapter_version_at_least(agent_version, (0, 0, 0)):
+    display_version = agent_version.strip() if isinstance(agent_version, str) else ""
+    if range_and_fix is None or not display_version:
         return ""
     (low, high), fix = range_and_fix
-    newer = _adapter_version_at_least(agent_version, high)
-    if _adapter_version_at_least(agent_version, low) and not newer:
-        return ""
+    if backend == ACP_BACKEND_ANTIGRAVITY:
+        parsed = _parse_antigravity_version(display_version)
+        if parsed is None:
+            return ""
+        newer = parsed >= (*high, 0)
+        if (*low, 1) <= parsed and not newer:
+            return ""
+    else:
+        if not _adapter_version_at_least(display_version, (0, 0, 0)):
+            return ""
+        newer = _adapter_version_at_least(display_version, high)
+        if _adapter_version_at_least(display_version, low) and not newer:
+            return ""
     tested = _tested_range_label(low, high)
-    advice = (newer and _NEWER_THAN_TESTED_ADVICE.get(backend)) or (
-        f"To install the tested release, run '{fix}', then start a new chat."
-    )
+    advice = (
+        _NEWER_THAN_TESTED_ADVICE.get(backend) if newer else _OLDER_THAN_TESTED_ADVICE.get(backend)
+    ) or f"To install the tested release, run '{fix}', then start a new chat."
     return (
-        f"{_NOTICE_NAMES.get(backend, backend)} {agent_version} is outside the tested "
+        f"{_NOTICE_NAMES.get(backend, backend)} {display_version} is outside the tested "
         f"range {tested}, so parts of it may behave in ways Crew has not checked. {advice}"
     )
 

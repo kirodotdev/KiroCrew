@@ -225,7 +225,7 @@ provider.
 | `goose` | goose | Uses goose's native ACP server. Each session runs on a separate goose home Kiro Crew builds, so your own `permission.yaml` approves nothing there. That home is built on macOS and Linux only: on Windows a goose session is refused; run goose under WSL. |
 | `deepseek` | DeepSeek Harness | Runs `dsh --profile acp` with Kiro Crew's gate plugin; provider keys come from `agent.deepseek_env`. |
 | `copilot` | GitHub Copilot CLI | Runs `copilot --acp --stdio`; signs in with its own login. A project carrying Copilot CLI's own hooks, settings or MCP config is refused. |
-| `antigravity` | Google Antigravity | Runs the standalone ACP Registry runtime (`agy_acp_server` plus `localharness_external`). Signs in with its own Google/API-key configuration and runs in `default` permission mode; `auto_edit` and `yolo` are refused. Kiro Crew verifies Antigravity ACP 1.4.4 only and refuses other versions, including the newer release the ACP Registry serves; install the 1.4.4 archive the backend card names. |
+| `antigravity` | Google Antigravity | Runs the standalone ACP Registry runtime (`agy_acp_server` plus `localharness_external`). Signs in with its own Google/API-key configuration and runs in `default` permission mode; `auto_edit` and `yolo` are refused. Kiro Crew needs Antigravity ACP 1.4.4 or newer (verified through 1.5.0) and warns once outside `1.4.4` through `1.x`. Auth supports `oauth-personal`, `oauth-business`, `gemini-api-key` (`GEMINI_API_KEY`), and `agent-platform`. Windows resolution also checks `%LOCALAPPDATA%\agy\bin\agy_acp_server.exe`. |
 
 Codex runs with the credential stores Kiro Crew's agent may never read hidden
 on purpose, apart from Codex's own sign-in file. They include `~/.aws`,

@@ -300,6 +300,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _drop_live_config_snapshot,
     _ensure_event_loop,
     _fake_computer_use_backend,
+    _forget_antigravity_version_warnings,
     _forget_app_declared_row_listings,
     _forget_app_turn_approver,
     _forget_declared_mcp_not_ready_notes,

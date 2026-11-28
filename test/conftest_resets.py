@@ -1983,3 +1983,19 @@ def _published_redaction_verdict_on():
     seams = sys.modules.get("kiro_crew.redaction_seams")
     if seams is not None:
         seams.publish(False)
+
+
+@pytest.fixture(autouse=True)
+def _forget_antigravity_version_warnings():
+    """Clear cached Antigravity version warnings before and after each test."""
+
+    def clear() -> None:
+        mod = sys.modules.get("kiro_crew.acp.client_antigravity")
+        if mod is not None and hasattr(mod, "_warned_versions"):
+            mod._warned_versions.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()

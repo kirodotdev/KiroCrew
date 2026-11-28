@@ -927,8 +927,9 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # and Gemini Enterprise tokens under its private profile. On macOS it also
         # mirrors them into the login keychain under the ``antigravity-acp`` and
         # ``antigravity-acp-business`` accounts; the file forms are the readable
-        # leaves that belong on Crew's credential floor. Its 1.4.4 settings loader
-        # states that ``settings.json`` holds only ``auth.type`` and
+        # leaves that belong on Crew's credential floor. Its settings loader
+        # states that ``settings.json`` holds only ``auth.type`` (``oauth-personal``,
+        # ``oauth-business``, ``gemini-api-key``, or ``agent-platform``) and
         # ``gcp.project``/``gcp.location``; credentials are never written there.
         # API-key auth reads ``GEMINI_API_KEY`` from the launch environment.
         credential_leaves=(
@@ -948,16 +949,17 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         ),
         sign_in_remedy=(
             "Google Antigravity ACP signs in on its own. In a terminal on the gateway "
-            "host, set auth.type to oauth-personal in "
-            "$GEMINI_HOME/antigravity-acp/settings.json and start a new chat; the "
-            f"runtime opens Google sign-in in the browser. {HOST_TERMINAL_NOTE} Kiro "
-            "Crew verifies Google Antigravity ACP 1.4.4 only and refuses other versions."
+            "host, set auth.type to oauth-personal, oauth-business, gemini-api-key "
+            "(with GEMINI_API_KEY), or agent-platform in "
+            "$GEMINI_HOME/antigravity-acp/settings.json and start a new chat. "
+            f"{HOST_TERMINAL_NOTE} Kiro Crew needs Google Antigravity ACP 1.4.4 or newer."
         ),
         signed_out_message=(
             "Google Antigravity ACP is not signed in. In a terminal on the gateway host, "
-            "set auth.type to `oauth-personal` in "
-            "`~/.gemini/antigravity-acp/settings.json`, then start a new chat to open "
-            f"Google sign-in. {HOST_TERMINAL_NOTE}"
+            "set auth.type to `oauth-personal`, `oauth-business`, `gemini-api-key` "
+            "(with `GEMINI_API_KEY`), or `agent-platform` in "
+            "`~/.gemini/antigravity-acp/settings.json`, then start a new chat. "
+            f"{HOST_TERMINAL_NOTE}"
         ),
         signed_out_signature="No authentication method selected",
         host_logout_retires_children=False,
