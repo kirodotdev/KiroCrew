@@ -4296,6 +4296,7 @@ The canonical command and flag inventory is in the [CLI spec](cli.md#member-memo
 Parses legacy markdown files into structured memory:
 - `preferences.md`: bullet points with `key: value` → semantic entries (confidence 0.85, source "migration"). Bare prefix keys get `.default` suffix.
 - `projects.md`: project names → `project.name` semantic entries, details → episodic
+- A leading UTF-8 byte-order mark on `preferences.md` or `projects.md` (a Windows "UTF-8 with BOM" save) is dropped before the bullets are read, by the migration and by `legacy_memory_present()`, so the first bullet migrates like the rest. Only one leading mark is dropped, and the migration's read stays strict (`MemoryFiles.read_text`).
 - `history/*.md`: daily summaries → episodic entries (importance 0.4)
 - **Embedding during migration**: when the model file is present, the caller sets `store.embed_fn` before calling migration. Each episodic entry is embedded in-process and stored with its FAISS vector, enabling vector search immediately after migration.
 - Idempotent: re-running skips existing semantic entries (conflict resolution), episodic dedup via FAISS when available
