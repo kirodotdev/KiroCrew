@@ -338,9 +338,9 @@ def _rows(
 _PACKED_ROWS_MIN_SQLITE = (3, 45, 0)
 #: Rows per SQLite step when packed.
 _PACKED_ROWS_CHUNK = 2000
-#: A scan whose first _SCAN_PROBE_ROWS rows took _SCAN_SLOW_SECS or longer reads
-#: the rest packed. Unloaded, those rows take under 10 ms with the caller's work;
-#: while other threads hold the GIL they take over half a second.
+#: A scan where any _SCAN_PROBE_ROWS rows in a row took _SCAN_SLOW_SECS or longer
+#: reads the rest packed. Unloaded, those rows take under 10 ms with the caller's
+#: work; while other threads hold the GIL they take over half a second.
 _SCAN_PROBE_ROWS = 256
 _SCAN_SLOW_SECS = 0.1
 
@@ -350,9 +350,11 @@ def _scan(store: Any, sql: str, params: list, *, packable: bool):
 
     A cursor gives the GIL away and takes it back for every row. While other threads
     keep the GIL busy, as during a gateway's first minutes, each take waits out the
-    interpreter's switch interval: 23,000 rows took 57 s instead of 0.9 s. When the
-    first rows show that wait, the rest come packed (:func:`_packed_rows`), which
-    pays it once per chunk. An unloaded scan stays on the cursor, which is faster.
+    interpreter's switch interval: 23,000 rows took 57 s instead of 0.9 s. When a
+    block of rows shows that wait, the rest come packed (:func:`_packed_rows`), which
+    pays it once per chunk. Every block is timed, not only the first, because the
+    other threads can start mid-scan. An unloaded scan stays on the cursor, which is
+    faster.
     It switches only inside the caller's open transaction (``_read_snapshot``): a
     cursor's own implicit snapshot can end with its last row, and the packed rows
     must be numbered in the snapshot the cursor read.
@@ -362,17 +364,18 @@ def _scan(store: Any, sql: str, params: list, *, packable: bool):
         started = time.monotonic()
         for read, row in enumerate(cursor, 1):
             yield row
-            if (
-                packable
-                and read == _SCAN_PROBE_ROWS
-                and store.db.in_transaction
-                and time.monotonic() - started >= _SCAN_SLOW_SECS
-            ):
+            if not packable or read % _SCAN_PROBE_ROWS:
+                continue
+            now = time.monotonic()
+            if store.db.in_transaction and now - started >= _SCAN_SLOW_SECS:
                 rest = _packed_rows(store, sql, params, skip=read)
                 if rest is not None:
                     cursor.close()
                     yield from rest
                     return
+                # This SQLite or these rows cannot be packed; do not ask again.
+                packable = False
+            started = now
     finally:
         cursor.close()
 

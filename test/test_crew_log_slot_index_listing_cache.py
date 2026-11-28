@@ -28,6 +28,7 @@ import pytest
 from kiro_crew.crew_log import store, store_units
 from kiro_crew.crew_log.schema import KIND_SESSION
 from kiro_crew.crew_log.store import CrewLog
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 SLOT = "chat-cache"
 _DAY_NS = 86_400 * 1_000_000_000
@@ -444,3 +445,68 @@ def test_the_suite_teardown_forgets_the_index_between_tests(
         plugins=[_rootdir_teardown(request.config)],
     )
     result.assert_outcomes(passed=2)
+
+
+def test_callers_that_miss_the_cache_together_share_one_scan(
+    listings: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Startup asks from many pool threads at once. While one caller reads the headers,
+    the others wait for its listing instead of reading every header again beside it."""
+    import threading
+
+    for index in range(5):
+        _create(f"acp-flight-{index}")
+    store._slot_index = None  # type: ignore[attr-defined]
+    store_units._SLOT_INDEX_TRUST[0] = None
+    store_units._PROVED_ROWS[0] = None
+
+    real_proved = store_units._proved_header
+    inside = threading.Event()
+    release = threading.Event()
+    reads: list[str] = []
+
+    def held_proved(directory: Path) -> "dict[str, Any] | None":
+        reads.append(directory.name)
+        if len(reads) == 1:
+            inside.set()
+            assert release.wait(FALLBACK_TIMEOUT_SECS), "the test never released the first scan"
+        return real_proved(directory)
+
+    real_lock = store_units._SLOT_INDEX_BUILD
+    arrived = threading.Semaphore(0)
+
+    class _ArrivalLock:
+        def __enter__(self) -> None:
+            arrived.release()
+            real_lock.acquire()
+
+        def __exit__(self, *exc: object) -> None:
+            real_lock.release()
+
+    monkeypatch.setattr(store, "_proved_header", held_proved)
+    monkeypatch.setattr(store, "_SLOT_INDEX_BUILD", _ArrivalLock())
+
+    answers: list[dict[str, tuple[str, ...]]] = []
+    first = threading.Thread(target=lambda: answers.append(store.session_units_by_slot()))
+    first.start()
+    assert inside.wait(FALLBACK_TIMEOUT_SECS)
+    assert arrived.acquire(timeout=FALLBACK_TIMEOUT_SECS)
+    others = [
+        threading.Thread(target=lambda: answers.append(store.session_units_by_slot()))
+        for _ in range(4)
+    ]
+    for thread in others:
+        thread.start()
+    for _ in others:
+        assert arrived.acquire(
+            timeout=FALLBACK_TIMEOUT_SECS
+        ), "a waiting caller never reached the listing"
+    release.set()
+    for thread in [first, *others]:
+        thread.join(FALLBACK_TIMEOUT_SECS)
+        assert not thread.is_alive()
+
+    assert len(reads) == 5, "one header read per unit, however many callers asked"
+    assert len(answers) == 5
+    assert all(answer == answers[0] for answer in answers)
+    assert len(answers[0][SLOT]) == 5

@@ -445,6 +445,62 @@ def test_a_write_from_another_connection_mid_scan_does_not_shift_the_rest(
         assert list(memory_edit._rows(store, query, summaries=True)) == by_cursor
 
 
+class _BlockClock:
+    """``time`` for memory_edit whose monotonic() answers from a script, then holds."""
+
+    def __init__(self, *readings):
+        self._readings = list(readings)
+
+    def monotonic(self):
+        if len(self._readings) > 1:
+            return self._readings.pop(0)
+        return self._readings[0]
+
+
+@pytest.mark.parametrize("store", ["v1"], indirect=True)
+def test_a_scan_that_turns_slow_after_its_first_block_reads_the_rest_packed(
+    store, monkeypatch  # noqa: F811
+):
+    # The other threads can start after the first rows were quick: every block is
+    # timed, so the second block's wait still moves the rest to the packed read.
+    _seed(store)
+    query = {"q": "", "kind": "all"}
+    by_cursor = list(memory_edit._rows(store, query, summaries=True))
+    monkeypatch.setattr(memory_edit, "_SCAN_PROBE_ROWS", 2)
+    # The default slow bar stays: start 0, first block ends at 0 (fast), second
+    # block ends at 5 (slow).
+    monkeypatch.setattr(memory_edit, "time", _BlockClock(0.0, 0.0, 5.0))
+    skips = []
+    real = memory_edit._packed_rows
+
+    def seen(*args, **kwargs):
+        skips.append(kwargs["skip"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(memory_edit, "_packed_rows", seen)
+    with memory_edit._read_snapshot(store):
+        assert list(memory_edit._rows(store, query, summaries=True)) == by_cursor
+    assert skips == [4]
+
+
+@pytest.mark.parametrize("store", ["v1"], indirect=True)
+def test_a_scan_that_cannot_be_packed_asks_once(store, monkeypatch):  # noqa: F811
+    _seed(store)
+    query = {"q": "", "kind": "all"}
+    by_cursor = list(memory_edit._rows(store, query, summaries=True))
+    monkeypatch.setattr(memory_edit, "_SCAN_PROBE_ROWS", 1)
+    monkeypatch.setattr(memory_edit, "_SCAN_SLOW_SECS", 0)
+    asked = []
+
+    def cannot(*args, **kwargs):
+        asked.append(kwargs["skip"])
+
+    monkeypatch.setattr(memory_edit, "_packed_rows", cannot)
+    with memory_edit._read_snapshot(store):
+        assert list(memory_edit._rows(store, query, summaries=True)) == by_cursor
+    assert asked == [1]
+
+
 def test_a_slow_scan_outside_a_transaction_stays_on_its_cursor(store, monkeypatch):  # noqa: F811
     # Without the caller's snapshot the cursor's own one can end with its last row,
     # so the rows a packed read would number may not be the rows the cursor read.
