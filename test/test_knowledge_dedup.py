@@ -270,8 +270,8 @@ class TestWhitespaceRunInName:
         assert all(_longest_whitespace_run(text) <= 1 for text in recorder.texts)
 
     def test_dedup_pass_over_a_library_with_such_a_name_stays_bounded(
-            self, tmp_path, monkeypatch):
-        store = _mk_store(tmp_path)
+            self, tmp_path, monkeypatch, opened):
+        store = opened(_mk_store(tmp_path))
         _add_upload(store, "notes" + " " * 1200 + "x.txt", "H-hostile", [1.0, 0.0, 0.0, 0.0])
         sid, _ = _add_upload(store, "plan.txt", "H-plain", [0.0, 1.0, 0.0, 0.0])
         recorder = self._record_copy_modifier_input(monkeypatch)
