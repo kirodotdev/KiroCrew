@@ -5050,7 +5050,15 @@ compaction, and the long-task and
 team rules every turn needs: the item budget, no split by default, one owner per
 artifact and one integrator per output, merging two lines, reusing a finished
 worker only for the next step of its own line, the plan reviewer, the `pr_merged` bar,
-the hourly check on a quiet wake, routine incidents, and reporting before a park) are written once,
+the hourly check on a quiet wake, routine incidents, reporting before a park, and
+the hand-off rules: a seed written for a reader with no context (why, what is
+known or ruled out, the report wanted, no phrase only the conductor can resolve),
+a round's independent items dispatched in one step with the critical path first,
+a request needing a tool the conductor's own chat lacks handed to a worker before
+any refusal,
+an `accept_eval` fail quoted word for word to its worker, no prediction of an
+item still running, and resuming after a compaction or reset from the ledger
+without dispatching again an item a live worker holds) are written once,
 in `agent_parts/spec_prompts.py` `_LEDGER_CONDUCTOR_RULES`: the root charter is
 assembled from them (`_CONDUCTOR_PROMPT_SECTIONS`) and `conductor.patrol` names
 each as a placeholder (`context_assembly.member.ledger_rules_block`).

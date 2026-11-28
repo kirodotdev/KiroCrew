@@ -32,6 +32,10 @@ The gateway refuses a reset from a loop it cannot vouch for, or while a
 question card or tool approval is pending. A refused reset changes nothing:
 carry on in the same chat and try again at the next round close.
 
+## After a reset or a compaction
+
+Resume as your prompt's after-compaction rule says. Read the ledger before any other call. An item is held by a live worker when it is open, bound, and flagged neither `stale` nor `orphaned`. An open item with no worker, a flagged one, or one marked `redispatch_due` is not: handle it as its own rule says. Check a bound item whose seed you are unsure of with `session_read_message` before you resend it: a blind resend can seed it twice. A message from the person replaces the goal only when it says so; otherwise it steers the goal you have.
+
 ## Goal changes mid-flight
 
 The user can message you any time. Apply a changed goal **at the round
