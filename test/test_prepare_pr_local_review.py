@@ -64,6 +64,15 @@ NO_PYC = {"PYTHONDONTWRITEBYTECODE": "1"}
 
 KIROCREW_PROFILE = json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))
 PROFILE_MODELS = {r["name"]: r for r in KIROCREW_PROFILE["reviewers"]}
+#: Served to every CLI run, so no verdict depends on the host's own account.
+SERVED_PINS = ",".join(r["model"] for r in KIROCREW_PROFILE["reviewers"])
+
+
+@pytest.fixture(autouse=True)
+def _no_model_listing(_floor_monkeypatch):
+    """An in-process ``main`` never asks the host's kiro-cli which models it serves."""
+    _floor_monkeypatch.setattr(local_review, "list_served_models", lambda: None)
+
 
 # Local values for the GitHub event expressions the workflows interpolate.
 FAKE_VALUES = {
@@ -531,11 +540,6 @@ def test_the_gpt_pin_is_the_reviewers_not_its_adjudicators():
     assert local_review._extract_ci_model(text, scalars, prefer="cli") == "openai.gpt-6.1-sol"
 
 
-def test_model_drift_is_reported_not_swallowed():
-    notes = local_review._model_note("openai.gpt-9.9-nova", "gpt-5.6-sol")
-    assert notes and "MODEL DRIFT" in notes[0]
-
-
 def test_model_pin_is_read_from_config_not_from_prose():
     """`--model` appears in a workflow COMMENT too; a prose match would win."""
     scalars = local_review.block_scalars(_opus_text())
@@ -728,6 +732,7 @@ def test_cli_exits_40_on_a_contract_that_escapes_the_repo(parity_repo, tmp_path)
             [
                 sys.executable, "-X", "utf8",
                 str(SCRIPTS_DIR / "local_review.py"),
+                "--served-models", SERVED_PINS,
                 "--worktree",
                 str(parity_repo),
                 "--base",
@@ -845,15 +850,6 @@ def test_pr_intent_only_reaches_the_lane_whose_contract_injects_it(
     assert "feat(thing): add VALUE" in gpt_brief
     assert "feat(thing): add VALUE" not in opus_brief
     assert "injects no PR intent" in opus_brief
-
-
-def test_model_drift_warns_on_a_truncated_local_pin():
-    """CI ids gain provider prefixes, never trailing characters - so a prefix-
-    tolerant test must still reject a local pin that stops short."""
-    assert local_review._model_note("us.anthropic.claude-opus-4-8", "claude-opus-4.8") == []
-    assert local_review._model_note("openai.gpt-5.6-sol", "gpt-5.6-sol") == []
-    truncated = local_review._model_note("us.anthropic.claude-opus-4-8", "claude-opus-4")
-    assert truncated and "MODEL DRIFT" in truncated[0]
 
 
 @pytest.mark.parametrize("field", ["model", "model_tier"])
@@ -1073,9 +1069,9 @@ def test_default_out_and_stage_dirs_are_unique_per_run(parity_repo, tmp_path, mo
     seen = []
     real = local_review.assemble
 
-    def capture(worktree, base, out_dir, stage_dir, resolved=None):
+    def capture(worktree, base, out_dir, stage_dir, resolved=None, served=None):
         seen.append((out_dir, stage_dir))
-        return real(worktree, base, out_dir, stage_dir, resolved)
+        return real(worktree, base, out_dir, stage_dir, resolved, served)
 
     monkeypatch.setattr(local_review, "assemble", capture)
     for _ in range(2):
@@ -1637,6 +1633,7 @@ def test_cli_exits_40_when_the_prompt_assembly_is_gone(parity_repo, tmp_path):
         [
             sys.executable, "-X", "utf8",
             str(SCRIPTS_DIR / "local_review.py"),
+            "--served-models", SERVED_PINS,
             "--worktree",
             str(parity_repo),
             "--base",
@@ -1733,6 +1730,7 @@ def test_cli_json_summary_is_machine_readable(parity_repo, tmp_path):
         [
             sys.executable, "-X", "utf8",
             str(SCRIPTS_DIR / "local_review.py"),
+            "--served-models", SERVED_PINS,
             "--worktree",
             str(parity_repo),
             "--base",
@@ -1803,7 +1801,7 @@ def _run_copy(script, repo, out, stage, tmpdir):
     return subprocess.run(
         [
             sys.executable, str(script), "--worktree", str(repo), "--base", "main",
-            "--out-dir", str(out), "--stage-dir", str(stage),
+            "--out-dir", str(out), "--stage-dir", str(stage), "--served-models", SERVED_PINS,
         ],
         capture_output=True, text=True, encoding="utf-8", cwd=repo,
         env={**os.environ, **NO_PYC, "TMPDIR": str(tmpdir), "TEMP": str(tmpdir), "TMP": str(tmpdir)},
@@ -1876,7 +1874,9 @@ def _check_older_install_hint(parity_repo, tmp_path, old, base_sha, short):
     subprocess.run(add, check=True, capture_output=True, env=_fixture_git_env())
     out2 = tmp_path / "out2"
     fixed = subprocess.run(
-        rerun + ["--out-dir", str(out2), "--stage-dir", str(tmp_path / "stage2")],
+        rerun
+        + ["--out-dir", str(out2), "--stage-dir", str(tmp_path / "stage2")]
+        + ["--served-models", SERVED_PINS],
         capture_output=True, text=True, encoding="utf-8", cwd=parity_repo,
         env={**os.environ, **NO_PYC},
     )
