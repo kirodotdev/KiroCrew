@@ -484,6 +484,20 @@ lands at the end: a tail row streaming, and the host's chrome below the rows
 watches, so the working footer mounting under a reply that went quiet carries a
 followed reader down to it instead of leaving them its height short of the end).
 
+**A nested pane that tails appended text follows on its own latch.** The expanded
+reasoning trace (`ThinkingBlock`, capped at 360px) and a subagent card's output pane
+(`ActivityViewer`'s `SubagentPane`) scroll inside the row, so the transcript's follow
+never sees them; `lib/tailFollow.ts` decides theirs. Any upward scroll releases
+it, however small (a fraction of a pixel included) and even inside the `TAIL_SLACK_PX`
+at-end slack, since a touchpad steps a few px per event and a slack-only test
+re-pinned a reader scrolling up on every chunk. The one upward move that keeps it is
+the engine's clamp: the box got shorter and the landing is flush at its new end.
+Positions are held to the scroll range, so Safari's elastic overscroll settling back
+is not an upward move. A downward return into the slack re-arms it. The reasoning trace also releases on an
+upward wheel over a box that can scroll, before its scroll event lands, so a chunk
+committing in between cannot cancel the wheel's scroll. Collapsing and reopening the
+trace re-arms it.
+
 **Re-entering a Bot's chat lands on the last message the reader saw.** The
 persisted reading position above answers a reader who left mid-transcript and is
 cleared at the bottom on purpose, so on its own the common Bot return -- caught

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState, type WheelEvent } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight, Sparkles } from 'lucide-react'
 import { useRowDisclosure } from './rowDisclosure'
@@ -7,6 +7,7 @@ import { useStreamIdle } from './ChatFooter'
 import { loadChatConfig } from './ChatSettings'
 import { useSmoothStream } from '../../hooks/useSmoothStream'
 import { useReasoningStartsExpanded } from '../../hooks/useToolCallsStartExpanded'
+import { followsAfterScroll, isAtTailEnd, tailPosition, type TailPosition } from './tailFollow'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -21,16 +22,6 @@ const LIVE_TAIL_CHARS = 240
  *  there a late hand-off shows a redundant indicator, here a short window makes
  *  the line appear and vanish across the gap between two reasoning bursts. */
 const PREVIEW_IDLE_MS = 1200
-
-/** Slack, in px, for "is the expanded trace at its end". An exact test never
- *  re-arms following: sub-pixel offsets leave scrollTop a hair short, stranding
- *  a reader who scrolled back down. Same value as ActivityViewer's log pane. */
-const TAIL_SLACK_PX = 20
-
-/** Within a line's slack of the bottom -- the one test both the scroll listener
- *  and the pin effect latch on, so they cannot drift apart. */
-const isAtEnd = (el: HTMLElement) =>
-  el.scrollTop + el.clientHeight >= el.scrollHeight - TAIL_SLACK_PX
 
 /** The tail of the trace as a single line: whatever the model just wrote, with
  *  newlines collapsed so a multi-line thought still reads as one line. */
@@ -67,6 +58,9 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
   const bodyRef = useRef<HTMLDivElement | null>(null)
   // A ref, not state: it changes on every scroll event and must not repaint.
   const autoScroll = useRef(true)
+  // The body's position as of the last scroll event or pin, so a scroll event
+  // can tell an upward move from a downward one. null = nothing observed yet.
+  const lastPos = useRef<TailPosition | null>(null)
 
   // Liveness is derived from the content GROWING rather than from the slot's
   // running flag: one turn keeps a single reasoning block, so a burst that
@@ -125,21 +119,37 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
   useEffect(() => {
     if (!expanded || !streaming) return
     const el = bodyRef.current
-    if (el && autoScroll.current) el.scrollTop = el.scrollHeight
+    if (el && autoScroll.current) {
+      el.scrollTop = el.scrollHeight
+      lastPos.current = tailPosition(el)
+    }
   }, [expanded, content, shown, streaming])
 
   // Latch on where the reader IS -- deliberately NOT on `content`: an append
   // commits a taller box before liveness flips, so re-deriving would stop follow.
+  // It only releases: a pause between bursts must not re-arm a reader who
+  // scrolled up inside the slack, or the next burst pins them back down.
   useEffect(() => {
-    if (!expanded) { autoScroll.current = true; return }
+    if (!expanded) { autoScroll.current = true; lastPos.current = null; return }
     const el = bodyRef.current
-    if (el && !streaming) autoScroll.current = isAtEnd(el)
+    if (el && !streaming) autoScroll.current = autoScroll.current && isAtTailEnd(el)
   }, [expanded, streaming])
 
   const onBodyScroll = useCallback(() => {
     const el = bodyRef.current
     if (!el) return
-    autoScroll.current = isAtEnd(el)
+    autoScroll.current = followsAfterScroll(el, lastPos.current, autoScroll.current)
+    lastPos.current = tailPosition(el)
+  }, [])
+
+  // An upward wheel is the reader leaving the end before its scroll event
+  // lands: a chunk committing in that gap would otherwise pin them back down
+  // and cancel the wheel's own scroll animation. A trace that fits its box has
+  // nowhere to scroll, so a wheel over it releases nothing. A ctrl wheel is a
+  // pinch-zoom, which scrolls nothing either.
+  const onBodyWheel = useCallback((e: WheelEvent<HTMLDivElement>) => {
+    const el = e.currentTarget
+    if (e.deltaY < 0 && !e.ctrlKey && el.scrollHeight > el.clientHeight) autoScroll.current = false
   }, [])
 
   if (!content) return null
@@ -228,7 +238,7 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
                 opacity modifier: the theme colours are raw var() references,
                 so Tailwind opacity variants silently generate nothing. */}
             <div className={`${ROW_RAIL_CLASS} border-l-[color-mix(in_srgb,var(--accent)_70%,transparent)]`}>
-              <div ref={bodyRef} onScroll={onBodyScroll} data-testid="thinking-body" className="max-h-[360px] overflow-auto">
+              <div ref={bodyRef} onScroll={onBodyScroll} onWheel={onBodyWheel} data-testid="thinking-body" className="max-h-[360px] overflow-auto">
                 {/* The RAIL spans the row so its edge aligns with the tool
                     payload box, but the prose inside is capped at a readable
                     measure — reasoning is sentences, not code, and ~140-char
