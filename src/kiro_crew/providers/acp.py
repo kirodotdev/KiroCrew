@@ -606,6 +606,13 @@ class AcpProvider(LLMProvider):
         return notice if isinstance(notice, str) else ""
 
     @property
+    def client_origin_notice(self) -> str:
+        """The upgrade notice when the relay KAS this session runs does not name Kiro
+        Crew as its client, else ``""``. Recorded at the spawn."""
+        notice = getattr(self._client, "kas_client_origin_notice", "")
+        return notice if isinstance(notice, str) else ""
+
+    @property
     def mode_pinned_notice(self) -> str:
         """The notice when this claude session runs in ``default`` instead of the
         ``auto`` it asked for, because its folder's settings file is not Crew's,

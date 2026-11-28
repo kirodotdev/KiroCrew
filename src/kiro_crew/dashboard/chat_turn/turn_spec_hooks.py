@@ -869,7 +869,8 @@ async def _notice_unread_steering(
 
 def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: Any) -> None:
     """One notice row on a new session whose adapter is too old to take a mid-turn
-    message, one whose KAS drops its agent's prompt, and one whose goose, codex, claude,
+    message, one whose KAS drops its agent's prompt, one whose relay KAS does not name
+    Kiro Crew as its client, and one whose goose, codex, claude,
     pi or deepseek adapter is outside its tested range: the chat runs, and each row names the installed version, the
     tested one and the command that installs it. One more on a session whose MCP
     servers start without part of their env or headers, naming each server and the
@@ -886,6 +887,7 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
     for name in (
         "steer_upgrade_notice",
         "agent_prompt_upgrade_notice",
+        "client_origin_notice",
         "tested_version_notice",
         "known_limitation_notice",
         "withheld_credentials_notice",
