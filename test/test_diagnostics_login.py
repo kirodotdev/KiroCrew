@@ -9,9 +9,13 @@ these tests drive that whole pipeline on one member's text.
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
-from kiro_crew import diagnostics
+from test_diagnostics import _isolate
+
+from kiro_crew import diagnostics, diagnostics_login
 
 
 def test_bundle_replaces_the_login_where_it_stands_as_its_own_word(monkeypatch):
@@ -128,3 +132,48 @@ def test_bundle_replaces_a_login_that_a_serialized_escape_follows(monkeypatch):
 
     assert out == note("<user>"), out
     assert n == 2
+
+
+def _bundle_with(tmp_path, monkeypatch, gateway_log: str):
+    home = tmp_path / "nathansmith"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(diagnostics.diagnostics_host_name, "host_names", lambda: [])
+    (home / "gateway.log").write_text(gateway_log)
+    return diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+
+def test_bundle_reports_a_login_the_scrub_leaves_and_keeps_the_text(tmp_path, monkeypatch):
+    """A login ending another name stays in the member, and the bundle says where.
+
+    The issue body carries the warning; the member text is what the scrub alone
+    gives.
+    """
+    log = "tunnel 127.0.0.1:2222 -> nathansmith@example-host via dev-nathansmith\n"
+
+    r = _bundle_with(tmp_path, monkeypatch, log)
+    with zipfile.ZipFile(r.zip_path) as z:
+        gw = z.read("gateway.log").decode()
+    body = parse_qs(urlsplit(r.github_issue_url).query)["context"][0]
+
+    assert gw == "tunnel 127.0.0.1:2222 -> <user>@example-host via dev-nathansmith\n"
+    assert r.login_residuals == {"gateway.log": 1}
+    assert (
+        "1 login occurrence(s) left in 1 file(s) (gateway.log):"
+        " search the zip for your login before posting it."
+    ) in body
+
+
+def test_bundle_reports_no_login_where_none_or_only_a_sibling_is_left(tmp_path, monkeypatch):
+    """A replaced login, a sibling login and a ``<user>`` placeholder count for nothing."""
+    log = "-> nathansmith@example-host nathansmith2 nathansmith.doe dev-nathansmith-box\n"
+    user_home = "/" + "home" + "/" + "user"  # assembled so no literal home path is on a line
+
+    r = _bundle_with(tmp_path, monkeypatch, log)
+    body = parse_qs(urlsplit(r.github_issue_url).query)["context"][0]
+
+    assert r.login_residuals == {}
+    assert "login occurrence" not in body
+    assert diagnostics_login.count_logins("<user>@box", [user_home]) == 0
+    assert diagnostics_login.count_logins("ann.USER", [user_home]) == 1
+    assert diagnostics_login.count_logins("x", []) == 0
+    assert diagnostics_login.residual_warning({}) == ""

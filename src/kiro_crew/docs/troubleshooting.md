@@ -37,7 +37,9 @@ percent-encoded and IDNA spellings. A login joined into a longer name by `-`, `_
 or `.`, a login written escaped or percent-encoded, a profile folder named
 differently from the login, a name the machine had before, the domain after a
 short name, a name followed by `-`, `_` or a digit, or a less common spelling of
-the name can remain, so look through the zip before you attach it.
+the name can remain, so look through the zip before you attach it. Where your login
+still ends a longer name (`dev-<login>`), the command and the issue text say how
+many such occurrences remain and in which files.
 It then prints a GitHub new-issue link on the bug-report form; drag the
 zip into that issue. The link fills in the version and the release channel from
 the build's own release record. When the build cannot prove its channel, the
