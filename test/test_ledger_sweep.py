@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -266,6 +266,57 @@ def test_age_falls_back_to_the_state_file_when_the_stamp_is_empty():
     candidates = [c for c in sweep.scan(older_than_days=30).candidates if c.store == directory.name]
 
     assert candidates and candidates[0].age_days >= 89
+
+
+@pytest.mark.parametrize("stamp", ["0001-01-01T00:00:00", "9999-12-31T23:59:59"])
+def test_a_stamp_at_the_edge_of_the_calendar_reads_as_no_stamp(stamp):
+    """A naive stamp whose local-time conversion leaves the calendar is not a stamp.
+
+    ``astimezone()`` raised ``ValueError`` for it, which escaped the whole scan
+    and the doctor's workload check; the module's refuse-safe rule is that a
+    stamp that cannot be read falls back to the file's mtime.
+    """
+    assert sweep._parse_iso(stamp) is None
+
+
+def test_an_edge_of_the_calendar_stamp_ages_from_the_file_mtime(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text("{}", encoding="utf-8")
+    _backdate(path, 90)
+    now = datetime.now(timezone.utc)
+
+    age = sweep._age_days("9999-12-31T23:59:59", path, now)
+
+    assert age == pytest.approx(sweep._age_days(None, path, now))
+    assert age >= 89
+
+
+def test_a_finished_ledger_with_an_edge_of_the_calendar_stamp_is_still_scanned():
+    directory = _session_ledger("chat-6-edge", phase="done", age_days=90)
+    state_path = directory / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["finished_at"] = "9999-12-31T23:59:59"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    _backdate(state_path, 90)
+
+    candidates = [c for c in sweep.scan(older_than_days=30).candidates if c.store == directory.name]
+
+    assert candidates and candidates[0].age_days >= 89
+
+
+def test_an_in_range_stamp_still_reads_as_it_did():
+    naive = sweep._parse_iso("2026-11-20T12:00:00")
+    aware = sweep._parse_iso("2026-11-20T12:00:00+00:00")
+
+    assert naive == datetime(2026, 11, 20, 12).astimezone()
+    assert naive is not None and naive.tzinfo is not None
+    assert aware is not None
+    assert aware.utcoffset() == timedelta(0)
+    assert aware == datetime.fromisoformat("2026-11-20T12:00:00+00:00")
+
+
+def test_a_stamp_that_is_not_text_or_not_a_date_still_reads_as_no_stamp():
+    assert [sweep._parse_iso(v) for v in (None, "", 7, "not a date")] == [None] * 4
 
 
 # ── unreadable ────────────────────────────────────────────────────────────
