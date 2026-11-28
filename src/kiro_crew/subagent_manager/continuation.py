@@ -7,6 +7,11 @@ from typing import TYPE_CHECKING
 from .. import subagent_persistence as persistence
 from ._component import ManagerComponent
 
+#: How long an async continuation waits for a finished run's shared KAS session
+#: to leave the parent's process before answering ``conversation_busy``: the
+#: run's turn cancel and its ``session/close`` are each bounded at 5 s.
+_SHARED_CLOSE_WAIT_SECS = 15.0
+
 
 def _run_silent(original, recorded) -> bool:
     """The run's resolved completion-notification opt-out, live else recorded.
@@ -136,7 +141,9 @@ class ContinuationCoordinator(ManagerComponent):
         run's LAST live worker, so the hold lasts exactly as long as the danger.
         """
         for a in self._manager._agents.values():
-            if not a.done and (a.conversation_key or f"subagent:{a.id}") == conv_key:
+            if (a.conversation_key or f"subagent:{a.id}") == conv_key and (
+                not a.done or self._shared_close_pending(a)
+            ):
                 return a
         for p in self._manager._queue:
             # UNSTARTED entries only, the class every other ``_queue`` scan
@@ -175,6 +182,109 @@ class ContinuationCoordinator(ManagerComponent):
             if held in self._manager._abandoned_state_writers:
                 return SubagentInfo(id=held, task="", _state_writer_abandoned=True)
         return None
+
+    @staticmethod
+    def _shared_kas_runtime(run: SubagentInfo) -> object | None:
+        """The KAS parent process a shared run's session lives on, or None.
+
+        Dedicated and non-KAS runs: None.
+        """
+        if not run._session_sharing:
+            return None
+        runtime = getattr(run._shared_provider, "_runtime", None)
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+
+        return runtime if getattr(runtime, "acp_backend", None) == ACP_BACKEND_KAS else None
+
+    def _shared_close_pending(self, run: SubagentInfo) -> bool:
+        """Whether a FINISHED run is still closing its session on its KAS parent's process.
+
+        ``done`` is set before the run's ``finally`` closes its shared session. A
+        continuation runs on a dedicated process (it is ``keep``) and loads the
+        same id, and KAS refuses every turn of a session another live process
+        holds (``SessionHeldElsewhereError``). So the conversation stays held while
+        the run's task or its teardown gate is live: both end on their own. A close
+        that ended unconfirmed is judged only by the async continuation
+        (:meth:`_await_shared_close`), the one caller that sends it again; holding
+        it here would refuse ``release_conversation``, keep the TTL sweep
+        refreshing the conversation and stall ``claim_retry`` for as long as the
+        parent's process lives.
+        """
+        if self._shared_kas_runtime(run) is None:
+            return False
+        gate = self._manager._teardown_gates.get(run.id)
+        return run.id in self._manager._tasks or (gate is not None and not gate.is_set())
+
+    def _shared_close_unconfirmed(self, run: SubagentInfo) -> bool:
+        """Whether a FINISHED shared KAS run's close is listed unconfirmed by its parent's runtime."""
+        runtime = self._shared_kas_runtime(run)
+        sid = getattr(getattr(run._shared_provider, "_handle", None), "session_id", None)
+        return bool(sid) and sid in getattr(runtime, "_unconfirmed_teardowns", ())
+
+    async def _await_shared_close(self, conv_key: str) -> SubagentInfo | None:
+        """Wait, bounded, for a finished run's shared session to leave its parent's process.
+
+        The ordinary case is a parent continuing the moment the completion lands,
+        a few seconds before the close returns: waiting turns that into a normal
+        start instead of a refusal. Past ``_SHARED_CLOSE_WAIT_SECS`` the caller's
+        busy check answers ``conversation_busy`` (retryable).
+
+        A close left unconfirmed is sent once more (``evict_session``), and its
+        answer is the judge: confirmed when the host acknowledged it or said it
+        does not hold the session, or when the process exited and its whole tree
+        is confirmed dead. A dead transport alone confirms nothing (a stdin stall
+        leaves the child running). Returns the run whose close is still
+        unconfirmed, for the caller to refuse, else None. Not an ``_impl``, so it
+        keeps this module's globals: imported here.
+        """
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _SHARED_CLOSE_WAIT_SECS
+        while True:
+            closing = next(
+                (
+                    a
+                    for a in self._manager._agents.values()
+                    if a.done
+                    and (a.conversation_key or f"subagent:{a.id}") == conv_key
+                    and (self._shared_close_pending(a) or self._shared_close_unconfirmed(a))
+                ),
+                None,
+            )
+            remaining = deadline - loop.time()
+            if closing is None:
+                return None
+            if self._shared_close_pending(closing):
+                if remaining <= 0:
+                    return None
+                gate = self._manager._teardown_gates.get(closing.id)
+                if gate is not None and not gate.is_set():
+                    try:
+                        await asyncio.wait_for(gate.wait(), timeout=remaining)
+                    except asyncio.TimeoutError:
+                        # Judged again: the teardown may have ended unconfirmed
+                        # just as the wait ran out.
+                        pass
+                else:
+                    await asyncio.sleep(min(0.05, remaining))
+                continue
+            if remaining <= 0:
+                return closing
+            # Only the parent's unconfirmed close is left. A close the host
+            # finished after Crew's request timed out is never re-answered on its
+            # own, so ask once more.
+            provider = closing._shared_provider
+            runtime = getattr(provider, "_runtime", None)
+            sid = getattr(getattr(provider, "_handle", None), "session_id", None)
+            try:
+                # ``session/close``: frees the resident copy, keeps the record.
+                confirmed = await asyncio.wait_for(
+                    runtime.evict_session(sid), timeout=remaining  # type: ignore[union-attr]
+                )
+            except Exception:
+                return closing
+            return None if confirmed is True else closing
 
     def _keep_recorded_on_disk_impl(self, key: str) -> bool:
         """Retention guard for subagent conversations without loop-side disk probes.
@@ -470,6 +580,7 @@ class ContinuationCoordinator(ManagerComponent):
 
         conv_key = f"subagent:{conv_id}"
         busy_key = self._busy_key_for_requested_run(conv_id)
+        unconfirmed = await self._await_shared_close(busy_key)
         if self._manager._conversation_busy(busy_key) is not None:
             busy_result = self._manager._continue_prelude(
                 conv_id,
@@ -484,6 +595,17 @@ class ContinuationCoordinator(ManagerComponent):
             )
             assert not isinstance(busy_result, dict)
             return busy_result
+        if unconfirmed is not None:
+            return SubagentInfo(
+                id=self._manager._mint_agent_id(),
+                task=_redact(task),
+                done=True,
+                parent_session_key=parent_session_key,
+                error=(
+                    f"conversation_busy: run {unconfirmed.id} is still closing its session "
+                    "on the parent's process — retry shortly"
+                ),
+            )
         original = self._manager._agents.get(conv_id)
         execution = original.execution_context if original is not None else None
         state = ...
@@ -596,9 +718,16 @@ class ContinuationCoordinator(ManagerComponent):
                     "write on this conversation — retry shortly"
                     if busy._state_writer_abandoned
                     else (
-                        f"conversation_busy: run {busy.id} is in flight on this "
-                        "conversation — use spawn_steer to inject into it, or wait "
-                        "for its completion event"
+                        (
+                            f"conversation_busy: run {busy.id} is still closing its session "
+                            "on the parent's process — retry shortly"
+                        )
+                        if busy.done
+                        else (
+                            f"conversation_busy: run {busy.id} is in flight on this "
+                            "conversation — use spawn_steer to inject into it, or wait "
+                            "for its completion event"
+                        )
                     )
                 ),
             )
@@ -1313,6 +1442,8 @@ class ContinuationCoordinator(ManagerComponent):
                     False,
                     f"conversation_busy: run {busy.id} is still settling a state write",
                 )
+            if busy.done:
+                return False, f"conversation_busy: run {busy.id} is still closing its session"
             return False, f"conversation_busy: run {busy.id} is in flight"
         provider_label = (
             self._manager._sessions.conversation_provider(conv_key) or PROVIDER_LABEL_DEFAULT

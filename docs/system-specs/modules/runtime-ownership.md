@@ -277,6 +277,19 @@ turn is the interval in which ending the process destroys work that is never
 retried; an idle sub-agent holding a claim for its whole life would pin a runtime
 nobody is using.
 
+A sharing `spawn_run` child on a **KAS** parent also holds one claim from its bind
+to its provider's shutdown (`AcpSessionProvider.hold_shared_session`, taken in
+`_bind_shared_handle`, released at the end of the shutdown through
+`_end_shared_turn`). Between its `session/new` and its first prompt (the MCP
+readiness wait) no turn defends it, and a parent recycle's kill there ended the
+run as a runtime death with no retry. A run is not idle, and every path that binds
+the child shuts its provider down, so the claim lasts as long as the run's session
+does. When that refused kill leaves the process alive, the parent's own KAS session
+is closed there with its record kept (`close_own_session_left_on_process`): KAS
+holds a loaded session's lease in the process that loaded it, and the successor
+that loads the parent session on a new process would otherwise have every turn
+refused (`SessionHeldElsewhereError`) until the children finish.
+
 A self-shield is not a tenancy. Every `AcpRuntime` shields its own pid as it spawns
 and drops the shield only once its kill has succeeded, so
 `session_pid._PROTECTED_PIDS` is held for the whole life of the very process its

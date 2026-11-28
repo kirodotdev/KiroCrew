@@ -5323,6 +5323,28 @@ the hint the parent re-spawns from scratch and pays for the same tool calls twic
   promotion probes arbitration and the per-agent off-loop-writer lock non-blocking.
   Contention returns retryable `conversation_busy`, so a later retry writes
   `keep=True` only after every older writer completes.
+- **A finished KAS shared run holds its conversation until its session leaves
+  the parent's process.** `done` is set before the run's `finally` sends
+  `session/close` there, and a continuation (always `keep`, so a dedicated
+  process) loads the same id; KAS refuses every turn of a session another live
+  process has loaded (`SessionHeldElsewhereError`). So `_conversation_busy` also
+  answers a `done` run on a KAS parent's process while its task or teardown gate
+  is live (`ContinuationCoordinator._shared_close_pending`), with
+  `conversation_busy: run X is still closing its session`. The async
+  continuation first waits for that close, bounded by `_SHARED_CLOSE_WAIT_SECS`
+  (15 s), so a parent continuing as the completion lands starts normally. A
+  close the parent's runtime still lists in `_unconfirmed_teardowns` is judged
+  on that path alone (`_await_shared_close`): a close the host finished after
+  Crew's request timed out is never re-answered on its own, so the continuation
+  sends it once more (`evict_session`) and refuses with `conversation_busy: run
+  X is still closing its session on the parent's process` unless that answer
+  confirms it. The answer, not the transport's liveness, decides: a stdin stall
+  marks the transport dead while the child still runs, and `evict_session`
+  confirms a dead transport only when the process exited and its whole tree is
+  confirmed dead. `_conversation_busy` does not count an unconfirmed close, so
+  `release_conversation`, the TTL sweep and `claim_retry` are never held by
+  one. Dedicated and non-KAS runs are unaffected. Pinned by
+  `test_shared_kas_child_lifecycle.py`.
 - **A resume entry never holds a conversation.** `_conversation_busy`'s `_queue`
   scan matches UNSTARTED entries only. A `_resume_id` entry carries no
   `conversation_key`, so its synthetic key is the RUN's id — which IS the

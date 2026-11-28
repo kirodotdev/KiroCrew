@@ -772,6 +772,8 @@ async def _bind_shared_handle_impl(
     provider.child_fidelity_aware = True
     info._session_sharing = True
     info._shared_provider = provider
+    # Published first, so the shutdown that releases this hold always finds it.
+    provider.hold_shared_session()
     # Capture cleanup identity before persistence or later setup can fail,
     # otherwise the live handle becomes an untracked ghost.
     cleanup_session_id = str(handle.session_id or "")
