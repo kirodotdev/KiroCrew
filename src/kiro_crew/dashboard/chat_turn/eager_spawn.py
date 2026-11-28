@@ -665,6 +665,12 @@ async def _eager_spawn(
             return  # a real turn owns session creation (and the pending reset)
         if app_agent_binding_applies(slot):
             return  # bound after the debounce: the per-turn check owns resolution
+        from kiro_crew.dashboard.crewmate_worktree_scope import settle_worker_project
+
+        # A Bot worker's close cleanup may be removing the folder its project names.
+        await settle_worker_project(state, slot)
+        if state.get_slot(slot.key) is not slot or slot.running:
+            return
         if _eager_spawn_sem.locked():
             logger.info("Eager spawn: concurrency cap reached, skipping slot %s", slot.key)
             return

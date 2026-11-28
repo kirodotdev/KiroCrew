@@ -12,13 +12,21 @@ model cannot do for itself here:
   unless set), cut from the repository's default branch the first time and
   reused, as it is, after that; a repository the edition works in place
   (``AgentRuntime.works_in_place``) gets none, so the worker's project stays put;
+  a repository the edition lays out per worker
+  (``AgentRuntime.worker_worktree_subpath``) gives each worker its own worktree
+  under ``<crewmate workspace>/worktrees/<crewmate-slug>/workers/<worker>/``
+  (:func:`worker_path_for`), on ``<prefix><crewmate-slug>/<worker>/<repo>``
+  (:func:`worker_branch_for`), and the edition sets up each new worktree
+  (``AgentRuntime.prepare_worktree``);
 * point the worker's ``slot.project`` at it at the start of each turn
   (:mod:`kiro_crew.dashboard.crewmate_worktree_scope`), with the repository's
   ``aws.project_profiles`` binding still applying there (:func:`source_path`);
 * remove a crewmate's worktrees when the crewmate is removed
-  (:func:`remove_crewmate_worktrees`): one with uncommitted or ignored files is
-  kept and reported, the branch always stays, and the repository's own checkout
-  is never touched.
+  (:func:`remove_crewmate_worktrees`), and a worker's own ones when its session is
+  closed (:func:`remove_worker_worktrees`): only one :func:`is_provably_disposable`
+  clears is removed, every other is kept and reported, the branch always stays,
+  the repository's own checkout is never touched, and the edition tidies up after
+  each one removed (``AgentRuntime.release_worktree``).
 
 The module also makes the worktree an isolated ``spawn_run`` worker runs in
 (``isolate: "worktree"``, :func:`make_run_worktree`): detached at the HEAD of the
@@ -53,8 +61,10 @@ import re
 import stat
 import subprocess
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import PurePath
+from typing import Any
 
 from kiro_crew.subprocess_utf8 import utf8_path_stdout
 
@@ -62,6 +72,10 @@ logger = logging.getLogger(__name__)
 
 #: The folder under a crewmate's workspace that holds its worktrees.
 WORKTREES_DIR = "worktrees"
+#: The folder under a crewmate's worktrees that holds one folder per worker with its own worktrees.
+WORKERS_DIR = "workers"
+#: Most folder names an edition's per-worker layout may give (``worker_worktree_subpath``).
+_MAX_SUBPATH = 3
 #: Every crewmate branch starts with this unless ``agent.member_branch_prefix`` names another.
 BRANCH_PREFIX = "crew/"
 
@@ -182,6 +196,60 @@ def path_for(workspace_dir: str, slug: str, repo: str) -> str:
     repositories may share a name).
     """
     return os.path.join(_root(workspace_dir, slug), _folder_name(repo))
+
+
+def worker_branch_for(slug: str, worker: str, repo: str, prefix: str = BRANCH_PREFIX) -> str:
+    """The branch *worker* of crewmate *slug* works on in its own worktree of *repo*."""
+    return f"{prefix}{_name(slug)}/{_name(worker)}/{_name(os.path.basename(repo))}"
+
+
+def _worker_dir(workspace_dir: str, slug: str, worker: str) -> str:
+    """The folder that holds *worker*'s own worktrees."""
+    return os.path.join(_root(workspace_dir, slug), WORKERS_DIR, _name(worker))
+
+
+def worker_path_for(workspace_dir: str, slug: str, worker: str, subpath: tuple[str, ...]) -> str:
+    """The worktree *worker* of crewmate *slug* gets at the edition's *subpath*."""
+    return os.path.join(_worker_dir(workspace_dir, slug, worker), *subpath)
+
+
+def _worker_subpath(repo: str) -> tuple[str, ...] | None:
+    """The edition's per-worker layout for *repo* (``AgentRuntime.worker_worktree_subpath``).
+
+    One to :data:`_MAX_SUBPATH` names, each one :func:`_name` keeps as it is, so the
+    path stays inside the worker's folder; anything else is ``None`` with a warning.
+    """
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    def ask() -> object:
+        ask_runtime = getattr(current_context().agent_runtime, "worker_worktree_subpath", None)
+        return ask_runtime(repo) if ask_runtime is not None else None
+
+    answer = safe_context_call(
+        ask,
+        fallback=None,
+        log_message="agent_runtime.worker_worktree_subpath failed; the Bot's worktree is shared",
+    )
+    if answer is None:
+        return None
+    parts = tuple(answer) if isinstance(answer, (tuple, list)) else ()
+    if 0 < len(parts) <= _MAX_SUBPATH and all(
+        isinstance(p, str) and p not in (".", "..") and _name(p) == p for p in parts
+    ):
+        return parts
+    logger.warning("agent_runtime.worker_worktree_subpath(%s) = %r is not a layout", repo, answer)
+    return None
+
+
+def _runtime_hook(name: str):
+    """The edition runtime's *name* method, else ``None`` (an older edition lacks it)."""
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    return safe_context_call(
+        lambda: getattr(current_context().agent_runtime, name, None),
+        fallback=None,
+        log_message=f"agent_runtime.{name} unreadable",
+    )
 
 
 def _folder_name(repo: str) -> str:
@@ -346,17 +414,38 @@ def _source_of(real: str) -> str | None:
     top = wt._git_toplevel(_nearest_dir(real))
     if not top or not _contains(top, real):
         return None
-    parts = PurePath(top).parts
-    if len(parts) < 3 or parts[-3] != WORKTREES_DIR:
-        return None
-    repo = repo_root(top)
-    if repo is None or repo == top or os.path.basename(top) != _folder_name(repo):
+    repo = _laid_out_repo(top)
+    if repo is None:
         return None
     trees = wt._worktree_branches(repo)
     if not trees or wt._norm_path(top) not in trees:
         return None
     rel = os.path.relpath(real, top)
     return repo if rel == "." else os.path.join(repo, rel)
+
+
+def _laid_out_repo(top: str) -> str | None:
+    """The repository whose worktree *top* is, when it sits where :func:`ensure` puts one.
+
+    Either ``worktrees/<slug>/`` with the name :func:`path_for` gives, or
+    ``worktrees/<slug>/workers/<worker>/`` followed by exactly the subpath the
+    edition gives that repository (:func:`worker_path_for`). Else ``None``.
+    """
+    parts = PurePath(top).parts
+    if len(parts) >= 3 and parts[-3] == WORKTREES_DIR:
+        repo = repo_root(top)
+        if repo is not None and repo != top and os.path.basename(top) == _folder_name(repo):
+            return repo
+    for depth in range(1, _MAX_SUBPATH + 1):
+        if len(parts) < depth + 4:
+            break
+        if parts[-depth - 4] != WORKTREES_DIR or parts[-depth - 2] != WORKERS_DIR:
+            continue
+        repo = repo_root(top)
+        if repo is None or repo == top:
+            return None
+        return repo if _worker_subpath(repo) == parts[-depth:] else None
+    return None
 
 
 def _plain(text: str) -> bool:
@@ -386,7 +475,7 @@ def _works_in_place(repo: str) -> bool:
 
 
 def ensure(
-    slug: str, workspace_dir: str, path: str, prefix: str = BRANCH_PREFIX
+    slug: str, workspace_dir: str, path: str, prefix: str = BRANCH_PREFIX, worker: str = ""
 ) -> CrewmateWorktree | None:
     """The crewmate's own worktree for the repository *path* is in, made if missing.
 
@@ -394,16 +483,27 @@ def ensure(
     crewmate's own workspace (a home folder under git is not a repository it was
     handed), or in one the edition works in place (its build needs the checkout
     where it is). Raises :class:`WorktreeRefused` when the gateway will not make it (a
-    checkout filter, an unlistable worktree table, something else at the place).
+    checkout filter, an unlistable worktree table, something else at the place, or
+    the edition's ``prepare_worktree`` raising).
     One git already registers at the place is used as it is, whatever branch the
     worker has checked out there: that is the worker's own work. Only a worktree
-    made here takes *prefix* (:func:`branch_for`).
+    made here takes *prefix* (:func:`branch_for`). With a *worker* (its session
+    key) and a per-worker layout from the edition, the worktree is that worker's
+    own (:func:`worker_path_for`, :func:`worker_branch_for`).
     """
     wt = _wt()
     repo = repo_root(path)
     if repo is None or _contains(repo, os.path.realpath(workspace_dir)) or _works_in_place(repo):
         return None
-    dest = path_for(workspace_dir, slug, repo)
+    subpath = _worker_subpath(repo) if worker else None
+    if subpath is None:
+        dest = path_for(workspace_dir, slug, repo)
+        parents: tuple[str, ...] = (WORKTREES_DIR, _name(slug))
+        new_branch = branch_for(slug, repo, prefix)
+    else:
+        dest = worker_path_for(workspace_dir, slug, worker, subpath)
+        parents = (WORKTREES_DIR, _name(slug), WORKERS_DIR, _name(worker), *subpath[:-1])
+        new_branch = worker_branch_for(slug, worker, repo, prefix)
     with _lock(dest):
         trees = wt._worktree_branches(repo)
         if trees is None:
@@ -415,8 +515,8 @@ def ensure(
             if registered is not None:
                 # Its folder was deleted by hand: drop this one stale registration.
                 wt._deregister_missing(repo, dest)
-            registered = branch_for(slug, repo, prefix)
-            _create(wt, repo, dest, registered, workspace_dir, slug)
+            registered = new_branch
+            _create(wt, repo, dest, registered, workspace_dir, parents)
     return CrewmateWorktree(
         repo=repo, path=dest, branch=registered, cwd=_mapped_cwd(wt, repo, dest, path)
     )
@@ -447,8 +547,14 @@ def _default_branch(wt, repo: str) -> str:
     return "HEAD"
 
 
-def _create(wt, repo: str, dest: str, branch: str, workspace_dir: str, slug: str) -> None:
-    """Add *dest* on *branch*, cutting the branch from the default branch when it is new."""
+def _create(
+    wt, repo: str, dest: str, branch: str, workspace_dir: str, parents: tuple[str, ...]
+) -> None:
+    """Add *dest* on *branch*, cutting the branch from the default branch when it is new.
+
+    *dest* is the folder *parents* (relative to the workspace) holds. Once the add
+    succeeds the edition's ``prepare_worktree`` runs; a raise undoes the add.
+    """
     offending = wt._checkout_filter(repo)
     if offending:
         raise WorktreeRefused(f"the repository configures a checkout filter ({offending})")
@@ -462,7 +568,7 @@ def _create(wt, repo: str, dest: str, branch: str, workspace_dir: str, slug: str
             raise WorktreeRefused(f"could not create {branch}")
         claimed = True
     try:
-        made = _make_dest(workspace_dir, slug, dest)
+        made = _make_dest(workspace_dir, parents, dest)
     except (OSError, WorktreeRefused):
         if claimed:
             wt._cleanup_partial(repo, dest, branch, claimed=True, created=False, base_sha=base_sha)
@@ -475,6 +581,14 @@ def _create(wt, repo: str, dest: str, branch: str, workspace_dir: str, slug: str
     if proc.returncode != 0 or not os.path.exists(os.path.join(dest, ".git")):
         _unwind_add(wt, repo, dest, branch, made, claimed=claimed, base_sha=base_sha)
         raise WorktreeRefused(wt._git_error(proc) if proc.returncode else "worktree add failed")
+    prepare = _runtime_hook("prepare_worktree")
+    if prepare is not None:
+        try:
+            prepare(repo, dest)
+        except Exception as exc:  # noqa: BLE001 - any edition failure refuses this worktree
+            logger.warning("Bot worktree %s: prepare_worktree failed", dest, exc_info=True)
+            _unwind_prepared(wt, repo, dest, branch, made, claimed=claimed, base_sha=base_sha)
+            raise WorktreeRefused(f"the edition could not prepare it: {exc}") from None
     logger.info("Bot worktree %s on %s from %s", dest, branch, repo)
 
 
@@ -501,12 +615,13 @@ def _claim_folder(
     return made.st_dev, made.st_ino
 
 
-def _make_dest(workspace_dir: str, slug: str, dest: str) -> tuple[int, int]:
+def _make_dest(workspace_dir: str, parents: tuple[str, ...], dest: str) -> tuple[int, int]:
     """Make the empty folder *dest* without following a link; its ``(dev, ino)``.
 
-    ``worktrees/<slug>`` sits in the agent-writable workspace and this runs in the
-    gateway: each part is made and opened with a no-follow descriptor from the
-    workspace down (:func:`_claim_folder`). A link raises :class:`WorktreeRefused`.
+    *parents* (``worktrees/<slug>``, or a worker's folders below it) sit in the
+    agent-writable workspace and this runs in the gateway: each part is made and
+    opened with a no-follow descriptor from the workspace down
+    (:func:`_claim_folder`). A link raises :class:`WorktreeRefused`.
     """
     from kiro_crew.pinned_fs import PinnedPathRefusal
 
@@ -515,7 +630,7 @@ def _make_dest(workspace_dir: str, slug: str, dest: str) -> tuple[int, int]:
     try:
         return _claim_folder(
             workspace,
-            (WORKTREES_DIR, _name(slug)),
+            parents,
             dest,
             what="Bot worktree folder",
             create=True,
@@ -563,6 +678,28 @@ def _unwind_add(
         if pinned_fs.supports_pinned_tree_walk() or not _rmdir_if_made(dest, made):
             logger.warning("Bot worktree %s left in place after a failed add", dest, exc_info=True)
     wt._cleanup_partial(repo, dest, branch, claimed=claimed, created=False, base_sha=base_sha)
+
+
+def _unwind_prepared(
+    wt, repo: str, dest: str, branch: str, made: tuple[int, int], *, claimed: bool, base_sha: str
+) -> None:
+    """Undo a ``worktree add`` that succeeded but whose ``prepare_worktree`` raised.
+
+    The folder now holds a checkout, so :func:`_unwind_add`'s empty-folder
+    fallback cannot clear it where a tree walk cannot be pinned (Windows). Git
+    removes the worktree it registered at *dest* first; :func:`_unwind_add` then
+    clears whatever is left. The branch this lookup cut is dropped only once the
+    folder is gone, so a checkout that survives keeps its branch.
+    """
+    trees = wt._worktree_branches(repo)
+    if trees is not None and trees.get(wt._norm_path(dest)) == branch:
+        wt._run_git(["worktree", "remove", "--force", dest], repo)
+    if not os.path.lexists(dest):
+        wt._cleanup_partial(repo, dest, branch, claimed=claimed, created=False, base_sha=base_sha)
+        return
+    _unwind_add(wt, repo, dest, branch, made, claimed=False, base_sha=base_sha)
+    if os.path.lexists(dest):
+        logger.warning("Bot worktree %s left unprepared after a failed prepare", dest)
 
 
 def _rmdir_if_made(dest: str, made: tuple[int, int]) -> bool:
@@ -721,11 +858,9 @@ def remove_run_worktree(
     *path* and *base* come from the gateway's own record. The folder is first
     re-derived from *run_id* and the repository git says *path* belongs to, and
     that repository must register a worktree at exactly that place; anything else
-    is left alone. Clean means its HEAD is still *base*, ``git status`` shows
-    nothing (untracked files included, whatever the config), it holds no
-    ignored files and no file flagged assume-unchanged or skip-worktree (which
-    both git checks skip) is still in the folder; only then ``git worktree
-    remove`` runs, never with ``--force``.
+    is left alone. Clean means its HEAD is still *base* and
+    :func:`is_provably_disposable` clears it, detached at *base*; only then
+    ``git worktree remove`` runs, never with ``--force``.
     *remove* false only reports the commits ``base..HEAD``.
     Never raises; blocks, so callers run it off the loop.
     """
@@ -755,32 +890,10 @@ def remove_run_worktree(
             commits, count = _commits_since(wt, expected, base)
             if not remove:
                 return kept("", commits, count)
-            why = ""
             if wt._resolve_commit(expected, "HEAD") != base:
                 why = "it has commits" if count > 0 else "its HEAD moved"
-            elif wt._checkout_filter(expected):
-                why = "the repository configures a checkout filter"
             else:
-                # --untracked-files=all: a status.showUntrackedFiles=no config must never
-                # hide new files that ``git worktree remove`` would delete with the folder.
-                status = wt._run_git(
-                    [
-                        "--no-optional-locks",
-                        "status",
-                        "--porcelain",
-                        "--untracked-files=all",
-                        "--ignore-submodules=all",
-                    ],
-                    expected,
-                )
-                if status.returncode != 0:
-                    why = "git could not read its status"
-                elif status.stdout.strip():
-                    why = "it has uncommitted changes"
-                elif ignored := _ignored_files(wt, expected):
-                    why = f"it holds ignored files ({ignored})"
-                elif flagged := _flagged_files(wt, expected):
-                    why = f"it holds files flagged assume-unchanged or skip-worktree ({flagged})"
+                why = is_provably_disposable(wt, repo, expected, None, head_at=base)[1]
             if why:
                 return kept(why, commits, count)
             proc = wt._run_git(["worktree", "remove", expected], repo)
@@ -809,37 +922,52 @@ def _flagged_files(wt, path: str) -> str:
 
     Flagged means assume-unchanged (``ls-files -v`` tags it in lowercase) or
     skip-worktree (``S``), which ``git status`` and ``git worktree remove`` both
-    skip. Only a flagged file still in the folder counts: an absent one (a sparse
-    checkout leaves skipped files out) holds nothing a removal could lose. The
-    presence check uses the exact bytes git listed, whatever the locale, and a
-    name shows U+FFFD for a byte that is not UTF-8.
+    skip. An assume-unchanged file counts present or absent: an absent one is a
+    deletion ``status`` hides. A skip-worktree file counts unless it is absent
+    and the worktree has sparse checkout on, the one case where git leaves it
+    out by design. The presence check uses the exact bytes git listed, whatever
+    the locale, and a name shows U+FFFD for a byte that is not UTF-8.
+    shortcut: an absent skip-worktree file in a sparse worktree is taken as left
+    out by the sparse patterns without matching them; match them if a worker is
+    ever seen setting the flag by hand.
     """
     proc = wt._run_git(["ls-files", "-z", "-v"], path, stdout_decoder=utf8_path_stdout)
     if proc.returncode != 0:
         return "unknown"
-    found = [
-        entry[2:]
-        for entry in proc.stdout.split("\0")
-        if (entry[:1] == "S" or entry[:1].islower())
-        and os.path.lexists(
-            os.path.join(os.fsencode(path), entry[2:].encode("utf-8", "surrogateescape"))
-        )
-    ]
+    sparse: bool | None = None
+    found = []
+    for entry in proc.stdout.split("\0"):
+        tag, name = entry[:1], entry[2:]
+        if not (tag == "S" or tag.islower()):
+            continue
+        if tag == "S" and not os.path.lexists(os.path.join(os.fsencode(path), _path_bytes(name))):
+            if sparse is None:
+                sparse = _sparse_checkout_on(wt, path)
+            if sparse:
+                continue
+        found.append(name)
     shown = ", ".join(found[:5]).encode("utf-8", "surrogateescape").decode("utf-8", "replace")
     return shown + (f" and {len(found) - 5} more" if len(found) > 5 else "")
 
 
-def remove_crewmate_worktrees(workspace_dir: str, slug: str) -> tuple[list[str], list[str]]:
-    """Remove crewmate *slug*'s worktrees; ``(removed, kept)``.
+def _sparse_checkout_on(wt, path: str) -> bool:
+    """Whether the worktree at *path* has sparse checkout on; ``False`` when git cannot say."""
+    proc = wt._run_git(["config", "--type=bool", "--get", "core.sparseCheckout"], path)
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
 
-    Found by listing ``<workspace>/worktrees/<slug>`` and asking git which
-    repository each belongs to and whether it registers it there; anything git
-    does not register as a worktree of that repository is left untouched. Each
-    goes with ``git worktree remove`` (never ``--force``): one with uncommitted
-    changes, ignored files (results, a data file) or a repository that configures
-    a checkout filter is kept and listed in ``kept``. Branches stay, and the
-    repository's own checkout is never touched. A link where the folder should be
-    is not followed.
+
+def remove_crewmate_worktrees(workspace_dir: str, slug: str) -> tuple[list[str], list[str]]:
+    """Remove crewmate *slug*'s worktrees, its workers' included; ``(removed, kept)``.
+
+    Found by listing ``<workspace>/worktrees/<slug>``. Each goes with ``git worktree
+    remove`` (never ``--force``). A shared one is kept when git does not register it
+    there, it holds ignored files (results, a data file) or the repository
+    configures a checkout filter (:func:`_shared_keep_reason`). A worker's own one,
+    under ``workers/``, goes only when :func:`is_provably_disposable` proves it holds
+    nothing a removal would lose, on whatever branch it has: the crewmate is gone,
+    so no later worktree depends on which one. Every kept one is listed in
+    ``kept``. Branches stay, and the repository's own checkout is never touched. A
+    link where the folder should be is not followed.
     """
     wt = _wt()
     root = _root(workspace_dir, slug)
@@ -850,41 +978,472 @@ def remove_crewmate_worktrees(workspace_dir: str, slug: str) -> tuple[list[str],
     for item in sorted(os.scandir(root), key=lambda e: e.name):
         if item.is_symlink() or not item.is_dir(follow_symlinks=False):
             continue
-        dest = item.path
-        try:
-            repo = repo_root(dest)
-            trees = wt._worktree_branches(repo) if repo else None
-            if (
-                not repo
-                or repo == os.path.realpath(dest)
-                or not trees
-                or (wt._norm_path(dest) not in trees)
-            ):
-                logger.warning("Bot worktree %s kept: not a registered worktree", dest)
-                kept.append(dest)
-                continue
-            why = ""
-            if wt._checkout_filter(dest):
-                why = "the repository configures a checkout filter"
-            elif ignored := _ignored_files(wt, dest):
-                why = f"ignored files ({ignored})"
-            if why:
-                logger.warning("Bot worktree %s kept: %s", dest, why)
-                kept.append(dest)
-                continue
-            proc = wt._run_git(["worktree", "remove", dest], repo)
-        except Exception:  # noqa: BLE001 - no sandbox, no git: keep it
-            logger.warning("Bot worktree %s could not be removed", dest, exc_info=True)
-            kept.append(dest)
+        if item.name == WORKERS_DIR:
+            try:
+                workers = sorted(os.scandir(item.path), key=lambda e: e.name)
+            except OSError:
+                logger.warning(
+                    "Bot worker folders %s could not be listed", item.path, exc_info=True
+                )
+                workers = []
+            for worker in workers:
+                if not worker.is_symlink() and worker.is_dir(follow_symlinks=False):
+                    _remove_worker_dir(wt, worker.path, removed, kept, _unless_disposable(None))
+            with contextlib.suppress(OSError):
+                os.rmdir(item.path)
             continue
-        if proc.returncode == 0:
-            removed.append(dest)
-        else:
-            logger.warning("Bot worktree %s kept: %s", dest, wt._git_error(proc))
-            kept.append(dest)
+        _remove_one(wt, item.path, removed, kept, _shared_keep_reason)
     with contextlib.suppress(OSError):
         os.rmdir(root)  # only once empty; rmdir never follows a link
     return removed, kept
+
+
+def remove_worker_worktrees(
+    workspace_dir: str,
+    slug: str,
+    worker: str,
+    prefix: str = BRANCH_PREFIX,
+) -> tuple[list[str], list[str]]:
+    """Remove *worker*'s own worktrees under crewmate *slug*; ``(removed, kept)``.
+
+    Each one is removed only when :func:`is_provably_disposable` proves it holds
+    nothing a removal would lose, on the worker's own branch
+    (:func:`worker_branch_for` with *prefix*): a worktree made again later starts
+    on that branch, so removing one on another would leave the worker on the wrong
+    branch. The worker's folders go once empty. The Bot's shared worktrees are
+    untouched.
+    """
+    wt = _wt()
+    base = _worker_dir(workspace_dir, slug, worker)
+    above = (_root(workspace_dir, slug), os.path.dirname(base), base)
+    if any(os.path.islink(p) for p in above) or not os.path.isdir(base):
+        return [], []
+    removed: list[str] = []
+    kept: list[str] = []
+    own = _unless_disposable(lambda repo: worker_branch_for(slug, worker, repo, prefix))
+    _remove_worker_dir(wt, base, removed, kept, own)
+    return removed, kept
+
+
+def _remove_worker_dir(
+    wt,
+    base: str,
+    removed: list[str],
+    kept: list[str],
+    keep_reason: _KeepReason,
+) -> None:
+    """Remove the worktrees found within :data:`_MAX_SUBPATH` folders of *base*, then empty folders.
+
+    A folder holding a ``.git`` entry is a worktree and is not searched further.
+    Links are never followed. Folders left empty, *base* included, are removed.
+    *keep_reason* is passed to :func:`_remove_one`.
+    """
+
+    def walk(folder: str, depth: int) -> None:
+        for item in sorted(os.scandir(folder), key=lambda e: e.name):
+            if item.is_symlink() or not item.is_dir(follow_symlinks=False):
+                continue
+            if os.path.lexists(os.path.join(item.path, ".git")):
+                _remove_one(wt, item.path, removed, kept, keep_reason)
+            elif depth < _MAX_SUBPATH:
+                walk(item.path, depth + 1)
+            with contextlib.suppress(OSError):
+                os.rmdir(item.path)  # only once empty; rmdir never follows a link
+
+    try:
+        walk(base, 1)
+    except OSError:
+        logger.warning("Bot worker folder %s could not be listed", base, exc_info=True)
+    with contextlib.suppress(OSError):
+        os.rmdir(base)
+
+
+#: ``keep_reason(wt, repo, dest)``: why the worktree *dest* of *repo* stays, ``""`` to remove it.
+_KeepReason = Callable[[Any, str, str], str]
+
+
+def _shared_keep_reason(wt, repo: str, dest: str) -> str:
+    """Why Bot deletion keeps the shared worktree *dest*, else ``""``.
+
+    Not registered there, a checkout filter, or ignored files; ``git worktree
+    remove`` refuses the rest itself.
+    """
+    trees = wt._worktree_branches(repo)
+    if not trees or wt._norm_path(dest) not in trees:
+        return "not a registered worktree"
+    if wt._checkout_filter(dest):
+        return "the repository configures a checkout filter"
+    if ignored := _ignored_files(wt, dest):
+        return f"ignored files ({ignored})"
+    return ""
+
+
+def _unless_disposable(own_branch: Callable[[str], str] | None) -> _KeepReason:
+    """A *keep_reason* that keeps whatever :func:`is_provably_disposable` does not clear.
+
+    ``own_branch(repo)`` is the branch the worktree must be on; ``None`` takes any.
+    """
+
+    def keep_reason(wt, repo: str, dest: str) -> str:
+        branch = own_branch(repo) if own_branch is not None else None
+        disposable, why = is_provably_disposable(wt, repo, dest, branch)
+        return "" if disposable else why
+
+    return keep_reason
+
+
+def _remove_one(
+    wt, dest: str, removed: list[str], kept: list[str], keep_reason: _KeepReason
+) -> None:
+    """``git worktree remove`` *dest* unless *keep_reason* names a reason, then release it.
+
+    Holds the lookup's lock for *dest*, so a worker turn reopening it waits.
+    """
+    with _lock(dest):
+        _remove_one_locked(wt, dest, removed, kept, keep_reason)
+
+
+def _remove_one_locked(
+    wt, dest: str, removed: list[str], kept: list[str], keep_reason: _KeepReason
+) -> None:
+    try:
+        repo = repo_root(dest)
+        if not repo or repo == os.path.realpath(dest):
+            why = "it is not a worktree of a repository"
+        else:
+            why = keep_reason(wt, repo, dest)
+        if why:
+            logger.warning("Bot worktree %s kept: %s", dest, why)
+            kept.append(dest)
+            return
+        proc = wt._run_git(["worktree", "remove", dest], repo)
+    except Exception:  # noqa: BLE001 - no sandbox, no git: keep it
+        logger.warning("Bot worktree %s could not be removed", dest, exc_info=True)
+        kept.append(dest)
+        return
+    if proc.returncode != 0:
+        logger.warning("Bot worktree %s kept: %s", dest, wt._git_error(proc))
+        kept.append(dest)
+        return
+    removed.append(dest)
+    release = _runtime_hook("release_worktree")
+    if release is not None:
+        try:
+            release(repo, dest)
+        except Exception:  # noqa: BLE001 - the worktree is gone either way
+            logger.warning("Bot worktree %s: release_worktree failed", dest, exc_info=True)
+
+
+#: ``-c`` overrides for every git read in :func:`is_provably_disposable`: a command-line
+#: ``-c`` beats repository and user config, so neither can hide a worktree's state
+#: (untracked files, a stale untracked cache, a modification the stat check skips, an
+#: executable-bit change, an untracked file folded onto a tracked one differing only in
+#: case; on a case-insensitive filesystem the override can only make status list more,
+#: which keeps the worktree). ``core.fileMode`` is forced on only where the filesystem
+#: keeps that bit: on Windows git reads every file as changed with it on.
+_SHOW_ALL_STATE = (
+    "-c",
+    "status.showUntrackedFiles=all",
+    "-c",
+    "core.untrackedCache=false",
+    "-c",
+    "core.ignoreStat=false",
+    "-c",
+    "core.checkStat=default",
+    "-c",
+    "core.trustctime=true",
+    "-c",
+    "diff.ignoreSubmodules=all",
+    "-c",
+    "core.ignoreCase=false",
+    *(() if os.name == "nt" else ("-c", "core.fileMode=true")),
+)
+#: A gitlink's mode in ``ls-files -s``: a submodule.
+_GITLINK_MODE = "160000"
+
+
+def is_provably_disposable(
+    wt, repo: str, dest: str, own_branch: str | None, *, head_at: str | None = None
+) -> tuple[bool, str]:
+    """Whether removing the worktree *dest* of *repo* provably loses nothing, and if not, why.
+
+    The one removability check of this module: a worker's close, the Bot's
+    deletion of its workers' worktrees and an isolated run's prune all ask it.
+    Removable only when ALL hold, each status read with :data:`_SHOW_ALL_STATE`:
+    git lists *dest* as a worktree of *repo*, not locked, on a branch that is
+    *own_branch* unless that is ``None``, or detached exactly at *head_at* when
+    the caller has proved that commit is kept elsewhere (a detached HEAD's commits
+    may be on no branch); the repository names no checkout filter; no submodule
+    folder holds anything and no gitlink is staged at another commit
+    (:func:`_submodule_keep_reason`, read before ``status`` so no submodule's
+    own commands run); no commit is reached only by this worktree's own ``HEAD``
+    reflog or per-worktree refs (:func:`_commit_keep_reason`); ``status`` lists
+    nothing at all, untracked and ignored files included, never entering a
+    submodule, and opens every folder; and no tracked file flagged
+    assume-unchanged or skip-worktree is edited or deleted, a file a sparse
+    checkout leaves out aside (:func:`_flagged_files`). Ignored files keep it: a ``.env`` or a notes file
+    is ignored as often as build output is, and only a person can tell them apart.
+    Anything else, a read that fails or times out included, is a reason to keep
+    it. Never raises.
+    """
+    try:
+        why = _keep_reason(wt, repo, dest, own_branch, head_at)
+    except Exception as exc:  # noqa: BLE001 - a check that cannot finish proves nothing
+        why = f"it could not be checked ({type(exc).__name__})"
+    return not why, why
+
+
+def _keep_reason(wt, repo: str, dest: str, own_branch: str | None, head_at: str | None) -> str:
+    entry = _worktree_entry(wt, repo, dest)
+    if entry is None:
+        return "git does not list it as a worktree of its repository"
+    if "locked" in entry:
+        return "it is locked"
+    branch = entry.get("branch", "").removeprefix("refs/heads/")
+    if not branch:
+        if head_at is None or entry.get("HEAD") != head_at:
+            return "its HEAD is detached"
+    elif own_branch is not None and branch != own_branch:
+        return f"it is on {branch!r}, not {own_branch!r}"
+    if wt._checkout_filter(dest):
+        return "the repository configures a checkout filter"
+    if why := _git_folder_keep_reason(wt, dest):
+        return why
+    if why := _submodule_keep_reason(wt, dest):
+        return why
+    if why := _commit_keep_reason(wt, repo, dest):
+        return why
+    status = wt._run_git(
+        [
+            *_SHOW_ALL_STATE,
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignored=matching",
+            "--ignore-submodules=all",
+        ],
+        dest,
+    )
+    if status.returncode != 0:
+        return "git could not read its status"
+    # A folder git cannot open is only warned about, exit 0, and never listed.
+    if _UNREADABLE_FOLDER in (status.stderr or ""):
+        return "it holds a folder git cannot read"
+    if listed := [line[3:] for line in status.stdout.split("\0") if line]:
+        return f"it holds changed, untracked or ignored files ({_first(listed)})"
+    if flagged := _flagged_files(wt, dest):
+        return f"it holds files flagged assume-unchanged or skip-worktree ({flagged})"
+    return ""
+
+
+#: What ``git status`` writes to stderr for a folder it cannot open.
+_UNREADABLE_FOLDER = "could not open directory"
+#: The files a worktree's own git folder holds that lose nothing once ``status`` is
+#: clean, measured on git 2.50.1: a fresh worktree leaves ``HEAD``, ``ORIG_HEAD``,
+#: ``commondir``, ``gitdir``, ``index``, ``logs/HEAD`` and an empty ``refs/``; a
+#: commit, checkout, fetch, pull, reset and gc add ``COMMIT_EDITMSG`` and
+#: ``FETCH_HEAD``; sparse checkout adds ``config.worktree`` and ``info/sparse-checkout``.
+#: ``refs/`` and ``logs/refs/`` hold the per-worktree refs and their reflogs, which
+#: :func:`_commit_keep_reason` reads. Anything else, a paused operation's state
+#: (``rebase-apply``, ``MERGE_HEAD``, ``sequencer``, ``BISECT_LOG``) or a file a later
+#: git adds, keeps the worktree: what is not known to be safe is kept.
+_SAFE_GIT_FILES = frozenset(
+    {
+        "HEAD",
+        "ORIG_HEAD",
+        "index",
+        "commondir",
+        "gitdir",
+        "COMMIT_EDITMSG",
+        "FETCH_HEAD",
+        "config.worktree",
+        os.path.join("logs", "HEAD"),
+        os.path.join("info", "sparse-checkout"),
+    }
+)
+#: Folders of a worktree's own git folder whose whole content is read elsewhere.
+_SAFE_GIT_TREES = ("refs", os.path.join("logs", "refs"))
+
+
+def _git_folder_keep_reason(wt, dest: str) -> str:
+    """Why the worktree *dest*'s own git folder keeps it, ``""`` when it holds only safe entries.
+
+    Links are never followed, and an entry that cannot be listed keeps it.
+    """
+    gitdir = wt._run_git(["rev-parse", "--absolute-git-dir"], dest)
+    folder = gitdir.stdout.strip() if gitdir.returncode == 0 else ""
+    if not folder or os.path.islink(folder) or not os.path.isdir(folder):
+        return "git could not read its state"
+    try:
+        for current, dirs, files in os.walk(folder, followlinks=False, onerror=_raise):
+            rel = os.path.relpath(current, folder)
+            if rel != "." and any(_contains(t, rel) for t in _SAFE_GIT_TREES):
+                continue
+            for name in files + [d for d in dirs if os.path.islink(os.path.join(current, d))]:
+                entry = os.path.normpath(os.path.join(rel, name))
+                if entry not in _SAFE_GIT_FILES:
+                    return f"its own git folder holds {entry}, not known to be safe to remove"
+    except OSError:
+        return "its own git folder could not be read"
+    return ""
+
+
+def _raise(error: OSError) -> None:
+    raise error
+
+
+#: Refs git keeps per worktree, removed with it.
+_PER_WORKTREE_REFS = ("refs/worktree", "refs/bisect", "refs/rewritten")
+
+
+def _commit_keep_reason(wt, repo: str, dest: str) -> str:
+    """Why a commit keeps the worktree *dest* of *repo*, ``""`` when none does.
+
+    The worktree's own ``HEAD`` reflog, its per-worktree refs and their reflogs go
+    with it, so a commit only they reach (made on a detached HEAD and left, kept by
+    a ``refs/worktree/`` or ``refs/bisect/`` ref, or one such a ref pointed at
+    before it moved) would be lost. What survives is
+    every shared ref and reflog plus the main checkout's ``HEAD``, read from
+    *repo* with ``--single-worktree``. Branches and stashes are shared refs.
+    shortcut: the commits go on one command line, so a reflog past the
+    argument-size limit fails the read and keeps the worktree; pass them on
+    stdin if that ever happens.
+    """
+    refs = wt._run_git(
+        ["for-each-ref", "--format=%(objectname) %(refname)", *_PER_WORKTREE_REFS], dest
+    )
+    if refs.returncode != 0:
+        return "git could not read its history"
+    listed = [line.split(" ", 1) for line in refs.stdout.splitlines() if " " in line]
+    reached = {tip for tip, _name in listed}
+    # Each per-worktree ref's own reflog goes with the worktree too, so a commit a
+    # ref pointed at before it moved is as much the worktree's as HEAD's history.
+    for ref in ("HEAD", *(name for _tip, name in listed)):
+        reflog = wt._run_git(["reflog", "show", "--format=%H", ref], dest)
+        if reflog.returncode != 0:
+            return "git could not read its history"
+        reached.update(reflog.stdout.split())
+    # ``%H`` is each entry's new endpoint only. The old one is the commit an entry
+    # moved away from, and once the entry that made it is expired it is the only
+    # record left (a detached commit, the reflog expired, then a checkout).
+    from kiro_crew.crewmate_worktree_history import history_commits
+
+    both = history_commits(wt, dest)
+    if both is None:
+        return "git could not read its history"
+    reached.update(both)
+    commits = sorted(reached)
+    if not commits:
+        return ""
+    lost = wt._run_git(
+        ["rev-list", "-n", "1", *commits, "--not", "--single-worktree", "--all", "--reflog"], repo
+    )
+    if lost.returncode != 0:
+        return "git could not read its history"
+    if commit := lost.stdout.strip():
+        return f"it holds a commit no shared branch, tag or reflog keeps ({commit[:12]})"
+    return ""
+
+
+def _submodule_keep_reason(wt, dest: str) -> str:
+    """Why a submodule of the worktree *dest* keeps it, ``""`` when none does.
+
+    Read before any ``status``, which would otherwise enter a submodule and run
+    that submodule's own configured commands. A submodule folder holding
+    anything keeps it: a checked-out submodule (a ``.git`` there) or files
+    written into an empty one, which ``status`` never lists and ``git worktree
+    remove`` deletes. So does a gitlink whose staged commit differs from
+    ``HEAD``'s, which ``status --ignore-submodules=all`` does not show. An empty
+    or missing folder, as ``git worktree add`` leaves every submodule, holds
+    nothing.
+    """
+    index = wt._run_git(["ls-files", "-z", "-s"], dest, stdout_decoder=utf8_path_stdout)
+    if index.returncode != 0:
+        return "git could not read its index"
+    staged = _gitlinks(index.stdout, 1)
+    if not staged:
+        return ""
+    root = os.fsencode(dest)
+    for path in staged:
+        if _holds_anything(os.path.join(root, _path_bytes(path))):
+            return f"it holds files in a submodule folder ({_shown(path)})"
+    tree = wt._run_git(
+        ["--literal-pathspecs", "ls-tree", "-r", "-z", "HEAD", "--", *staged],
+        dest,
+        stdout_decoder=utf8_path_stdout,
+    )
+    if tree.returncode != 0:
+        return "git could not read its HEAD tree"
+    committed = _gitlinks(tree.stdout, 2)
+    for path, sha in staged.items():
+        if committed.get(path) != sha:
+            return f"it holds a staged submodule change ({_shown(path)})"
+    return ""
+
+
+def _gitlinks(listing: str, commit_field: int) -> dict[str, str]:
+    """``{path: commit}`` of the gitlinks in a ``-z`` listing whose entries are
+    ``<fields>\\t<path>`` with the commit at *commit_field*: 1 for ``ls-files -s``
+    (``mode commit stage``), 2 for ``ls-tree`` (``mode type commit``)."""
+    found: dict[str, str] = {}
+    for entry in listing.split("\0"):
+        if entry[:6] == _GITLINK_MODE:
+            fields, _, path = entry.partition("\t")
+            found[path] = fields.split()[commit_field]
+    return found
+
+
+def _holds_anything(folder: bytes) -> bool:
+    """Whether *folder* holds an entry; a folder that cannot be read counts as holding one.
+
+    A missing folder holds nothing. ``status`` never lists what sits in a
+    submodule's folder, so this is the only check that sees it.
+    """
+    try:
+        with os.scandir(folder) as entries:
+            return next(entries, None) is not None
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+
+
+def _path_bytes(path: str) -> bytes:
+    return path.encode("utf-8", "surrogateescape")
+
+
+def _shown(path: str) -> str:
+    """*path* safe for a log line: a byte that is not UTF-8 shows as U+FFFD."""
+    return _path_bytes(path).decode("utf-8", "replace")
+
+
+def _worktree_entry(wt, repo: str, dest: str) -> dict[str, str] | None:
+    """The ``worktree list --porcelain`` fields of *dest* in *repo*, else ``None``.
+
+    Raises :class:`RuntimeError` when git cannot list them, which is not the same
+    as *dest* being absent from the list.
+    """
+    listing = wt._run_git(["worktree", "list", "--porcelain", "-z"], repo)
+    if listing.returncode != 0:
+        raise RuntimeError("git could not list the repository's worktrees")
+    want = wt._norm_path(dest)
+    fields: dict[str, str] = {}
+    for field in [*listing.stdout.split("\0"), ""]:
+        if field:
+            key, _, value = field.partition(" ")
+            fields[key] = value
+            continue
+        if fields and wt._norm_path(fields.get("worktree", "")) == want:
+            return fields
+        fields = {}
+    return None
+
+
+def _first(paths: list[str]) -> str:
+    """The first five of *paths*, and how many more, for a log line."""
+    return ", ".join(paths[:5]) + (f" and {len(paths) - 5} more" if len(paths) > 5 else "")
 
 
 def remove_for_member(name: str, config) -> tuple[list[str], list[str]] | None:
@@ -908,4 +1467,92 @@ def remove_for_member(name: str, config) -> tuple[list[str], list[str]] | None:
         return None
     if kept:
         logger.warning("kept %d worktree(s) of %s: %s", len(kept), name, kept)
+    return removed, kept
+
+
+def worker_folder_for(name: str, config, worker: str) -> str | None:
+    """The folder holding *worker*'s own worktrees under crewmate *name*, else ``None``.
+
+    Real path, not created. ``None`` when *name* has no record or no *worker* is given.
+    """
+    from kiro_crew.config import loader
+    from kiro_crew.members import member_slug
+
+    record = getattr(config, "agents", {}).get(name)
+    if record is None or not worker:
+        return None
+    workspace = str(loader.workspace_dir_for(getattr(record, "workspace", "") or None))
+    return _worker_dir(workspace, member_slug(name, config), worker)
+
+
+def rebuild_worker_worktree(
+    slug: str,
+    workspace_dir: str,
+    repo: str,
+    project: str,
+    worker: str,
+    prefix: str = BRANCH_PREFIX,
+) -> CrewmateWorktree | None:
+    """Make *worker*'s own worktree of *repo* again at its place, when the missing *project* is in it.
+
+    *project* is a folder a removed worktree held (a saved project written back over
+    a close's move, or a person's pick). The worktree comes back at the same path on
+    the worker's own branch (:func:`ensure`), so *project* names its folder again.
+    Raises :class:`WorktreeRefused`, creating nothing, when *project* is outside the
+    worker's own folder: by its path, or through a link anywhere on the way
+    (the worker's folder itself included). ``None``, creating nothing, when
+    *project* lies in the worker's folder but not where its worktree of *repo* goes.
+    """
+    own = _worker_dir(workspace_dir, slug, worker)
+    path = os.path.normpath(project)
+    if (
+        not _contains(own, path)
+        or os.path.realpath(own) != own
+        or not _contains(own, os.path.realpath(path))
+    ):
+        raise WorktreeRefused(f"{project} is not in worker {worker}'s own folder")
+    subpath = _worker_subpath(repo)
+    dest = worker_path_for(workspace_dir, slug, worker, subpath) if subpath is not None else ""
+    if not dest or not _contains(dest, path) or os.path.lexists(os.path.join(dest, ".git")):
+        return None
+    # A start in the missing folder (an agent process given it as its cwd) may have
+    # made it again empty; only empty folders go, so anything holding a file stays
+    # and ensure() refuses the place.
+    _remove_empty_folders(dest)
+    return ensure(slug, workspace_dir, repo, prefix, worker)
+
+
+def _remove_empty_folders(top: str) -> None:
+    """Remove the folders under *top*, *top* included, that hold nothing; links are never followed."""
+    if os.path.islink(top) or not os.path.isdir(top):
+        return
+    for folder, _dirs, _files in os.walk(top, topdown=False, followlinks=False):
+        with contextlib.suppress(OSError):
+            os.rmdir(folder)  # refuses a folder that holds anything
+
+
+def remove_for_worker(name: str, config, worker: str) -> tuple[list[str], list[str]] | None:
+    """Remove *worker*'s own worktrees under crewmate *name*. Best-effort.
+
+    Called when the worker's session is closed; never raises, so it cannot fail
+    that. Returns ``(removed, kept)`` as :func:`remove_worker_worktrees` does, or
+    ``None`` when they could not be looked at at all.
+    """
+    from kiro_crew.config import loader
+    from kiro_crew.members import member_slug
+
+    record = getattr(config, "agents", {}).get(name)
+    if record is None or not worker:
+        return [], []
+    try:
+        workspace = str(loader.workspace_dir_for(getattr(record, "workspace", "") or None))
+        prefix = getattr(getattr(config, "agent", None), "member_branch_prefix", BRANCH_PREFIX)
+        removed, kept = remove_worker_worktrees(
+            workspace, member_slug(name, config), worker, prefix or BRANCH_PREFIX
+        )
+    except Exception:  # noqa: BLE001 - never fails the worker's close
+        logger.warning("worktrees of %s worker %s were not removed", name, worker, exc_info=True)
+        return None
+    if kept:
+        logger.warning("kept %d worktree(s) of %s worker %s: %s", len(kept), name, worker, kept)
     return removed, kept

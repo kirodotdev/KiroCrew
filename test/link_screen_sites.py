@@ -167,6 +167,8 @@ DECLARED_SITES = frozenset(
         ("context_assembly/store_admission.py", "_admitted_file_stats"),
         ("crew_teams.py", "_has_document"),
         ("crewmate_bundle_export.py", "bundled_skills"),
+        ("crewmate_worktree.py", "_git_folder_keep_reason"),
+        ("crewmate_worktree.py", "_remove_empty_folders"),
         ("crewmate_worktree.py", "make_run_worktree"),
         ("crewmate_worktree.py", "remove_crewmate_worktrees"),
         ("crewmate_worktree.py", "remove_run_worktree"),

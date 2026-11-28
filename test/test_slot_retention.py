@@ -408,6 +408,24 @@ async def test_sweep_hands_nothing_up_from_an_archived_manager(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_sweep_keeps_an_archived_workers_own_worktrees(tmp_path, monkeypatch):
+    """An idle archive is revivable, so a worker's own worktrees stay for it."""
+    from kiro_crew.dashboard import crewmate_worktree_scope
+
+    released: list[str] = []
+    monkeypatch.setattr(
+        crewmate_worktree_scope,
+        "release_closed_worker",
+        lambda _s, slot, _key: released.append(slot.key),
+    )
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=slot_retention.SWEEP_HIGH_WATER)
+    archived = await slot_retention.sweep_idle_slots(state, 7, now=_NOW.timestamp())
+    never_done.cancel()
+    assert archived == ["idle"]
+    assert released == []
+
+
+@pytest.mark.asyncio
 async def test_sweep_does_nothing_below_high_water(tmp_path, monkeypatch):
     state, never_done = _sweep_state(
         tmp_path, monkeypatch, fill_to=slot_retention.SWEEP_HIGH_WATER - 1

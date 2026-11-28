@@ -207,6 +207,45 @@ class AgentRuntime(Protocol):
         """
         ...
 
+    def worker_worktree_subpath(self, repo: str) -> "tuple[str, ...] | None":
+        """Where each worker's OWN worktree of *repo* goes, or ``None`` for the Bot's shared one.
+
+        WIRED: ``crewmate_worktree.ensure`` asks this with the real path of the
+        repository's checkout root, for a worker turn, before it makes a worktree.
+        ``None`` (the Default): the Bot's one worktree of *repo*, shared by its
+        workers. A tuple of one to three plain folder names: each worker gets its
+        own worktree at ``<Bot worktrees>/workers/<worker>/<names...>``, on the
+        branch ``<prefix><slug>/<worker>/<repo>``, removed when that worker's
+        session is closed. The folders above the last name are made for it and
+        belong to the edition's layout (a build workspace root, for example). Any
+        other answer is ``None`` with a warning. Asked off the event loop. Read
+        through ``safe_context_call``: a runtime without it, or one that raises,
+        answers ``None``. v1 addition (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
+    def prepare_worktree(self, repo: str, path: str) -> None:
+        """Set up the worktree the gateway just added at *path*, before a worker runs there.
+
+        WIRED: ``crewmate_worktree.ensure``, once, right after ``git worktree add``
+        of *repo* succeeds, for the shared and the per-worker layout alike. A raise
+        undoes the add (folder, registration, and a branch the add cut) and the
+        worker gets no worktree of *repo*. Called off the event loop. A runtime
+        without the method skips it. Default: nothing. v1 addition.
+        """
+        ...
+
+    def release_worktree(self, repo: str, path: str) -> None:
+        """Tidy up after the gateway removed the worktree of *repo* at *path*.
+
+        WIRED: every ``git worktree remove`` the gateway itself runs on a Bot's
+        worktree (a worker's session closed, the Bot removed), after it succeeds.
+        A worktree kept because it is dirty is not released. A raise is logged and
+        changes nothing else. Called off the event loop. A runtime without the
+        method skips it. Default: nothing. v1 addition.
+        """
+        ...
+
 
 class AgentExecutableResolver(Protocol):
     """Resolve an edition-provided agent launcher to its direct executable.

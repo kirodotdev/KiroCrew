@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from aiohttp import web
 
@@ -467,25 +467,54 @@ async def close_slot(
     *,
     pre_pop_check: Callable[[], None] | None = None,
     hand_back: bool = True,
+    release_worktrees: bool = True,
 ) -> None:
     """Close a slot while releasing its admission fence on every aborted path.
 
     A close that returns has committed, so the sessions the closed one managed are
-    handed up the manager line here (a no-op unless ``agent.session_manager_chain``).
-    The idle sweep passes ``hand_back=False``: an idle archive keeps them on it.
+    handed up the manager line here (a no-op unless ``agent.session_manager_chain``),
+    and a crewmate's worker loses the worktrees that were its own
+    (``crewmate_worktree_scope.release_closed_worker``). The idle sweep passes
+    ``hand_back=False`` and ``release_worktrees=False``: an idle archive keeps both,
+    so reviving it finds them as they were.
     """
-    # Published across the whole frame, restore included: a concurrent vocabulary delete
-    # must be able to strip this object while it is out of ``_slots``.
-    with close_in_flight(state, name, slot):
-        try:
-            await _close_slot(state, slot, name, pre_pop_check=pre_pop_check)
-        finally:
-            if state.get_slot(name) is slot:
-                slot.cancel_close()
-    if hand_back and state.get_slot(name) is not slot:
-        from kiro_crew.dashboard.session_control import hand_back_on_close
+    from kiro_crew.dashboard import crewmate_worktree_scope as worktree_scope
 
-        await _timed_close_stage(name, "hand-back", hand_back_on_close(state, slot))
+    session_key = effective_session_key(slot)
+    cleanup_place: list[Any] = []
+
+    def check_then_reserve_cleanup() -> None:
+        # Runs with no await before the pop, so a worker's cleanup is in line for
+        # its key before a resume can reopen it, whatever the teardown awaits next.
+        if pre_pop_check is not None:
+            pre_pop_check()
+        if release_worktrees:
+            cleanup_place.append(worktree_scope.reserve_worker_cleanup(state, slot))
+
+    released = False
+    try:
+        # Published across the whole frame, restore included: a concurrent vocabulary
+        # delete must be able to strip this object while it is out of ``_slots``.
+        with close_in_flight(state, name, slot):
+            try:
+                await _close_slot(state, slot, name, pre_pop_check=check_then_reserve_cleanup)
+            finally:
+                if state.get_slot(name) is slot:
+                    slot.cancel_close()
+        if hand_back and state.get_slot(name) is not slot:
+            from kiro_crew.dashboard.session_control import hand_back_on_close
+
+            await _timed_close_stage(name, "hand-back", hand_back_on_close(state, slot))
+        if release_worktrees and state.get_slot(name) is not slot:
+            worktree_scope.release_closed_worker(
+                state, slot, session_key, cleanup_place[0] if cleanup_place else None
+            )
+            released = True
+    finally:
+        if not released:
+            worktree_scope.cancel_worker_cleanup(
+                state, slot, cleanup_place[0] if cleanup_place else None
+            )
 
 
 async def _timed_close_stage(name: str, stage: str, step: Awaitable[_T]) -> _T:

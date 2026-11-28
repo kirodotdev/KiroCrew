@@ -575,7 +575,12 @@ async def sweep_idle_slots(
             # hand_back=False: an idle archive leaves the sessions it managed naming it,
             # so reviving it brings it back to them (docs/session-control.md).
             await chat_handlers.close_slot(
-                state, slot, name, pre_pop_check=still_idle, hand_back=False
+                state,
+                slot,
+                name,
+                pre_pop_check=still_idle,
+                hand_back=False,
+                release_worktrees=False,
             )
         except chat_handlers.SlotCloseError as exc:
             logger.info("Idle slot sweep kept %s: %s", name, exc.code)
