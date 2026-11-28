@@ -11,6 +11,9 @@
  * A label/description is read from EITHER form:
  *   - a string literal          `label="Zoom Level"`
  *   - a translation call        `label={t('settings.display.language.label')}`
+ *   - a conditional pair        `label={flag ? t('variant') : t('plain')}` (a label or
+ *     hint only), read as its plain (else) key: the row's own text, which the
+ *     variant only rewords
  *
  * The `t()` form is resolved against `src/i18n/locales/en.json`, so the
  * generated registry keeps holding real English text for command-palette
@@ -121,6 +124,8 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'DisplayPanel.tsx': 'display',
   // The Theme page's per-part Experience toggles, mounted by DisplayPanel.
   'ThemeExperienceSettings.tsx': { tab: 'display', params: { sub: 'theme' } },
+  // Scheduled mode's method choice and location, mounted by DisplayPanel's Theme page.
+  'ThemeScheduleMethodSetting.tsx': { tab: 'display', params: { sub: 'theme' } },
   // Task Runner's switch, mounted by DisplayPanel's View page.
   'TaskRunnerSetting.tsx': { tab: 'display', params: { sub: 'view' } },
   // Channels' switch, mounted by DisplayPanel's View page. Drawn only while Channels
@@ -403,12 +408,7 @@ function extractStringProp(source: string, propName: string): string | undefined
     const m = re.exec(source)
     if (m) return m[1]
   }
-  // `i18nT('key')` / `t("key")` — either helper, optional inner whitespace.
-  const tCall = new RegExp(
-    `${propName}=\\{\\s*(?:i18nT|t)\\(\\s*['"]([^'"]+)['"]\\s*\\)\\s*\\}`,
-    'g',
-  )
-  const tMatch = tCall.exec(source)
+  const tMatch = translationKeyMatch(source, propName)
   // `{{productName}}` is resolved to its stock default here, mirroring what
   // i18next's `defaultVariables` renders at runtime. The registry is a SEARCH
   // corpus: leaving the raw placeholder in would make a user's query for the
@@ -416,8 +416,21 @@ function extractStringProp(source: string, propName: string): string | undefined
   // duplicates DEFAULT_PRODUCT_NAME in `src/i18n/index.ts`: importing that
   // module here would drag i18next and every catalog into a build-time
   // script for one constant.
-  if (tMatch) return withStockProductName(getEnCatalog()[tMatch[1]])
+  if (tMatch) return withStockProductName(getEnCatalog()[tMatch])
   return undefined
+}
+
+/** Props whose conditional pair is read as its plain key. Not `description`: on-row
+ *  copy that varies says something different per branch, so it stays skipped. */
+const CONDITIONAL_PAIR_PROPS = new Set(['label', 'hint'])
+
+/** A translation call's key, `p={i18nT('key')}` / `p={t("key")}` (either helper,
+ *  optional inner whitespace), or the plain key of `p={flag ? i18nT('a') : i18nT('key')}`. */
+function translationKeyMatch(source: string, propName: string): string | undefined {
+  const call = `(?:i18nT|t)\\(\\s*['"]([^'"]+)['"]\\s*\\)`
+  const plain = new RegExp(`${propName}=\\{\\s*${call}\\s*\\}`).exec(source)?.[1]
+  if (plain || !CONDITIONAL_PAIR_PROPS.has(propName)) return plain
+  return new RegExp(`${propName}=\\{\\s*[\\w.]+\\s*\\?\\s*${call}\\s*:\\s*${call}\\s*\\}`).exec(source)?.[2]
 }
 
 /** A catalog string with `{{productName}}` resolved to its stock default, for the reason above. */
@@ -427,13 +440,9 @@ function withStockProductName(text: string | undefined): string | undefined {
 
 /** Return the catalog key when a JSX prop is a supported translation call. */
 function extractTranslationKeyProp(source: string, propName: string): string | undefined {
-  const tCall = new RegExp(
-    `${propName}=\\{\\s*(?:i18nT|t)\\(\\s*['"]([^'"]+)['"]\\s*\\)\\s*\\}`,
-    'g',
-  )
-  const match = tCall.exec(source)
-  if (!match) return undefined
-  return getEnCatalog()[match[1]] === undefined ? undefined : match[1]
+  const key = translationKeyMatch(source, propName)
+  if (!key) return undefined
+  return getEnCatalog()[key] === undefined ? undefined : key
 }
 
 /**

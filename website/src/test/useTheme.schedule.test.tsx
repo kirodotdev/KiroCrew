@@ -154,4 +154,111 @@ describe('useTheme in Scheduled mode', () => {
     // 22:00 is dark on the 07:00 / 19:00 default and light on the workspace's times.
     await waitFor(() => expect(result.current.theme).toBe('light'))
   })
+
+  // Seattle on the device's UTC clock: light by the sun, dark on 07:00 / 19:00.
+  const SEATTLE = { method: 'sun' as const, latitude: 47.61, longitude: -122.33 }
+  const SEATTLE_EVENING = new Date('2026-06-22T02:00:00Z')
+
+  it("keeps this browser's sunrise and sunset method across the workspace's times at boot", async () => {
+    vi.setSystemTime(SEATTLE_EVENING)
+    localStorage.setItem(THEME_SCHEDULE_STORAGE_KEY, JSON.stringify({ light: '08:00', dark: '20:00', ...SEATTLE }))
+    themeBootFn.mockResolvedValue({ ...FIRST_RUN_DONE, mode: 'schedule', schedule_light: '07:00', schedule_dark: '19:00' })
+    const seen: string[] = []
+    const { result } = renderHook(() => {
+      const theme = useTheme()
+      seen.push(theme.theme)
+      return theme
+    }, { wrapper })
+    await waitFor(() => expect(result.current.preference).toBe('schedule'))
+    await waitFor(() => expect(result.current.schedule).toEqual({ light: '07:00', dark: '19:00', ...SEATTLE }))
+    expect(result.current.theme).toBe('light')
+    expect(seen).not.toContain('dark')
+    expect(JSON.parse(localStorage.getItem(THEME_SCHEDULE_STORAGE_KEY) ?? '{}')).toEqual({ light: '07:00', dark: '19:00', ...SEATTLE })
+  })
+
+  it('keeps the method and location off the workspace; a time change still saves only the two times', async () => {
+    const { result } = await bootWith({})
+    vi.useFakeTimers()
+    vi.setSystemTime(SEATTLE_EVENING)
+    act(() => result.current.setTheme('schedule'))
+    expect(result.current.theme).toBe('dark')
+    await advance(0)
+    expect(updateThemeConfigFn).toHaveBeenCalledWith({ mode: 'schedule' })
+    updateThemeConfigFn.mockClear()
+
+    act(() => result.current.setSunSchedule({ method: 'sun' }))
+    act(() => result.current.setSunSchedule({ latitude: SEATTLE.latitude }))
+    act(() => result.current.setSunSchedule({ longitude: SEATTLE.longitude }))
+    await advance(0)
+    expect(result.current.theme).toBe('light')
+    expect(updateThemeConfigFn).not.toHaveBeenCalled()
+    expect(JSON.parse(localStorage.getItem(THEME_SCHEDULE_STORAGE_KEY) ?? '{}')).toEqual({ light: '07:00', dark: '19:00', ...SEATTLE })
+
+    act(() => result.current.setSchedule({ ...result.current.schedule, light: '06:30' }))
+    await advance(0)
+    expect(updateThemeConfigFn).toHaveBeenCalledTimes(1)
+    expect(updateThemeConfigFn).toHaveBeenCalledWith({ schedule_light: '06:30', schedule_dark: '19:00' })
+    expect(result.current.theme).toBe('light')
+  })
+
+  // Another tab of this browser saved the sun method and its location after this tab loaded.
+  function writeFromAnotherTab(copy: object) {
+    const newValue = JSON.stringify(copy)
+    localStorage.setItem(THEME_SCHEDULE_STORAGE_KEY, newValue)
+    act(() => { window.dispatchEvent(new StorageEvent('storage', { key: THEME_SCHEDULE_STORAGE_KEY, newValue })) })
+  }
+  const storedCopy = () => JSON.parse(localStorage.getItem(THEME_SCHEDULE_STORAGE_KEY) ?? '{}')
+
+  it("keeps another tab's location when this tab then picks Sunrise and sunset", async () => {
+    localStorage.setItem(THEME_SCHEDULE_STORAGE_KEY, JSON.stringify({ light: '07:00', dark: '19:00' }))
+    const { result } = await bootWith({})
+    vi.useFakeTimers()
+    vi.setSystemTime(SEATTLE_EVENING)
+    act(() => result.current.setTheme('schedule'))
+    expect(result.current.theme).toBe('dark')
+
+    writeFromAnotherTab({ light: '07:00', dark: '19:00', ...SEATTLE })
+    act(() => result.current.setSunSchedule({ method: 'sun' }))
+    await advance(0)
+    expect(storedCopy()).toEqual({ light: '07:00', dark: '19:00', ...SEATTLE })
+    expect(result.current.theme).toBe('light')
+  })
+
+  it("keeps another tab's method and location when this tab then saves a fixed time", async () => {
+    localStorage.setItem(THEME_SCHEDULE_STORAGE_KEY, JSON.stringify({ light: '07:00', dark: '19:00' }))
+    const { result } = await bootWith({})
+    vi.useFakeTimers()
+    vi.setSystemTime(SEATTLE_EVENING)
+    act(() => result.current.setTheme('schedule'))
+    await advance(0)
+    updateThemeConfigFn.mockClear()
+
+    writeFromAnotherTab({ light: '07:00', dark: '19:00', ...SEATTLE })
+    // What Settings' time field saves: the pair built from this tab's schedule.
+    act(() => result.current.setSchedule({ ...result.current.schedule, light: '06:45' }))
+    await advance(0)
+    expect(storedCopy()).toEqual({ light: '06:45', dark: '19:00', ...SEATTLE })
+    expect(updateThemeConfigFn).toHaveBeenCalledTimes(1)
+    expect(updateThemeConfigFn).toHaveBeenCalledWith({ schedule_light: '06:45', schedule_dark: '19:00' })
+  })
+
+  it("adopts another tab's copy without writing it back, so two tabs never echo each other", async () => {
+    const { result } = await bootWith({})
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    try {
+      // The other tab's serialisation differs from this tab's (key order, a null coordinate):
+      // the one rewrite this tab makes is its own normalised copy, and it settles there.
+      writeFromAnotherTab({ ...SEATTLE, longitude: null, dark: '19:00', light: '07:00' })
+      await waitFor(() => expect(result.current.schedule).toEqual({ light: '07:00', dark: '19:00', method: 'sun', latitude: 47.61 }))
+      const own = JSON.stringify(result.current.schedule)
+      expect(localStorage.getItem(THEME_SCHEDULE_STORAGE_KEY)).toBe(own)
+      setItem.mockClear()
+      writeFromAnotherTab(JSON.parse(own))
+      await act(async () => {})
+      // The one write is the other tab's; this tab, already holding that copy, writes nothing.
+      expect(setItem.mock.calls.filter(([key]) => key === THEME_SCHEDULE_STORAGE_KEY)).toHaveLength(1)
+    } finally {
+      setItem.mockRestore()
+    }
+  })
 })

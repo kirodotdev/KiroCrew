@@ -322,7 +322,9 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   // What users call the behaviour, whatever their platform names the tray.
   'display.keep-running-in-the-background-after-closing-the-window': ['close to tray', 'quit on close', 'exit on close', 'run in background', 'system tray', 'close button'],
   'display.language': ['ui language', 'dashboard language', 'change language', 'interface language', 'chinese', 'japanese', 'translate the app'],
+  'display.latitude': ['sunrise location', 'sunset location', 'coordinates', 'where i am'],
   'display.light-from': ['light mode schedule', 'light in the day', 'auto light mode time'],
+  'display.longitude': ['sunrise location', 'sunset location', 'coordinates', 'where i am'],
   'display.minimize-to-tray': ['minimize to system tray', 'hide in tray', 'menu bar'],
   'display.mode': ['dark mode', 'light mode', 'theme', 'appearance', 'dark', 'light', 'night', 'night mode', 'dark theme', 'light theme'],
   'display.overlays': ['theme overlays', 'background effects', 'visual effects'],
@@ -340,6 +342,7 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'display.show-unread-dot-on-session-cards': ['unread badge', 'unread indicator', 'blue dot'],
   'display.sounds': ['theme sounds', 'ui sounds', 'click sounds'],
   'display.ssh-host': ['remote ssh host', 'ssh config host', 'dev box name'],
+  'display.switch-at': ['sunrise and sunset', 'follow the sun', 'dark at sunset', 'light at sunrise', 'theme schedule'],
   'display.theme': ['theme', 'appearance', 'skin', 'palette', 'color theme', 'colour theme', 'colors', 'colours', 'change colors', 'change colours', 'app appearance', 'color scheme', 'colour scheme'],
   'display.touch-screen-layout': ['tablet layout', 'touch mode', 'ipad layout', 'bigger tap targets'],
   'display.translucent-panels': ['transparency', 'blur', 'see-through panels', 'frosted glass'],

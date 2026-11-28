@@ -3110,6 +3110,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.latitude",
+    "label": "Latitude",
+    "labelKey": "pages.settings.displayPanel.theme_schedule_latitude",
+    "hint": "Decimal degrees, north positive, from -90 to 90.",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    }
+  },
+  {
     "id": "display.light-from",
     "label": "Light from",
     "labelKey": "pages.settings.displayPanel.theme_schedule_light_from",
@@ -3121,6 +3133,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "theme"
     },
     "configKey": "dashboard.theme_schedule_light"
+  },
+  {
+    "id": "display.longitude",
+    "label": "Longitude",
+    "labelKey": "pages.settings.displayPanel.theme_schedule_longitude",
+    "hint": "Decimal degrees, east positive, from -180 to 180.",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    }
   },
   {
     "id": "display.minimize-to-tray",
@@ -3330,6 +3354,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "remote-editor"
     },
     "configKey": "dashboard.remote_editor.host"
+  },
+  {
+    "id": "display.switch-at",
+    "label": "Switch at",
+    "labelKey": "pages.settings.displayPanel.theme_schedule_method",
+    "tab": "display",
+    "type": "buttonGroup",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    }
   },
   {
     "id": "display.theme",

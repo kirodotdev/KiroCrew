@@ -83,6 +83,25 @@ describe('settingsExtract — i18n-aware label resolution', () => {
     expect(skipped).toBe(1)
   })
 
+  it('reads a conditional pair of translation calls as its plain (else) key', () => {
+    // A row whose label is reworded under a condition (Scheduled's time fields
+    // while the sun decides) stays indexed under its own label and hint.
+    const { entries } = extractFromSource(
+      `<SettingsInput type="time"
+         label={sunDecides ? i18nT('pages.settings.displayPanel.theme_schedule_light_from_fallback') : i18nT('pages.settings.displayPanel.theme_schedule_light_from')}
+         hint={sunDecides ? i18nT('pages.settings.displayPanel.theme_schedule_fixed_fallback_hint') : i18nT('pages.settings.displayPanel.theme_schedule_light_from_hint')}
+         value={x} onChange={f} configKey="dashboard.theme_schedule_light" />`,
+      FILE,
+    )
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({
+      label: 'Light from',
+      labelKey: 'pages.settings.displayPanel.theme_schedule_light_from',
+      hint: "Scheduled mode switches to light at this time, in this device's time zone.",
+      configKey: 'dashboard.theme_schedule_light',
+    })
+  })
+
   it('still skips a genuinely dynamic label', () => {
     const { entries, skipped } = extractFromSource(
       `<SettingsSelect label={someVariable} value={x} onChange={f} />`,

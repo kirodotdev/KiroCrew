@@ -476,6 +476,20 @@ dashboard load into header-only round trips.
 `prefers-color-scheme`, `light` and `dark` are fixed, and `schedule` (Scheduled)
 is light from `theme_schedule_light` until `theme_schedule_dark` on the device's
 own clock and time zone, wrapping past midnight, 07:00 and 19:00 when unset.
+Scheduled has two methods: Fixed times (the default, the two times above) and
+Sunrise and sunset, light from local sunrise until local sunset at a typed
+latitude and longitude (decimal degrees, north and east positive), computed on
+the device with no geolocation call or online lookup; a polar day is light, a
+polar night dark. The method and the location are kept in this browser's
+`mc-theme-schedule` copy only, never in the workspace, so another browser, the
+desktop app or another dashboard address uses the two times until a location is
+typed there, and so does this one while the location is missing or out of range.
+Changing them never writes the workspace; the boot adopt merges the served times
+into this copy, so it never clears them. Each tab adopts another tab's write of
+the copy (its `storage` event) before its own next write, and does not rewrite
+an unchanged copy, so an older tab never drops a method or location saved since
+and two tabs never echo each other. While the sun decides at a valid location,
+Settings labels the two times as the fallback where no location is set.
 A manual pick replaces the schedule and keeps its times. First run's look step
 offers Auto, Light and Dark only, because Scheduled needs the two times. A
 schedule save the workspace refuses shows an inline notice under the two times;
@@ -483,7 +497,8 @@ this device keeps the new times, and leaving a time field saves them again.
 
 - **One resolver.** `website/src/utils/themeSchedule.ts` has no imports, so the
   crew companion and Mochi windows, which paint from `localStorage["mc-theme"]`,
-  resolve `schedule` the same way from the `mc-theme-schedule` copy.
+  resolve `schedule` the same way from the `mc-theme-schedule` copy, which
+  carries the method and location as well as the two times.
 - **A minute tick, not a timer to the next switch.** While Scheduled is active
   the dashboard (`useThemeSchedule.ts`) re-reads the clock every minute, so the
   switch lands within a minute of each time and of the device waking from sleep.

@@ -1827,12 +1827,26 @@
       "hint": "Language for the dashboard interface."
     },
     {
+      "id": "display.latitude",
+      "label": "Latitude",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=display.latitude",
+      "hint": "Decimal degrees, north positive, from -90 to 90."
+    },
+    {
       "id": "display.light-from",
       "label": "Light from",
       "tab": "display",
       "route": "/settings/display/theme?highlight=key%3Adashboard.theme_schedule_light",
       "hint": "Scheduled mode switches to light at this time, in this device's time zone.",
       "configKey": "dashboard.theme_schedule_light"
+    },
+    {
+      "id": "display.longitude",
+      "label": "Longitude",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=display.longitude",
+      "hint": "Decimal degrees, east positive, from -180 to 180."
     },
     {
       "id": "display.minimize-to-tray",
@@ -1955,6 +1969,12 @@
       "route": "/settings/display/remote-editor?highlight=key%3Adashboard.remote_editor.host",
       "description": "The name after Host in ~/.ssh/config on the computer you’re using, like dev-box. Every computer you open this dashboard from needs that name.",
       "configKey": "dashboard.remote_editor.host"
+    },
+    {
+      "id": "display.switch-at",
+      "label": "Switch at",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=display.switch-at"
     },
     {
       "id": "display.theme",

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { screen, waitFor, within, fireEvent, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { DisplayPanel } from '../pages/settings/DisplayPanel'
@@ -6,6 +6,7 @@ import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import { experiencePack, readExperience, saveExperienceChoice } from '../utils/themeConsent'
 import { registerThemeBranding } from '../themeBranding'
+import type { ThemeSchedule } from '../utils/themeSchedule'
 
 // The rail mounts one item at a time; each describe sets the item it exercises
 // in its beforeEach and renders through this helper.
@@ -1152,5 +1153,100 @@ describe('DisplayPanel – Scheduled mode times', () => {
     expect(screen.getByText("Couldn't save these times. This device uses them; other devices keep the old ones. Try again.")).toBeInTheDocument()
     fireEvent.blur(screen.getByLabelText('Light from'))
     expect(setSchedule).toHaveBeenCalledWith({ light: '07:00', dark: '19:00' })
+  })
+
+  it('offers Fixed times by default, with the two time fields and no location', () => {
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      preference: 'schedule',
+      schedule: { light: '07:00', dark: '19:00' },
+    }))
+    renderPanel()
+    expect(screen.getByRole('radio', { name: 'Fixed times' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByLabelText('Light from')).toHaveValue('07:00')
+    expect(screen.getByLabelText('Dark from')).toHaveValue('19:00')
+    expect(screen.queryByLabelText('Latitude')).toBeNull()
+  })
+
+  it('choosing Sunrise and sunset keeps it in this browser and says the fixed times apply until a location is typed', () => {
+    const setSunSchedule = vi.fn()
+    const setSchedule = vi.fn()
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      preference: 'schedule',
+      schedule: { light: '07:00', dark: '19:00' },
+      setSunSchedule,
+      setSchedule,
+    }))
+    const { rerender } = renderPanel()
+    fireEvent.click(screen.getByRole('radio', { name: 'Sunrise and sunset' }))
+    expect(setSunSchedule).toHaveBeenCalledWith({ method: 'sun' })
+
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      preference: 'schedule',
+      schedule: { light: '07:00', dark: '19:00', method: 'sun' },
+      setSunSchedule,
+      setSchedule,
+    }))
+    rerender(<DisplayPanel />)
+    expect(screen.getByLabelText('Latitude')).toBeInTheDocument()
+    expect(screen.getByLabelText('Longitude')).toBeInTheDocument()
+    expect(screen.getByText('The location and this choice are kept only in this browser or app, at this address; anywhere else the two fixed times apply until a location is typed there.')).toBeInTheDocument()
+    expect(screen.getByTestId('theme-schedule-sun-status')).toHaveTextContent('Without a valid latitude and longitude, the Light from and Dark from times below apply.')
+
+    const latitude = screen.getByLabelText('Latitude')
+    fireEvent.change(latitude, { target: { value: '95' } })
+    fireEvent.blur(latitude)
+    expect(setSunSchedule).toHaveBeenCalledTimes(1)
+    expect(latitude).toHaveValue(null)
+    fireEvent.change(latitude, { target: { value: '47.61' } })
+    fireEvent.blur(latitude)
+    expect(setSunSchedule).toHaveBeenLastCalledWith({ latitude: 47.61 })
+    expect(setSchedule).not.toHaveBeenCalled()
+  })
+
+  it("names today's switch times for a valid location", () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    onTestFinished(() => { vi.useRealTimers() })
+    vi.setSystemTime(new Date('2026-06-21T12:00:00Z'))
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      preference: 'schedule',
+      schedule: { light: '07:00', dark: '19:00', method: 'sun', latitude: 51.5074, longitude: -0.1278 },
+      setSunSchedule: vi.fn(),
+    }))
+    renderPanel()
+    expect(screen.getByTestId('theme-schedule-sun-status')).toHaveTextContent(/^Today: light from 3:4\d AM, dark from 8:2\d PM\.$/)
+  })
+
+  // The row's info tip is its `title` while closed.
+  const FALLBACK_HINT = 'Sunrise and sunset decides here. This time applies where no location is set, such as other browsers, and here when Fixed times is chosen.'
+  const scheduledWith = (schedule: ThemeSchedule) => mockUseTheme.mockImplementation(() => ({
+    ...DEFAULT_THEME, preference: 'schedule', schedule, setSunSchedule: vi.fn(), setSchedule: vi.fn(),
+  }))
+
+  it('labels the two times as the fallback while the sun decides at a valid location', () => {
+    scheduledWith({ light: '07:00', dark: '19:00', method: 'sun', latitude: 47.61, longitude: -122.33 })
+    renderPanel()
+    expect(screen.getByLabelText('Light from (without a location)')).toHaveValue('07:00')
+    expect(screen.getByLabelText('Dark from (without a location)')).toHaveValue('19:00')
+    expect(screen.queryByLabelText('Light from')).toBeNull()
+    expect(screen.getAllByTitle(FALLBACK_HINT)).toHaveLength(2)
+    expect(screen.queryByTitle("Scheduled mode switches to light at this time, in this device's time zone.")).toBeNull()
+  })
+
+  it.each([
+    ['Sunrise and sunset without a location', { light: '07:00', dark: '19:00', method: 'sun' as const }],
+    ['Sunrise and sunset with only a latitude', { light: '07:00', dark: '19:00', method: 'sun' as const, latitude: 47.61 }],
+    ['Fixed times with a stored location', { light: '07:00', dark: '19:00', latitude: 47.61, longitude: -122.33 }],
+  ])('keeps the plain time labels and hints for %s', (_, schedule) => {
+    scheduledWith(schedule)
+    renderPanel()
+    expect(screen.getByLabelText('Light from')).toHaveValue('07:00')
+    expect(screen.getByLabelText('Dark from')).toHaveValue('19:00')
+    expect(screen.getByTitle("Scheduled mode switches to light at this time, in this device's time zone.")).toBeInTheDocument()
+    expect(screen.getByTitle("Scheduled mode switches to dark at this time, in this device's time zone.")).toBeInTheDocument()
+    expect(screen.queryByTitle(FALLBACK_HINT)).toBeNull()
   })
 })
