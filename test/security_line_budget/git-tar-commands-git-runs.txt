@@ -1,0 +1,6 @@
++8
+The git/tar self-dial floor reads more of what git runs for a verb: `rebase`
+and `submodule foreach` are read in full, the glued value of a short `-u` or
+`-x` is read behind other short options too, and the transport-command
+environment is read on every verb. The added lines are the comments that say
+so and the two-line environment-name set.

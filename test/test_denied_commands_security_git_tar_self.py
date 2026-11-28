@@ -249,7 +249,7 @@ class TestSandboxEscapeGitTarSelf:
             "git request-pull HEAD git@github.com:o/r",
             "git fetch github.com:o/r",
             "GIT_SSH_COMMAND='ssh far.example.com' git maintenance run --task=prefetch",
-            "GIT_SSH_COMMAND='ssh localhost' git status",
+            "GIT_SSH_COMMAND='ssh -i key' git status",
         ],
     )
     def test_full_read_still_allows_local_work_and_other_hosts(self, cmd):
@@ -771,8 +771,8 @@ class TestSandboxEscapeGitTarSelf:
             "GIT_SSH_COMMAND='ssh localhost id #' true; git ls-remote far:x",
             # an export after the git command does not reach it
             "git ls-remote far:x; export GIT_SSH_COMMAND='ssh localhost id #'",
-            # a local verb runs no transport
-            "export GIT_SSH_COMMAND='ssh localhost id #'; git status",
+            # a local verb whose exported transport command dials no self host
+            "export GIT_SSH_COMMAND='ssh -i key'; git status",
             # an exported command that does not dial this host
             "export GIT_SSH_COMMAND='ssh -i key'; git ls-remote far:x",
             "GIT_SSH_COMMAND='ssh -i key' sh -c 'git ls-remote far:x'",
@@ -841,7 +841,7 @@ class TestSandboxEscapeGitTarSelf:
         'git commit -m "fix localhost:8080 bug"',
         'git commit -m "see ssh://localhost/x please"',
         "git status",
-        "GIT_SSH_COMMAND='ssh localhost' git status",
+        "GIT_SSH_COMMAND='ssh -i key' git status",
         "git log",
         "git log --grep=localhost:x",
         "git diff",
@@ -900,7 +900,7 @@ class TestSandboxEscapeGitTarSelf:
         "git config remote.origin.url localhost:x",
         "git remote -v",
         "git remote set-url --delete origin localhost:x",
-        "GIT_SSH_COMMAND='ssh localhost' git remote show -n origin",
+        "GIT_SSH_COMMAND='ssh -i key' git remote show -n origin",
         "git remote get-url localhost:x",
         "git remote remove localhost:x",
         "git remote rename localhost:x elsewhere",

@@ -40,11 +40,11 @@ from .shell_normalizer import _ends_argv, _strip_redirect
 
 # Subcommands (git 2.50 ``git help -a`` and ``git --exec-path``) that never open
 # a network transport themselves.  Every other verb -- a transport verb, an
-# unknown one, an alias from a config file, ``request-pull``, ``maintenance`` --
-# has its operands, config and transport environment read (fail closed).  ``archive``,
-# ``submodule`` and ``remote`` need a second-level classification below.
-# shortcut: a partial clone can lazily fetch a missing object under a local verb;
-# such a verb is still not read here.
+# unknown one, an alias from a config file, ``request-pull``, ``maintenance``,
+# ``rebase`` (its ``-x`` runs a command line) -- has its operands and config read
+# (fail closed).  ``archive``, ``submodule`` and ``remote`` need a second-level
+# classification below.  Every verb has its transport environment read: a
+# partial clone can lazily fetch a missing object under a local verb.
 _GIT_LOCAL_ONLY_VERBS: frozenset[str] = frozenset(
     {
         *("add", "am", "annotate", "apply", "bisect", "blame", "branch", "bugreport"),
@@ -59,7 +59,7 @@ _GIT_LOCAL_ONLY_VERBS: frozenset[str] = frozenset(
         *("merge-index", "merge-one-file", "merge-tree", "mktag", "mktree"),
         *("multi-pack-index", "mv", "name-rev", "notes", "pack-objects", "pack-redundant"),
         *("pack-refs", "patch-id", "prune", "prune-packed", "range-diff", "read-tree"),
-        *("rebase", "reflog", "refs", "repack", "replace", "replay", "rerere", "reset"),
+        *("reflog", "refs", "repack", "replace", "replay", "rerere", "reset"),
         *("restore", "rev-list", "rev-parse", "revert", "rm", "shortlog", "show"),
         *("show-branch", "show-index", "show-ref", "stage", "stash", "status"),
         *("stripspace", "switch", "symbolic-ref", "tag", "unpack-file", "unpack-objects"),
@@ -67,7 +67,8 @@ _GIT_LOCAL_ONLY_VERBS: frozenset[str] = frozenset(
         *("verify-pack", "verify-tag", "version", "whatchanged", "worktree", "write-tree"),
     }
 )
-# The other commands git ships (and ``lfs``), which can open a transport.  git
+# The other commands git ships (and ``lfs``), which can open a transport or run
+# a command line (``rebase -x``, ``difftool -x``) that can.  git
 # ignores an alias that would hide one of them, so its own argv is read even
 # when the invocation defines that alias; an unknown verb with an
 # invocation-local alias is read both as the alias it becomes and as typed.
@@ -83,8 +84,8 @@ _GIT_NON_LOCAL_COMMANDS: frozenset[str] = frozenset(
         *("hook", "http-backend", "http-fetch", "http-push", "imap-send", "instaweb"),
         *("lfs", "ls-remote", "maintenance", "merge-octopus", "merge-ours"),
         *("merge-recursive", "merge-resolve", "merge-subtree", "mergetool"),
-        *("mergetool--lib", "p4", "pull", "push", "quiltimport", "receive-pack", "remote"),
-        *("remote-ext", "remote-fd", "remote-ftp", "remote-ftps", "remote-http"),
+        *("mergetool--lib", "p4", "pull", "push", "quiltimport", "rebase", "receive-pack"),
+        *("remote", "remote-ext", "remote-fd", "remote-ftp", "remote-ftps", "remote-http"),
         *("remote-https", "request-pull", "scalar", "send-email", "send-pack"),
         *("sh-i18n", "sh-i18n--envsubst", "sh-setup", "shell", "sparse-checkout"),
         *("submodule", "submodule--helper", "svn", "upload-archive", "upload-pack"),
@@ -116,9 +117,10 @@ _GIT_NON_ESCAPE_SCHEMES: tuple[str, ...] = (
 )
 
 
-# git ssh-transport scheme aliases normalized to ``ssh://`` so the ssh floor's
-# operand resolver reads their authority (it models ``ssh://`` but not these).
-_GIT_SSH_SCHEME_ALIASES: tuple[str, ...] = ("git+ssh://", "ssh+git://")
+# git ssh-transport scheme aliases (and ``git svn``'s ``svn+ssh://``) normalized to
+# ``ssh://`` so the ssh floor's operand resolver reads their authority (it models
+# ``ssh://`` but not these).
+_GIT_SSH_SCHEME_ALIASES: tuple[str, ...] = ("git+ssh://", "ssh+git://", "svn+ssh://")
 
 
 def _git_remote_targets_self(operand: str) -> bool:
@@ -225,8 +227,10 @@ def _git_remote_candidates(token: str) -> "tuple[str, ...]":
     post-verb token is a candidate, so ``--opt value`` has its value read
     whatever the option.  The attached ``--opt=value`` therefore has its value
     read for every long option too (``--repo=``, ``--remote=``,
-    ``--upload-pack=``), and fetch's glued short ``-u<program>``.  Config
-    options are also classified separately with their key intact.
+    ``--upload-pack=``), and the glued value of a short ``-u`` / ``-x``, also
+    behind other short options (``-u<program>``, ``-x<command>``,
+    ``-ix<command>``).  Config options are also classified separately with
+    their key intact.
     """
     t = token.strip().strip("\"'")
     candidates = [t]
@@ -234,9 +238,10 @@ def _git_remote_candidates(token: str) -> "tuple[str, ...]":
         _, sep, attached = t.partition("=")
         if sep:
             candidates.append(attached)
-    if t.startswith("-u") and len(t) > 2:
-        short_tail = t[2:]
-        candidates.append(short_tail[1:] if short_tail.startswith("=") else short_tail)
+    elif t.startswith("-"):
+        for letter in "ux":
+            short_tail = t[t.find(letter, 1) + 1 :] if letter in t[1:] else ""
+            candidates.append(short_tail[1:] if short_tail.startswith("=") else short_tail)
     return tuple(candidate for candidate in candidates if candidate)
 
 
@@ -280,7 +285,8 @@ def _git_transport_modes(verb: str, tokens: "list[str]") -> "tuple[bool, bool]":
         opens = any(tok == "--remote" or tok.startswith("--remote=") for tok in options)
         return opens, opens
     if verb == "submodule":
-        opens = _git_nested_subcommand(tokens) in ("add", "update")
+        # ``foreach`` hands its command line to the shell in every submodule.
+        opens = _git_nested_subcommand(tokens) in ("add", "update", "foreach")
         return opens, opens
     if verb != "remote":
         return True, True

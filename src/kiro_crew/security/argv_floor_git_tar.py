@@ -154,9 +154,12 @@ if TYPE_CHECKING:
 
 
 # The config key (lower-cased) that hands git an arbitrary ssh-replacement
-# command, and the environment variables that choose a transport command.
+# command, and the environment variables that choose a transport command
+# (``SVN_SSH`` is the one ``git svn`` runs for ``svn+ssh://``).
 _GIT_SSHCOMMAND_CONFIG_PREFIX = "core.sshcommand="
-_GIT_SSH_ENV_NAMES: frozenset[str] = frozenset({"git_proxy_command", "git_ssh", "git_ssh_command"})
+_GIT_SSH_ENV_NAMES: frozenset[str] = frozenset(
+    {"git_proxy_command", "git_ssh", "git_ssh_command", "svn_ssh"}
+)
 
 
 def _frame_commands(source: str) -> "tuple[list[str], bool]":
@@ -517,7 +520,13 @@ def _git_command_targets_self(tokens: "list[str]", env: "dict[str, list[str]]") 
     parameters = env.get("git_config_parameters", [])
     cache: "dict[tuple[object, ...], Any]" = {}
 
-    opens_transport, inspect_remotes = _git_transport_modes(verb, command_tokens)
+    # A transport-command environment override is read on every verb: a local
+    # verb in a partial clone lazily fetches a missing object through it.
+    for name in _GIT_SSH_ENV_NAMES:
+        if any(_command_value_dials_self(_unmasked(value)) for value in env.get(name, ())):
+            return True
+
+    _, inspect_remotes = _git_transport_modes(verb, command_tokens)
     if not inspect_remotes or verb not in _GIT_NON_LOCAL_COMMANDS:
         bodies = _git_alias_bodies(
             verb, global_overrides, local_overrides, numbered_overrides, parameters, env, cache
@@ -551,13 +560,6 @@ def _git_command_targets_self(tokens: "list[str]", env: "dict[str, list[str]]") 
                 ):
                     return True
                 return alias_dials
-
-    if opens_transport:
-        # A transport-command environment override matters only when this
-        # invocation can run a transport.  Local verbs merely store/read data.
-        for name in _GIT_SSH_ENV_NAMES:
-            if any(_command_value_dials_self(_unmasked(value)) for value in env.get(name, ())):
-                return True
 
     # A transport invocation inspects every invocation-local config value as a
     # command git could run (``_sshcommand_config_dials_self`` is key-agnostic),
