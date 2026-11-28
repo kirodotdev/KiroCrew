@@ -19,6 +19,8 @@ vi.mock('../api/client', () => ({
     getFeishuConfig: mocks.getConfig,
     saveFeishuConfig: mocks.saveConfig,
     installFeishuSdk: mocks.installSdk,
+    // The desktop restart asks what is running first; nothing is, here.
+    confirmRestartWork: vi.fn(async () => {}),
     // The last case renders WeComPanel to prove the group section is opt-in;
     // it reads the same mocks, so its own shape is set per test.
     getWeComConfig: mocks.getConfig,

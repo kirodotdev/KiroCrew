@@ -635,36 +635,63 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
     if isinstance(force, web.Response):
         return force
     if not force:
-        census = _quiescence_of(state, quiet_window_secs=0.0)
-        if census is not None and isinstance(census.busy, int) and census.busy > 0:
-            counts = census.payload()
-            logger.info("Restart refused while work is in flight: %s", counts)
-            # Named for this answer only: the owner gate above admits the owner and
-            # a Shared Crew teammate, who both list every slot and cron job already.
-            holders, holders_more = census.named_holders()
-            return web.json_response(
-                {
-                    "ok": False,
-                    "error": (
-                        "Running work would be interrupted by a restart. "
-                        "Restart again once it has finished, or confirm to restart anyway."
-                    ),
-                    "code": "work_in_flight",
-                    "turns": counts["turns"],
-                    "background": counts["background"],
-                    "queued_messages": counts["queued_messages"],
-                    "pending_approvals": counts["pending_approvals"],
-                    "busy": counts["busy"],
-                    "quiet_remaining_secs": counts["quiet_remaining_secs"],
-                    "settle_remaining_secs": counts["settle_remaining_secs"],
-                    "holders": holders,
-                    "holders_more": holders_more,
-                    "force_available": True,
-                },
-                status=409,
-            )
+        refusal = _work_in_flight_response(state, status=409)
+        if refusal is not None:
+            return refusal
 
     return await _start_gateway_restart(state, force=force)
+
+
+async def api_gateway_restart_census(request: web.Request) -> web.Response:
+    """GET /api/restart — what a restart now would cut; restarts nothing.
+
+    For a restart control that does not end in ``POST /api/restart``: the desktop
+    app's own Restart gateway stops and respawns the gateway it runs, so it asks
+    here first. Answers ``200`` with the ``work_in_flight`` body
+    ``POST /api/restart {"force": false}`` refuses with while work is in flight,
+    or ``200 {"ok": true, "busy": 0, "holders": [], "holders_more": 0}`` otherwise.
+    """
+    owner_denied = await require_owner_dashboard_request(request, "update.restart_census")
+    if owner_denied is not None:
+        return owner_denied
+    work = _work_in_flight_response(request.app["state"], status=200)
+    if work is None:
+        return web.json_response({"ok": True, "busy": 0, "holders": [], "holders_more": 0})
+    return work
+
+
+def _work_in_flight_response(state: DashboardState, *, status: int) -> web.Response | None:
+    """The ``work_in_flight`` answer for the running work, or ``None`` when none runs."""
+    census = _quiescence_of(state, quiet_window_secs=0.0)
+    if census is None or not isinstance(census.busy, int) or census.busy <= 0:
+        return None
+    counts = census.payload()
+    if status == 409:
+        logger.info("Restart refused while work is in flight: %s", counts)
+    # Named for the owner gate's callers only: it admits the owner and a Shared
+    # Crew teammate, who both list every slot and cron job already.
+    holders, holders_more = census.named_holders()
+    return web.json_response(
+        {
+            "ok": False,
+            "error": (
+                "Running work would be interrupted by a restart. "
+                "Restart again once it has finished, or confirm to restart anyway."
+            ),
+            "code": "work_in_flight",
+            "turns": counts["turns"],
+            "background": counts["background"],
+            "queued_messages": counts["queued_messages"],
+            "pending_approvals": counts["pending_approvals"],
+            "busy": counts["busy"],
+            "quiet_remaining_secs": counts["quiet_remaining_secs"],
+            "settle_remaining_secs": counts["settle_remaining_secs"],
+            "holders": holders,
+            "holders_more": holders_more,
+            "force_available": True,
+        },
+        status=status,
+    )
 
 
 async def _start_gateway_restart(

@@ -123,3 +123,29 @@ async def test_route_is_owner_only(
         assert reached, f"owner control: the {route} side effect never ran"
     else:
         assert reached == [], f"{caller} reached the {route} side effect: {reached}"
+
+
+@pytest.mark.parametrize("caller", sorted(_CALLERS))
+async def test_the_restart_census_is_owner_only(caller: str) -> None:
+    """``GET /api/restart`` names running work, so it carries the restart's gate."""
+    claims, expected = _CALLERS[caller]
+    reached: list[str] = []
+
+    @web.middleware
+    async def _claims(request: web.Request, handler: Callable) -> web.StreamResponse:
+        for key, value in claims.items():
+            request[key] = value
+        return await handler(request)
+
+    def _probe(**_kw: object) -> None:
+        reached.append("census")
+
+    app = web.Application(middlewares=[_claims])
+    app["state"] = SimpleNamespace(owner_id=OWNER, _quiescence_probe=_probe)
+    app.router.add_get("/api/restart", updates.api_gateway_restart_census)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/api/restart")
+        text = await resp.text()
+
+    assert resp.status == expected, f"{caller}: {resp.status} {text}"
+    assert reached == (["census"] if expected == 200 else [])

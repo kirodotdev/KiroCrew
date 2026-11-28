@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
+import { api } from '../../api/client'
 import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
+import { WorkConfirmDeclined } from '../../utils/workInFlight'
 import { RestartGatewayButton } from './AboutPanelUpdateFlow'
 
 /**
@@ -12,6 +14,8 @@ import { RestartGatewayButton } from './AboutPanelUpdateFlow'
  * electron/runtime/gateway/user-restart.js). So the control is shown only where
  * the app says its restart works: the main window, connected to a gateway this
  * app started. A remote crew, an adopted gateway and a browser tab never see it.
+ * Before the app stops it, `GET /api/restart` says what is running, and the
+ * person confirms as on every other restart control (`api.confirmRestartWork`).
  *
  * `available` is read by the panel too: where it is true, the gateway-side
  * restart controls stand down so the card shows one.
@@ -34,19 +38,25 @@ export function useDesktopGatewayRestart() {
   }, [])
 
   const restart = useCallback(async () => {
-    const api = window.gatewayRestartAPI
-    if (!api) return
+    const bridge = window.gatewayRestartAPI
+    if (!bridge) return
     setPending(true)
     setError('')
     try {
+      // The same "Work is still running" warning every other restart control
+      // shows, read from the gateway before the app stops it. A read that fails
+      // restarts nothing and says so below.
+      await api.confirmRestartWork()
       // "restarting" replaces this page with the app's splash, so the button
       // stays busy until the page goes.
-      if ((await api.restart()) === 'restarting') {
+      if ((await bridge.restart()) === 'restarting') {
         setRestarting(true)
         return
       }
       setError(i18nT('pages.settings.aboutPanel.desktop_restart_unavailable'))
-    } catch {
+    } catch (err) {
+      // A "no" is a quiet cancel.
+      if (err instanceof WorkConfirmDeclined) return
       setError(i18nT('pages.settings.aboutPanel.desktop_restart_unavailable'))
     } finally {
       setPending(false)

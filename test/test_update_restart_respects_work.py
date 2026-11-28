@@ -624,6 +624,50 @@ async def test_the_restart_endpoint_rejects_a_malformed_confirmation(gateway, mo
     restarted.assert_not_awaited()
 
 
+# -- GET /api/restart ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_restart_census_names_the_work_and_restarts_nothing(gateway, monkeypatch):
+    """The desktop app's own Restart gateway asks this before it stops the gateway."""
+    gateway.running_turn()
+    gateway.orch._running_script_ids.add("job-7f3a")
+    gateway.orch.cron_svc = SimpleNamespace(
+        get_job=lambda _id: SimpleNamespace(name="nightly-sync"),
+        running_since=lambda _id: None,
+    )
+    restarted = _restart_endpoint(gateway, monkeypatch)
+
+    resp = await updates.api_gateway_restart_census(_wired_request(gateway))
+
+    assert resp.status == 200
+    body = _json(resp)
+    assert body["code"] == "work_in_flight"
+    assert body["turns"] == 1 and body["background"] == 1
+    assert ("script", "nightly-sync") in {(h["kind"], h["name"]) for h in body["holders"]}
+    assert not gateway.state._background_tasks
+    restarted.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_restart_census_of_an_idle_gateway_says_nothing_runs(gateway, monkeypatch):
+    restarted = _restart_endpoint(gateway, monkeypatch)
+
+    resp = await updates.api_gateway_restart_census(_wired_request(gateway))
+
+    assert resp.status == 200
+    assert _json(resp) == {"ok": True, "busy": 0, "holders": [], "holders_more": 0}
+    restarted.assert_not_awaited()
+
+
+def test_the_restart_census_route_is_labelled_and_served():
+    from kiro_crew.dashboard import handlers
+    from kiro_crew.dashboard.route_access import ROUTES
+
+    assert ROUTES[("GET", "/api/restart")].action == "update.restart_census.read"
+    assert handlers.api_gateway_restart_census is updates_apply.api_gateway_restart_census
+
+
 # -- the confirmation reaches the restart, never more ---------------------------------
 
 

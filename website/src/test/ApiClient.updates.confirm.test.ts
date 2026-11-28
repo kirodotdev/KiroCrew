@@ -175,6 +175,52 @@ describe('restartGateway', () => {
   })
 })
 
+describe('confirmRestartWork', () => {
+  it('reads GET /api/restart, posts nothing, and asks nothing when nothing is running', async () => {
+    const ask = stubAppConfirm(true)
+    fetchMock.mockResolvedValue(res(200, { ok: true, busy: 0, holders: [], holders_more: 0 }))
+
+    await expect(api.confirmRestartWork()).resolves.toBeUndefined()
+
+    expect(fetchMock.mock.calls.map(([url, init]) => [url, (init as RequestInit | undefined)?.method ?? 'GET']))
+      .toEqual([['/api/restart', 'GET']])
+    expect(ask).not.toHaveBeenCalled()
+  })
+
+  it('shows the same warning, naming the work, and resolves once the person confirms', async () => {
+    const ask = stubAppConfirm(true)
+    fetchMock.mockResolvedValue(res(200, {
+      ...WORK,
+      holders: [{ kind: 'script', name: 'nightly-sync', since_secs: 21, count: 1 }],
+      holders_more: 0,
+    }))
+
+    await expect(api.confirmRestartWork()).resolves.toBeUndefined()
+
+    expect(ask).toHaveBeenCalledTimes(1)
+    const text = confirmText(ask.mock.calls[0][0])
+    expect(text).toContain(i18nT('components.updateFoundModal.work_running_title'))
+    expect(text).toContain('nightly-sync')
+    expect(ask.mock.calls[0][0].confirmLabel).toBe(i18nT('components.updateFoundModal.restart_anyway'))
+  })
+
+  it('throws WorkConfirmDeclined when the person declines', async () => {
+    stubAppConfirm(false)
+    fetchMock.mockResolvedValue(res(200, WORK))
+
+    await expect(api.confirmRestartWork()).rejects.toBeInstanceOf(WorkConfirmDeclined)
+  })
+
+  it('throws, never resolves, when the gateway cannot answer', async () => {
+    const ask = stubAppConfirm(true)
+    fetchMock.mockResolvedValueOnce(res(503, { error: 'unavailable' }))
+    await expect(api.confirmRestartWork()).rejects.toBeInstanceOf(ApiError)
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    await expect(api.confirmRestartWork()).rejects.toBeInstanceOf(TypeError)
+    expect(ask).not.toHaveBeenCalled()
+  })
+})
+
 describe('applyUpdate', () => {
   it('arms the update for the next start and never confirms, whatever is running', async () => {
     const ask = stubAppConfirm(true)

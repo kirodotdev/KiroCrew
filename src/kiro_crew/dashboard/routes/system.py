@@ -95,6 +95,9 @@ def register(app: web.Application) -> None:
     # restart is valid everywhere and is how a wheel install picks up code a
     # terminal-run installer already replaced on disk.
     app.router.add_post("/api/restart", handlers.api_gateway_restart)
+    # What that restart would cut, read without restarting: the desktop app's own
+    # Restart gateway, which stops and respawns the gateway instead, asks it first.
+    app.router.add_get("/api/restart", handlers.api_gateway_restart_census)
     # The idle check `kirocrew restart --when-idle` asks before restarting.
     # Host-only: a strict internal path, re-asserted by the handler.
     app.router.add_post("/api/restart/when-idle", restart_gate_handlers.api_restart_when_idle)
