@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { sessionControlContext } from '../pages/chat/page/sessionControls'
+import { sessionControlContext } from '../hooks/composerSessionControls'
 import type { ChatSlot } from '../types'
 
 vi.mock('../api/client', () => ({ api: {} }))

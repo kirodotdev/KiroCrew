@@ -44,6 +44,7 @@ describe('ChatPane module boundary', () => {
     expect(OWNERS).toEqual([
       'ChatPanePickerMenus.tsx',
       'ChatPaneProps.ts',
+      'ChatPaneSessionControls.tsx',
       'ChatPaneTranscript.tsx',
       'useChatPaneContinue.ts',
       'useChatPaneDraft.ts',

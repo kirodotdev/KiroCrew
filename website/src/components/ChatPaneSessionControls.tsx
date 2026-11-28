@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 
-import { sessionControlContext, useComposerSessionControls, useSessionControlChips } from '../pages/chat/page/sessionControls'
+import { sessionControlContext, useComposerSessionControls, useSessionControlChips } from '../hooks/composerSessionControls'
 import type { ChatInputProps } from './chat-input/props'
 import ErrorNotice from './ErrorNotice'
 import SessionControlHost from './SessionControlHost'
