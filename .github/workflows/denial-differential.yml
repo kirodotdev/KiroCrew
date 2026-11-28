@@ -130,6 +130,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
 
           # `git archive` needs the OBJECTS, not just the refs. fetch-depth: 0
@@ -157,12 +158,12 @@ jobs:
           # `git ls-tree` prints nothing and exits 0 for an absent path, and
           # exits non-zero when the tree cannot be read.
           if ! listed="$(git ls-tree --name-only "$BASE_SHA" -- "$corpus_path")"; then
-            echo "::error::Could not read the base commit's tree ($BASE_SHA) for $corpus_path. Failing closed rather than classifying against the change's own corpus."
+            err "Could not read the base commit's tree ($BASE_SHA) for $corpus_path. Failing closed rather than classifying against the change's own corpus."
             exit 1
           fi
           if [ -n "$listed" ]; then
             if ! git show "$BASE_SHA:$corpus_path" > corpus.json; then
-              echo "::error::$corpus_path is on the base commit ($BASE_SHA) but could not be read. Failing closed rather than classifying against the change's own corpus."
+              err "$corpus_path is on the base commit ($BASE_SHA) but could not be read. Failing closed rather than classifying against the change's own corpus."
               exit 1
             fi
           elif [ -f "$corpus_path" ]; then
@@ -173,7 +174,7 @@ jobs:
             owner="head"
             cp "$corpus_path" corpus.json
           else
-            echo "::error::No golden-paths corpus at $corpus_path -- nothing to classify."
+            err "No golden-paths corpus at $corpus_path -- nothing to classify."
             {
               echo "### Denial differential"
               echo
@@ -212,7 +213,7 @@ jobs:
 
           if [ "$rc" = "2" ]; then
             # A differential that could not run is not a pass.
-            echo "::error::deny_diff could not run (corpus or ref error) -- see the job summary."
+            err "deny_diff could not run (corpus or ref error) -- see the job summary."
             {
               echo
               echo "**The differential did not run.** A corpus or ref error is not a pass."
@@ -228,5 +229,5 @@ jobs:
             echo "PR changes no rule, so this gate is green on it, and this PR's base then no"
             echo "longer carries the row."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::error::Newly-refused golden paths -- see the job summary."
+          err "Newly-refused golden paths -- see the job summary."
           exit 1

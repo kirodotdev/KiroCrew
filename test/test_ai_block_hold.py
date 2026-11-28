@@ -620,4 +620,4 @@ class TestTheScriptMatchesWhatTheLanesPublish:
         for workflow, lane in (("claude-review.yml", _OPUS), ("codex-review.yml", _GPT)):
             model = lane.removesuffix(" Review")
             text = (_WORKFLOWS / workflow).read_text(encoding="utf-8")
-            assert f'echo "::error::{model} {phrase} $HEAD ' in text, workflow
+            assert f'err "{model} {phrase} $HEAD ' in text, workflow

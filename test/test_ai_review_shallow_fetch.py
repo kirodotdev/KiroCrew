@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 import yaml
 from git_maintenance_helpers import git_maintenance_off_entries
+from workflow_annotation_helpers import annotation_helpers
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -443,7 +444,8 @@ def _compat_block(lane: str) -> str:
     )
     end = next(i for i in range(start + 1, len(lines)) if lines[i] == "fi") + 1
     assert start < end, lane
-    return "set -uo pipefail\n" + "\n".join(lines[start:end]) + "\n"
+    helpers = annotation_helpers("\n".join(lines))
+    return "set -uo pipefail\n" + helpers + "\n".join(lines[start:end]) + "\n"
 
 
 @pytest.mark.parametrize("lane", sorted(_EVIDENCE_STEP))

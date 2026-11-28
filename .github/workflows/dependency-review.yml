@@ -107,8 +107,10 @@ jobs:
           # license it found: the action sets this output only after that read.
           LICENSE_FINDING: ${{ fromJSON(steps.review_retry.outputs.invalid-license-changes || '{}').forbidden[0] != null || fromJSON(steps.review_retry.outputs.invalid-license-changes || '{}').unresolved[0] != null }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           if [ "$RETRY" = "success" ]; then
-            echo "::warning::The first dependency review failed and the retry passed;" \
+            warn "The first dependency review failed and the retry passed;" \
                  "the first failure was transient."
             exit 0
           fi
@@ -117,7 +119,7 @@ jobs:
           # is the action's own verdict on the dependencies.
           err="${RUNNER_TEMP:-/tmp}/dep-graph-probe.txt"
           if [ "${LICENSE_FINDING:-}" = "true" ]; then
-            echo "::error::Dependency review failed twice and the retry reported a license" \
+            err "Dependency review failed twice and the retry reported a license" \
                  "it does not accept, so this is the action's license verdict: see its summary above."
             exit 1
           fi
@@ -126,7 +128,7 @@ jobs:
           # not count against the quota.
           left="$(gh api rate_limit --jq '.resources.core.remaining' 2>/dev/null || true)"
           if [[ "$left" =~ ^[0-9]+$ ]] && [ "$left" -lt 100 ]; then
-            echo "::error::Dependency review could not run: the GitHub API rate limit is" \
+            err "Dependency review could not run: the GitHub API rate limit is" \
                  "spent (${left} REST requests left). This is CI infrastructure, not a" \
                  "license finding and not the code under review; re-run this job after" \
                  "the reset."
@@ -135,7 +137,7 @@ jobs:
           for attempt in 1 2 3; do
             if gh api --method GET "repos/$REPO/dependency-graph/compare/$BASE...$HEAD" \
                 --silent 2>"$err"; then
-              echo "::error::Dependency review failed twice while the dependency-graph" \
+              err "Dependency review failed twice while the dependency-graph" \
                    "API answers, so this is the action's license verdict: see its summary above."
               exit 1
             fi
@@ -143,13 +145,13 @@ jobs:
           done
           answer="$(head -c 300 "$err" | tr '\n' ' ')"
           if grep -qi 'rate limit' "$err"; then
-            echo "::error::Dependency review could not run: the GitHub API rate limit is" \
+            err "Dependency review could not run: the GitHub API rate limit is" \
                  "spent and did not reset inside this job's wait budget (${answer})." \
                  "This is CI infrastructure, not a license finding and not the code" \
                  "under review; re-run this job after the reset."
             exit 1
           fi
-          echo "::error::Dependency review could not run: GitHub's dependency-graph API" \
+          err "Dependency review could not run: GitHub's dependency-graph API" \
                "does not answer for this PR (${answer:-no output}). This is not a license" \
                "finding; re-run this job once the API recovers."
           exit 1
