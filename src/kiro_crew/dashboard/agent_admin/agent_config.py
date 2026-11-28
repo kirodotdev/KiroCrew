@@ -525,7 +525,15 @@ async def api_agent_config(request: web.Request) -> web.Response:
             raise
         except Exception as exc:
             return _err500(exc)
-    # GET
+    # GET. The installed spec carries every MCP server's ``env`` and ``headers``
+    # values unmasked: the Agent config tab edits this JSON raw and PUTs it back,
+    # so a redaction marker here would overwrite the real value. Only the owner
+    # and an admitted teammate read it.
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    denied = await require_owner_for_dashboard_caller(request, "agent_config.read")
+    if denied is not None:
+        return denied
 
     def _read_agent_config() -> Any:
         # Prefer installed config (what kiro-cli reads); fall back to defaults.
@@ -555,8 +563,8 @@ async def api_agent_config(request: web.Request) -> web.Response:
             {"error": "agent config is busy; retry", "code": "config_busy"}, status=503
         )
     # A pre-registered Connections client projects its secret into the installed
-    # spec for kiro-cli; this read is not kiro-cli, and any dashboard subject can
-    # make it. Mask the value (the PUT branch restores the marker from disk).
+    # spec for kiro-cli; this read is not kiro-cli, and nothing reading it needs
+    # the value. Mask it (the PUT branch restores the marker from disk).
     from kiro_crew.mcp_utils import redact_oauth_client_secrets
 
     return web.json_response(redact_oauth_client_secrets(data))

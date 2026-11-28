@@ -166,13 +166,44 @@ def _reorder_named(entries: list[Any], ordered: Sequence[str]) -> list[Any]:
     return reordered
 
 
+def _redact_mcp_server_secrets(spec: dict[str, Any]) -> dict[str, Any]:
+    """A copy of *spec* whose ``mcpServers[].env`` and ``headers`` keep names, not values.
+
+    Those values are usually credentials. This read never needs them: the
+    PATCH refuses ``mcpServers`` (``TEMPLATE_READ_ONLY_KEYS``), so nothing here
+    writes a redaction marker back, and the pane shows only how a server runs.
+    """
+    from kiro_crew.mcp_discovery import redact_mcp_headers
+
+    servers = spec.get("mcpServers")
+    if not isinstance(servers, dict):
+        return spec
+    redacted: dict[str, Any] = {}
+    for server, entry in servers.items():
+        if isinstance(entry, dict):
+            entry = {
+                **entry,
+                **{
+                    key: redact_mcp_headers(entry[key])
+                    for key in ("env", "headers")
+                    if key in entry
+                },
+            }
+        redacted[server] = entry
+    return {**spec, "mcpServers": redacted}
+
+
 async def api_agent_detail(request: web.Request) -> web.Response:
     """GET/PATCH /api/agents/detail/{name} — view or update agent config."""
     name = request.match_info["name"]
     if request.method != "GET":
         denied = await _require_owner(request, f"agent_detail.{request.method.lower()}")
-        if denied is not None:
-            return denied
+    else:
+        from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+        denied = await require_owner_for_dashboard_caller(request, "agent_detail.get")
+    if denied is not None:
+        return denied
     # Parse body early so a malformed body returns 400, not 404 from the file loop.
     patch_body = None
     if request.method == "PATCH":
@@ -612,9 +643,10 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                 state,
                 _read_session_key(request),
             )
-            # The spec is otherwise passed through verbatim, so mask the one
-            # value in it that is a credential (a pre-registered Connections
-            # client's projected secret); this read is not owner-gated.
+            # The spec is otherwise passed through verbatim, so mask the values
+            # in it that are credentials: a pre-registered Connections client's
+            # projected secret, and every MCP server's ``env`` and ``headers``
+            # values (``_redact_mcp_server_secrets``).
             from kiro_crew.acp_backends import ACP_BACKEND_KAS
             from kiro_crew.config import KiroCrewConfig
             from kiro_crew.dashboard.agent_no_tools_notice import (
@@ -629,7 +661,7 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                 session_lists_tools = await asyncio.to_thread(session_spec_lists_tools, name, data)
             return web.json_response(
                 {
-                    **redact_oauth_client_secrets(data),
+                    **_redact_mcp_server_secrets(redact_oauth_client_secrets(data)),
                     # The rest of the spec is passed through verbatim, but
                     # these two are CONSUMED as display text by the detail
                     # panel. A foreign spec's structured value rendered as a

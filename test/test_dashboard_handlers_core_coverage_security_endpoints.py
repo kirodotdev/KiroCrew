@@ -155,7 +155,7 @@ class TestSelEndpoints:
     @pytest.mark.asyncio
     async def test_verify_reports_intact_chain(self, fake_sel) -> None:
         fake_sel.verify_integrity.return_value = _SelVerification(7, 7, True, "")
-        body = json.loads((await core_mod.api_sel_verify(_req())).body)
+        body = json.loads((await core_mod.api_sel_verify(self._owner_req())).body)
         assert body == {
             "total": 7,
             "valid": 7,
@@ -168,7 +168,7 @@ class TestSelEndpoints:
     @pytest.mark.asyncio
     async def test_verify_reports_tampering(self, fake_sel) -> None:
         fake_sel.verify_integrity.return_value = _SelVerification(7, 5, True, "")
-        body = json.loads((await core_mod.api_sel_verify(_req())).body)
+        body = json.loads((await core_mod.api_sel_verify(self._owner_req())).body)
         assert body["integrity"] == "compromised"
         assert body["tampered"] == 2
 
@@ -178,7 +178,7 @@ class TestSelEndpoints:
         fake_sel.verify_integrity.return_value = _SelVerification(
             7, 7, False, "segment directory refused to pin (planted link?)"
         )
-        body = json.loads((await core_mod.api_sel_verify(_req())).body)
+        body = json.loads((await core_mod.api_sel_verify(self._owner_req())).body)
         assert body["integrity"] == "unverifiable"
         assert "refused" in body["detail"]
 
@@ -187,7 +187,7 @@ class TestSelEndpoints:
         """The writer's lost-batch counter is surfaced next to the chain verdict."""
         fake_sel.verify_integrity.return_value = _SelVerification(7, 7, True, "")
         fake_sel.dropped_events = 4
-        body = json.loads((await core_mod.api_sel_verify(_req())).body)
+        body = json.loads((await core_mod.api_sel_verify(self._owner_req())).body)
         assert body["dropped_events"] == 4
 
 
@@ -209,7 +209,9 @@ class TestSecurityStats:
                 }
             ),
         )
-        body = json.loads((await core_mod.api_security_stats(_req())).body)
+        body = json.loads(
+            (await core_mod.api_security_stats(_req(app=TestSelEndpoints._OWNER_APP))).body
+        )
         assert body == {
             "denied_commands": 42,
             "suspicious_patterns": 3,
@@ -225,7 +227,9 @@ class TestSecurityStats:
             AsyncMock(side_effect=OSError("unreadable")),
         )
         monkeypatch.setattr(core_mod, "posture_counts_async", AsyncMock(return_value={}))
-        body = json.loads((await core_mod.api_security_stats(_req())).body)
+        body = json.loads(
+            (await core_mod.api_security_stats(_req(app=TestSelEndpoints._OWNER_APP))).body
+        )
         assert body["denied_commands"] == 0
         assert body["suspicious_patterns"] is None
 

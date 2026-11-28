@@ -696,6 +696,11 @@ async def api_mcp_custom_get(request: web.Request) -> web.Response:
     are redaction markers that a PUT resolves back to the stored values.
     Reads the same scope PUT writes.
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    denied = await require_owner_for_dashboard_caller(request, "mcp_custom_get")
+    if denied is not None:
+        return denied
     name = request.match_info.get("name", "")
     if not _is_valid_mcp_name(name):
         return web.json_response({"error": f"invalid server name '{name[:64]}'"}, status=400)
