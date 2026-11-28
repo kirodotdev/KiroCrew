@@ -197,3 +197,25 @@ describe('dedupResourceLinks', () => {
       .toBe('https://host.example/nonreviews/CR-1')
   })
 })
+
+describe('extractChatLinks bare URL characters', () => {
+  const urls = (content: string) => extractChatLinks([msg('assistant', content)]).map((l) => l.url)
+
+  it.each([
+    ['a port', 'Docs at https://wiki.example.com:8443/docs/start for now', 'https://wiki.example.com:8443/docs/start'],
+    ['a colon', 'See https://en.wikipedia.org/wiki/Special:Search for it', 'https://en.wikipedia.org/wiki/Special:Search'],
+    ['a percent escape', 'Open https://example.com/files/a%20b.pdf please', 'https://example.com/files/a%20b.pdf'],
+    ['a plus', 'Build https://ci.example.com/job/a+b/12/ done', 'https://ci.example.com/job/a+b/12/'],
+    ['a plus in a query', 'Search https://example.com/search?q=a+b&page=2 for it', 'https://example.com/search?q=a+b&page=2'],
+    ['a tilde', 'Home https://example.com/~bob/page ok', 'https://example.com/~bob/page'],
+    ['an at sign', 'Pkg https://example.com/path/@scope/pkg ok', 'https://example.com/path/@scope/pkg'],
+  ])('keeps %s in a bare URL', (_name, text, expected) => {
+    expect(urls(text)).toEqual([expected])
+  })
+
+  it('still drops the punctuation that ends a sentence', () => {
+    expect(urls('Report: https://example.com/report?id=7&lang=en.')).toEqual(['https://example.com/report?id=7&lang=en'])
+    expect(urls('Repo https://github.com/org/repo/pull/12, merged')).toEqual(['https://github.com/org/repo/pull/12'])
+    expect(urls('Is it https://example.com/docs: yes')).toEqual(['https://example.com/docs'])
+  })
+})
