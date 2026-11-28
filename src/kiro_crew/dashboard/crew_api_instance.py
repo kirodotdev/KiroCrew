@@ -33,7 +33,7 @@ from aiohttp import web
 
 from kiro_crew.config.paths import data_home
 from kiro_crew.dashboard.crew_api_auth import OWNER_ONLY_PUBLIC_ROUTES
-from kiro_crew.dashboard.crew_api_errors import CREW_API_VERSION
+from kiro_crew.dashboard.crew_api_errors import CREW_API_VERSION, contract_error, request_id_for
 from kiro_crew.dashboard.crew_api_grant_requests import _host_owner_refusal
 from kiro_crew.dashboard.crew_api_models import models_for_grant, usable_models_off_loop
 from kiro_crew.dashboard.crew_api_owner import owner_route
@@ -115,7 +115,17 @@ async def _info(request: web.Request) -> web.Response:
     denied = await _refusal(request, INFO_PATH)
     if denied is not None:
         return denied
-    instance_id = await asyncio.to_thread(_instance_id)
+    try:
+        instance_id = await asyncio.to_thread(_instance_id)
+    except OSError:
+        # The kept ID could not be read (another program holds the file): answering
+        # with a new one would show the caller an identity the relay never sees.
+        return contract_error(
+            503,
+            "instance_unavailable",
+            "the instance ID cannot be read right now",
+            request_id_for(request),
+        )
     return web.json_response({"id": instance_id, "form": FORM, "api_version": CREW_API_VERSION})
 
 

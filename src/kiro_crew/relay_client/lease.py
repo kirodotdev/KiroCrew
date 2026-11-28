@@ -380,17 +380,26 @@ def crew_instance_id(home: Path) -> str:
 
     Kept across restarts, because a team Crew whose instance changes waits for the
     old lease to free (``IDENTITY_IN_USE``). Blocking: call it in a thread.
+
+    Only a missing or damaged file makes a new ID. Any other ``OSError`` (a Windows
+    sharing violation that outlasts the retry, a denied read) propagates: a new ID
+    would replace a kept one the file still holds.
     """
+    from kiro_crew.atomic_write import read_bytes_with_retry
+
     path = home / INSTANCE_ID_FILE
     # One reader makes the ID: the lease and GET /v1/crew/info both call this, and two
     # first reads side by side would each make one and answer with different values.
     with _INSTANCE_ID_LOCK:
         try:
-            return str(uuid.UUID(path.read_text(encoding="ascii").strip()))
+            raw = read_bytes_with_retry(path)
         except FileNotFoundError:
-            pass
-        except (OSError, ValueError):
-            logger.warning("the relay's crew instance ID file is unreadable; making a new one")
+            raw = None
+        if raw is not None:
+            try:
+                return str(uuid.UUID(raw.decode("ascii").strip()))
+            except ValueError:
+                logger.warning("the relay's crew instance ID file is damaged; making a new one")
         if path in _UNSAVED_INSTANCE_IDS:
             return _UNSAVED_INSTANCE_IDS[path]
         value = str(uuid.uuid4())
@@ -939,7 +948,15 @@ class LeaseHostTokenSource:
         self._cannot_host_said = ""
         home = self._home if self._home is not None else _data_home()
         if self._instance_id is None:
-            self._instance_id = await asyncio.to_thread(crew_instance_id, home)
+            try:
+                self._instance_id = await asyncio.to_thread(crew_instance_id, home)
+            except OSError as exc:
+                # Held by another program or not readable: read it again on the
+                # backoff steps rather than send a new identity for the whole run.
+                self._back_off(
+                    f"the relay's crew instance ID file {home / INSTANCE_ID_FILE} "
+                    f"could not be read ({type(exc).__name__})"
+                )
             self._lease_version = await asyncio.to_thread(
                 stored_lease_version, home, self._instance_id
             )
