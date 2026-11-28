@@ -180,9 +180,12 @@ _BINDS_NO_CHILD: frozenset[str] = frozenset(
 )
 
 #: The :data:`CREW_SPEC_DENIES_KEY` fields that only grant: what the gate answers
-#: once the record's denies are checked. It empties them for a sub-agent's request
+#: once the record's denies are checked, and ``askedCommands``, which only narrows
+#: them (its rules travel to the engine). It empties them for a sub-agent's request
 #: (``spec_denied_grant.denies_only``).
-_RECORD_GRANTS: frozenset[str] = frozenset({"builtins", "commands", "webFetchTrusted"})
+_RECORD_GRANTS: frozenset[str] = frozenset(
+    {"builtins", "commands", "webFetchTrusted", "askedCommands"}
+)
 
 #: Every other field of that record refuses, with the one value under which it
 #: refuses nothing. A field named in neither, and a value of another type, count

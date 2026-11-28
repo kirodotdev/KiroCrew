@@ -496,6 +496,10 @@ def denied_grant_applies(call: ToolCall, names: tuple[str, ...]) -> bool:
     if shell and grant.denied_commands:
         if allowed_commands.denied_match(grant.denied_commands, call.command) is not False:
             return False
+    if shell and grant.asked_commands:
+        # A scoped shell ask: a command it may match keeps its prompt.
+        if allowed_commands.denied_match(grant.asked_commands, call.command) is not False:
+            return False
     if _is_write(call, names) and grant.denied_write_paths:
         if _write_denied(call, grant) is not False:
             return False

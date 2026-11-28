@@ -367,6 +367,7 @@ _EMPTY_RECORD: dict[str, Any] = {
     "webFetchBlocked": [],
     "webFetchBlockedComplete": True,
     "webFetchTrusted": [],
+    "askedCommands": [],
 }
 
 #: field -> (a value that makes the field count, whether the agent still joins).
@@ -374,6 +375,7 @@ _RECORD_FIELDS: dict[str, tuple[Any, bool]] = {
     "builtins": (["execute_bash"], True),
     "commands": (["ls"], True),
     "webFetchTrusted": (["https://docs.example.com/"], True),
+    "askedCommands": (["sudo .*"], True),
     "deniedCommands": (["rm .*"], False),
     "deniedPaths": (["/secret/**"], False),
     "webFetchBlocked": (["https://internal.example.com/admin"], False),
@@ -389,6 +391,7 @@ def test_the_judged_fields_are_every_field_the_projection_writes():
             "fs_write": {"deniedPaths": ["secret/**"]},
             "web_fetch": {"blocked": [_BLOCKED_URL], "trusted": [_TRUSTED_URL]},
         },
+        "permissions": {"rules": [{"capability": "shell", "match": ["sudo *"], "effect": "ask"}]},
     }
     record = kas_spec_denies.spec_denies_record(
         spec,

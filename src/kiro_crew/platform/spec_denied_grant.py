@@ -37,6 +37,10 @@ class SpecDeniedGrant:
     every entry, and *web_fetch_trusted* holds the plain-URL ``web_fetch.trusted``
     entries it grants by. ``web_fetch`` in *builtins* grants a fetch no blocked
     entry reaches.
+
+    *asked_commands* are the ``match`` globs of the spec's scoped shell ``ask`` /
+    ``deny`` rules, as ``allowedCommands``-style patterns: a shell grant here holds
+    only for a command none of them may match, so the rest keep prompting.
     """
 
     builtins: frozenset[str] = frozenset()
@@ -47,6 +51,7 @@ class SpecDeniedGrant:
     web_fetch_blocked: tuple[str, ...] = ()
     web_fetch_blocked_complete: bool = True
     web_fetch_trusted: tuple[str, ...] = ()
+    asked_commands: tuple[str, ...] = ()
 
 
 def denies_only(value: Any) -> SpecDeniedGrant | None:
