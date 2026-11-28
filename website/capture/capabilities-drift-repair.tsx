@@ -1,25 +1,28 @@
 /**
- * Capture page for the Capabilities pane's drift repair path (PR #13523).
+ * Capture page for the Bot editor's drift repair path (PR #13523).
  *
  * Scenes (`?scene=`):
  *   errorcard -- the chat error row a `materialization_changed` session start
  *                leaves behind: the `capabilities_changed` prose and the Open
- *                Capabilities button that is this path's entry point.
- *   drift     -- the member's agent file changed outside the page: the notice names
- *                the Review changes button, which is enabled with no edit.
- *   refused   -- the same pane after Review + Save on a file whose drift sits in a
- *                setting the page cannot show: the 409 `unreviewable_drift` refusal
- *                names the file beside the disabled Review changes button. The runner
- *                performs the clicks.
+ *                Customize button that is this path's entry point.
+ *   drift     -- the member's agent file changed outside the page: the Approvals
+ *                section's notice names the Review change button, which is enabled
+ *                with no edit.
+ *   refused   -- the same section after Review + Save on a file whose drift sits in
+ *                a setting the page cannot show: the 409 `unreviewable_drift`
+ *                refusal leaves the save-failed notice. The runner performs the
+ *                clicks.
  *
- * A capture page has no gateway behind it, so the pane's three calls are answered
- * here with the shapes the backend returns.
+ * A capture page has no gateway behind it, so the section's three calls are
+ * answered here with the shapes the backend returns.
  */
+import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { initI18n } from '../src/i18n'
-import CrewCapabilitiesPane from '../src/components/crew/CrewCapabilitiesPane'
+import CrewApprovalsEditor from '../src/components/crew/CrewApprovalsEditor'
+import type { CapabilityPreview } from '../src/api/crewCapabilities'
 import { ErrorCard } from '../src/pages/chat/ErrorCard'
 import '../src/index.css'
 
@@ -32,7 +35,7 @@ document.documentElement.setAttribute('data-theme', theme)
 
 /** The chat error row as the host renders it: `meta.code` is the backend's
  *  stamp and `onOpenCapabilities` is the host's deep link into this member's
- *  pane. The wire text is the gateway's own sentence; the card shows the
+ *  editor. The wire text is the gateway's own sentence; the card shows the
  *  catalog copy instead, so what is photographed is the string the user reads. */
 const errorCardScene = (
   <div style={{ background: 'var(--bg)', color: 'var(--text)', padding: 24 }} data-capture-root>
@@ -81,16 +84,32 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
 
-const paneScene = (
+/** The Bot editor dialog owns the approvals draft and its preview; this stands in
+ *  for it so the section renders as the dialog mounts it. */
+function ApprovalsSection() {
+  const [pending, setPending] = useState<Record<string, boolean>>({})
+  const [preview, setPreview] = useState<CapabilityPreview | null>(null)
+  return (
+    <CrewApprovalsEditor
+      member="atlas-writer"
+      pending={pending}
+      setPending={setPending}
+      preview={preview}
+      setPreview={setPreview}
+    />
+  )
+}
+
+const editorScene = (
   <QueryClientProvider client={qc}>
     <MemoryRouter initialEntries={['/capabilities']}>
       <div style={{ background: 'var(--bg)', color: 'var(--text)', padding: 24 }} data-capture-root>
-        <div style={{ maxWidth: 720, height: 560, display: 'flex' }} className="rounded-lg border border-border">
-          <CrewCapabilitiesPane member="atlas-writer" members={['atlas-writer']} hidden={false} onDirtyChange={() => {}} onBusyChange={() => {}} onSaved={() => {}} />
+        <div style={{ maxWidth: 720 }} className="rounded-lg border border-border p-4">
+          <ApprovalsSection />
         </div>
       </div>
     </MemoryRouter>
   </QueryClientProvider>
 )
 
-createRoot(document.getElementById('root')!).render(scene === 'errorcard' ? errorCardScene : paneScene)
+createRoot(document.getElementById('root')!).render(scene === 'errorcard' ? errorCardScene : editorScene)
