@@ -392,7 +392,7 @@ def _build_tool_call_event(
         diff_old_text=_diff_old_text,
         diff_path=_diff_path,
         harness_tool_id=_event_tool_id,
-        claude_mcp_tool_name=claude_mcp_stamp(update, _stated_tool_name, backend=harness_backend),
+        claude_mcp_tool_name=claude_mcp_stamp(update, backend=harness_backend),
     )
 
 
@@ -410,6 +410,7 @@ def _build_tool_refinement_event(
     tool_kind_cache: dict[str, str] | None = None,
     identity_unreadable_cache: dict[str, bool] | None = None,
     harness_tool_name_cache: dict[str, str] | None = None,
+    harness_backend: str = "",
 ) -> AcpEvent | None:
     """Build an ``EVENT_TOOL_CALL_UPDATE`` (refined title/kind/input) for a tool.
 
@@ -570,6 +571,7 @@ def _build_tool_refinement_event(
         is_shell=is_shell,
         diff_old_text=_diff_old_text,
         diff_path=_diff_path,
+        claude_mcp_tool_name=claude_mcp_stamp(update, backend=harness_backend),
     )
 
 
@@ -661,6 +663,7 @@ def parse_session_update(
             tool_kind_cache=tool_kind_cache,
             identity_unreadable_cache=identity_unreadable_cache,
             harness_tool_name_cache=harness_tool_name_cache,
+            harness_backend=harness_backend,
         )
         if refine is not None:
             events.append(refine)

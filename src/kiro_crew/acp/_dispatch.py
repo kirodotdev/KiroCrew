@@ -755,6 +755,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _antigravity_named_paths,
         _antigravity_other_commands,
         _antigravity_stated_commands,
+        _bounded_harness_tool_name,
         _harness_identifier,
         _kiro_mcp_server_name,
         _kiro_tool_name,

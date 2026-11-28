@@ -19,15 +19,20 @@ import logging
 import pytest
 
 from kiro_crew import directive_queue, session_directive
+from kiro_crew.acp._dispatch import parse_session_update
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_TOOL_CALL,
+    EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
     AcpEvent,
 )
+from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
 from kiro_crew.dashboard.session_directive_apply import DirectiveOutcome
 from kiro_crew.messaging import TransportCapabilities, TurnDriver
+from kiro_crew.messaging.directive_tracker import DirectiveTracker
 from kiro_crew.messaging.dispatch import build_directive_consumer
+from kiro_crew.messaging.driver import directive_event_observer
 from kiro_crew.messaging.renderer import Renderer
 
 KEY = "slack:1755000000.1"
@@ -140,6 +145,24 @@ def _run(script, consumer):
     asyncio.run(driver.run("hello"))
 
 
+@pytest.fixture(params=["driver", "observer"])
+def run_turn(request):
+    """Both channel entry points: ``TurnDriver`` and ``directive_event_observer``."""
+    if request.param == "driver":
+        return _run
+
+    def run(script, consumer):
+        observe = directive_event_observer(DirectiveTracker(consumer))
+
+        async def stream():
+            async for event in _Provider(script).stream("hello"):
+                await observe(event)
+
+        asyncio.run(stream())
+
+    return run
+
+
 class TestKasFrameClaims:
     def test_kas_call_applies_the_parked_record(self, caplog):
         consumer = _Consumer()
@@ -195,6 +218,83 @@ class TestKasFrameClaims:
         call.title = "@kirocrew-core/monitor_start"
         call.mcp_server_name = ""
         _run([call, _park(), _result(), _DONE], consumer)
+        assert consumer.applied == []
+        assert directive_queue.depth(KEY) == 1
+
+    def test_refinement_title_cannot_name_an_unresolved_call(self, run_turn):
+        """A refinement's title can be command text: opencode retitles a bash call
+        with its command. Only the call's own ``tool_call`` frame, or a Claude
+        stamp, decides whether it is a directive."""
+        consumer = _Consumer()
+        call = _kas_call(wire_title="bash")
+        call.mcp_server_name = ""
+        update = _kas_call(wire_title="kirocrew-core_monitor_start")
+        update.kind = EVENT_TOOL_CALL_UPDATE
+        update.mcp_server_name = ""
+        run_turn([call, update, _park(), _result(), _DONE], consumer)
+        assert consumer.applied == []
+        assert directive_queue.depth(KEY) == 1
+
+
+class TestClaudeFrameClaims:
+    _TCID = "tc-claude"
+    _LEGACY = "mcp__kirocrew-core__monitor_start"
+    _READABLE = "kirocrew-core: monitor_start"
+
+    @classmethod
+    def _parse(cls, update, title, stamp, args):
+        (event,) = parse_session_update(
+            {
+                "sessionUpdate": update,
+                "toolCallId": cls._TCID,
+                "title": title,
+                "kind": "other",
+                "status": "in_progress" if update == "tool_call_update" else "pending",
+                "rawInput": args,
+                "_meta": {"claudeCode": {"toolName": stamp}} if stamp else {},
+            },
+            harness_backend=ACP_BACKEND_CLAUDE,
+        )
+        return event
+
+    @pytest.mark.parametrize(
+        ("title", "stamp", "applies"),
+        [
+            pytest.param(
+                "kirocrew-core: monitor_start",
+                "mcp__kirocrew-core__monitor_start",
+                True,
+                id="readable",
+            ),
+            pytest.param("mcp__kirocrew-core__monitor_start", "Bash", False, id="builtin"),
+        ],
+    )
+    def test_channel_directive_uses_claude_stamp(self, title, stamp, applies):
+        consumer = _Consumer()
+        call = self._parse("tool_call", title, stamp, CALL_ARGS)
+        _run([call, _park(), _result(self._TCID), _DONE], consumer)
+        if applies:
+            assert consumer.applied == [("monitor_start", PARKED_ARGS)]
+            assert directive_queue.depth(KEY) == 0
+        else:
+            assert consumer.applied == []
+            assert directive_queue.depth(KEY) == 1
+
+    def test_channel_refinement_claims_full_arguments_once(self, run_turn):
+        consumer = _Consumer()
+        call = self._parse("tool_call", self._LEGACY, self._LEGACY, {})
+        update = self._parse("tool_call_update", self._READABLE, self._LEGACY, CALL_ARGS)
+        marker = session_directive.encode("monitor_start", CALL_ARGS, "requested")
+        result = _result(self._TCID, marker)
+        run_turn([call, update, _park(), _park(), result, result, _DONE], consumer)
+        assert consumer.applied == [("monitor_start", PARKED_ARGS)]
+        assert directive_queue.depth(KEY) == 1
+
+    def test_channel_refinement_can_disqualify_a_legacy_title(self, run_turn):
+        consumer = _Consumer()
+        call = self._parse("tool_call", self._LEGACY, "", CALL_ARGS)
+        update = self._parse("tool_call_update", self._LEGACY, "Bash", CALL_ARGS)
+        run_turn([call, update, _park(), _result(self._TCID), _DONE], consumer)
         assert consumer.applied == []
         assert directive_queue.depth(KEY) == 1
 

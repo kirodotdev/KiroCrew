@@ -537,18 +537,18 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
             turn._pending_tool_ids.pop(event.tool_call_id, None)
         else:
             turn._pending_tool_ids[event.tool_call_id] = _post_identity
-        # The claim key binds the TOOL to its arguments, so only a call
-        # that resolves to a directive tool records one: trusted
-        # _meta.kiro identity first, else kiro-agent's own
-        # ``@kirocrew-core/<tool>`` WIRE title -- never event.title,
-        # which select_tool_title fills from a shell call's
-        # model-authored rawInput.description. A shell call, or any
-        # other tool, records nothing and can claim nothing.
+        # The claim key binds the tool to the arguments of the call that
+        # parked the record. Use identities from the wire, before rendering.
+        _claude_stamp = event.claude_mcp_tool_name
         _dir_for_digest = session_directive.directive_tool_from_call(
-            event.mcp_server_name or "", event.tool_name or "", event.wire_title or ""
+            event.mcp_server_name or "",
+            event.tool_name or "",
+            event.wire_title or "",
+            claude_mcp_tool_name=_claude_stamp,
         )
-        if _dir_for_digest:
+        if _dir_for_digest or _claude_stamp:
             _pending_dir_for_digest[event.tool_call_id] = _dir_for_digest
+        if _dir_for_digest:
             if event.raw_tool_params is not None:
                 _pending_input_digest[event.tool_call_id] = session_directive.event_input_digest(
                     _dir_for_digest,
@@ -777,14 +777,22 @@ async def _on_tool_call_update(turn: _ChatTurn, event) -> None:
             wire_title=event.wire_title or "",
         )
     _dir_refresh = _pending_dir_for_digest.get(event.tool_call_id, "")
-    if not _dir_refresh:
-        # claude-agent-acp's initial tool_call carries a generic title
-        # and the refinement carries the real one, so the tool may only
-        # resolve here. The gate is the same resolver either way.
-        _dir_refresh = session_directive.directive_tool_from_call(
-            event.mcp_server_name or "", event.tool_name or "", event.wire_title or ""
+    _claude_stamp = event.claude_mcp_tool_name
+    if event.tool_call_id not in _pending_dir_for_digest or (
+        _claude_stamp and event.tool_call_id not in turn._pending_dir_tool
+    ):
+        # A Claude stamp can first arrive on a refinement and supersede the
+        # initial wire title. Cache even an empty verdict for a stamped frame.
+        _resolved = session_directive.directive_tool_from_call(
+            event.mcp_server_name or "",
+            event.tool_name or "",
+            event.wire_title or "",
+            claude_mcp_tool_name=_claude_stamp,
         )
-        if _dir_refresh:
+        if _resolved != _dir_refresh:
+            _pending_input_digest.pop(event.tool_call_id, None)
+        _dir_refresh = _resolved
+        if _dir_refresh or _claude_stamp:
             _pending_dir_for_digest[event.tool_call_id] = _dir_refresh
     from kiro_crew.dashboard import session_send_receipts
 

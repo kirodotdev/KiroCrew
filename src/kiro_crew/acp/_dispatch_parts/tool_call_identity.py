@@ -255,6 +255,10 @@ def harness_tool_name(update: dict[str, Any], *, backend: str = "") -> str:
                 name = name[4:-1]
             elif name.startswith("Running "):
                 name = name[8:]
+    return _bounded_harness_tool_name(name)
+
+
+def _bounded_harness_tool_name(name: object) -> str:
     # Bounded by MAX_HARNESS_TOOL_NAME_LEN, not KAS's 128: an opencode MCP title
     # fuses an operator-chosen server name with the tool's, and one dropped here
     # leaves a deny hook matching the title alone.
@@ -267,19 +271,12 @@ def harness_tool_name(update: dict[str, Any], *, backend: str = "") -> str:
     return name
 
 
-def claude_mcp_stamp(update: dict[str, Any], stated_name: str, *, backend: str) -> str:
-    """*stated_name* when it is claude-agent-acp's own stamp for an MCP tool, or "".
-
-    *stated_name* is :func:`harness_tool_name`'s read of this frame. It is
-    ``_meta.claudeCode.toolName`` only when the frame carries a ``claudeCode``
-    block; without one it falls back to the title, which claude builds from the
-    call's arguments, so that name is never kept here. Empty for a built-in and on
-    every other *backend*.
-    """
-    meta = update.get("_meta")
-    stamped = isinstance(meta, dict) and isinstance(meta.get("claudeCode"), dict)
-    if backend == ACP_BACKEND_CLAUDE and stamped and stated_name.startswith("mcp__"):
-        return stated_name
+def claude_mcp_stamp(update: dict[str, Any], *, backend: str) -> str:
+    """Read Claude's own tool name, including built-ins, from its metadata."""
+    if backend == ACP_BACKEND_CLAUDE:
+        meta = update.get("_meta")
+        claude = meta.get("claudeCode") if isinstance(meta, dict) else None
+        return _bounded_harness_tool_name(_str_field(claude, "toolName"))
     return ""
 
 

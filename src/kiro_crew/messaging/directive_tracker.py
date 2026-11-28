@@ -78,11 +78,8 @@ class DirectiveTracker:
         # fact applied. Diagnostic-only bookkeeping: nothing reads it to
         # authorize anything.
         self._consumed: set[str] = set()
-        # Identity OBSERVED on each tool_call frame, for the NOT-APPLIED
-        # diagnostic only. It cannot be read off the result frame: the
-        # tool_call_update path builds its event with no identity fields, so
-        # they are always "" there. Nothing reads this to authorize anything —
-        # the grant still comes solely from directive_tool_for at call time.
+        # Identity observed on the initial tool_call, for the NOT-APPLIED
+        # diagnostic. The marker grant comes solely from directive_tool_for.
         self._seen_identity: dict[str, tuple[str, str]] = {}
         # Out-of-band delivery: the consumer's own claim on the gateway-parked
         # records for ITS session, or None when it offers none.
@@ -95,6 +92,11 @@ class DirectiveTracker:
         # tool, the selector for the parked record. A SELECTOR, never a grant:
         # the applied payload is always the record's.
         self._digests: dict[str, str] = {}
+        # Selector tool resolved for each call, an empty verdict included. A
+        # refinement can supply the complete arguments, but only a Claude
+        # stamp can change the verdict: a refinement's title may be the
+        # command text (opencode retitles a bash call with it).
+        self._selector_tools: dict[str, str] = {}
 
     def record_tool_call(self, event: Any) -> None:
         """Forgery gate: record the directive-tool name ONLY from the trusted
@@ -115,20 +117,44 @@ class DirectiveTracker:
             self._pending[event.tool_call_id] = canonical
         else:
             self._seen_identity[event.tool_call_id] = (server, tool_name)
-        # The out-of-band selector, recorded the way the dashboard consumer
-        # records it: trusted identity first, else the backend's own WIRE title
-        # (KAS stamps ``@kirocrew-core/<tool>``). Never ``event.title``, which a
-        # shell call fills from model-written text. Recorded for every
-        # resolvable call, a native child's included, so a parent frame sharing
-        # a child's digest can be refused below.
-        if self._claim_parked is None:
+        self._record_parked_selector(event, initial=True)
+
+    def record_tool_call_update(self, event: Any) -> None:
+        """Refresh the parked-record selector from a call refinement."""
+        self._record_parked_selector(event, initial=False)
+
+    def _record_parked_selector(self, event: Any, *, initial: bool) -> None:
+        # The out-of-band selector uses trusted identity, then the Claude
+        # stamp, then the backend's wire title. Native child selectors also
+        # participate so a parent sharing a child's digest can be refused.
+        call_id = event.tool_call_id
+        if self._claim_parked is None or not call_id or call_id in self._consumed:
             return
-        resolved = session_directive.directive_tool_from_call(
-            server, tool_name, getattr(event, "wire_title", "") or ""
-        )
+        if initial:
+            self._selector_tools.pop(call_id, None)
+            self._digests.pop(call_id, None)
+        server = getattr(event, "mcp_server_name", "") or ""
+        tool_name = getattr(event, "tool_name", "") or ""
+        pending = self._pending.get(call_id)
+        if pending:
+            server, tool_name = session_directive.CORE_MCP_SERVER, pending
+        stamp = getattr(event, "claude_mcp_tool_name", "")
+        resolved = self._selector_tools.get(call_id)
+        if resolved is None or (stamp and not pending):
+            refined = session_directive.directive_tool_from_call(
+                server,
+                tool_name,
+                getattr(event, "wire_title", "") or "",
+                claude_mcp_tool_name=stamp,
+            )
+            if refined != resolved:
+                self._digests.pop(call_id, None)
+            resolved = refined
+            if initial or resolved or stamp:
+                self._selector_tools[call_id] = resolved
         raw = getattr(event, "raw_tool_params", None)
         if resolved and raw is not None:
-            self._digests[event.tool_call_id] = session_directive.event_input_digest(
+            self._digests[call_id] = session_directive.event_input_digest(
                 resolved, raw, server, tool_name
             )
 
