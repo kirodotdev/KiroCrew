@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -225,13 +226,27 @@ class TestTheDeclaredSchema(unittest.TestCase):
             self._validate(method="POST", path="/ledger", body_json="x" * 32_769)
 
 
+def _pin_home(case: unittest.TestCase, home: str) -> None:
+    """Point ``KIROCREW_HOME`` at *home* until *case*'s cleanups run, then put the old value back.
+
+    One write to set it and one to restore it, never ``mock.patch.dict(os.environ, ...)``:
+    that lifts its pin by clearing the WHOLE environment before refilling it, and a
+    background thread that reaches ``config_dir()`` in the gap (a tool-gate listing of the
+    installed apps, a lazy resolver) finds no ``KIROCREW_HOME`` at all and resolves, and
+    creates, the operator's real data home.
+    """
+    patcher = pytest.MonkeyPatch()
+    case.addCleanup(patcher.undo)
+    patcher.setenv("KIROCREW_HOME", home)
+
+
 class _Served(unittest.IsolatedAsyncioTestCase):
     """The app's router plus the registry route its hook registers, on an isolated home."""
 
     def setUp(self) -> None:
         self.home = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
-        self.enterContext(mock.patch.dict(os.environ, {"KIROCREW_HOME": self.home}))
+        _pin_home(self, self.home)
         omc_registry.reset_registry()
         self.addCleanup(omc_registry.reset_registry)
         self.enterContext(mock.patch.object(routes, "is_app_enabled", return_value=True))
@@ -273,6 +288,19 @@ class _Served(unittest.IsolatedAsyncioTestCase):
             return web.json_response({"ok": True, "served": name})
 
         return mock.patch.object(routes, name, handler), seen
+
+
+class TestTheServedHome(unittest.TestCase):
+    def test_the_pin_is_lifted_without_clearing_the_environment(self) -> None:
+        case = unittest.TestCase()
+        before = os.environ.get("KIROCREW_HOME")
+        with tempfile.TemporaryDirectory() as home:
+            _pin_home(case, home)
+            self.assertEqual(os.environ["KIROCREW_HOME"], home)
+            with mock.patch.object(os.environ, "clear", wraps=os.environ.clear) as cleared:
+                case.doCleanups()
+        cleared.assert_not_called()
+        self.assertEqual(os.environ.get("KIROCREW_HOME"), before)
 
 
 class TestTheRoute(_Served):
