@@ -157,6 +157,66 @@ async def test_graph_search_set_and_count_equal_the_list_with_word_and_meaning_h
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("name", STORES)
+async def test_graph_search_by_meaning_lights_what_the_list_lists_per_kind(env, name):
+    tier = _tier(env, name)
+    tier.embed_fn = lambda text, **_: (
+        [1.0, 0.0] if "checkout" in text or text == "worktree" else [0.0, 1.0]
+    )
+    for key, text in (("user.word", "worktree keyword"), ("user.meaning", "checkout notes")):
+        assert tier.set_semantic(key, text, 0.9, "user_explicit") is None
+    assert tier.write_episodic("Kept the checkout clean.", conversation_id="c1", tags=["ops"])
+    tier.backfill_missing_embeddings(pace=False)
+    await _ready(env, name)
+    for graph_kind, list_kind in ((None, None), ("fact", "fact"), ("episode", "episode")):
+        kind = {"kind": list_kind} if list_kind else {}
+        listed = await memory_edit.api_memory_records(
+            request(
+                env,
+                query={"store": name, "q": "worktree", "mode": "meaning", "limit": "100", **kind},
+                owner=True,
+            )
+        )
+        assert listed.status == 200, listed.text
+        rows = json.loads(listed.text)
+        graph = await _get(
+            env,
+            api.api_memory_graph_search,
+            name,
+            q="worktree",
+            mode="meaning",
+            **({"kind": graph_kind} if graph_kind else {}),
+        )
+        assert graph["meaning"] is True
+        assert {m["id"]: m["score"] for m in graph["matches"]} == {
+            row["id"]: row["match"] for row in rows["entries"]
+        }
+        assert graph["total"] == rows["total"] > 0
+        # "worktree keyword" shares the word, not the meaning: meaning leaves it dark.
+        assert "user.word" not in {m["id"] for m in graph["matches"]}
+
+
+@pytest.mark.asyncio
+async def test_graph_search_by_meaning_refuses_as_the_list_does_without_a_model(env):
+    tier = _tier(env, "member-alice")
+    _seed(tier, 3)
+    await _ready(env, "member-alice")
+    tier.embed_fn = None
+    tier.embed_fn_factory = None
+    query = {"store": "member-alice", "q": "zebra", "mode": "meaning"}
+    graph = await api.api_memory_graph_search(request(env, query=query, owner=True))
+    listed = await memory_edit.api_memory_records(request(env, query=query, owner=True))
+    assert graph.status == listed.status == 409
+    assert (
+        json.loads(graph.text)["code"] == json.loads(listed.text)["code"] == "meaning_unavailable"
+    )
+    bad = await api.api_memory_graph_search(
+        request(env, query={**query, "mode": "fuzzy"}, owner=True)
+    )
+    assert bad.status == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", STORES)
 async def test_box_select_counts_nodes_never_loaded_and_the_list_shows_them(env, name):
     _seed(_tier(env, name), 120)
     await _ready(env, name)

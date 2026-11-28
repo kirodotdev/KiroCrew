@@ -639,23 +639,85 @@ def _cached_summaries(store: Any, base: dict) -> list[dict]:
     return everything
 
 
-def matching_scores(store: Any, query: dict) -> tuple[dict[str, float], bool]:
-    """The list's word-search matches, each fully lit on the memory graph.
+def matching_scores(
+    store: Any, query: dict, *, meaning: bool = False
+) -> tuple[dict[str, float], bool]:
+    """Every row :func:`list_records` lists for *query*, by id, with its score.
 
-    Use the same query, row matcher and filters as :func:`list_records` across
-    all pages. The graph has no meaning-mode control, so it must not add the
-    matches from the list's separate meaning search. Scores describe brightness
-    only; every word match scores 1 and the bool reports that meaning did not run.
+    The same query, matcher, cut-off and filters as the list, across all pages,
+    so the memory graph lights exactly what the list shows in the same mode.
+    A word match scores 1; with *meaning*, a row scores its meaning ``match``.
+    The bool reports whether meaning ran.
     """
     query = _query(query)
     if not query["q"]:
         raise MemoryEditError("Search needs search words.")
+    if not meaning:
+        with store._db_lock, _read_snapshot(store):
+            return {
+                row["id"]: 1.0
+                for row in _rows(store, query)
+                if isinstance(row["id"], str) and row["id"]
+            }, False
+    vector = _meaning_vector(store, query["q"])
+    filters = _with_box(store, query.get("filters", {}))
     with store._db_lock, _read_snapshot(store):
-        return {
-            row["id"]: 1.0
-            for row in _rows(store, query)
-            if isinstance(row["id"], str) and row["id"]
-        }, False
+        everything = _cached_summaries(store, {"q": "", "kind": "all"})
+        _strong, listed, _hidden = _listed(store, everything, vector, query, filters, weak=False)
+    return {s["id"]: s["match"] for s in listed if isinstance(s["id"], str) and s["id"]}, True
+
+
+def _meaning_vector(store: Any, words: str) -> list[float]:
+    try:
+        # Model inference, outside the store lock.
+        return memory_record_meaning.embed_query(store, words)
+    except memory_record_meaning.MeaningUnavailable:
+        raise MemoryEditError(
+            "Search by meaning needs the embedding model, which is not ready. Search by words instead.",
+            code="meaning_unavailable",
+            status=409,
+        ) from None
+
+
+def _listed(
+    store: Any,
+    everything: list[dict],
+    vector: list[float] | None,
+    query: dict,
+    filters: dict,
+    *,
+    weak: bool,
+) -> tuple[list[dict], list[dict], int]:
+    """``(everything, listed, hidden)``: the rows of *everything* the list shows.
+
+    With a meaning *vector*, *everything* becomes scored copies, cut at
+    ``MEANING_CUTOFF`` unless *weak*, and *hidden* counts the listed kind's rows
+    the cut left out. Called inside the read snapshot.
+    """
+    hidden = 0
+    if vector is not None:
+        # Copies: these match scores answer this question, not the cached pass.
+        everything = [dict(summary) for summary in everything]
+        scores = memory_record_meaning.score_rows(store, vector)
+        for summary in everything:
+            summary["match"] = memory_record_meaning.summary_score(scores, summary)
+        if not weak:
+            strong = [s for s in everything if s["match"] >= memory_record_meaning.MEANING_CUTOFF]
+            hidden = sum(
+                1
+                for s in everything
+                if s["match"] < memory_record_meaning.MEANING_CUTOFF
+                and (query["kind"] == "all" or s["kind"] == query["kind"])
+                and memory_record_facets.matches(s, filters)
+            )
+            everything = strong
+    listed = [
+        summary
+        for summary in everything
+        if (query["kind"] == "all" or summary["kind"] == query["kind"])
+        and memory_record_facets.matches(summary, filters)
+    ]
+    return everything, listed, hidden
 
 
 def list_records(
@@ -694,15 +756,7 @@ def list_records(
     vector = None
     if meaning:
         sort, descending = "match", True
-        try:
-            # Model inference, outside the store lock.
-            vector = memory_record_meaning.embed_query(store, query["q"])
-        except memory_record_meaning.MeaningUnavailable:
-            raise MemoryEditError(
-                "Search by meaning needs the embedding model, which is not ready. Search by words instead.",
-                code="meaning_unavailable",
-                status=409,
-            ) from None
+        vector = _meaning_vector(store, query["q"])
     if sort is None and not facets:
         entries, total = [], 0
         # One snapshot, so a scan that switches to packed reads sees the rows it started on.
@@ -723,31 +777,7 @@ def list_records(
         # A cached row ages without a write: its strength and band are read for now.
         now = datetime.now(timezone.utc)
         bands = memory_decay.refresh(everything, now)
-        hidden = 0
-        if vector is not None:
-            # Copies: these match scores answer this question, not the cached pass.
-            everything = [dict(summary) for summary in everything]
-            scores = memory_record_meaning.score_rows(store, vector)
-            for summary in everything:
-                summary["match"] = memory_record_meaning.summary_score(scores, summary)
-            if not weak:
-                strong = [
-                    s for s in everything if s["match"] >= memory_record_meaning.MEANING_CUTOFF
-                ]
-                hidden = sum(
-                    1
-                    for s in everything
-                    if s["match"] < memory_record_meaning.MEANING_CUTOFF
-                    and (query["kind"] == "all" or s["kind"] == query["kind"])
-                    and memory_record_facets.matches(s, filters)
-                )
-                everything = strong
-        listed = [
-            summary
-            for summary in everything
-            if (query["kind"] == "all" or summary["kind"] == query["kind"])
-            and memory_record_facets.matches(summary, filters)
-        ]
+        everything, listed, hidden = _listed(store, everything, vector, query, filters, weak=weak)
         if sort is not None:
             memory_record_facets.order(listed, sort, descending)
         window = listed[offset : offset + limit]

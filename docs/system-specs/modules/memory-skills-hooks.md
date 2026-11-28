@@ -2257,11 +2257,18 @@ an empty result, and Refresh reads the overview, the nodes in view and the searc
 again. The detail panel's shared refresh after an edit, forget, restore or proposal
 resolution uses that same reload: it clears cached nodes and pending selections,
 drops old replies and refetches the visible tiles even when the layout revision
-has not changed. Search runs on the server (up to 50,000 matches): it uses the
-Memories list's default word search (`memory_edit.matching_scores`), with every
-match scored 1. The graph does not add matches from the list's separate meaning
-mode or apply a recall cutoff. The reply says `meaning: false`; an embedding
-model is not needed. The canvas lights the
+has not changed. Search runs on the server (up to 50,000 matches) and lights
+exactly the rows the Memories list lists for the same words in the same mode
+(`memory_edit.matching_scores`, which shares the list's matcher, cut-off and kind
+filter). The search box carries the list's Words / Meaning switch
+(`SearchModeSwitch`), flush at the box's end, or on its own row under it on a
+phone. Words (the default) scores every match 1, needs no embedding model and
+replies `meaning: false`. Meaning (`mode=meaning`) lights every row at or above
+`MEANING_CUTOFF` with its meaning `match` as its score and replies
+`meaning: true`; the rows under the cut-off, which the list counts and offers to
+show, stay dark. Without an embedding model it answers 409
+`meaning_unavailable`, and the graph shows the list's "Search by meaning is not
+available" notice with its Search by words button. The canvas lights the
 set (`memoryGraph/graphLight.ts`): each hit glows by its score relative to the
 set's own range (opacity 0.7 to 1, drawn 1.5 to 2.2 times its size), every other mark dims to
 0.1 opacity and turns 80% grey, links between two hits grow 3× stronger and the
@@ -4304,7 +4311,7 @@ before reading transcript bodies, opening learned memory or billing a model.
 | GET | `/api/memory/graph` | Memory as nodes and edges for the legacy graph API: preferences, projects, recent history, at most 200 semantic rows (first by key, lessons excluded, read on the key index) and the 200 newest lessons; `partial` (`{"semantic": bool, "lessons": bool}`) says which capped population left rows out. No longer read by the dashboard |
 | GET | `/api/memory/graph/overview` | The store's laid-out clusters (centre, radius, count, topic label) and the layout's bounds and counts, or `{"status": "building"}` |
 | GET | `/api/memory/graph/nodes` | The nodes whose layout point lies in `bbox` (`x0,y0,x1,y1`), optional repeated `kind`, paged by `cursor` with `limit` up to 2,000; each carries `ref`, `record` and `weight` (recall's weight, `episodic_search.recall_weight`) |
-| GET | `/api/memory/graph/search` | Laid-out points matching the Memories list's default word search for `q` (`meaning: false`); optional `kind`; each match carries `x`, `y`, `cluster` and `score: 1`; at most 50,000 matches plus the `total` |
+| GET | `/api/memory/graph/search` | Laid-out points of the rows the Memories list lists for `q` in `mode` (`words`, the default, or `meaning`; 409 `meaning_unavailable` without a model); optional `kind`; each match carries `x`, `y`, `cluster` and `score` (1 for a word match, the meaning `match` otherwise); at most 50,000 matches plus the `total` and `meaning` |
 | GET | `/api/memory/graph/select` | How many nodes lie in `bbox` for the optional `kind`s, the count behind "N selected" |
 | GET/PUT | `/api/memory/settings` | Consolidation settings; see the memory settings card above |
 | GET | `/api/memory/carve` | Filter or count one crew store by carve facet. Query: the five facet names, `kind`, `count_by`, `limit`, `offset`, plus the shared `?store=`. Absent, it reads the global store; present, it is owner-gated like every other store-scoped route. 409 `facets_unsupported` on the v1 lineage, 400 `unknown_facet`, 400 `invalid_pagination`, 503 `store_unavailable`. Every answer echoes the `store` it read. See [Who reads a facet](#who-reads-a-facet) |
