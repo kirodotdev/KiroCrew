@@ -232,6 +232,23 @@ class TestSessionsSummarizeHandler:
         )
 
     @pytest.mark.asyncio
+    async def test_the_call_is_stamped_as_a_session_summary(self, tmp_path, monkeypatch):
+        """The call's spend row reads ``bg:session_summary``, the Spend tab's
+        summaries kind, not the default stamp every unlabelled helper shares."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("alpha", "user", "help me tune the redis timeout")
+        state = _make_app(log, "unused", [])["state"]
+        seen: dict = {}
+
+        async def _reply(*_args, **kwargs):
+            seen.update(kwargs)
+            return "Tuning redis timeout"
+
+        monkeypatch.setattr(sessions_handlers, "run_bg_oneliner", _reply)
+        assert await sessions_handlers._summarize_one(state, "alpha") == "Tuning redis timeout"
+        assert seen["sel_source"] == "session_summary"
+
+    @pytest.mark.asyncio
     async def test_a_busy_publish_uses_the_busy_arm_and_fails_closed(self, tmp_path, monkeypatch):
         """Busy and Withheld use distinct arms but both fail closed."""
 

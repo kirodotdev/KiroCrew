@@ -211,6 +211,45 @@ describe('TelemetryPanel — conversations by spend', () => {
       }
     })
 
+    const kinds = [
+      row('turn', 40),
+      row('helper_title', 20),
+      row('helper_summary', 15),
+      row('helper_memory', 10),
+      row('helper', 5),
+    ]
+
+    async function openPurposeTable() {
+      const fullTable = i18nT('pages.telemetryPanel.full_table')
+      fireEvent.click(await screen.findByRole('button', { name: n => n.startsWith(fullTable) }))
+      fireEvent.click(await screen.findByRole('radio', { name: i18nT('pages.telemetryPanel.purpose_col') }))
+    }
+
+    it('names the helper kinds as their own rows', async () => {
+      await mount([convo()], { by_purpose: kinds })
+      await openPurposeTable()
+      expect(await screen.findByText('helper: titles')).toBeInTheDocument()
+      expect(screen.getByText('helper: summaries')).toBeInTheDocument()
+      expect(screen.getByText('helper: memory upkeep')).toBeInTheDocument()
+      expect(screen.getByText('helper')).toBeInTheDocument()
+    })
+
+    it('translates the helper kinds, never showing a raw kind name', async () => {
+      await i18next.changeLanguage('de')
+      try {
+        await mount([convo()], { by_purpose: kinds })
+        await openPurposeTable()
+        expect(await screen.findByText('Hilfsaufruf: Titel')).toBeInTheDocument()
+        expect(screen.getByText('Hilfsaufruf: Zusammenfassungen')).toBeInTheDocument()
+        expect(screen.getByText('Hilfsaufruf: Speicherpflege')).toBeInTheDocument()
+        for (const raw of ['helper_title', 'helper_summary', 'helper_memory']) {
+          expect(screen.queryByText(raw)).toBeNull()
+        }
+      } finally {
+        await i18next.changeLanguage('en')
+      }
+    })
+
     it('shows a purpose name this build does not know as it arrived', async () => {
       await mount([convo()], { by_purpose: [row('turn', 70), row('compaction', 30)] })
       await openPurpose()

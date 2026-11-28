@@ -191,7 +191,11 @@ async def _summarize_one(state: DashboardState, key: str, *, owner_app: str = ""
         return ""
     try:
         text = await run_bg_oneliner(
-            state.sessions, prompt, model=_SUMMARIZE_MODEL, timeout=_SUMMARIZE_TIMEOUT_SECS
+            state.sessions,
+            prompt,
+            model=_SUMMARIZE_MODEL,
+            timeout=_SUMMARIZE_TIMEOUT_SECS,
+            sel_source="session_summary",
         )
     except Exception:
         logger.debug("Session summary generation failed for %s", key, exc_info=True)

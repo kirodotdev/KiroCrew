@@ -65,14 +65,27 @@ _COMPACTION_DROP_PCT = 1.0
 
 
 def _purpose_of(obj: dict[str, Any], slot: str) -> str:
-    """What a turn was for: ``helper``, ``automation``, ``turn`` or ``unknown``.
+    """What a turn was for: a helper kind, ``automation``, ``turn`` or ``unknown``.
 
     The session key decides everything but the helper case, as it does for the
     channel: a historical row's ``surface`` can be wrong but non-empty, so only
     the ``bg:`` prefix, which only the background-call writers produce, is read
-    from it.
+    from it. A ``bg:`` row is a helper whatever its slot, so the prefix is read
+    before the slot is. The task after the prefix names the kind: a title is
+    ``helper_title`` (``chat_title``, or a messaging ``<source>_auto_title``), a
+    sidebar summary is ``helper_summary``, memory upkeep is ``helper_memory``,
+    and every other helper call, and every row written before these task names
+    were stamped, stays ``helper``.
     """
-    if str(obj.get("surface") or "").startswith(_BACKGROUND_CALL_SURFACE_PREFIX):
+    surface = str(obj.get("surface") or "")
+    if surface.startswith(_BACKGROUND_CALL_SURFACE_PREFIX):
+        task = surface[len(_BACKGROUND_CALL_SURFACE_PREFIX) :]
+        if task == "chat_title" or task.endswith("auto_title"):
+            return "helper_title"
+        if task == "session_summary":
+            return "helper_summary"
+        if task in ("consolidation", "skill_dedupe", "skill_merge"):
+            return "helper_memory"
         return "helper"
     if not slot:
         return "unknown"
