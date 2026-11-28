@@ -149,6 +149,8 @@ def _load_sibling(module_name: str, filename: str) -> Any:
     return module
 
 
+# How --base is read, the same in every prepare-pr script.
+_base_ref = _load_sibling("_lr_base_ref", "_base_ref.py")
 # argv[0] resolution and the batch-launcher guard ``run`` applies.
 _tool_argv = _load_sibling("_lr_tool_argv", "_tool_argv.py")
 
@@ -1483,11 +1485,17 @@ def assemble(
     dispatching chat's own model. Left out, the pins are passed on as before.
     """
     resolve_profile = _load_sibling("_lr_resolve_profile", "resolve_profile.py")
+    if base_ref:
+        base_ref = _base_ref.base_revision(
+            base_ref, lambda args: run(["git", *args], cwd=worktree)[0]
+        )
     # The ref the profile is READ from is settled BEFORE any profile value is
     # trusted -- the caller's --base, else git's own record of the remote
     # default branch. Deriving it FROM the profile would read review authority
     # out of the branch checkout, which is the input this pinning distrusts.
-    profile_ref = base_ref or resolve_profile.default_base_ref(worktree) or "origin/main"
+    profile_ref = (
+        base_ref or resolve_profile.default_base_ref(worktree) or "refs/remotes/origin/main"
+    )
     try:
         profile = resolve_profile.resolve(worktree, base_ref=profile_ref)
     except (EnvironmentError, ParityError):
@@ -1524,7 +1532,7 @@ def assemble(
     # target on a repo whose PRs go to a non-default branch.
     if not base_ref:
         declared = profile.get("base_branch")
-        base_ref = "origin/{}".format(declared) if declared else profile_ref
+        base_ref = "refs/remotes/origin/{}".format(declared) if declared else profile_ref
     rc, base_sha, _ = run(["git", "merge-base", "HEAD", base_ref], cwd=worktree)
     if rc != 0 or not base_sha.strip():
         raise EnvironmentError(
@@ -1874,7 +1882,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         description="Assemble local pre-push reviewer briefs from CI's own review workflows."
     )
     parser.add_argument("--worktree", default=None, help="worktree root (default: git toplevel)")
-    parser.add_argument("--base", default=None, help="base ref (default: remote default branch)")
+    parser.add_argument(
+        "--base",
+        default=None,
+        help="base ref; a branch name means its origin copy (default: remote default branch)",
+    )
     parser.add_argument("--out-dir", default=None, help="where the task files land")
     parser.add_argument("--stage-dir", default=None, help="where auxiliary inputs are staged")
     parser.add_argument("--json", action="store_true", help="emit the summary as JSON")

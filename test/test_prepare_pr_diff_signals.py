@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from git_maintenance_helpers import git_maintenance_off_entries
@@ -355,6 +356,69 @@ def test_end_to_end_inventory_alone_is_unchanged(repo: Path) -> None:
     assert rc == 0
     assert "=== Files (name-status) ===" in out
     assert "Body check" not in out
+
+
+def test_the_default_base_is_the_remote_branch_even_beside_a_local_namesake(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With no base argument, the base comes from ``refs/remotes/origin/HEAD`` and is
+    read as ``refs/remotes/origin/<base>``. Beside a local branch named
+    ``origin/trunk``, git's ``--short`` record turns into ``remotes/origin/trunk``,
+    and a short ``origin/trunk`` names that branch, here left at HEAD, so the change
+    would read as empty. ``main`` runs in this process."""
+    _git(repo, "update-ref", "refs/remotes/origin/trunk", "refs/remotes/origin/main")
+    _git(repo, "update-ref", "-d", "refs/remotes/origin/main")
+    _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
+    _git(repo, "branch", "origin/trunk", "HEAD")
+    monkeypatch.chdir(repo)
+
+    assert ds.main(["diff_signals.py"]) == 0
+
+    assert "src/kiro_crew/chat/send.py" in capsys.readouterr().out
+
+
+def test_a_missing_remote_base_is_reported_even_beside_a_local_namesake(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A local branch named ``origin/main`` does not stand in for an unfetched base:
+    the check that the base exists asks for ``refs/remotes/origin/main``."""
+    _git(repo, "branch", "origin/main", "HEAD")
+    _git(repo, "update-ref", "-d", "refs/remotes/origin/main")
+    monkeypatch.chdir(repo)
+
+    assert ds.main(["diff_signals.py", "main"]) == 2
+
+    assert "origin/main not found" in capsys.readouterr().err
+
+
+def test_every_read_of_the_base_names_the_remote_ref_in_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The three CI check scripts, the branch title and the sibling check's merge base
+    are read from ``refs/remotes/origin/<base>``, never the short ``origin/<base>`` a
+    local branch of that name would answer. git and the check scripts' own runs are
+    stubbed: what this pins is the ref each read names."""
+    reads: list[list[str]] = []
+
+    def recording_run(args):
+        reads.append(list(args))
+        return 0, "x", ""
+
+    def no_child(argv, **_kwargs):
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(ds, "run", recording_run)
+    monkeypatch.setattr(ds, "subprocess", SimpleNamespace(run=no_child))
+
+    ds.branch_title("main")
+    ds.template_check("", "main")
+    ds.sibling_check("", "main")
+    ds.proof_check("", "main", "unused-git-dir")
+
+    named = [arg for argv in reads for arg in argv[1:] if "origin/" in arg]
+    assert {arg.split(":")[0].split("..")[0] for arg in named} == {"refs/remotes/origin/main"}
+    assert sum(argv[1:2] == ["show"] for argv in reads) == 3
+    assert any(argv[1:2] == ["merge-base"] for argv in reads)
 
 
 def _body(repo: Path) -> Path:

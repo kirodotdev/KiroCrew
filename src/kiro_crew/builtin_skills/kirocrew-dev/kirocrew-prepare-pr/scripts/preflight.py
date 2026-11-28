@@ -3,9 +3,11 @@
 
 Reports repo / current-branch / base-branch / gh-auth / dirty / divergence /
 existing-PR / write permission, and gates on blockers so the agent never
-commits on the base branch, acts unauthenticated, or works a PR it cannot
-publish to. Write permission is the gh ``viewerPermission`` answer plus a
-dry-run transport probe of the remote; either can exit 30.
+commits on the base branch, acts unauthenticated, works a PR it cannot
+publish to, or runs the loop where another ref named ``origin/<base>``
+stands in for the remote base. Write permission is the gh
+``viewerPermission`` answer plus a dry-run transport probe of the remote;
+either can exit 30.
 
 Portable: stdlib only; shells out to git/gh via argument lists (no shell
 pipelines), so it runs on macOS, Linux, and Windows wherever Kiro Crew's
@@ -331,6 +333,52 @@ def push_transport_verdict(branch):
     return _classify_push_probe_error(stderr)
 
 
+# A name a printed remedy can carry as is: nothing in it that a shell expands.
+_PLAIN_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+def base_namesakes(base):
+    """(ref, remedy) for each ref git's lookup of a short ``origin/<base>`` reads
+    before the remote base, in gitrevisions(7) order, or None when git cannot
+    list them.
+
+    A name outside refs/ is a file in the COMMON git dir, also when a linked
+    worktree writes it (outside refs/, git keeps only all-caps names such as HEAD
+    per worktree): ``git update-ref origin/<base>`` writes one there but refuses
+    to delete a ref by that name, so its remedy deletes the file. ``for-each-ref`` runs with its
+    default output rather than a ``--format``: run() refuses a cmd.exe
+    metacharacter such as ``%`` in any argument when git is a batch launcher. A
+    remedy is a command only for a plain name, so pasting it cannot run
+    anything the name smuggles in.
+    """
+    name = "origin/" + base  # short-origin-ok: a namesake of the base is called this
+    rc, common_dir, _ = run(["git", "rev-parse", "--git-common-dir"])
+    if rc != 0 or not common_dir:
+        return None
+    namesakes = []
+    ref_file = os.path.abspath(os.path.join(common_dir, name))
+    if os.path.isfile(ref_file):
+        namesakes.append(
+            (name, "delete the file {} (git refuses to delete it by name)".format(ref_file))
+        )
+    under_refs = ["refs/" + name, "refs/tags/" + name, "refs/heads/" + name]
+    rc, listed, _ = run(["git", "for-each-ref"] + under_refs)
+    if rc != 0:
+        return None
+    # Each line of the default output is "<object> <type>\t<refname>".
+    existing = {line.split("\t", 1)[1] for line in listed.splitlines() if "\t" in line}
+    for ref in under_refs:
+        if ref not in existing:
+            continue
+        if not _PLAIN_REF.match(ref):
+            namesakes.append((ref, "rename or delete it by hand; its name holds shell characters"))
+        elif ref.startswith("refs/heads/"):
+            namesakes.append((ref, "git branch -m {} <new-name>".format(name)))
+        else:
+            namesakes.append((ref, "git update-ref -d " + ref))
+    return namesakes
+
+
 def main():
     previous = install_termination_handlers()
     try:
@@ -447,6 +495,19 @@ def _main():
         if rc == 0 and len(out.split()) == 2:
             behind, ahead = out.split()
 
+    # git's lookup of a short origin/<base> tries a ref of that name outside refs/,
+    # then refs/origin/<base>, a tag and a branch of that name, all before
+    # refs/remotes/origin/<base> (gitrevisions(7)), so any of them would stand in
+    # for the base in every gate and recipe that spells it short.  rev-parse names
+    # the remote ref only when nothing shadows it; beside a namesake it prints the
+    # namesake, or nothing when both exist.  --verify keeps it from echoing back a
+    # working-tree path of that name when no ref has it.
+    short_base = "origin/" + base  # short-origin-ok: the probe asks what this name resolves to
+    rc, named_base, _ = run(
+        ["git", "rev-parse", "--verify", "--quiet", "--symbolic-full-name", short_base]
+    )
+    base_shadowed = rc == 0 and named_base != _remote_ref(base)
+
     print("repo:            " + root)
     print("current branch:  " + cur)
     print("base branch:     " + base + ("  (from PR)" if pr_base else ""))
@@ -525,6 +586,21 @@ def _main():
             # or credential-helper error messages that no URL-shape scrubber
             # can redact; round-13 lesson).
             print("  error class: " + fetch_diagnostic(fetch_rc, fetch_err).replace("<base>", base))
+        blocked = True
+    if base_shadowed:
+        print(
+            "BLOCKER: origin/{0} does not name {1}: git's ref lookup reads another ref "
+            "called origin/{0} first, so every gate and recipe that spells the base "
+            "short would read it. Remove each one:".format(base, _remote_ref(base))
+        )
+        namesakes = base_namesakes(base)
+        if namesakes is None:
+            print("  git could not list them; see gitrevisions(7) for where it looks")
+        elif namesakes:
+            for ref, remedy in namesakes:
+                print("  {}: {}".format(ref, remedy))
+        else:
+            print("  none found under refs/ or as a file in the git dir; see gitrevisions(7)")
         blocked = True
     # Stale-base guard: if the branch is implausibly far ahead of origin/<base>
     # (more than DEFAULT_MAX_AHEAD commits for a single-commit PR workflow),

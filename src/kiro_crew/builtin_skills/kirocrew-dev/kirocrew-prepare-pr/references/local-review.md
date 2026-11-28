@@ -2,7 +2,7 @@
 
 Moved verbatim from the kirocrew-prepare-pr `SKILL.md` core (Phase 2 step 2).
 
-2. **Local review — one subagent per profile reviewer**, briefed from CI's own workflows. Run `python3 $SKILL_DIR/scripts/local_review.py --base origin/<base>` from the worktree: it resolves both SHAs itself and writes one task file per reviewer (`local-review-<name>.md`) with that reviewer's prompt **extracted literally from its `contract` workflow**, plus the base-ref `AUTOSDE.yaml` snapshots, the `BASE...HEAD` diff and the PR intent inside the workflow's own UNTRUSTED framing. It never calls a model.
+2. **Local review — one subagent per profile reviewer**, briefed from CI's own workflows. Run `python3 $SKILL_DIR/scripts/local_review.py --base refs/remotes/origin/<base>` from the worktree: it resolves both SHAs itself and writes one task file per reviewer (`local-review-<name>.md`) with that reviewer's prompt **extracted literally from its `contract` workflow**, plus the base-ref `AUTOSDE.yaml` snapshots, the `BASE...HEAD` diff and the PR intent inside the workflow's own UNTRUSTED framing. It never calls a model.
 
    Dispatch one model-pinned `spawn_run` call per entry in `reviewers[]`, using
    the `model=` the script prints for it, never the repair-family table. `model` is batch-wide per

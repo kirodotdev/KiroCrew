@@ -60,20 +60,25 @@ import subprocess
 import sys
 import warnings
 
-# argv[0] resolution and the batch-launcher guard ``run`` applies, from
-# _tool_argv.py beside this script, by path and without writing bytecode.
-_SPEC = importlib.util.spec_from_file_location(
-    "_prepare_pr_green_age_tool_argv",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "_tool_argv.py"),
-)
-if _SPEC is None or _SPEC.loader is None:  # pragma: no cover - defensive
-    raise ImportError("cannot import kirocrew-prepare-pr sibling _tool_argv.py")
-_tool_argv = importlib.util.module_from_spec(_SPEC)
-_WRITES_BYTECODE, sys.dont_write_bytecode = sys.dont_write_bytecode, True
-try:
-    _SPEC.loader.exec_module(_tool_argv)
-finally:
-    sys.dont_write_bytecode = _WRITES_BYTECODE
+
+def _sibling(filename, name):
+    """``filename`` beside this script, loaded by path and without writing bytecode."""
+    spec = importlib.util.spec_from_file_location(
+        name, os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        raise ImportError("cannot import kirocrew-prepare-pr sibling " + filename)
+    module = importlib.util.module_from_spec(spec)
+    writes_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = writes_bytecode
+    return module
+
+
+# argv[0] resolution and the batch-launcher guard ``run`` applies.
+_tool_argv = _sibling("_tool_argv.py", "_prepare_pr_green_age_tool_argv")
 
 # Exit codes, named so the callers in SKILL.md and pr_status.py cannot drift
 # from the values here.
@@ -539,7 +544,9 @@ def summarize(base="main", pr="", head="HEAD", runner=None):
         if _run(["git", "rev-parse", "--is-inside-work-tree"])[0] != 0:
             raise EnvError("not inside a git repository")
         _fetch_base(base, _run)
-        base_ref = "origin/{}".format(base)
+        # The ref the fetch wrote, in full: the short ``origin/<base>`` resolves a
+        # local branch, tag or other ref of that name first.
+        base_ref = "refs/remotes/origin/{}".format(base)
         base_head = _rev_parse(base_ref, _run)
         head_sha = _rev_parse(head, _run)
         # The base this head was tested on top of. kirocrew-prepare-pr rebases before
@@ -635,12 +642,10 @@ def main(argv=None):
         help="Take the changed files from this PR instead of the local branch.",
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
-    # The skill passes --base origin/<base> to its scripts, so accept that form
-    # rather than fetching refs/heads/origin/<base>, which never exists.
-    for remote_prefix in ("refs/remotes/origin/", "origin/"):
-        if args.base.startswith(remote_prefix):
-            args.base = args.base[len(remote_prefix) :]
-            break
+    # Loaded here, not at import: the readiness sweep imports this module through
+    # pr_status.py from a checkout of only the files that import needs.
+    base_ref = _sibling("_base_ref.py", "_prepare_pr_green_age_base_ref")
+    args.base = base_ref.base_branch(args.base)
 
     summary = summarize(base=args.base, pr=args.pr)
     line = format_line(summary)

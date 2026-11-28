@@ -157,7 +157,7 @@ compare against a base when `I18N_BASE_REF` is set.
 
 Worse still, an *unresolvable* base fails **open** if the substitution is inlined.
 The profile resolves it first and short-circuits — `BASE="$(git merge-base HEAD
-origin/main)" && BRAND_BASE_REF="$BASE" …` — which returns nonzero when the base
+refs/remotes/origin/main)" && BRAND_BASE_REF="$BASE" …` — which returns nonzero when the base
 cannot be resolved instead of silently reporting nothing.
 
 When adding any gate: supply its base ref, make an unresolvable base fail closed,

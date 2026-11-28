@@ -58,20 +58,27 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
-# argv[0] resolution and the batch-launcher guard every git call applies, from
-# _tool_argv.py beside this script, by path and without writing bytecode.
-_SPEC = importlib.util.spec_from_file_location(
-    "_prepare_pr_prove_tool_argv",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "_tool_argv.py"),
-)
-if _SPEC is None or _SPEC.loader is None:  # pragma: no cover - defensive
-    raise ImportError("cannot import kirocrew-prepare-pr sibling _tool_argv.py")
-_tool_argv = importlib.util.module_from_spec(_SPEC)
-_WRITES_BYTECODE, sys.dont_write_bytecode = sys.dont_write_bytecode, True
-try:
-    _SPEC.loader.exec_module(_tool_argv)
-finally:
-    sys.dont_write_bytecode = _WRITES_BYTECODE
+
+def _sibling(filename: str, name: str) -> Any:
+    """``filename`` beside this script, loaded by path and without writing bytecode."""
+    spec = importlib.util.spec_from_file_location(
+        name, os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        raise ImportError("cannot import kirocrew-prepare-pr sibling " + filename)
+    module = importlib.util.module_from_spec(spec)
+    writes_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = writes_bytecode
+    return module
+
+
+# argv[0] resolution and the batch-launcher guard every git call applies.
+_tool_argv = _sibling("_tool_argv.py", "_prepare_pr_prove_tool_argv")
+# How --base is read, the same in every prepare-pr script.
+_base_ref = _sibling("_base_ref.py", "_prepare_pr_prove_base_ref")
 
 # Emitted into the temp dir and put on PYTHONPATH so pytest reports its own
 # counts.  Reading pytest's report objects is both safer and more precise than
@@ -561,25 +568,14 @@ def dirty_among(changed: list[str], repo: Path) -> list[str]:
 def resolve_base(repo: Path, base: str) -> str:
     """The ref ``--base`` diffs against: a branch name means its ``origin`` copy.
 
-    ``push_guard.py``, ``green_age.py`` and ``diff_signals.py`` all read
-    ``--base main`` as ``origin/main``, so this does too. A local ``main`` in a
-    long-lived clone can sit weeks behind its remote; diffing against it sweeps
-    every commit main gained since into the change under proof, and the baseline
-    then runs tests the change never touched. A name with no remote-tracking
-    branch, a remote ref such as ``origin/main``, or a commit is used as given.
-
-    Only an exact branch name is mapped. ``show-ref --verify`` matches one full
-    ref and evaluates no ``~`` or ``^``, so ``HEAD~1`` is never read as
-    ``origin/HEAD~1``. ``HEAD`` itself is left alone: a clone's
-    ``refs/remotes/origin/HEAD`` names the remote's default branch, not this one.
-    A local branch with an ``origin`` copy is still reachable by its full name,
-    ``refs/heads/<name>``, for a stacked base not pushed yet.
+    Read by ``_base_ref.base_revision``, as every prepare-pr script reads its base. A
+    local ``main`` in a long-lived clone can sit weeks behind its remote; diffing against
+    it sweeps every commit main gained since into the change under proof, and the
+    baseline then runs tests the change never touched. A local branch with an ``origin``
+    copy is still reachable by its full name, ``refs/heads/<name>``, for a stacked base
+    not pushed yet.
     """
-    if base == "HEAD":
-        return base
-    remote = "refs/remotes/origin/" + base
-    probe = _git(["show-ref", "--verify", "--quiet", remote], repo)
-    return remote if probe.returncode == 0 else base
+    return _base_ref.base_revision(base, lambda args: _git(args, repo).returncode)
 
 
 def prove(repo: Path, base: str, per_hunk: bool, commit: str = "HEAD") -> dict:
@@ -753,9 +749,9 @@ def main() -> int:
     ap.add_argument(
         "--base",
         default=DEFAULT_BASE,
-        help="base to diff against; a branch name reads its origin copy when there is one, "
-        "as the other prepare-pr scripts do, and refs/heads/<name> names the local branch "
-        f"(default: {DEFAULT_BASE})",
+        help="base to diff against; a branch name reads its origin copy when there is one "
+        "and origin/<name> always does, as in the other prepare-pr scripts; "
+        f"refs/heads/<name> names the local branch (default: {DEFAULT_BASE})",
     )
     ap.add_argument(
         "--per-hunk",

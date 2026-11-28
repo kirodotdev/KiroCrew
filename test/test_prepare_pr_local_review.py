@@ -1307,8 +1307,8 @@ def test_default_diff_base_honours_the_profiles_base_branch(parity_repo, tmp_pat
         str(parity_repo), None, str(tmp_path / "out"), str(tmp_path / "stage")
     )
 
-    assert summary["base_ref"] == "origin/release"
-    assert summary["base_sha"] == _git(parity_repo, "merge-base", "HEAD", "origin/release")
+    assert summary["base_ref"] == "refs/remotes/origin/release"
+    assert summary["base_sha"] == _git(parity_repo, "merge-base", "HEAD", summary["base_ref"])
 
 
 def test_default_diff_base_falls_back_to_the_remote_default_branch(parity_repo, tmp_path):
@@ -1332,7 +1332,7 @@ def test_default_diff_base_falls_back_to_the_remote_default_branch(parity_repo, 
         str(parity_repo), None, str(tmp_path / "out"), str(tmp_path / "stage")
     )
 
-    assert summary["base_ref"] == "origin/trunk"
+    assert summary["base_ref"] == "refs/remotes/origin/trunk"
 
 
 def test_contract_absent_at_base_exits_40_through_the_cli(parity_repo, tmp_path):

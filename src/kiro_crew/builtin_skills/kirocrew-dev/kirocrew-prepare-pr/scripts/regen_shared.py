@@ -38,20 +38,27 @@ import shlex
 import subprocess
 import sys
 
-# argv[0] resolution and the batch-launcher guard ``run`` applies, from
-# _tool_argv.py beside this script, by path and without writing bytecode.
-_SPEC = importlib.util.spec_from_file_location(
-    "_prepare_pr_regen_tool_argv",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "_tool_argv.py"),
-)
-if _SPEC is None or _SPEC.loader is None:  # pragma: no cover - defensive
-    raise ImportError("cannot import kirocrew-prepare-pr sibling _tool_argv.py")
-_tool_argv = importlib.util.module_from_spec(_SPEC)
-_WRITES_BYTECODE, sys.dont_write_bytecode = sys.dont_write_bytecode, True
-try:
-    _SPEC.loader.exec_module(_tool_argv)
-finally:
-    sys.dont_write_bytecode = _WRITES_BYTECODE
+
+def _sibling(filename, name):
+    """``filename`` beside this script, loaded by path and without writing bytecode."""
+    spec = importlib.util.spec_from_file_location(
+        name, os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        raise ImportError("cannot import kirocrew-prepare-pr sibling " + filename)
+    module = importlib.util.module_from_spec(spec)
+    writes_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = writes_bytecode
+    return module
+
+
+# argv[0] resolution and the batch-launcher guard ``run`` applies.
+_tool_argv = _sibling("_tool_argv.py", "_prepare_pr_regen_tool_argv")
+# How the base argument is read, the same in every prepare-pr script.
+_base_ref = _sibling("_base_ref.py", "_prepare_pr_regen_base_ref")
 
 # One entry per generator that exists today. ``files`` are the repo-relative paths it
 # writes (and the only ones it may write); ``requires`` are paths that must exist for
@@ -259,7 +266,8 @@ def regen(root, base, entries):
     lines = []
     if _git_lines(root, "rev-parse", "--is-inside-work-tree") is None:
         return 2, ["ERROR: not inside a git repository (or git not found)."]
-    if _git_lines(root, "rev-parse", "--verify", "--quiet", "origin/" + base) is None:
+    base_ref = _base_ref.ORIGIN_REFS + base
+    if _git_lines(root, "rev-parse", "--verify", "--quiet", base_ref) is None:
         remote, _, branch = base.partition("/")
         if branch and _git_lines(root, "rev-parse", "--verify", "--quiet", "refs/remotes/" + base):
             # A remote ref (upstream/main from a fork clone): no fetch from origin brings it.
@@ -269,13 +277,13 @@ def regen(root, base, entries):
                 "fork's {2} with upstream first (CONTRIBUTING.md).".format(base, remote, branch)
             ]
         return 2, ["ERROR: origin/{0} not found - run: git fetch origin {0}".format(base)]
-    merge_base = _git_lines(root, "merge-base", "origin/" + base, "HEAD")
+    merge_base = _git_lines(root, "merge-base", base_ref, "HEAD")
     if not merge_base:
         return 2, ["ERROR: no merge base between origin/{} and HEAD".format(base)]
     mb = merge_base[0]
     # --no-renames lists both sides of a rename, so a baseline row for the old path is found.
     mine = _git_paths(root, "diff", "--name-only", "--no-renames", mb + "..HEAD")
-    theirs = _git_paths(root, "diff", "--name-only", "--no-renames", mb + "..origin/" + base)
+    theirs = _git_paths(root, "diff", "--name-only", "--no-renames", mb + ".." + base_ref)
     if mine is None or theirs is None:
         return 2, ["ERROR: git diff failed"]
     # A worktree edit counts as this branch's: the author may regenerate before committing.
@@ -355,12 +363,14 @@ def main(argv):
         err("ERROR: not inside a git repository (or git not found).")
         return 2
     root = root_out.strip()
-    base = args[0] if args else ""
+    base = _base_ref.base_branch(args[0]) if args else ""
     if not base:
-        sym = run(
-            ["git", "-C", root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]
-        )[1].strip()
-        base = sym[len("origin/") :] if sym.startswith("origin/") else "main"
+        # The full target: ``--short`` prints ``remotes/origin/<base>`` once
+        # another ref named ``origin/<base>`` makes the short name ambiguous.
+        sym = run(["git", "-C", root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])[
+            1
+        ].strip()
+        base = _base_ref.base_branch(sym) if sym.startswith(_base_ref.ORIGIN_REFS) else "main"
     code, lines = regen(root, base, REGEN)
     print("\n".join(lines))
     return code

@@ -165,6 +165,36 @@ def test_a_file_the_base_moved_also_counts(repo: Path) -> None:
     assert code == 20
 
 
+def test_the_default_base_is_the_remote_default_branch_beside_a_local_namesake(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no base argument, the base comes from ``refs/remotes/origin/HEAD``.
+    Beside a local branch named ``origin/trunk``, git's ``--short`` record of it turns
+    into ``remotes/origin/trunk``; read in full, it still names ``trunk``."""
+    _git(repo, "update-ref", "refs/remotes/origin/trunk", "refs/remotes/origin/main")
+    _git(repo, "update-ref", "-d", "refs/remotes/origin/main")
+    _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
+    _git(repo, "branch", "origin/trunk", "HEAD")
+    monkeypatch.setattr(rs, "REGEN", [])
+    monkeypatch.chdir(repo)
+
+    assert rs.main(["regen_shared.py"]) == 0
+
+
+def test_a_local_branch_named_like_the_remote_base_does_not_hide_its_move(repo: Path) -> None:
+    """The base is read as ``refs/remotes/origin/main``. A short ``origin/main``
+    resolves a local branch of that name first, and one left at the old base would
+    hide the base's edit to the generated file."""
+    _git(repo, "branch", "origin/main", "refs/remotes/origin/main")
+    _git(repo, "checkout", "-q", "-b", "upstream", "refs/remotes/origin/main")
+    _write(repo / "gen" / "out.txt", "base moved\n")
+    _git(repo, "commit", "-q", "-am", "base edits generated file")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    code, _ = rs.regen(str(repo), "main", [_entry(["gen/out.txt"], REWRITE)])
+    assert code == 20
+
+
 def test_an_uncommitted_edit_counts_as_the_branchs_own(repo: Path) -> None:
     _write(repo / "gen" / "out.txt", "edited, not committed\n")
     code, _ = rs.regen(str(repo), "main", [_entry(["gen/out.txt"], REWRITE)])

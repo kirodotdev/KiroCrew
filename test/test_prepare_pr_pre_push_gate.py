@@ -190,6 +190,29 @@ def test_a_remote_qualified_base_finds_the_same_merge_base(repo, use_gates, caps
     assert "no merge base" not in capsys.readouterr().out
 
 
+def test_a_local_branch_named_like_the_remote_base_does_not_move_the_merge_base(repo) -> None:
+    """The merge base is taken with ``refs/remotes/origin/<base>``. A short
+    ``origin/main`` resolves a local branch of that name first, and one at HEAD
+    would make HEAD the merge base, so no diff-scoped gate would see the change."""
+    remote_base = _git(repo, "rev-parse", "refs/remotes/origin/main")
+    _git(repo, "branch", "origin/main", "HEAD")
+
+    assert gate._base_sha("main") == remote_base
+
+
+def test_the_default_base_is_the_remote_default_branch_beside_a_local_namesake(repo) -> None:
+    """With no --base, the base comes from the full target of
+    ``refs/remotes/origin/HEAD``. Beside a local branch named ``origin/trunk``,
+    git's ``--short`` record of it turns into ``remotes/origin/trunk``; read in
+    full, it still names ``trunk``."""
+    _git(repo, "update-ref", "refs/remotes/origin/trunk", "refs/remotes/origin/main")
+    _git(repo, "update-ref", "-d", "refs/remotes/origin/main")
+    _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
+    _git(repo, "branch", "origin/trunk", "HEAD")
+
+    assert gate._base_sha("") == _git(repo, "rev-parse", "refs/remotes/origin/trunk")
+
+
 def test_a_gate_whose_paths_match_no_changed_file_does_not_run(repo, use_gates) -> None:
     only_docs = {**BAD_GATE, "id": "docs-only", "paths": [r"\.md$"]}
     use_gates(OK_GATE, only_docs)

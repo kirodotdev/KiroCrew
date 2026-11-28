@@ -33,8 +33,9 @@ silently ignored (so the profile is never quietly wrong).
 
 Usage:  python3 resolve_profile.py [repo_root] [base_ref]
         (repo defaults to git toplevel or CWD; base_ref pins every profile
-        input. When omitted, the remote default branch is used if one exists;
-        only a repo with no remote is read from the working tree.)
+        input, and a branch name there means its origin copy. When omitted, the
+        remote default branch is used if one exists; only a repo with no remote
+        is read from the working tree.)
 Exit:   0 resolved (JSON on stdout) - 2 env / parse error
 """
 
@@ -50,19 +51,24 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PROFILES_DIR = os.path.join(os.path.dirname(HERE), "profiles")
 
 
-# argv[0] resolution and the batch-launcher guard ``run`` applies, from
-# _tool_argv.py beside this script, by path and without writing bytecode.
-_SPEC = importlib.util.spec_from_file_location(
-    "_prepare_pr_profile_tool_argv", os.path.join(HERE, "_tool_argv.py")
-)
-if _SPEC is None or _SPEC.loader is None:  # pragma: no cover - defensive
-    raise ImportError("cannot import kirocrew-prepare-pr sibling _tool_argv.py")
-_tool_argv = importlib.util.module_from_spec(_SPEC)
-_WRITES_BYTECODE, sys.dont_write_bytecode = sys.dont_write_bytecode, True
-try:
-    _SPEC.loader.exec_module(_tool_argv)
-finally:
-    sys.dont_write_bytecode = _WRITES_BYTECODE
+def _sibling(filename, name):
+    """``filename`` beside this script, loaded by path and without writing bytecode."""
+    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        raise ImportError("cannot import kirocrew-prepare-pr sibling " + filename)
+    module = importlib.util.module_from_spec(spec)
+    writes_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = writes_bytecode
+    return module
+
+
+# argv[0] resolution and the batch-launcher guard ``run`` applies.
+_tool_argv = _sibling("_tool_argv.py", "_prepare_pr_profile_tool_argv")
+# How a base_ref argument is read, the same in every prepare-pr script.
+_base_ref = _sibling("_base_ref.py", "_prepare_pr_profile_base_ref")
 
 # Files whose combined presence identifies the Kiro Crew repo (or a faithful
 # fork) with a very low false-positive rate. All must be present to match.
@@ -425,13 +431,15 @@ def resolve(root, base_ref=None):
 def default_base_ref(root):
     """Trusted default base for CLI use: git's own record of the remote default
     branch, else origin/main when it resolves, else None (no remote to pin to,
-    so the working tree is the only source there is)."""
-    rc, out, _ = _git(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    so the working tree is the only source there is).  Both answers are full
+    refs: a short ``origin/main`` resolves a local branch, tag or other ref of
+    that name first."""
+    rc, out, _ = _git(root, "symbolic-ref", "refs/remotes/origin/HEAD")
     if rc == 0 and out:
         return out
-    rc, _, _ = _git(root, "rev-parse", "--verify", "origin/main~0")
+    rc, _, _ = _git(root, "rev-parse", "--verify", "refs/remotes/origin/main~0")
     if rc == 0:
-        return "origin/main"
+        return "refs/remotes/origin/main"
     return None
 
 
@@ -443,6 +451,8 @@ def main(argv):
         # Never default to the branch checkout when there is a remote base to
         # pin to -- the checkout is the input profile resolution distrusts.
         base_ref = default_base_ref(root)
+    else:
+        base_ref = _base_ref.base_revision(base_ref, lambda args: _git(root, *args)[0])
     try:
         profile = resolve(root, base_ref=base_ref)
     except RuntimeError as exc:
