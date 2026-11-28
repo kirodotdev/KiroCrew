@@ -314,9 +314,13 @@ What each fact rests on:
 
 Not captured: main at `37f635e3e1`. There #40671 trims the built-ins (item 9); the user server still mounts by code reading, since `strictMcpConfig` is not set for a named app agent. The recording is not committed: an RFC changes no code, and Phase 0 owns the committed fixtures.
 
+### Phase 0 capture
+
+Taken 2026-11-25 on KAS 0.66.117, bundle route, with `scripts/capture_tools_allowlist.py`. The fixtures are `test/fixtures/acp_frames/kas/tools-allowlist-*-live.jsonl`, and the per-variant verdict table is in [tools-allowlist-capture.md](../guides/tools-allowlist-capture.md#verdict-table). A bounded spec was offered only its own tool on both sources, and an app-run session with the `kas_subagents` preview on got no `invoke_sub_agent`. `"*"`, `use_subagent` (the engine's bundled sub-agent has shell and file tools, and called the shell) and a chat key under the preview (`invoke_sub_agent` mounted after projection) were not bounded, which matches the `spec_not_bounded` rules and the sent-entry check.
+
 ## Open questions
 
-1. **Tool search under `TOOLS_ALLOWLIST`.** Does the frozen meaning count a search tool that finds only tools inside the bound? Until Phase 0's tool-search variant shows that on KAS, a spec granting tool search is refused (`spec_not_bounded`). Phase 1 freezes the meaning, so it is blocked on this answer.
+1. **Tool search under `TOOLS_ALLOWLIST`.** Does the frozen meaning count a search tool that finds only tools inside the bound? Until Phase 0's tool-search variant shows that on KAS, a spec granting tool search is refused (`spec_not_bounded`). Phase 1 freezes the meaning, so it is blocked on this answer. Phase 0 on 0.66.117: a `tool_search` row got no separate search tool. The engine's own loader (`load_resource`, offered in every session) refused both tools outside the bound as not in its catalogue. Whether that is enough to admit `tool_search` is the Phase 1 decision.
 
 Decided in review: the KAS bundle route only (the KAS relay route and kiro-cli v2 are not claimed); a version floor with no ceiling, plus the re-capture rule on a `KAS_PIN_VERSION` bump; no owner setting for the pick order.
 

@@ -1,0 +1,271 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "kiro": {
+          "autoCompactionThreshold": {
+            "default": 80,
+            "max": 80,
+            "min": 0
+          },
+          "checkpoints": true,
+          "executionTargets": [
+            "local"
+          ],
+          "extensionMethods": [
+            "_kiro/knowledge",
+            "_kiro/memory/list",
+            "_kiro/memory/get",
+            "_kiro/memory/create",
+            "_kiro/memory/update",
+            "_kiro/memory/delete",
+            "_kiro/memory/import",
+            "_kiro/memory/export",
+            "_kiro/memory/getImportPrompt",
+            "_kiro/memory/getSyncStatus",
+            "_kiro/memory/sync",
+            "_kiro/codeIntelligence",
+            "_kiro/environment/start_ssh_session",
+            "_kiro/environment/get_network_configuration",
+            "_kiro/session/context",
+            "_kiro/session/compact",
+            "_kiro/session/export",
+            "_kiro/session/history",
+            "_kiro/session/recordRelationship",
+            "_kiro/session/delete",
+            "_kiro/session/rename",
+            "_kiro/job/cancel",
+            "_kiro/job/output",
+            "_kiro/job/moveToBackground",
+            "_kiro/config/template",
+            "_kiro/permissions/presets/list",
+            "_kiro/permissions/presets/stores",
+            "_kiro/permissions/presets/add",
+            "_kiro/permissions/presets/remove",
+            "_kiro/configuration/getState",
+            "_kiro/configuration/set",
+            "_kiro/workflow/new",
+            "_kiro/workflow/invoke",
+            "_kiro/workflow/load",
+            "_kiro/workflow/inspect",
+            "_kiro/workflow/list",
+            "_kiro/workflow/pause",
+            "_kiro/workflow/cancel",
+            "_kiro/workflow/delete",
+            "_kiro/workflow/listRecipes",
+            "_kiro/workflow/listWatchHandlers",
+            "_kiro/workflow/resumeAll",
+            "_kiro/workflow/retry",
+            "_kiro/workflow/update",
+            "_kiro/workflow/resume"
+          ],
+          "logging": {
+            "channels": [
+              {
+                "filePath": "<kiro-home>/logs/20261125T153910497-19565/kiro.log",
+                "name": "kiro"
+              },
+              {
+                "filePath": "<kiro-home>/logs/20261125T153910497-19565/mcp.log",
+                "name": "mcp"
+              },
+              {
+                "filePath": "<kiro-home>/logs/20261125T153910497-19565/powers.log",
+                "name": "powers"
+              }
+            ],
+            "logDir": "<kiro-home>/logs/20261125T153910497-19565"
+          },
+          "modelFallbackReporting": true,
+          "policyNotifications": true,
+          "replayMarking": true,
+          "sessionList": true,
+          "sessionListScopes": [
+            "workspace"
+          ],
+          "sessionSources": [
+            "local"
+          ],
+          "sourceProviders": false,
+          "strictSessionLoad": true
+        }
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "delete": {},
+        "fork": {
+          "_meta": {
+            "kiro": {
+              "messageId": true
+            }
+          }
+        },
+        "list": {}
+      }
+    },
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/mcp/status",
+    "params": {
+      "servers": [],
+      "sessionId": "kas-session-1"
+    }
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/tools/didChange",
+    "params": {
+      "sessionId": "kas-session-1",
+      "tags": [
+        {
+          "description": "read-file, diagnostics, search tools",
+          "source": "builtin",
+          "tag": "read"
+        },
+        {
+          "description": "write-file tools",
+          "source": "builtin",
+          "tag": "write"
+        },
+        {
+          "description": "run-commands tools",
+          "source": "builtin",
+          "tag": "shell"
+        },
+        {
+          "description": "web search tools",
+          "source": "builtin",
+          "tag": "web"
+        }
+      ]
+    }
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "vibe",
+      "ids": [
+        "tools-probe"
+      ]
+    },
+    "session_id": "kas-session-1"
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/mcp/status",
+    "params": {
+      "servers": [
+        {
+          "_meta": {
+            "kiro": {
+              "resource": {
+                "krn": "krn:agent:krn%3Asession%3Akas-session-1%3Aagent/tools-probe:mcp-server/mcpServers/probe",
+                "layer": "agent",
+                "resourceType": "mcpServer",
+                "source": {
+                  "origin": "client"
+                },
+                "standing": {
+                  "kind": "active"
+                }
+              }
+            }
+          },
+          "name": "probe",
+          "status": "connecting"
+        }
+      ],
+      "sessionId": "kas-session-1"
+    }
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/tools/didChange",
+    "params": {
+      "sessionId": "kas-session-1",
+      "tags": []
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/mcp/status",
+    "params": {
+      "servers": [
+        {
+          "_meta": {
+            "kiro": {
+              "resource": {
+                "krn": "krn:agent:krn%3Asession%3Akas-session-1%3Aagent/tools-probe:mcp-server/mcpServers/probe",
+                "layer": "agent",
+                "resourceType": "mcpServer",
+                "source": {
+                  "origin": "client"
+                },
+                "standing": {
+                  "kind": "active"
+                }
+              }
+            }
+          },
+          "name": "probe",
+          "prompts": [],
+          "resourceTemplates": [],
+          "resources": [],
+          "status": "connected",
+          "tools": [
+            {
+              "description": "Echo the given text back. Capture probe tool.",
+              "disabled": false,
+              "inputSchema": {
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ],
+                "type": "object"
+              },
+              "name": "probe_note"
+            }
+          ]
+        }
+      ],
+      "sessionId": "kas-session-1"
+    }
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/tools/didChange",
+    "params": {
+      "sessionId": "kas-session-1",
+      "tags": [
+        {
+          "description": "Echo the given text back. Capture probe tool.",
+          "source": "mcp",
+          "tag": "@probe/probe_note"
+        }
+      ]
+    }
+  }
+]
