@@ -33,6 +33,7 @@ from kiro_crew.mcp_gateway.daemon.identity import (
     _bind_agents,
     _bind_token,
     _caller_from_register,
+    _confine,
     _pid_live_tenants,
     _refresh_bound_agents,
     _session_mounts,
@@ -221,7 +222,9 @@ def _apply_stand_down(frame: dict[str, Any], stop_event: Optional[asyncio.Event]
 
 
 async def _apply_claim(
-    frame: dict[str, Any], pool: Optional["BackendPool"] = None
+    frame: dict[str, Any],
+    pool: Optional["BackendPool"] = None,
+    writer: Optional[asyncio.StreamWriter] = None,
 ) -> dict[str, Any]:
     """Apply a ``claim`` frame to every indexed connection of the target PID.
 
@@ -246,6 +249,12 @@ async def _apply_claim(
     claim is pushed before its stubs are launched, so "matched zero" is the
     normal ordering, and remembering the token is how the register that follows
     resolves to the right session instead of to the runtime's tree.
+
+    ``"confined": true`` says the claimed runtime is fenced tighter than a
+    gateway backend. It is recorded (``identity._confine``) only when *writer*
+    is the daemon's owner (:func:`_owner_sender_refusal`); from any other sender
+    it is ignored and audited, and the rest of the claim applies as before. A
+    claim without the flag never clears a recorded confinement.
     """
     raw_pid = frame.get("pid")
     pid = raw_pid if isinstance(raw_pid, int) and not isinstance(raw_pid, bool) else 0
@@ -259,6 +268,8 @@ async def _apply_claim(
     session_token = raw_session_token if isinstance(raw_session_token, str) else ""
     raw_token = frame.get("pid_start_id")
     claim_token = raw_token if isinstance(raw_token, str) else None
+    if frame.get("confined") is True:
+        await _apply_confinement(writer, session_token, pid, claim_token)
     _bind_token(session_token, updated_caller, pid, claim_token)
     # Does this runtime host more than one ACP session RIGHT NOW? The claiming
     # session is unioned in because its own stubs may not have registered yet --
@@ -512,6 +523,27 @@ async def _apply_abort(frame: dict[str, Any], pool: "BackendPool") -> dict[str, 
     return {"type": "aborted", "cancelled": total_cancelled, "stubs": len(affected_stubs)}
 
 
+async def _apply_confinement(
+    writer: Optional[asyncio.StreamWriter], token: str, pid: int, pid_start_id: Optional[str]
+) -> None:
+    """Record a claim's ``confined`` flag when the daemon's owner sent it.
+
+    Any process at this uid can write a claim, so a flag from anyone else is
+    refused here, audited, and changes nothing. The token is never logged.
+    """
+    if writer is None:
+        peer_pid, reason = None, "no sender to attest"
+    else:
+        peer_pid, reason = await _owner_sender_refusal(writer)
+    if reason:
+        logger.warning("gatewayd: claim confinement refused: %s", reason)
+        _audit_caller_claimed("", "", f"pid:{pid}", "denied", f"confinement refused: {reason}")
+        return
+    _confine(token, pid, pid_start_id)
+    logger.info("gatewayd: runtime pid=%d confined by its owner's claim", pid)
+    _audit_caller_claimed("", "", f"pid:{pid}", "allowed", f"confined by peer pid {peer_pid}")
+
+
 async def _owner_sender_refusal(writer: asyncio.StreamWriter) -> tuple[Optional[int], str]:
     """``(peer pid, why the sender is not this daemon's owner)``; ``""`` when it is.
 
@@ -552,7 +584,9 @@ async def _apply_agent_binding(
     from this daemon's owner (:func:`_owner_sender_refusal`); a refused frame
     leaves every binding as it was. ``pid`` is the runtime the session runs in,
     checked against the kernel-attested host chain of each registering stub
-    exactly as a claim's pid is (``identity._token_agents``).
+    exactly as a claim's pid is (``identity._token_agents``). ``"confined": true``
+    records the runtime and token as confined (``identity._confine``), exactly as
+    an owner's claim does.
     """
     token = frame.get("stub_session_token")
     raw_pid = frame.get("pid")
@@ -578,6 +612,10 @@ async def _apply_agent_binding(
     _bind_agents(
         token, frozenset(raw_agents), pid, raw_start if isinstance(raw_start, str) else None
     )
+    if frame.get("confined") is True:
+        # The sender already passed the owner check above.
+        _confine(token, pid, raw_start if isinstance(raw_start, str) else None)
+        logger.info("gatewayd: runtime pid=%d confined by its owner's agent binding", pid)
     refreshed = _refresh_bound_agents(token, pid)
     facade._wake_agent_binding_waiters()
     _audit_agent_binding(_peer_pid, "allowed", sorted(set(raw_agents)))
@@ -810,7 +848,7 @@ async def _serve_control_frame(
     # (fixes warm-pool re-claim staleness). Validation + auditing live in
     # ``_apply_claim``.
     if register.get("type") == "claim":
-        await _write_json_line(writer, await _apply_claim(register, pool))
+        await _write_json_line(writer, await _apply_claim(register, pool, writer))
         return True
 
     # Agent-binding short-circuit (one-shot control connection from the owning

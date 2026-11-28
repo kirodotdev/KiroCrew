@@ -306,6 +306,67 @@ def _token_is_unbound(token: str) -> bool:
     return bool(token) and token not in _TOKEN_BINDINGS
 
 
+#: Runtimes the owning gateway said are fenced tighter than a gateway backend
+#: (``runtime_confinement.runtime_confined``): runtime pid -> that pid's process
+#: start token, and the session tokens those frames named -> runtime pid. Written
+#: ONLY from a ``claim`` or ``agent-binding`` frame carrying ``"confined": true``
+#: that ``control._owner_sender_refusal`` finds the owner sent
+#: (``control._apply_claim``, ``control._apply_agent_binding``). Nothing removes
+#: an entry except the cap below,
+#: which drops only entries whose runtime is gone: a later claim that omits the
+#: flag, whoever sends it, leaves the confinement in place.
+_CONFINED_RUNTIMES: "OrderedDict[int, Optional[str]]" = OrderedDict()
+_CONFINED_TOKENS: "OrderedDict[str, int]" = OrderedDict()
+
+
+def _confine(token: str, pid: int, pid_start_id: Optional[str]) -> None:
+    """Record that runtime *pid* (and the session *token* names) is confined."""
+    _CONFINED_RUNTIMES.pop(pid, None)
+    _CONFINED_RUNTIMES[pid] = pid_start_id
+    if token:
+        _CONFINED_TOKENS.pop(token, None)
+        _CONFINED_TOKENS[token] = pid
+    # Over the cap, only entries whose runtime is gone are dropped; a live one
+    # stays, since dropping it would let that runtime's callers attach again.
+    for old_pid in list(_CONFINED_RUNTIMES):
+        if len(_CONFINED_RUNTIMES) <= _MAX_TOKEN_BINDINGS:
+            break
+        if old_pid != pid and not platform_compat.pid_exists(old_pid):
+            _CONFINED_RUNTIMES.pop(old_pid, None)
+    for old_token, old_pid in list(_CONFINED_TOKENS.items()):
+        if len(_CONFINED_TOKENS) <= _MAX_TOKEN_BINDINGS:
+            break
+        if old_pid != pid and not platform_compat.pid_exists(old_pid):
+            _CONFINED_TOKENS.pop(old_token, None)
+
+
+def _caller_confined(
+    token: str,
+    attested_pids: Collection[int] = (),
+    pid_start_ids: Optional[dict[int, Optional[str]]] = None,
+) -> bool:
+    """Whether a connection is served from inside a confined runtime.
+
+    True when its session *token* was named by a confined claim, or when its
+    kernel-attested host chain (*attested_pids*, never the Register's own
+    ``ancestor_pids``) passes through a confined runtime whose start token does
+    not definitely differ from the one snapshotted at register (a recycled pid
+    is not the runtime the claim named). Either factor is enough: a process
+    inside the runtime can present no token, another session's token, or its
+    own, and none of those moves it out of the runtime's process tree.
+    """
+    if token and token in _CONFINED_TOKENS:
+        return True
+    for pid in attested_pids:
+        if pid not in _CONFINED_RUNTIMES:
+            continue
+        bound_start_id = _CONFINED_RUNTIMES[pid]
+        registered = (pid_start_ids or {}).get(pid)
+        if bound_start_id is None or registered is None or registered == bound_start_id:
+            return True
+    return False
+
+
 #: ``stub_session_token`` -> (the agents whose stubs that session runs, runtime
 #: pid, that pid's start token). Written ONLY from an ``agent-binding`` frame the
 #: daemon's owner gateway sent (``control._apply_agent_binding``), which is what

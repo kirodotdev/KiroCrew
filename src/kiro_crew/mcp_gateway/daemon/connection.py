@@ -31,6 +31,7 @@ from kiro_crew.mcp_gateway.backend_stubs import _relabel_stub
 from kiro_crew.mcp_gateway.daemon import logger, session_describe
 from kiro_crew.mcp_gateway.daemon.admission_protocol import (
     _LEGACY_SPAWN_WAIT_SECS,
+    REJECT_CLASS_ISOLATION,
     _await_answering_pings,
     _negotiated_wait_budget,
     _PeerGone,
@@ -183,6 +184,11 @@ async def _declaring_agent(frame_agent: str, conn: _StubConn, writer: asyncio.St
         frame_agent,
     )
     return ""
+
+
+def _confined(conn: _StubConn) -> bool:
+    """Whether *conn* is served from inside a confined runtime (``identity._caller_confined``)."""
+    return facade._caller_confined(conn.stub_session_token, conn.attested_pids, conn.pid_start_ids)
 
 
 async def _await_declaring_agent(
@@ -437,6 +443,24 @@ async def _handle_connection(
         return
 
     conn = await _resolve_register_identity(register, writer, stub_uuid, pool_key)
+    if _confined(conn):
+        # Served from inside a runtime its owner said is fenced tighter than any
+        # backend this daemon starts: refused with a fallback class, so the stub
+        # runs the server per chat inside that runtime's own sandbox.
+        _conn_index_discard(conn)
+        reason = "caller is inside a confined runtime; run this server per chat"
+        logger.warning("rejected Register: stub %s %s", stub_uuid, reason)
+        facade._audit_peer_denied(f"stub {stub_uuid}: {reason}")
+        await _write_json_line(
+            writer,
+            {
+                "type": "rejected",
+                "reason": reason,
+                "class": REJECT_CLASS_ISOLATION,
+                "fallback": True,
+            },
+        )
+        return
     caller = conn.caller
 
     # Identity resolution already added conn to the claim index. Until bridge
@@ -599,6 +623,13 @@ async def _handle_connection(
                     except (OSError, ConnectionError):
                         return
                 continue
+            # A confining claim that landed after this stub registered (a
+            # warm-pool claim, or the owner's re-claim after a daemon restart):
+            # nothing more is forwarded for it.
+            if _confined(conn):
+                logger.warning("stub %s is inside a confined runtime; dropping conn", stub_uuid)
+                facade._audit_peer_denied(f"stub {stub_uuid}: inside a confined runtime")
+                return
             # Claim-push pickup: a concurrent ``claim`` connection may have
             # re-targeted this connection's identity via ``conn.caller``.
             # Sync per-frame so the very next forward carries the new caller.
