@@ -192,8 +192,35 @@ def test_the_tool_gate_judges_a_call_inside_one_resolver_budget(monkeypatch) -> 
     assert getattr(paths_resolver._judgment_budget, "left", None) is None
 
 
-def test_default_pool_has_eight_children(monkeypatch) -> None:
-    # Pinned as a literal so that changing the shipped size has to edit a test.
+def test_default_pool_has_two_children_and_the_gateway_eight(monkeypatch) -> None:
+    # Pinned as literals so that changing a shipped size has to edit a test.
     monkeypatch.delenv(ex._PATH_RESOLVE_WORKERS_ENV, raising=False)
-    assert ex._PATH_RESOLVE_WORKERS_DEFAULT == 8
-    assert ex._path_resolve_worker_count() == 8
+    monkeypatch.setattr(ex, "_MAX_PATH_RESOLVE_WORKERS", ex._MAX_PATH_RESOLVE_WORKERS)
+    assert ex._path_resolve_worker_count() == 2
+    ex.size_path_resolver_for_gateway()
+    assert ex._MAX_PATH_RESOLVE_WORKERS == 8
+    # The knob still sizes the gateway's pool.
+    monkeypatch.setenv(ex._PATH_RESOLVE_WORKERS_ENV, "3")
+    ex.size_path_resolver_for_gateway()
+    assert ex._MAX_PATH_RESOLVE_WORKERS == 3
+
+
+def test_kirocrew_gateway_takes_the_gateway_pool_size_before_it_boots(monkeypatch) -> None:
+    from kiro_crew import cli, platform_compat
+
+    class _Stop(Exception):
+        pass
+
+    def stop_at_reexec(_argv: list[str]) -> None:
+        raise _Stop
+
+    monkeypatch.delenv(ex._PATH_RESOLVE_WORKERS_ENV, raising=False)
+    monkeypatch.setattr(ex, "_MAX_PATH_RESOLVE_WORKERS", 2)
+    monkeypatch.setattr(
+        cli.platform_compat, "limit_malloc_arenas", lambda: platform_compat.MallocArenaCap(2, 2, 1)
+    )
+    monkeypatch.setattr(cli, "maybe_reexec", stop_at_reexec)
+    monkeypatch.setattr(cli.sys, "argv", ["kirocrew", "gateway"])
+    with pytest.raises(_Stop):
+        cli.main()
+    assert ex._MAX_PATH_RESOLVE_WORKERS == 8

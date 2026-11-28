@@ -297,34 +297,29 @@ _MAX_STT_WORKERS = 2
 # costs one respawn (~11ms), never a pinned worker.  Measurements and the
 # reasoning are in ``subprocess_pool/executor.py``.
 #
-# The knob sizes the number of children.  One sustains ~45k resolutions/s idle,
-# but a caller holds its child for the whole round trip INCLUDING its own wait for
-# the GIL to read the answer, so under CPU load the count of children is how many
-# GIL-starved callers fit before the next one is refused for want of a free child.
-# ``scripts/measure_path_gate_under_load.py`` with 32 busy threads and 16 callers
-# making 20 checks each admitted 111 of 320 with 2 children, 229 with 4, and all 320
-# with 8 or 16.  The DEFAULT is 8, the smallest count that cleared the lease wait;
-# each child is about 9 to 13 MiB resident.  The floor is 2
-# for wedge isolation: while one child is stuck on a dead mount (until the
-# deadline reclaims it), another keeps serving every healthy prefix.  Read once at import,
-# because the pool is a module-level singleton; an unparseable or out-of-range
-# value keeps the default rather than failing the import, since a gateway that
-# will not start is a worse outcome than one resolving with the shipped size.
+# The knob sizes the number of children.  One sustains ~45k resolutions/s idle, but a caller
+# holds its child for the whole round trip INCLUDING its own wait for the GIL to read the answer,
+# so under CPU load the count of children is how many GIL-starved callers fit before the next one
+# is refused for want of a free child.  ``scripts/measure_path_gate_under_load.py`` with 32 busy
+# threads and 16 callers making 20 checks each admitted 111 of 320 with 2 children, 229 with 4,
+# and all 320 with 8 or 16, so the GATEWAY's default is 8, the smallest count that cleared the
+# lease wait.  Each child is about 9 to 13 MiB resident and stays alive while its process idles,
+# so every other process (each ``mcp-*`` server, app backend) defaults to the floor of 2, kept for
+# wedge isolation: while one child is stuck on a dead mount (until the deadline reclaims it),
+# another serves every healthy prefix.  Read at import, and again by the gateway's boot (the pool
+# is a singleton); a bad value keeps the default rather than failing the import, since a gateway
+# that will not start is a worse outcome than one resolving with the shipped size.
 _PATH_RESOLVE_WORKERS_ENV = "KIROCREW_PATH_RESOLVE_WORKERS"
-_PATH_RESOLVE_WORKERS_DEFAULT = 8
-_PATH_RESOLVE_WORKERS_MIN = 2
+_PATH_RESOLVE_WORKERS_DEFAULT = _PATH_RESOLVE_WORKERS_MIN = 2
+_PATH_RESOLVE_WORKERS_GATEWAY_DEFAULT = 8
 _PATH_RESOLVE_WORKERS_MAX = 64
 
 
-def _path_resolve_worker_count() -> int:
-    """The resolver pool size: :data:`_PATH_RESOLVE_WORKERS_DEFAULT` unless overridden.
-
-    Fail-soft TO THE DEFAULT: a bad value leaves the shipped size in place rather
-    than failing the import.
-    """
+def _path_resolve_worker_count(default: int = _PATH_RESOLVE_WORKERS_DEFAULT) -> int:
+    """The pool size the knob sets, else *default*; a bad value warns and keeps *default*."""
     raw = os.environ.get(_PATH_RESOLVE_WORKERS_ENV, "").strip()
     if not raw:
-        return _PATH_RESOLVE_WORKERS_DEFAULT
+        return default
     try:
         value = int(raw)
     except ValueError:
@@ -332,9 +327,9 @@ def _path_resolve_worker_count() -> int:
             "%s=%r is not an integer; using the default of %d resolver worker(s)",
             _PATH_RESOLVE_WORKERS_ENV,
             raw,
-            _PATH_RESOLVE_WORKERS_DEFAULT,
+            default,
         )
-        return _PATH_RESOLVE_WORKERS_DEFAULT
+        return default
     if not _PATH_RESOLVE_WORKERS_MIN <= value <= _PATH_RESOLVE_WORKERS_MAX:
         logger.warning(
             "%s=%d is outside %d..%d; using the default of %d resolver worker(s)",
@@ -342,10 +337,16 @@ def _path_resolve_worker_count() -> int:
             value,
             _PATH_RESOLVE_WORKERS_MIN,
             _PATH_RESOLVE_WORKERS_MAX,
-            _PATH_RESOLVE_WORKERS_DEFAULT,
+            default,
         )
-        return _PATH_RESOLVE_WORKERS_DEFAULT
+        return default
     return value
+
+
+def size_path_resolver_for_gateway() -> None:
+    """Give this process the gateway's pool size; call before :func:`path_resolve_executor`."""
+    global _MAX_PATH_RESOLVE_WORKERS
+    _MAX_PATH_RESOLVE_WORKERS = _path_resolve_worker_count(_PATH_RESOLVE_WORKERS_GATEWAY_DEFAULT)
 
 
 _MAX_PATH_RESOLVE_WORKERS = _path_resolve_worker_count()
