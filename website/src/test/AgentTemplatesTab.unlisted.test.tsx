@@ -86,9 +86,12 @@ const deleteFrom = async (region: HTMLElement, file: string, answer: 'Delete fil
   fireEvent.click(within(ask).getByRole('button', { name: answer }))
 }
 
+// Where KIRO_HOME puts the agents folder: the copy must name it, not ~/.kiro/agents.
+const AGENTS_FOLDER = '/srv/kiro-home/agents'
+
 beforeEach(() => {
   Object.values(mockApi).forEach(m => m.mockReset())
-  mockApi.agentTemplates.mockResolvedValue({ templates: [VISIBLE], unlisted: [BROKEN, COPY, NOTES] })
+  mockApi.agentTemplates.mockResolvedValue({ templates: [VISIBLE], unlisted: [BROKEN, COPY, NOTES], agents_folder: AGENTS_FOLDER })
   mockApi.agentDetail.mockResolvedValue({ name: 'atlas', description: '', prompt: '', tools: [], allowedTools: [] })
   mockApi.agentTemplateDelete.mockResolvedValue({ ok: true })
   mockApi.kirocrewAgents.mockResolvedValue({ agents: [], default_agent: 'kirocrew' })
@@ -105,7 +108,7 @@ describe('AgentTemplatesTab: files not shown', () => {
     expect(within(region).getByText('Declares the name “atlas”, which “atlas.json” already uses, so only that file is listed.')).toBeInTheDocument()
     // A file the server cannot reach by its stem alone gets the instruction,
     // not a Delete that could only be refused.
-    expect(within(region).getByText('Rename or delete this file in ~/.kiro/agents to free its name.')).toBeInTheDocument()
+    expect(within(region).getByText('Rename or delete this file in /srv/kiro-home/agents to free its name.')).toBeInTheDocument()
     expect(within(region).getAllByRole('button')).toHaveLength(2)
     expect(within(region).queryByRole('button', { name: 'Delete “notes.md”' })).toBeNull()
     // The entries are files, not options of the template listbox.
@@ -142,6 +145,21 @@ describe('AgentTemplatesTab: files not shown', () => {
     expect(ask).toHaveTextContent('“atlas.json”')
     expect(ask).toHaveTextContent('“atlas”')
     expect(within(ask).getByRole('button', { name: 'Delete file' })).toBeInTheDocument()
+  })
+
+  it('names the agents folder the server reports in the hint and in both delete confirms', async () => {
+    renderTab()
+    const region = await section()
+    expect(region).toHaveTextContent('These files in /srv/kiro-home/agents are not in the list')
+    fireEvent.click(within(region).getByRole('button', { name: 'Delete “broken.json”' }))
+    const plain = await screen.findByRole('dialog', { name: 'Delete the file “broken.json”?' })
+    expect(plain).toHaveTextContent('It is removed from “/srv/kiro-home/agents” and a backup ending in .bak stays beside it')
+    fireEvent.click(within(plain).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete the file “broken.json”?' })).toBeNull())
+    fireEvent.click(within(region).getByRole('button', { name: 'Delete “atlas_v2.json”' }))
+    const sameName = await screen.findByRole('dialog', { name: 'Delete the file “atlas_v2.json”?' })
+    expect(sameName).toHaveTextContent('It is removed from “/srv/kiro-home/agents” and a backup ending in .bak stays beside it')
+    expect(document.body).not.toHaveTextContent('~/.kiro/agents')
   })
 
   it('opens the reference list when the server refuses the delete as referenced', async () => {

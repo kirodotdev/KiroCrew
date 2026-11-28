@@ -368,7 +368,7 @@ export default function AgentTemplatesTab() {
   const [createViaDuplicate, setCreateViaDuplicate] = useState(false)
   const [blocked, setBlocked] = useState<{ name: string; references: TemplateReference[] } | null>(null)
 
-  const { data, isLoading, error, refetch } = useQuery<{ templates: TemplateRow[]; unlisted?: UnlistedSpec[] }>({
+  const { data, isLoading, error, refetch } = useQuery<{ templates: TemplateRow[]; unlisted?: UnlistedSpec[]; agents_folder?: string }>({
     queryKey: ['agent-templates'],
     queryFn: () => api.agentTemplates(),
     // Templates are files another window, a package install or an editor can
@@ -379,6 +379,8 @@ export default function AgentTemplatesTab() {
   // Files the list cannot show that still take their names: without them a
   // refused create has nothing on the tab to open, rename or delete.
   const unlisted = useMemo(() => data?.unlisted ?? [], [data])
+  // Named by the server: KIRO_HOME and a pod gateway move it from ~/.kiro/agents.
+  const agentsFolder = data?.agents_folder ?? ''
   const selected = useMemo(() => rows.find(r => r.name === selectedName) ?? null, [rows, selectedName])
 
   const detailQuery = useQuery<TemplateDetail>({
@@ -913,7 +915,7 @@ export default function AgentTemplatesTab() {
           />
           {/* An empty list can still hold names: a file that does not read is
               no row, yet a create of its name is refused. */}
-          <UnlistedSpecFiles entries={unlisted} onReferenced={onUnlistedReferenced} className="mt-3 pb-2 border border-border rounded-md" />
+          <UnlistedSpecFiles entries={unlisted} folder={agentsFolder} onReferenced={onUnlistedReferenced} className="mt-3 pb-2 border border-border rounded-md" />
         </>
       ) : rows.length > 0 && (
         <div className={PANE_SHELL_CLASS}>
@@ -934,7 +936,7 @@ export default function AgentTemplatesTab() {
               {/* Outside the listbox: its entries are files, not options to
                   select, and each carries its own action. Unfiltered, since
                   each is a name the user cannot create until it is freed. */}
-              <UnlistedSpecFiles entries={unlisted} onReferenced={onUnlistedReferenced} className="shrink-0 max-h-[45%] overflow-y-auto border-t border-border p-1 pb-2" />
+              <UnlistedSpecFiles entries={unlisted} folder={agentsFolder} onReferenced={onUnlistedReferenced} className="shrink-0 max-h-[45%] overflow-y-auto border-t border-border p-1 pb-2" />
             </div>
           )}
 
@@ -950,7 +952,7 @@ export default function AgentTemplatesTab() {
                       <div className="text-[17px] font-mono font-semibold text-text-strong truncate">{selected.name}</div>
                       <div className="text-[12px] text-muted mt-0.5">
                         {selected.read_only ? i18nT('pages.overview.agentTemplatesTab.read_only_short') : i18nT('pages.overview.agentTemplatesTab.your_template')}
-                        {' · '}<code className="text-[11.5px]">~/.kiro/agents/{selected.filename}</code>
+                        {' · '}<code className="text-[11.5px]">{agentsFolder}/{selected.filename}</code>
                       </div>
                     </div>
                     {/* Two controls in the row: the primary action and one overflow
@@ -990,7 +992,7 @@ export default function AgentTemplatesTab() {
                               // refuse anyway, so open the reference list straight away (the
                               // server's own refusal still wins if a holder landed since).
                               if (selected.used_by.length) { setBlocked({ name: selected.name, references: selected.used_by }); return }
-                              if (confirm(i18nT('pages.overview.agentTemplatesTab.delete_confirm', { name: selected.name }))) remove.mutate(selected.name)
+                              if (confirm(i18nT('pages.overview.agentTemplatesTab.delete_confirm', { name: selected.name, folder: agentsFolder }))) remove.mutate(selected.name)
                             }}>
                               <Trash2 className="lucide-inline shrink-0" aria-hidden />
                               <span>{i18nT('pages.overview.agentTemplatesTab.delete')}</span>
@@ -1230,7 +1232,9 @@ export default function AgentTemplatesTab() {
       <Btn disabled={create.isPending} onClick={() => { setCreating(false); setNotice(null) }}>{i18nT('pages.overview.agentTemplatesTab.cancel')}</Btn>
       <Btn primary disabled={!createForm.name.trim() || !!nameProblem(createForm.name) || create.isPending} onClick={() => create.mutate(createForm)}>{i18nT('pages.overview.agentTemplatesTab.create_and_edit')}</Btn>
     </>}>
-      <p className="text-[12.5px] text-muted mb-3">{i18nT('pages.overview.agentTemplatesTab.new_template_intro')}</p>
+      {/* New stays offered after a failed roster read, which names no folder:
+          the intro is left out then rather than naming one this install may not use. */}
+      {agentsFolder && <p className="text-[12.5px] text-muted mb-3">{i18nT('pages.overview.agentTemplatesTab.new_template_intro', { folder: agentsFolder })}</p>}
       {!createViaDuplicate && <div className="grid grid-cols-2 gap-2 mb-3" role="radiogroup" aria-label={i18nT('pages.overview.agentTemplatesTab.start_from')}>
         {[{ key: '', title: i18nT('pages.overview.agentTemplatesTab.start_blank'), sub: i18nT('pages.overview.agentTemplatesTab.start_blank_sub') },
           { key: '__copy__', title: i18nT('pages.overview.agentTemplatesTab.start_copy'), sub: i18nT('pages.overview.agentTemplatesTab.start_copy_sub') }].map(opt => {

@@ -14,6 +14,7 @@ import io
 import json
 import threading
 import zipfile
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -250,9 +251,16 @@ async def test_export_reports_chats_left_out_for_size(
 async def test_export_names_the_unbundled_templates_in_a_header(
     monkeypatch, templates, header
 ) -> None:
-    """The body is the archive, so the warning rides a header -- JSON-escaped."""
+    """The body is the archive, so the warning rides a header -- JSON-escaped --
+    with the agents folder it tells the user to copy them from beside it: the
+    folder this install reads, which ``KIRO_HOME`` moves from ``~/.kiro/agents``."""
+    folder = Path("/srv/kirö-home/agents")
     module = _handler_module()
     monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    # raising=False, so a handler that reads no kiro_agents_dir fails an assertion, not the patch.
+    monkeypatch.setattr(module, "kiro_agents_dir", lambda: folder, raising=False)
+    # Outside home on every platform, so the header carries the path in full.
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path("/home/someone-else")))
     _patch_streaming_export(monkeypatch, module, plan=_FakePlan(), unbundled=templates)
 
     async with TestClient(TestServer(_make_app(module))) as client:
@@ -261,6 +269,11 @@ async def test_export_names_the_unbundled_templates_in_a_header(
     assert response.status == 200
     assert response.headers.get(module.UNBUNDLED_TEMPLATES_HEADER) == header
     assert "X-Injected" not in response.headers
+    if header is None:
+        assert "X-Kirocrew-Agents-Folder" not in response.headers
+    else:
+        # json.dumps escapes to ASCII, so the non-ASCII folder cannot break the header line.
+        assert response.headers.get("X-Kirocrew-Agents-Folder") == json.dumps(str(folder))
 
 
 @pytest.mark.asyncio
@@ -559,6 +572,40 @@ async def test_a_memory_bundle_refuses_replace(monkeypatch) -> None:
     assert response.status == 400
     assert body["code"] == "memory_only_merge_only"
     assert applied == []
+
+
+@pytest.mark.asyncio
+async def test_import_names_the_agents_folder_the_missing_templates_belong_in(
+    monkeypatch,
+) -> None:
+    """The card tells the user to copy a missing template into this folder, the
+    one this install reads, which ``KIRO_HOME`` moves from ``~/.kiro/agents``."""
+    folder = Path("/srv/kiro-home/agents")
+    module = _handler_module()
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    monkeypatch.setattr(module, "validate_import_zip", lambda p: (True, "", {"version": 2}))
+    # raising=False, so a handler that reads no kiro_agents_dir fails an assertion, not the patch.
+    monkeypatch.setattr(module, "kiro_agents_dir", lambda: folder, raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path("/home/someone-else")))
+    monkeypatch.setattr(
+        module,
+        "apply_import_zip",
+        lambda *a, **k: {
+            "items": [],
+            "missing_agent_templates": [{"crew": "triage", "kiro_agent": "local-only"}],
+        },
+    )
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.post(
+            "/api/portability/import?mode=merge",
+            data=_zip_upload(),
+            headers={"X-Test-User": "owner"},
+        )
+        body = await response.json()
+
+    assert response.status == 200, body
+    assert body.get("agents_folder") == str(folder)
 
 
 @pytest.mark.asyncio

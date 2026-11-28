@@ -28,21 +28,23 @@ const reasonText = (e: UnlistedSpec): string => e.reason === 'duplicate_name'
 
 /** What the delete leaves. A same-name copy goes alone: the listed file that
  *  holds its declared name, and the agent of that name, stay as they are. */
-const confirmBody = (e: UnlistedSpec): string => e.reason === 'duplicate_name'
+const confirmBody = (e: UnlistedSpec, folder: string): string => e.reason === 'duplicate_name'
   ? i18nT('pages.overview.agentTemplatesTab.unlisted_delete_confirm_body_duplicate', {
-    file: e.listed_as ?? '', name: e.declared_name ?? '', stem: e.stem,
+    file: e.listed_as ?? '', name: e.declared_name ?? '', stem: e.stem, folder,
   })
-  : i18nT('pages.overview.agentTemplatesTab.unlisted_delete_confirm_body')
+  : i18nT('pages.overview.agentTemplatesTab.unlisted_delete_confirm_body', { folder })
 
 /**
  * The files in the agents directory the list cannot show, each with why and
  * how to free its name: Delete file when the server can reach the file by its
  * stem alone, otherwise the instruction to rename or delete it by hand. A delete
  * refused because something still names the file hands the reference list to
- * the tab's dialog, the one a row's delete opens.
+ * the tab's dialog, the one a row's delete opens. `folder` is that directory as
+ * the roster response names it.
  */
-export default function UnlistedSpecFiles({ entries, onReferenced, className }: {
+export default function UnlistedSpecFiles({ entries, folder, onReferenced, className }: {
   entries: UnlistedSpec[]
+  folder: string
   onReferenced: (name: string, body: string) => void
   className?: string
 }) {
@@ -69,7 +71,7 @@ export default function UnlistedSpecFiles({ entries, onReferenced, className }: 
   const askThenDelete = async (e: UnlistedSpec) => {
     const yes = await confirm({
       title: i18nT('pages.overview.agentTemplatesTab.unlisted_delete_confirm', { file: e.filename }),
-      body: confirmBody(e),
+      body: confirmBody(e, folder),
       confirmLabel: i18nT('pages.overview.agentTemplatesTab.unlisted_delete_button'),
     })
     if (yes) remove.mutate(e)
@@ -79,7 +81,7 @@ export default function UnlistedSpecFiles({ entries, onReferenced, className }: 
   return (
     <section className={className} aria-label={title} data-testid="unlisted-spec-files">
       <PanelSectionHeader label={title} count={entries.length} className="px-2 pt-2 pb-1" />
-      <p className="px-2 pb-1 text-[11px] text-muted">{i18nT('pages.overview.agentTemplatesTab.unlisted_hint')}</p>
+      <p className="px-2 pb-1 text-[11px] text-muted">{i18nT('pages.overview.agentTemplatesTab.unlisted_hint', { folder })}</p>
       {entries.map(e => (
         <div key={e.filename} className="flex items-start gap-2 px-2 py-1.5">
           <FileWarning className="lucide-inline mt-0.5 shrink-0 text-muted" aria-hidden />
@@ -98,7 +100,7 @@ export default function UnlistedSpecFiles({ entries, onReferenced, className }: 
                   <Trash2 className="lucide-inline" aria-hidden /> {i18nT('pages.overview.agentTemplatesTab.unlisted_delete_button')}
                 </Btn>
               )
-              : <span className="block text-[11px] text-muted">{i18nT('pages.overview.agentTemplatesTab.unlisted_by_hand')}</span>}
+              : <span className="block text-[11px] text-muted">{i18nT('pages.overview.agentTemplatesTab.unlisted_by_hand', { folder })}</span>}
           </div>
         </div>
       ))}

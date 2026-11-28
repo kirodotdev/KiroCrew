@@ -99,6 +99,7 @@ from kiro_crew.dashboard.handlers.agent_templates_unlisted import (
     unlisted_spec_files,
     unreadable_spec_at,
 )
+from kiro_crew.dashboard.side_readonly_spec import _home_relative
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.sel import sel
@@ -479,6 +480,8 @@ async def api_agent_templates(request: web.Request) -> web.Response:
     file in that checkout and is edited there, and a management action taken
     here persists into the global agents directory. ``unlisted`` names every
     spec file the roster does not show although it still takes its name.
+    ``agents_folder`` is that directory as the tab's copy names it: ``KIRO_HOME``
+    and a pod gateway move it away from ``~/.kiro/agents``.
     """
     state: DashboardState = request.app["state"]
     try:
@@ -495,7 +498,13 @@ async def api_agent_templates(request: web.Request) -> web.Response:
             },
             status=503,
         )
-    return web.json_response({"templates": rows, "unlisted": unlisted})
+    return web.json_response(
+        {
+            "templates": rows,
+            "unlisted": unlisted,
+            "agents_folder": _home_relative(kiro_agents_dir_path()),
+        }
+    )
 
 
 def _find_infos(name: str) -> list[AgentInfo]:

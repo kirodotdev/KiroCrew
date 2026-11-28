@@ -541,6 +541,13 @@ a guard whose answer depended on which tabs are open in which window could not
 be reasoned about from the roster — the decision and its consequence are
 stated in the module docstring of `handlers/agent_templates.py`.
 
+The response also carries `agents_folder`: the agents directory, written from
+home with `~` when it sits under home (`side_readonly_spec._home_relative`).
+`KIRO_HOME` and a pod gateway move that directory away from `~/.kiro/agents`,
+so the tab's copy names this value wherever it points at a file there: the
+template header, the delete confirm, the New dialog and **Files not shown**.
+After a failed roster read the New dialog leaves its intro out instead.
+
 Beside `templates` the response carries `unlisted`: every spec file in the
 agents directory that backs no row although its stem stays taken. A create
 checks the stem of EVERY spec file, readable or not, while discovery lists
