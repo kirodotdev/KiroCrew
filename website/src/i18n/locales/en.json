@@ -64,8 +64,12 @@
     "chatSession": {
       "create_returned_no_session": "The session was created, but the server didn't send it back. Try again."
     },
+    "refusal": {
+      "ask_agent": "Ask the agent to explain this",
+      "ask_agent_prompt": "Explain this message an app showed me: what the app can't do, and what its developer would change to turn it on. Only explain it; don't change anything.\n\n{{message}}"
+    },
     "pullRequestPanel": {
-      "not_declared": "This app can't show pull requests: its permissions don't declare {{path}}."
+      "not_declared": "This app can't show pull requests. Only its developer can turn this on. Developer: add {{path}} to the app's permissions."
     },
     "fileTree": {
       "not_declared": "This app can't show the project's files: its permissions don't declare {{path}}.",
@@ -73,11 +77,11 @@
       "status_failed": "Couldn't check which files changed, so changed files aren't marked."
     },
     "projectPicker": {
-      "not_declared": "This app can't show the project picker: its permissions don't declare {{path}}."
+      "not_declared": "This app can't show the project picker. Only its developer can turn this on. Developer: add {{path}} to the app's permissions."
     },
     "sessionChanges": {
-      "not_declared": "This app can't show this chat's changes. This app's developer hasn't allowed it: the app's permissions don't declare {{path}}. Ask the app's developer to add it.",
-      "diff_not_declared": "This app can't show this file's changes. This app's developer hasn't allowed it: the app's permissions don't declare {{path}}. Ask the app's developer to add it.",
+      "not_declared": "This app can't show this chat's changes. Only its developer can turn this on. Developer: add {{path}} to the app's permissions.",
+      "diff_not_declared": "This app can't show this file's changes. Only its developer can turn this on. Developer: add {{path}} to the app's permissions.",
       "pick_a_file": "Pick a file to see its changes.",
       "diff_unavailable": "This chat didn't record the whole file before and after this change, so there's no diff to show."
     },
@@ -103,7 +107,7 @@
       "loading": "Loading issues…",
       "loading_more": "Loading…",
       "more_people": "+{{n}}",
-      "not_declared": "This app can't show issues: its permissions don't declare {{path}}.",
+      "not_declared": "This app can't show issues. Only its developer can turn this on. Developer: add {{path}} to the app's permissions.",
       "open_in": "Open in {{provider}}",
       "opened_by": "Opened by {{name}}",
       "priority": "Priority: {{priority}}",

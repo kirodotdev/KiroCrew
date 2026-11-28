@@ -374,8 +374,12 @@
     "chatSession": {
       "create_returned_no_session": "La session a été créée, mais le serveur ne l’a pas renvoyée. Réessaie."
     },
+    "refusal": {
+      "ask_agent": "Demander à l'agent de l'expliquer",
+      "ask_agent_prompt": "Explique-moi ce message d'une app : ce que l'app ne peut pas faire et ce que son développeur devrait changer pour l'activer. Explique seulement ; ne change rien.\n\n{{message}}"
+    },
     "pullRequestPanel": {
-      "not_declared": "Cette app ne peut pas afficher de pull requests : ses autorisations ne déclarent pas {{path}}."
+      "not_declared": "Cette app ne peut pas afficher de pull requests. Seul le développeur de l'app peut l'activer. Développeur : ajoute {{path}} aux autorisations de l'app."
     },
     "fileTree": {
       "not_declared": "Cette app ne peut pas afficher les fichiers du projet : ses autorisations ne déclarent pas {{path}}.",
@@ -383,11 +387,11 @@
       "status_failed": "Impossible de vérifier quels fichiers ont changé, donc les fichiers modifiés ne sont pas signalés."
     },
     "projectPicker": {
-      "not_declared": "Cette app ne peut pas afficher le sélecteur de projet : ses autorisations ne déclarent pas {{path}}."
+      "not_declared": "Cette app ne peut pas afficher le sélecteur de projet. Seul le développeur de l'app peut l'activer. Développeur : ajoute {{path}} aux autorisations de l'app."
     },
     "sessionChanges": {
-      "not_declared": "Cette app ne peut pas afficher les modifications de ce chat. Le développeur de cette app ne l'a pas autorisé : les autorisations de l'app ne déclarent pas {{path}}. Demande au développeur de l'app de l'ajouter.",
-      "diff_not_declared": "Cette app ne peut pas afficher les modifications de ce fichier. Le développeur de cette app ne l'a pas autorisé : les autorisations de l'app ne déclarent pas {{path}}. Demande au développeur de l'app de l'ajouter.",
+      "not_declared": "Cette app ne peut pas afficher les modifications de ce chat. Seul le développeur de l'app peut l'activer. Développeur : ajoute {{path}} aux autorisations de l'app.",
+      "diff_not_declared": "Cette app ne peut pas afficher les modifications de ce fichier. Seul le développeur de l'app peut l'activer. Développeur : ajoute {{path}} aux autorisations de l'app.",
       "pick_a_file": "Choisis un fichier pour voir ses modifications.",
       "diff_unavailable": "Ce chat n'a pas enregistré le fichier entier avant et après cette modification, il n'y a donc pas de diff à afficher."
     },
@@ -415,7 +419,7 @@
       "loading": "Chargement des tickets…",
       "loading_more": "Chargement…",
       "more_people": "+{{n}}",
-      "not_declared": "Cette app ne peut pas afficher de tickets : ses autorisations ne déclarent pas {{path}}.",
+      "not_declared": "Cette app ne peut pas afficher de tickets. Seul le développeur de l'app peut l'activer. Développeur : ajoute {{path}} aux autorisations de l'app.",
       "open_in": "Ouvrir dans {{provider}}",
       "opened_by": "Ouvert par {{name}}",
       "priority": "Priorité : {{priority}}",

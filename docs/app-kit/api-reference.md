@@ -848,7 +848,11 @@ export the host does not provide fails your whole bundle at load time.
 
 The panel reads and writes through your app's scoped client, and needs
 `/api/source/pull-request` in your manifest's `permissions.api`. Without it the panel
-renders a refusal naming the path, with the **Ask the agent** hand-off, and sends nothing.
+renders the refusal "This app can't show pull requests. Only its developer can turn this
+on. Developer: add `/api/source/pull-request` to the app's permissions.", with the
+**Ask the agent to explain this** hand-off, and sends nothing. The hand-off opens a chat
+whose draft asks the agent to explain the refusal and change nothing; the `IssueList`
+and `SessionChanges` refusals offer the same one.
 With it, the panel uses every endpoint below:
 
 | Endpoint | What it backs |
@@ -903,10 +907,13 @@ manifest's `permissions.api`:
 | `/api/project/session-file-diff` | The diff of the file picked in the list |
 
 The two are siblings, not parent and child, so declaring one does not declare the
-other. Without the list's path, or outside an app, `SessionChanges` renders a refusal
-naming it, with the **Ask the agent** hand-off, and sends nothing. With the list's path
-alone, the list shows and picking a file renders a refusal naming the diff's path in
-the diff's place, sending nothing. The diff is the change the session recorded; when
+other. Without the list's path, or outside an app, `SessionChanges` renders the refusal
+"This app can't show this chat's changes. Only its developer can turn this on.
+Developer: add `/api/project/session-files` to the app's permissions.", with the
+**Ask the agent to explain this** hand-off, and sends nothing. With the list's path
+alone, the list shows and picking a file renders "This app can't show this file's
+changes." with the diff's path in the diff's place, with the same hand-off, sending
+nothing. The diff is the change the session recorded; when
 its record holds no whole before-and-after copy, the pane says so. Both reads are
 read-only. A built-in page keeps the dashboard's client. The list draws no **Browse**
 hand-off and picking a row does not open the file in a tab: those belong to the chat
@@ -1010,8 +1017,10 @@ returns, through one query (`IssueSearchRequest`) and one result shape
 (`IssueSummary`). The views draw all five providers the route serves (GitHub, GitLab,
 Jira, Linear and ServiceNow) from that shape. They need
 `APP_SDK_LEVEL >= 6` and `/api/source/issues` in your manifest's `permissions.api`.
-Without the declaration, or outside an app, the components render a refusal naming
-the path and send nothing; the hook reports an `AppApiPermissionError`. Declaring
+Without the declaration, or outside an app, the components render the refusal "This app
+can't show issues. Only its developer can turn this on. Developer: add
+`/api/source/issues` to the app's permissions.", with the **Ask the agent to explain
+this** hand-off, and send nothing; the hook reports an `AppApiPermissionError` with the same text. Declaring
 `/api/source/issue` (one issue) does not cover the list. A built-in page keeps the
 dashboard's client. [issues-guide.md](issues-guide.md) walks through a first list.
 
@@ -1082,7 +1091,9 @@ The picker needs every path it sends in your manifest's `permissions.api`:
 a favourite). Declare the three bare families `/api/browse-dirs`,
 `/api/recent-projects` and `/api/favorite-projects`: a bare entry covers its children,
 while an exact `=/api/browse-dirs` leaves **New folder** out and the picker refuses.
-With any path missing, or outside an app, it renders a refusal naming the first
+With any path missing, or outside an app, it renders the refusal "This app can't show
+the project picker. Only its developer can turn this on. Developer: add `<path>` to the
+app's permissions." naming the first
 missing path, with no **Ask the agent** hand-off (it would leave your page and lose
 what the form had not saved), and sends nothing. Declaring them is a real
 grant: **New folder** creates a directory on the gateway's disk, and a favourite is

@@ -10,7 +10,7 @@
  * query for anything it draws waits on that chunk (LAZY_PANEL).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import type { PullRequestSource } from '../types'
@@ -36,6 +36,7 @@ import { AppApiProvider, PullRequestPanel, type AppApi } from '../app-sdk/index'
 import { apiPathAllowed } from '../app-sdk/scopedApi'
 import { AppIdentityProvider } from '../app-sdk/identity'
 import { PULL_REQUEST_PANEL_PATHS, scopedPullRequestClient } from '../app-sdk/PullRequestPanel'
+import { consumeChatHandoff, installSoftNavigate } from '../utils/errorReport'
 
 const URL_ = 'https://github.com/acme/widgets/pull/12'
 
@@ -170,7 +171,19 @@ describe('the App SDK PullRequestPanel', () => {
   it('refuses an external app that declares no source read, and sends nothing', async () => {
     // Declaring a write or a sibling read is not the panel's read.
     render(externalApp(['/api/apps/pr-panel-app', PULL_REQUEST_PANEL_PATHS.comment, '/api/source/issue'], panel))
-    expect(await screen.findByTestId('app-pull-request-panel-not-declared')).toHaveTextContent(PULL_REQUEST_PANEL_PATHS.source)
+    const refusal = await screen.findByTestId('app-pull-request-panel-not-declared')
+    expect(refusal).toHaveTextContent(
+      `This app can't show pull requests. Only its developer can turn this on. Developer: add ${PULL_REQUEST_PANEL_PATHS.source} to the app's permissions.`,
+    )
+    // The hand-off says what the agent does, not a second person to fix it,
+    // and its draft asks for that explanation, not the error hand-off's fix.
+    installSoftNavigate(() => {})
+    fireEvent.click(within(refusal).getByRole('button', { name: 'Ask the agent to explain this' }))
+    installSoftNavigate(null)
+    const draft = consumeChatHandoff()
+    expect(draft).toMatch(/^Explain this message an app showed me/)
+    expect(draft).toContain(`Developer: add ${PULL_REQUEST_PANEL_PATHS.source} to the app's permissions.`)
+    expect(refusal.className).toContain('sm:flex-nowrap')
     expect(fetchMock).not.toHaveBeenCalled()
     expect(mockApi.pullRequestSource).not.toHaveBeenCalled()
   })

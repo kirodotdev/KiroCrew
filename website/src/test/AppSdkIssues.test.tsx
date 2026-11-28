@@ -22,6 +22,7 @@ import { AppApiProvider, IssueCard, IssueList, useIssues } from '../app-sdk/inde
 import { AppIdentityProvider } from '../app-sdk/identity'
 import { AppApiPermissionError } from '../app-sdk/apiError'
 import { ISSUES_PATH, scopedIssuesTransport } from '../app-sdk/issues/useIssues'
+import { consumeChatHandoff, installSoftNavigate } from '../utils/errorReport'
 import type { AppApi } from '../app-sdk/index'
 
 const LAZY = { timeout: 5000 }
@@ -130,7 +131,19 @@ describe('scopedIssuesTransport', () => {
 describe('fails closed', () => {
   it('refuses an app that declares only the single-issue read, and sends nothing', async () => {
     render(externalApp(['/api/source/issue', '/api/source/pull-request'], <IssueList query={QUERY} />))
-    expect(await screen.findByTestId('app-issue-list-not-declared', {}, LAZY)).toHaveTextContent(ISSUES_PATH)
+    const refusal = await screen.findByTestId('app-issue-list-not-declared', {}, LAZY)
+    expect(refusal).toHaveTextContent(
+      `This app can't show issues. Only its developer can turn this on. Developer: add ${ISSUES_PATH} to the app's permissions.`,
+    )
+    // The hand-off says what the agent does, not a second person to fix it,
+    // and its draft asks for that explanation, not the error hand-off's fix.
+    installSoftNavigate(() => {})
+    fireEvent.click(within(refusal).getByRole('button', { name: 'Ask the agent to explain this' }))
+    installSoftNavigate(null)
+    const draft = consumeChatHandoff()
+    expect(draft).toMatch(/^Explain this message an app showed me/)
+    expect(draft).toContain(`Developer: add ${ISSUES_PATH} to the app's permissions.`)
+    expect(refusal.className).toContain('sm:flex-nowrap')
     expect(fetchMock).not.toHaveBeenCalled()
     expect(mockApi.fetchIssues).not.toHaveBeenCalled()
   })

@@ -95,6 +95,7 @@ export type ErrorNoticeNoHandoff =
     noHandoffReason: string
     askAgent?: never
     askAgentLabel?: never
+    askAgentPrompt?: never
     onHandoff?: never
     onStage?: never
     gate?: never
@@ -193,6 +194,7 @@ export default function ErrorNotice({
   actions,
   askAgent = false,
   askAgentLabel,
+  askAgentPrompt,
   actionPlacement = 'beside',
   messagePlacement = 'beside',
   scrollMessage = false,
@@ -294,6 +296,13 @@ export default function ErrorNotice({
    * `askAgent` is off.
    */
   askAgentLabel?: string
+  /**
+   * The draft the hand-off stages, in place of the error report and its "fix
+   * it" lead (AskAgentButton's `prompt`): for a notice whose `askAgentLabel`
+   * asks the agent for something other than a fix, so the draft does what the
+   * label says. Ignored when `askAgent` is off.
+   */
+  askAgentPrompt?: string
   /**
    * Inline variant only: `below-on-phone` wraps the row under the `sm`
    * breakpoint so the hand-off takes the line under the message. The block
@@ -424,6 +433,7 @@ export default function ErrorNotice({
     <AskAgentButton
       report={report}
       message={message}
+      prompt={askAgentPrompt}
       onHandoff={onHandoff}
       onStage={onStage}
       gate={gate}

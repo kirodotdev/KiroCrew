@@ -104,12 +104,20 @@ export default function PullRequestPanel({ sources, selectedUrl, onSelect }: App
   )
   if (builtin) return panel
   if (!client) {
+    const message = i18nT('appSdk.pullRequestPanel.not_declared', { path: PULL_REQUEST_PANEL_PATHS.source })
     return (
       <ErrorNotice
         variant="inline"
         testId="app-pull-request-panel-not-declared"
-        message={i18nT('appSdk.pullRequestPanel.not_declared', { path: PULL_REQUEST_PANEL_PATHS.source })}
+        message={message}
         askAgent
+        // Says what the agent does here, so it does not read as a second
+        // person to fix what only the app's developer can change.
+        askAgentLabel={i18nT('appSdk.refusal.ask_agent')}
+        // The draft asks for that explanation, not the error hand-off's fix.
+        askAgentPrompt={i18nT('appSdk.refusal.ask_agent_prompt', { message })}
+        // The longer label beside the message squeezes it to a word per line on a phone.
+        actionPlacement="below-on-phone"
       />
     )
   }
