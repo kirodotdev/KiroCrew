@@ -806,6 +806,19 @@ class TestRealEnginePreflight:
         with pytest.raises(AWSError, match="AWS credentials did not resolve"):
             engine.preflight("default", "us-east-1")
 
+    def test_a_named_cause_leads_the_launch_failure_not_the_cli_text(self, monkeypatch):
+        from kiro_crew.cloud.aws import AWSError
+
+        reach = {
+            "reachable": False,
+            "cause": "region_rejects_credentials",
+            "note": "Region af-south-1 rejected these credentials.",
+            "detail": "aws: [ERROR]: InvalidClientTokenId",
+        }
+        engine = self._engine(monkeypatch, reach)
+        with pytest.raises(AWSError, match="Region af-south-1 rejected these credentials"):
+            engine.preflight("default", "af-south-1")
+
 
 class TestRealEngineRegistration:
     """`connect.register_instance` is best-effort by contract — it returns None on a

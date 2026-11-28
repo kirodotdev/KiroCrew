@@ -31,6 +31,45 @@ export function credentialHelperMissingSentence(name: string): string {
   })
 }
 
+// AWS's install guide for the CLI: the same page the gateway's own not-found message names.
+export const AWS_CLI_INSTALL_URL = 'https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html'
+
+/** The credentials row's wording when the gateway named the cause of the failure
+ *  (no AWS CLI, no such profile, a Region the account has not enabled): the cause and its
+ *  fix in plain words, with the CLI's own text left to the caller's details line. Null
+ *  when it could not tell, or when the credentials resolved. `region` is the Region the
+ *  check ran against. */
+export function awsCredentialCauseCopy(
+  p: CloudPreflight,
+  region: string,
+): { failure: string; steps?: PluginRefusalCopy['steps'] } | null {
+  if (p.reachable && p.account) return null
+  switch (p.cause) {
+    case 'cli_missing':
+      return {
+        failure: i18nT('pages.settings.remoteCrewPanel.credentials_cli_missing'),
+        steps: {
+          text: i18nT('pages.settings.remoteCrewPanel.credentials_cli_missing_steps'),
+          link: { href: AWS_CLI_INSTALL_URL, label: i18nT('pages.settings.remoteCrewPanel.aws_cli_install_page') },
+        },
+      }
+    case 'profile_not_found': {
+      const profile = p.profile_missing ?? ''
+      return {
+        failure: i18nT('pages.settings.remoteCrewPanel.credentials_profile_not_found', {
+          profile,
+          sso: `${AWS_CONFIGURE_SSO_COMMAND} --profile ${profile}`,
+          configure: `${AWS_CONFIGURE_COMMAND} --profile ${profile}`,
+        }),
+      }
+    }
+    case 'region_rejects_credentials':
+      return { failure: i18nT('pages.settings.remoteCrewPanel.credentials_region_rejected', { region }) }
+    default:
+      return null
+  }
+}
+
 /** The credentials row's sentence when the gateway's AWS credentials are
  *  environment variables: the profile to create first, then why. */
 export function envCredentialsSentence(): string {

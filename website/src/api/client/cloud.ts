@@ -42,6 +42,11 @@ export interface CloudPreflight {
   ssm_reachable: boolean
   note: string
   detail: string
+  /** Why the credentials check failed, when the gateway could tell: 'cli_missing',
+   *  'profile_not_found' or 'region_rejects_credentials'; "" when it could not. */
+  cause?: string
+  /** For 'profile_not_found': the profile name the AWS CLI said it could not find. */
+  profile_missing?: string
   /** The bare program name the AWS CLI could not find while resolving
    *  credentials (usually the profile's `credential_process` command), or "". */
   credential_helper_missing?: string

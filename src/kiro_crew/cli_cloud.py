@@ -193,7 +193,8 @@ def _cloud_list(args: argparse.Namespace) -> int:
     try:
         rows = ec2.list_instances(profile, region)
     except AWSError as exc:
-        ui.fail(str(exc))
+        # The same plain cause `cloud doctor` gives, not "tag:GetResources failed: <stderr>".
+        ui.fail(iam.plain_credential_failure(exc.returncode, exc.stderr)[1] or str(exc))
         return 1
     if not rows:
         ui.info("No KiroCrew cloud instances found.")
@@ -691,6 +692,7 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
     # what `kirocrew cloud` commands actually run under a GUI-launched
     # gateway's minimal PATH.
     cli_refusal = None
+    cli_not_found = False
     if shutil.which(resolve_aws_bin()):
         ui.ok("aws CLI found")
     elif (cli_refusal := ssm.aws_cli_refusal()) is not None:
@@ -700,7 +702,8 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
         ui.detail(ssm.REFUSAL_NEXT_STEP.get(cli_refusal.code, ssm.REFUSAL_NEXT_STEP[""]))
     else:
         failed = True
-        ui.fail("aws CLI not found — install it (https://aws.amazon.com/cli/)")
+        cli_not_found = True
+        ui.fail(f"aws CLI not found — install it ({aws.AWS_CLI_INSTALL_URL})")
     if ssm.session_manager_plugin_installed():
         ui.ok("session-manager-plugin found")
     elif (refusal := ssm.session_manager_plugin_refusal()) is not None:
@@ -749,11 +752,11 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
         ui.fail("AWS not reachable")
         # With the CLI refused, the profile was never checked: the note's
         # credential or helper advice would send the user to the wrong fix.
-        ui.detail(
-            "The aws CLI above was refused, so the profile was not checked."
-            if cli_refusal is not None
-            else reach.get("note", "")
-        )
+        if cli_refusal is not None:
+            ui.detail("The aws CLI above was refused, so the profile was not checked.")
+        elif not (cli_not_found and reach.get("cause") == "cli_missing"):
+            # A CLI the check above did not find was already named, with its install link.
+            ui.detail(reach.get("note", ""))
     return 1 if failed else 0
 
 

@@ -224,7 +224,15 @@ class RealLaunchEngine:
     def preflight(self, profile: str, region: str) -> None:
         reach = iam.reachability_check(profile, region)
         if not reach.get("reachable"):
-            detail = reach.get("detail") or reach.get("note") or "AWS credentials did not resolve"
+            # A named cause (no CLI, no such profile, Region not enabled) leads: its note
+            # carries the fix, where the CLI's own text does not.
+            plain = reach.get("note") if reach.get("cause") else ""
+            detail = (
+                plain
+                or reach.get("detail")
+                or reach.get("note")
+                or "AWS credentials did not resolve"
+            )
             raise AWSError(str(detail))
 
     def provision(

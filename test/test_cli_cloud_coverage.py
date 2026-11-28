@@ -54,6 +54,27 @@ def test_list_reports_an_aws_failure_and_exits_one(monkeypatch, capsys):
     assert "the SSO session has expired" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    ("rc", "stderr", "plain"),
+    [
+        (255, "sandbox: FATAL — cannot exec aws (No such file or directory)", "not installed"),
+        (
+            255,
+            "aws: [ERROR]: The config profile (kirocrew-test) could not be found",
+            "kirocrew-test",
+        ),
+    ],
+    ids=["no-cli", "no-profile"],
+)
+def test_list_names_the_cause_not_the_raw_cli_text(monkeypatch, capsys, rc, stderr, plain):
+    boom = _boom(f"tag:GetResources failed: {stderr}", returncode=rc, stderr=stderr)
+    monkeypatch.setattr(ec2, "list_instances", boom)
+    assert cli_cloud._cloud_list(_args()) == 1
+    out = capsys.readouterr().out
+    assert plain in out
+    assert "GetResources" not in out and "FATAL" not in out and "[ERROR]" not in out
+
+
 def test_status_prints_the_stack_the_instance_and_the_region(monkeypatch, capsys):
     stack = {"stack_name": "kirocrew-crew-a", "stack_status": "CREATE_COMPLETE"}
     _describe(monkeypatch, {**INSTANCE, **stack, "instance_state": "running", "region": "eu-1"})
@@ -353,6 +374,27 @@ class TestDoctor:
             monkeypatch.setattr(iam, "reachability_check", lambda p, r: {"reachable": False})
         assert cli_cloud._cloud_doctor(_args()) == code
         assert any(kind == "fail" for kind, _text in shown) is bool(code)
+
+    def test_a_missing_cli_is_named_once_and_not_sent_to_aws_configure(self, monkeypatch, shown):
+        monkeypatch.setattr(shutil, "which", lambda *_a, **_k: None)
+        monkeypatch.setattr(ssm, "aws_cli_refusal", lambda: None)
+        monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: True)
+        reach = {"reachable": False, "cause": "cli_missing", "note": "install the CLI note"}
+        monkeypatch.setattr(iam, "reachability_check", lambda p, r: reach)
+        assert cli_cloud._cloud_doctor(_args()) == 1
+        assert ("fail", f"aws CLI not found — install it ({aws.AWS_CLI_INSTALL_URL})") in shown
+        assert not any(text == "install the CLI note" for _kind, text in shown)
+
+    def test_another_unreachable_cause_shows_its_note(self, monkeypatch, shown):
+        monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: True)
+        reach = {
+            "reachable": False,
+            "cause": "region_rejects_credentials",
+            "note": "pick another Region",
+        }
+        monkeypatch.setattr(iam, "reachability_check", lambda p, r: reach)
+        assert cli_cloud._cloud_doctor(_args()) == 1
+        assert ("detail", "pick another Region") in shown
 
     def test_a_reachable_account_is_listed_with_each_service_in_order(self, monkeypatch):
         shown: list[tuple[str, str]] = []
