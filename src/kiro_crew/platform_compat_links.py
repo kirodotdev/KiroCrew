@@ -368,6 +368,13 @@ def opened_path_identity_matches(fd: int, path: str | os.PathLike) -> bool:
 #: deliberately omits ``FILE_SHARE_DELETE``: that omission is the pin.
 _WIN_GENERIC_READ = 0x80000000
 _WIN_GENERIC_WRITE = 0x40000000
+#: ``FILE_APPEND_DATA``: append-only write access. A handle opened with this and
+#: WITHOUT ``FILE_WRITE_DATA`` has every write placed at end-of-file by the
+#: filesystem itself, whatever the file position says, which is the kernel append
+#: ``O_APPEND`` gives POSIX and the C runtime only emulates.
+_WIN_FILE_APPEND_DATA = 0x00000004
+#: ``SYNCHRONIZE``: required for a synchronous handle; ``GENERIC_WRITE`` carried it.
+_WIN_SYNCHRONIZE = 0x00100000
 _WIN_DELETE = 0x00010000
 #: ``FILE_WRITE_ATTRIBUTES``: ``SetFileInformationByHandle(FileBasicInfo)`` needs it on the
 #: handle; ``GENERIC_READ`` grants only ``FILE_READ_ATTRIBUTES``.
@@ -1193,7 +1200,11 @@ def _win_reparse_refused(fd: int, attributes: int, *, links_only: bool) -> bool:
 
 
 def win_open_no_reparse(
-    path: str | os.PathLike, *, directory: bool, links_only: bool = False
+    path: str | os.PathLike,
+    *,
+    directory: bool,
+    links_only: bool = False,
+    append: bool = False,
 ) -> int:  # pragma: no cover
     """Windows: open the object at *path* ITSELF, never through a reparse point.
 
@@ -1205,9 +1216,16 @@ def win_open_no_reparse(
     lives, the object cannot be renamed or deleted. A directory variant refuses a
     non-directory with ``NotADirectoryError``. ``links_only`` narrows the refusal
     to a reparse point that stands for another name, as for
-    :func:`open_file_no_reparse`. The native handle is transferred to a CRT
-    descriptor only on success; release it with ``os.close``.
+    :func:`open_file_no_reparse`.
+
+    ``append`` opens a file with append-only access so the filesystem places every
+    write at end-of-file. It cannot be combined with ``directory``.
+
+    The native handle is transferred to a CRT descriptor only on success; release
+    it with ``os.close``.
     """
+    if append and directory:
+        raise ValueError("append cannot be combined with directory")
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
     kernel.CreateFileW.argtypes = [
         wintypes.LPCWSTR,
@@ -1221,9 +1239,15 @@ def win_open_no_reparse(
     kernel.CreateFileW.restype = wintypes.HANDLE
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.CloseHandle.restype = wintypes.BOOL
+    if directory:
+        desired_access = _WIN_FILE_LIST_DIRECTORY
+    elif append:
+        desired_access = _WIN_FILE_APPEND_DATA | _WIN_FILE_READ_ATTRIBUTES | _WIN_SYNCHRONIZE
+    else:
+        desired_access = _WIN_GENERIC_READ | _WIN_GENERIC_WRITE
     handle = kernel.CreateFileW(
         os.fspath(path),
-        _WIN_FILE_LIST_DIRECTORY if directory else _WIN_GENERIC_READ | _WIN_GENERIC_WRITE,
+        desired_access,
         _WIN_FILE_SHARE_READ if directory else _WIN_FILE_SHARE_READ_WRITE,
         None,
         _WIN_OPEN_EXISTING if directory else _WIN_OPEN_ALWAYS,
@@ -1232,10 +1256,14 @@ def win_open_no_reparse(
     )
     if handle is None or handle == wintypes.HANDLE(-1).value:
         raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined]
+    if directory:
+        fd_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    elif append:
+        fd_flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0)
+    else:
+        fd_flags = os.O_RDWR | getattr(os, "O_BINARY", 0)
     try:
-        fd = msvcrt.open_osfhandle(  # type: ignore[attr-defined]
-            handle, (os.O_RDONLY if directory else os.O_RDWR) | getattr(os, "O_BINARY", 0)
-        )
+        fd = msvcrt.open_osfhandle(handle, fd_flags)  # type: ignore[attr-defined]
     except BaseException:
         kernel.CloseHandle(handle)
         raise

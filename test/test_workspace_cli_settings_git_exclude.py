@@ -16,8 +16,11 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
+from kiro_crew import platform_compat
 from kiro_crew.providers.acp import _write_cli_overlay, _write_tool_search_overlay
 from kiro_crew.workspace_cli_settings import (
+    _EXCLUDE_COMMENT,
     CLI_SETTINGS_LOCK_NAME,
     workspace_cli_settings_lock,
 )
@@ -88,6 +91,72 @@ def test_exclude_is_appended_once_and_keeps_user_lines(tmp_path: Path) -> None:
     assert lines.count("/.kiro/settings/cli.json") == 1
     assert lines.count(f"/.kiro/settings/{CLI_SETTINGS_LOCK_NAME}") == 1
     assert _status(repo) == ""
+
+
+@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="POSIX append flags")
+def test_exclude_is_opened_for_atomic_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fcntl = pytest.importorskip("fcntl")
+    repo = _repo(tmp_path / "repo")
+    opened_flags: list[int] = []
+    real_fdopen = os.fdopen
+
+    def capture_flags(fd: int, mode: str = "r", *args, **kwargs):
+        if mode != "r":
+            opened_flags.append(fcntl.fcntl(fd, fcntl.F_GETFL))
+        return real_fdopen(fd, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fdopen", capture_flags)
+
+    _write_tool_search_overlay(repo, True)
+
+    assert opened_flags
+    assert opened_flags[0] & os.O_APPEND
+
+
+def test_a_line_appended_meanwhile_survives_the_exclude_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path / "repo")
+    exclude = repo / ".git/info/exclude"
+    exclude_id = os.stat(exclude)
+    real_fdopen = os.fdopen
+
+    class AppendBeforeWrite:
+        def __init__(self, handle) -> None:
+            self._handle = handle
+
+        def write(self, text: str) -> int:
+            with open(exclude, "a", encoding="utf-8") as other:
+                other.write("*.appended-meanwhile\n")
+            return self._handle.write(text)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self._handle.__exit__(*args)
+
+        def __getattr__(self, name: str):
+            return getattr(self._handle, name)
+
+    def append_before_write(fd: int, mode: str = "r", *args, **kwargs):
+        handle = real_fdopen(fd, mode, *args, **kwargs)
+        if ("w" in mode or "+" in mode) and os.path.samestat(os.fstat(fd), exclude_id):
+            return AppendBeforeWrite(handle)
+        return handle
+
+    monkeypatch.setattr(os, "fdopen", append_before_write)
+
+    _write_tool_search_overlay(repo, True)
+
+    lines = exclude.read_text(encoding="utf-8").splitlines()
+    # POSIX has always kept this green because O_APPEND positions the write.
+    assert lines.count("*.appended-meanwhile") == 1
+    assert "/.kiro/settings/cli.json" in lines
+    assert lines.index("*.appended-meanwhile") < lines.index(_EXCLUDE_COMMENT)
+    assert (repo / ".kiro/settings/cli.json").is_file()
 
 
 def test_linked_worktree_status_stays_clean(tmp_path: Path) -> None:
@@ -169,6 +238,49 @@ def test_a_planted_gitdir_pointer_writes_nothing_outside_a_real_git_dir(
 
     assert list(target.iterdir()) == []
     assert (work / ".kiro/settings/cli.json").is_file()
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        pytest.param(os.link, id="hardlink"),
+        pytest.param(os.symlink, id="symlink", marks=requires_symlinks),
+    ],
+)
+def test_a_linked_exclude_leaves_its_other_name_untouched(tmp_path: Path, link) -> None:
+    # A hardlink is a second name for the same file, so O_NOFOLLOW cannot refuse
+    # it; a symlink at ``exclude`` is followed where O_NOFOLLOW is 0 (Windows).
+    repo = _repo(tmp_path / "repo")
+    victim = tmp_path / "victim.txt"
+    victim.write_bytes(b"ORIGINAL-LINE\n")
+    exclude = repo / ".git/info/exclude"
+    exclude.unlink()
+    link(victim, exclude)
+
+    _write_tool_search_overlay(repo, True)
+
+    assert victim.read_bytes() == b"ORIGINAL-LINE\n"
+    assert (repo / ".kiro/settings/cli.json").is_file()
+
+
+def test_a_junctioned_info_dir_gets_nothing_written_through_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path / "repo")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    info = repo / ".git/info"
+    shutil.rmtree(info)
+    platform_compat.symlink_or_junction(outside, info)
+    # ``Path.is_symlink()`` is False for a Windows junction; make the link under
+    # test answer that way on every platform so the guard is judged as there.
+    monkeypatch.setattr(Path, "is_symlink", lambda self: False)
+    assert platform_compat.is_link_or_junction(info)
+
+    _write_tool_search_overlay(repo, True)
+
+    assert not (outside / "exclude").exists()
+    assert (repo / ".kiro/settings/cli.json").is_file()
 
 
 def test_exclude_failure_does_not_block_the_overlay(tmp_path: Path) -> None:

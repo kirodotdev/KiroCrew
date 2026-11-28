@@ -310,6 +310,7 @@ DECLARED_SITES = frozenset(
         ("staging.py", "staging_dir"),
         ("ui_prefs.py", "_read_raw"),
         ("work_root.py", "sweep_work_root"),
+        ("workspace_cli_settings.py", "_exclude_from_git"),
         ("workspace_cli_settings.py", "workspace_cli_settings_lock"),
     }
 )
