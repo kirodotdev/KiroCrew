@@ -1152,14 +1152,20 @@ IPv6 CI lane names by path).
 
 **Adopted onto its own repository.** The wheel pins the app (`apps/adoption-pins.json`,
 [app-kit-platform.md § 33](app-kit-platform.md#33-former-built-in-adoption)) at
-`KiroCrewCaptain/kirocrew-app-meetings` with `minAppSdkLevel` 7, the level of the
-`agentReadOnlyDirs` entry `notes` (`ctx.turns`, `ctx.untrusted` and
-`permissions.agentTurns` need level 2), so a host whose record is builtin-owned swaps it
+`KiroCrewCaptain/kirocrew-app-meetings` with `minAppSdkLevel` 14, the level at which
+the backend SDK publishes the file path gate, the descriptor-pinned walk and copy, the
+public-address check and the raster sniffer that the pinned tree asks for by their public
+names (the `agentReadOnlyDirs` entry `notes` needs level 7; `ctx.turns`, `ctx.untrusted`
+and `permissions.agentTurns` need level 2), so a host whose record is builtin-owned swaps it
 in place onto that tree at a restart, keeping `data/` (meetings, transcripts, notes and
 the calendar sync state), `.app_secret`, the approved grants and `enabled`; the rail
 keeps `/meetings` and the `CalendarClock` glyph. The repository's `app.json` declares the
 same `permissions` (`/api/ws/stt` and `agentTurns` included) and the same three agents
 as the wheel copy, so E9 holds nothing back. It ships the `meetings` skill under
 `skills/meetings`; once the record is adopted the bundled `builtin_skills/meetings/` copy
-stands down (`test/test_released_builtin_skill_copies.py`). A fix to the app lands in
-that repository first; a change to the wheel copy needs its `App repo:` line.
+stands down (`test/test_released_builtin_skill_copies.py`). The pinned tree still looks
+up two private names, both for the recording import alone:
+`kiro_crew.sandbox.prime_voice_runtime_sandbox_paths` and `kiro_crew.transcribe`. If
+either moves, the import answers 503 `transcription_unavailable` and the app's health
+names the cause; live transcription over `/api/ws/stt` is unaffected. A fix to the app
+lands in that repository first; a change to the wheel copy needs its `App repo:` line.
