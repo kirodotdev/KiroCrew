@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation } from 'react-router-dom'
 import { Trans } from 'react-i18next'
 import MarkdownRenderer from './MarkdownRenderer'
 import ErrorNotice from './ErrorNotice'
+import InfoTip from './InfoTip'
 import { InAppUpdateFlow } from '../pages/settings/AboutPanelUpdateFlow'
 import { updateInfoQuery } from '../api/updateInfoQuery'
 import { failedWithNoData } from '../api/queryState'
@@ -18,7 +19,6 @@ import type { StatusData } from '../types'
 import { i18nT } from '../i18n/t'
 import { copyToClipboard } from '../utils/clipboard'
 import { updateAffordance } from '../utils/updateAffordance'
-import { settingsPath } from './settingsPath'
 import { shouldNudge, snoozeRecord, skipRecord, type UpdateNudgeRecord, type UpdateNudgeVerdict } from '../utils/updateNudge'
 import { foldStableStamp } from '../utils/displayVersion'
 import { stagedConsumesOffer } from '../utils/releaseVersion'
@@ -95,7 +95,6 @@ type Candidate = {
  * mounted, so its per-version session state survives, and opens once released.
  */
 export default function UpdateFoundModal({ held = false }: { held?: boolean } = {}) {
-  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { data: desktop } = useQuery<UpdateState | null>({
     queryKey: ['update-state'],
@@ -204,7 +203,11 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
         source: 'gateway', version: gwVersion,
         displayVersion: gwVersionDisplay || gwVersion,
         sameAsRunning: gwVersion === runningVersion,
-        affordance: gwRestartReadyForOffer || (afford === 'apply' && !!gwArmedVersion) ? 'restart' : afford,
+        // An in-app arm of THIS offer for the next start (a gateway on the
+        // stable link) leaves only the restart too; a mandatory dialog must not
+        // keep the arm step, which then has no button.
+        affordance: gwRestartReadyForOffer || (afford === 'apply' && !!gwArmedVersion)
+          || (afford === 'arm' && gwArmedVersion === gwVersion) ? 'restart' : afford,
         command: gwCommand,
       }
     }
@@ -539,11 +542,6 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
     }
   }
 
-  const goToAbout = () => {
-    dismiss()
-    navigate(settingsPath({ tab: 'about' }))
-  }
-
   return (
     // The scrim is presentation, not a control: an ARIA button must not
     // contain interactive descendants, and with programmatic focus never
@@ -576,6 +574,9 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
                 ? i18nT('components.updateFoundModal.update_required')
                 : i18nT('components.updateFoundModal.update_available')}
             </span>
+            {/* Where this update waits once the dialog is put away: a hint, not
+                a step, so it sits in the info button beside the title. */}
+            {!required && <InfoTip text={i18nT('components.updateFoundModal.you_can_update_anytime_from_settings_about')} />}
           </div>
           {!required && (
             <button
@@ -591,6 +592,9 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
         </div>
 
         <div className="px-4 py-3 text-sm text-text">
+          {/* No body sentence where the one button names the version (the in-app
+              Update): the title and that button say it all. */}
+          {!(candidate.source === 'gateway' && candidate.affordance === 'arm') && (
           <p>
             {/* One interpolated key, not fixed JSX fragments: the version slot
                 sits in locale-specific positions (sentence-medial in ja/ko,
@@ -608,6 +612,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
                 />
               )}
           </p>
+          )}
           {required && (
             // Why the modal cannot be dismissed. `update_min_version` is
             // non-empty whenever `update_required` is true (both authorities
@@ -636,7 +641,6 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
               <InAppUpdateFlow
                 version={candidate.displayVersion}
                 rawVersion={candidate.version}
-                manualCommand=""
                 onHandoff={required ? undefined : () => setHandedOffVersion(candidate.version)}
                 askAgent={!required}
               />
@@ -720,16 +724,6 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
           />
           {!required && (
           <p className="mt-2 text-[12px] flex items-center gap-3">
-            {/* One full-sentence key, not a prefix + link-text pair: the link
-                phrase sits sentence-finally in ja/ko, so a split key cannot be
-                translated with correct word order. */}
-            <button
-              type="button"
-              className="underline text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 text-[12px] text-left"
-              onClick={goToAbout}
-            >
-              {i18nT('components.updateFoundModal.you_can_update_anytime_from_settings_about')}
-            </button>
             {/* Skip lives with the low-emphasis prose, keeping the footer at
                 its two-action maximum — a three-button footer row makes the
                 dismissal read as the primary choice. */}

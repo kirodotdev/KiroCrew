@@ -119,7 +119,7 @@ export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, on
       )}
       <SettingsToggle
         label={i18nT('pages.settings.aboutPanel.automatic_updates')}
-        description={i18nT('pages.settings.aboutPanel.gateway_auto_update_description')}
+        hint={i18nT('pages.settings.aboutPanel.gateway_auto_update_description')}
         // A switch held by the effect cannot install whatever is saved, so it
         // reads off; the saved value comes back if the effect turns to install.
         checked={gw.checked && !copy.disabled}
