@@ -53,6 +53,16 @@ value back to you: a login lists its username and websites, nothing else, so a
 screenshot of the panel leaks nothing. On a phone the list is the page and a
 row opens its pane.
 
+The add and edit forms also take an optional **Rotate by** date. The pane then
+shows "Rotate by" with that date, and once the date has passed, a **Rotation
+due** chip appears on the entry's row and in its pane, so a key you meant to
+replace does not go stale unnoticed. The date is written the way the dashboard
+writes dates in its language, and the chip appears when your local day turns
+over, without a reload. The date sits beside the encrypted value, never inside
+it, and it changes nothing about how the entry is used. Saving a new value
+without a date clears it. Nothing changes until you set one, so there is no
+setting for it.
+
 If a value fails to save, the form keeps what you typed rather than clearing it,
 so you do not have to fetch the credential again.
 

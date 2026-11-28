@@ -23,7 +23,7 @@ import json
 import os
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
@@ -94,6 +94,33 @@ def entry_item_type(entry: Any) -> str:
         if isinstance(item_type, str) and item_type:
             return item_type
     return ITEM_TYPE_SECRET
+
+
+def parse_rotate_by(value: object) -> Optional[str]:
+    """*value* when it is a calendar date written ``YYYY-MM-DD``, else None.
+
+    The date an owner means to rotate an entry by. It is advisory metadata the
+    Secrets panel flags once it has passed; nothing reads it to refuse a use.
+    """
+    if not isinstance(value, str) or len(value) != 10 or value[4] != "-" or value[7] != "-":
+        return None
+    if not all(c in "0123456789" for c in value[:4] + value[5:7] + value[8:]):
+        return None
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return None
+    return value
+
+
+def entry_rotate_by(entry: Any) -> Optional[str]:
+    """The rotate-by date a stored entry carries, or None when it has none.
+
+    The date sits in the clear beside the ciphertext, as ``updated_at`` does, so
+    a listing reads it without decrypting. It is not bound into the AAD: a
+    hand-edit can change when the panel flags the entry, never what it holds.
+    """
+    return parse_rotate_by(entry.get("rotate_by")) if isinstance(entry, dict) else None
 
 
 #: How many names :meth:`SecretVault.add_item_under_free_name` tries before it gives up.
@@ -267,8 +294,22 @@ class SecretVault:
             out.append(row)
         return out
 
+    def rotate_by_dates(self) -> dict[str, str]:
+        """``name -> rotate-by date`` for every entry that carries one. Read without decrypting."""
+        dates: dict[str, str] = {}
+        for name, entry in self._load_entries().items():
+            rotate_by = entry_rotate_by(entry)
+            if rotate_by is not None:
+                dates[name] = rotate_by
+        return dates
+
     async def set_item_with_revision(
-        self, name: str, item_type: str, fields: Mapping[str, Any]
+        self,
+        name: str,
+        item_type: str,
+        fields: Mapping[str, Any],
+        *,
+        rotate_by: Optional[str] = None,
     ) -> str:
         """Store a typed item under *name*; return the :func:`entry_revision` written.
 
@@ -281,11 +322,19 @@ class SecretVault:
         nothing is written). A ``secret`` item is stored exactly as
         :meth:`set_with_revision` stores a value, so the two write paths produce
         the same entry.
+
+        *rotate_by*, a date :func:`parse_rotate_by` accepts, is stored beside the
+        ciphertext. Without one the entry carries none, so a new value saved
+        without a date clears the previous entry's date.
         """
         async with self._lock:
-            return await asyncio.to_thread(self._set_item_sync, name, item_type, dict(fields))
+            return await asyncio.to_thread(
+                self._set_item_sync, name, item_type, dict(fields), parse_rotate_by(rotate_by)
+            )
 
-    def _set_item_sync(self, name: str, item_type: str, fields: dict[str, Any]) -> str:
+    def _set_item_sync(
+        self, name: str, item_type: str, fields: dict[str, Any], rotate_by: Optional[str] = None
+    ) -> str:
         from cryptography.exceptions import InvalidTag  # see _encrypt_entry
 
         written: dict[str, str] = {}
@@ -304,6 +353,8 @@ class SecretVault:
                 merged = _items.keep_absent_fields(item_type, fields, prior)
             plaintext = _items.encode_item(item_type, merged)
             entry = self._encrypt_entry(name, plaintext.encode("utf-8"), item_type)
+            if rotate_by is not None:
+                entry["rotate_by"] = rotate_by
             written.update(entry)
             return {**entries, name: entry}
 
