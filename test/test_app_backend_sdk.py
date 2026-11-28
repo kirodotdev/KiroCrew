@@ -294,7 +294,6 @@ def test_sandboxed_argv_refuses_any_other_tier_before_preparing(monkeypatch, mod
 @pytest.mark.parametrize(
     "knob",
     [
-        "extra_hidden_dirs",
         "extra_visible_dirs",
         "extra_private_dirs",
         "extra_writable_dirs",
@@ -303,6 +302,7 @@ def test_sandboxed_argv_refuses_any_other_tier_before_preparing(monkeypatch, mod
     ],
 )
 def test_sandboxed_argv_offers_no_widening_knob(knob) -> None:
+    # ``extra_hidden_dirs`` (level 18) only adds masks: test_app_backend_sdk_hidden_dirs.
     import inspect
 
     for fn in (sdk.sandboxed_argv, sdk.sandboxed_argv_async):

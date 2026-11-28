@@ -3,9 +3,10 @@
 An app backend that needs a host control with no ``ctx`` seam (a sensitive-path
 check, the file path gate, a no-follow read, outbound redaction, a credential or
 exfiltration-URL check on text it holds, an audit row, a sandboxed child and the
-environment and git hook overrides it runs with, a process or file-lock helper, the
-public-address check for a URL it fetches, a media-type sniff, a descriptor-pinned
-path walk and copy) otherwise looks up a private ``kiro_crew`` name by string. Those
+environment, hidden paths and git hook overrides it runs with, a process or file-lock
+helper, the trusted location of a host tool, the public-address check for a URL it
+fetches, a media-type sniff, a descriptor-pinned path walk and copy) otherwise looks
+up a private ``kiro_crew`` name by string. Those
 names move between releases, so each lookup is a gap that keeps a wheel copy alive.
 This package is the stable spelling of the most-used of them.
 
@@ -21,8 +22,8 @@ release reaches the app with the wheel. Nothing here is a copy, and no name adds
 reach: a spawn is wrapped in the same OS sandbox and can only keep or tighten its
 tier, a read or a pinned copy refuses exactly what the private one refuses, the URL
 check only refuses (it opens no connection), the content checks only answer about
-text the caller already holds, and an audit row is attributed to the app the gateway
-named.
+text the caller already holds, a tool lookup only stops a ``PATH``-planted binary,
+and an audit row is attributed to the app the gateway named.
 
 **Level-gated.** ``SDK_LEVEL`` is the App Kit seam level of this build
 (``ctx.sdk_level`` for an in-process app); the package exists from level 7. A name
@@ -80,6 +81,7 @@ if TYPE_CHECKING:
         IS_MACOS,
         IS_POSIX,
         IS_WINDOWS,
+        address_covers_loopback,
         file_lock,
         first_linked_ancestor,
         is_link_or_junction,
@@ -95,6 +97,13 @@ if TYPE_CHECKING:
         run_sandboxed_async,
         sandboxed_argv,
         sandboxed_argv_async,
+    )
+    from kiro_crew.apps.backend_sdk.tools import (  # noqa: F401
+        agent_template_host_values,
+        nvm_version_bin_dirs,
+        trusted_git_bin,
+        trusted_system_bin,
+        uv_executable,
     )
     from kiro_crew.apps.backend_sdk.urls import (  # noqa: F401
         UrlRejectedError,
@@ -137,6 +146,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "IS_MACOS": "process",
     "IS_POSIX": "process",
     "IS_WINDOWS": "process",
+    "address_covers_loopback": "process",
     "file_lock": "process",
     "first_linked_ancestor": "process",
     "is_link_or_junction": "process",
@@ -151,6 +161,11 @@ _LAZY_EXPORTS: dict[str, str] = {
     "run_sandboxed_async": "spawn",
     "sandboxed_argv": "spawn",
     "sandboxed_argv_async": "spawn",
+    "agent_template_host_values": "tools",
+    "nvm_version_bin_dirs": "tools",
+    "trusted_git_bin": "tools",
+    "trusted_system_bin": "tools",
+    "uv_executable": "tools",
     "UrlRejectedError": "urls",
     "address_is_not_public": "urls",
     "vet_public_url": "urls",
@@ -182,14 +197,22 @@ _EXPORT_LEVELS: dict[str, int] = {
     "DENIED_ROOT_PARTS": 17,
     "OutputLimitExceeded": 17,
     "minimal_env": 17,
+    "address_covers_loopback": 18,
+    "agent_template_host_values": 18,
+    "nvm_version_bin_dirs": 18,
+    "trusted_git_bin": 18,
+    "trusted_system_bin": 18,
+    "uv_executable": 18,
 }
 
 #: Keyword -> the App Kit seam level that publishes it, for a keyword added to a name
-#: after the name itself: ``max_output_bytes`` on ``run_sandboxed_async``. A keyword
-#: is not an attribute of the package, so it is not in ``__all__``; the adoption pin
-#: tool counts a tree's use of one as it counts an ``_EXPORT_LEVELS`` name.
+#: after the name itself: ``max_output_bytes`` on ``run_sandboxed_async``, and
+#: ``extra_hidden_dirs`` on the four spawn names. A keyword is not an attribute of the
+#: package, so it is not in ``__all__``; the adoption pin tool counts a tree's use of
+#: one as it counts an ``_EXPORT_LEVELS`` name.
 _KEYWORD_LEVELS: dict[str, int] = {
     "max_output_bytes": 17,
+    "extra_hidden_dirs": 18,
 }
 
 __all__ = sorted({"SDK_LEVEL", "BACKEND_SDK_LEVEL", *_LAZY_EXPORTS})
