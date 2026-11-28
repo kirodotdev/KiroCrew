@@ -53,6 +53,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_apply import api_update_apply  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import api_update_cancel  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import api_update_simulate  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import (  # noqa: F401
+        _RESTART_TARGET_TIMEOUT_SECS,
+    )
     from kiro_crew.dashboard.handlers.updates_channel import _changelog_cache  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import _changelog_path  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import _overlay_refusal  # noqa: F401

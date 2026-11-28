@@ -53,6 +53,12 @@ logger = logging.getLogger("kiro_crew.dashboard.handlers.updates")
 WHEN_NEXT_START = "next-start"
 WHEN_CANCEL = "cancel"
 
+#: How long ``_resolve_restart_target`` waits, in all, for its worker-thread
+#: checks (the launcher, the respawn resolver and the exec-target stat) before
+#: it refuses the restart. Each is a few path lookups; past this the path sits on
+#: a stalled mount and the restart would otherwise wait on it with no end.
+_RESTART_TARGET_TIMEOUT_SECS = 10.0
+
 
 async def _resolve_restart_target(
     resolver: Callable[[], str] | None = None,
@@ -65,50 +71,74 @@ async def _resolve_restart_target(
     The refusals a restart makes BEFORE its drain, in one place, so
     ``POST /api/restart`` can answer them before its 200 (every restart
     control then shows them as a failure) and ``_restart_gateway`` still
-    re-checks at the moment it commits.
+    re-checks at the moment it commits. A check that outlasts
+    ``_RESTART_TARGET_TIMEOUT_SECS`` is one of those refusals.
     """
-    # Resolve off-loop. An explicit broken launcher must not fall back to the
-    # running bundle's interpreter and import path.
     try:
-        launcher = await asyncio.to_thread(resolve_restart_launcher)
-    except (ValueError, OSError) as exc:
-        logger.warning("Gateway launcher unavailable: %s", exc)
-        return (
-            None,
-            None,
-            ("restart_launcher_invalid", "Cannot restart: invalid gateway launcher path"),
-        )
-    if launcher is not None:
-        return launcher, None, None
-    # Applying callers load this resolver before the install can replace
-    # their import tree. A plain restart has no apply, so load it here.
-    if resolver is None:
-        from kiro_crew.platform.wheel_engine import respawn_executable
+        async with asyncio.timeout(_RESTART_TARGET_TIMEOUT_SECS):
+            # Resolve off-loop. An explicit broken launcher must not fall back to the
+            # running bundle's interpreter and import path.
+            try:
+                launcher = await asyncio.to_thread(resolve_restart_launcher)
+            except (ValueError, OSError) as exc:
+                logger.warning("Gateway launcher unavailable: %s", exc)
+                return (
+                    None,
+                    None,
+                    ("restart_launcher_invalid", "Cannot restart: invalid gateway launcher path"),
+                )
+            if launcher is not None:
+                return launcher, None, None
+            # Applying callers load this resolver before the install can replace
+            # their import tree. A plain restart has no apply, so load it here.
+            if resolver is None:
+                from kiro_crew.platform.wheel_engine import respawn_executable
 
-        resolver = respawn_executable
-    exe = await asyncio.to_thread(resolver)
-    # ONE hop for both syscalls, the contract this helper's docstring
-    # states: the pathname can be a stalled mount, and this function is
-    # on the event loop -- the await above proves it -- so a bare stat
-    # here would hold every session while the restart decides.
-    if not await asyncio.to_thread(platform_compat.execv_target_available, exe):
-        # The interpreter this process ran under is gone, which is what an
-        # apply that prunes the previous versioned tree leaves behind.
-        # REFUSE HERE, while this process is still serving: the drain is the
-        # point of no return, and main reached its exec only after
-        # ``close_all()``, where the failure left the gateway alive with
-        # admission shut and nothing able to reopen it. Refusing before the
-        # drain keeps every session answerable and leaves the operator a
-        # repair-then-relaunch they can actually perform. The pruned tree
-        # took the bundle too, so a deferred restart into an applied update
-        # does not hold the watchdog's exit.
-        update_ownership.clear_restart_deferral()
+                resolver = respawn_executable
+            exe = await asyncio.to_thread(resolver)
+            # ONE hop for both syscalls, the contract this helper's docstring
+            # states: the pathname can be a stalled mount, and this function is
+            # on the event loop -- the await above proves it -- so a bare stat
+            # here would hold every session while the restart decides.
+            if not await asyncio.to_thread(platform_compat.execv_target_available, exe):
+                # The interpreter this process ran under is gone, which is what an
+                # apply that prunes the previous versioned tree leaves behind.
+                # REFUSE HERE, while this process is still serving: the drain is the
+                # point of no return, and main reached its exec only after
+                # ``close_all()``, where the failure left the gateway alive with
+                # admission shut and nothing able to reopen it. Refusing before the
+                # drain keeps every session answerable and leaves the operator a
+                # repair-then-relaunch they can actually perform. The pruned tree
+                # took the bundle too, so a deferred restart into an applied update
+                # does not hold the watchdog's exit.
+                update_ownership.clear_restart_deferral()
+                return (
+                    None,
+                    exe,
+                    (
+                        "restart_interpreter_missing",
+                        "Cannot restart: invalid Python executable path",
+                    ),
+                )
+            return None, exe, None
+    except TimeoutError:
+        # shortcut: the worker thread is abandoned, not stopped, and holds an
+        # executor slot until its syscall returns; give these checks their own
+        # executor if repeated restarts on a stalled mount ever exhaust the pool.
+        logger.warning(
+            "Restart target not resolved within %gs; refusing the restart",
+            _RESTART_TARGET_TIMEOUT_SECS,
+        )
         return (
             None,
-            exe,
-            ("restart_interpreter_missing", "Cannot restart: invalid Python executable path"),
+            None,
+            (
+                "restart_target_timeout",
+                "Cannot restart: finding the gateway launcher or Python executable took "
+                f"longer than {_RESTART_TARGET_TIMEOUT_SECS:g} seconds; a disk or network "
+                "mount may be stalled",
+            ),
         )
-    return None, exe, None
 
 
 @update_ownership.owning(update_ownership.Step.RESTART)
