@@ -39,100 +39,169 @@ engine (`mcp_gateway/shareability.py::assess`) is pure — no IO, no config, no 
 
 The bulk stub action consults whichever of the two the global sharing switch makes true of a click, and it does so **server-side, inside the lock hold that performs the write** (`resolve_eligibility` on `POST /api/mcp-gateway/servers/stub`). The client sends candidate names and reads `stubbed` / `skipped` back. This is a placement decision, not a detail: a client can only answer for the moment it read its rows, while sharing is a separate switch another dashboard or the CLI can flip and the verdicts themselves move as measurements land. Deciding in the browser therefore leaves a window between the decision and the write, and each guard against that window — re-read the switch, bypass the query cache, compare-and-set the expected state — closes one instance while leaving the shape that produces them. Resolving inside the hold means one config state decides both, and the eligibility rule has exactly one implementation.
 
-## The working-folder question gates routing
+## Folder facts decide how a server shares
 
-A routed server's backend runs in one fixed folder outside the session sandbox
+A shared backend runs in one fixed folder outside every session sandbox
 (`daemon/launch.py::_backend_work_dir` ignores the session's work dir on purpose:
-an in-sandbox caller must not steer an unsandboxed interpreter's cwd). A server that
-reads the folder it starts in, like git or file search, would therefore read the
-wrong project once routed.
-No detector decides which servers do: the operator answers per server in MCP
-Management, and the answer is stored in `mcp_gateway.cwd_use` (`uses_cwd`,
-`not_used`, or absent for unanswered).
+an in-sandbox caller must not steer an unsandboxed interpreter's cwd). A server
+that reads the folder it starts in, like git or file search, would read the wrong
+project there. No detector decides which servers do, and nobody is asked:
+`folder_use.ProjectRouting.per_project` reads the declared facts once, for the
+server rows, the stub route and the rewriter alike.
 
-- `POST /api/mcp-gateway/servers/stub` with `stub: true` refuses
-  (`409 cwd_unconfirmed`, or a `cwd_unconfirmed` skip under
-  `resolve_eligibility`) any server that is not one of Kiro Crew's own
+- **Folder-free servers share one backend.** Kiro Crew's own servers
   (`mcp_cleanup.KIROCREW_BIN_MCP_SERVERS`, whose launch the rewriter re-derives
-  from the install) and is not answered `not_used`. That route is the only writer
-  of launch approvals, and the rewriter wraps a server only for an approved
-  launch, so an unanswered server never gets a live stub on any harness: kiro-cli
-  and KAS read the same overlay.
-- `_resolve_stub_servers` drops a server answered `uses_cwd`, so answering it
-  unroutes it. The answer route applies that change through the broker when it
-  unroutes a routed server; with no broker wired it takes effect at the next start.
-- A server routed before the question existed keeps its approval and keeps
-  running routed until answered. Its row asks once, and re-approving its launch
-  needs the answer.
-- The answer is keyed by server name. A renamed server is unanswered. A changed
-  launch is refused by the launch approval and runs in the session until it is
-  approved again; the stored answer carries over to that approval.
-- Third-party servers that advertise `kirocrew.caller-identity`, and stdio remote
-  proxies, are asked like any other: the extension says nothing about the folder,
-  and a proxy cannot be told apart from a local server by its command alone.
-- The question is skipped when a declared fact answers it
-  (`mcp_gateway/folder_use.py`). Kiro Crew's own servers and the servers the
-  edition lists (`McpToolingProvider.folder_free_mcp_servers()`, none in the public
-  build) are cleared without an answer, and the row reports `cwd_proven` for both.
-  A stored `uses_cwd` answer outranks the edition list, so that server is asked again.
-  A `roots/list` observation (`hazards.HAZARD_ROOTS_REQUESTED`, recorded even
-  with one chat attached) keeps a name per chat only when every source agrees;
-  any mixed case keeps the question and approval behaviour from before roots
-  observations were used. `folder_use.roots_keeps_per_chat` decides this once
-  from the same value-free declaration scan for the row, single-form toggle and
-  rewriter. Its sources are:
-  - all agent declarations, including admitted crewmates and their service specs;
-    any `secret://` env reference disagrees with running without the gateway;
-  - the settings `mcp.json` declaration, with the same vault-reference rule;
-  - the edition's folder-free list, which disagrees with a roots observation
-    (the question is asked rather than treating that list as proof);
-  - saved `cwd_use` answers, read through `effective_cwd_answer` with the current
-    command/args binding: `not_used` disagrees, `uses_cwd` agrees, and an absent
-    or stale answer supplies no disagreement. The binding uses only the source
-    directory's agent specs, keyed by the exact server name, matching the server
-    row's declared launch. Settings and crewmate launches do not join that binding;
-  - canonical aliases, which join the observation, declarations and edition entries
-    under either spelling of a name. For saved answers, the exact name's valid,
-    launch-bound answer wins. Only when it has no valid answer are aliases consulted;
-    among those alias answers, `not_used` wins over `uses_cwd`.
-  An unreadable source cannot establish agreement and keeps the normal approval
-  path. That covers a failed directory listing or crewmate owner record; one
-  unreadable or invalid agent spec is skipped, as the rewriter and the row scan
-  skip it, so the other specs still bind launches. When all sources agree, the
-  row reports `cwd_roots` and `can_stub: false`, the single-form toggle refuses
-  with `409 cwd_roots`, and both agent and settings declarations stay unwrapped
-  at the next start or overlay refresh. A toggle press that carries
-  `cwd_use: not_used` is checked against that answer, bound as the write binds it.
-  The row still offers the owner's answer that the server does not use the
-  folder: it sends `cwd_use: not_used` with no `stub`, and the route alone decides
-  what that answer routes. It reads the routed set before and after the write
-  with `_resolve_stub_servers` (roster, followers, `stub_overrides`) and the same
-  folder rule. When the set does not change (the name is not rostered, or is
-  declined), the answer is saved bound to the current launch, nothing is shared,
-  and the reply carries `routing_changed: false`; the row then shows its Share
-  switch. When the answer adds the name (a rostered server that an exact
-  `uses_cwd` answer or roots alone kept per chat), the route runs the broker
-  apply the toggle runs and reports its `applied` and `restart_required` with
-  `routing_changed: true`, but only when the approval store already approves
-  every launch the name resolves to now. Otherwise it refuses with
-  `409 expected_launch_required` and writes nothing, and the page shows the
-  launch and sends it with the answer as one toggle press. An answer that removes
-  the name from the set (`uses_cwd`) runs the same apply. Probes still
-  resolve every launch. A mixed name keeps its Share control and normal launch
-  approvals; this never approves a changed launch automatically. At registration
-  and respawn, `hazards.retreat_codes` excludes `roots_requested`: roots alone
-  follow the folder-use rule and its saved-answer, vault and edition exceptions.
-  Any other observed hazard for the launch, including `unroutable_server_request`,
-  still forces a private backend. The batch share remains on `_stub_eligibility`
-  and skips any server with the hazard.
-  The fingerprint keeps `stub_servers` and the managed-launch signature based on
-  the configured roster. `roots_excluded` holds only the names the common check
-  made per-chat; it invalidates cached overlays without changing the live refresh
-  policy.
-  Config hints such as a `.` argument are not read; an unknown server is asked.
+  from the install), the servers the edition lists
+  (`McpToolingProvider.folder_free_mcp_servers()`, none in the public build), and
+  a server with a saved `not_used` fact in `mcp_gateway.cwd_use` for its current
+  launch (`effective_cwd_answer`: a fact bound in `cwd_use_launch` to another
+  command or arguments no longer holds). Such a server is shared through the
+  row's Share press, which approves its launch, as before.
+- **Every other server shares per project**, with no approval and no question:
+  see *Per-project backends* below. A saved `uses_cwd` fact or a `roots/list`
+  observation (`hazards.HAZARD_ROOTS_REQUESTED`) outranks the edition list.
+  The row reports `per_project: true`, the rewriter writes its stub with
+  `--project-scoped` when sharing (`mcp_gateway.enabled`) is on, and
+  `POST /api/mcp-gateway/servers/stub` refuses `stub: true` for it
+  (`409 per_project`, or a `per_project` skip under `resolve_eligibility`).
+  Sharing on starts the broker and gives sessions the overlay even with an
+  empty `stub_servers` (`mcp_broker._init_mcp_gateway`,
+  `config.loader_config`), so these stubs do not depend on the stub set. At
+  boot that broker starts only once the process is ready
+  (`mcp_broker._schedule_project_broker`); a chat before then starts its
+  servers itself.
+- **Env layer.** The record carries the env its session's launch added over
+  the gateway env (`agent.env` and the driver's `extra_env`, such as a
+  project's `AWS_PROFILE`), and the key carries its digest. The backend starts
+  from that snapshot, never a live config read. The values stay in gatewayd's
+  memory: never in a log or an audit row, and not in the binding's `repr`. A
+  cleared credential name in the layer, or a `PYTHON*` key the server declares
+  (the wrap strips it), falls back to one copy per chat.
+- **Tier.** The daemon raises the record's tier to the governance floor
+  (`project_scope._effective_binding`, `sandbox_tiers.effective_sandbox_mode`),
+  the tier the session's own wrap applied, so a strict chat never shares a
+  backend started on a weaker tier. A floor that cannot be read records nothing.
+- **Read-only layer.** The record and pool key carry the operator's
+  `agent.sandbox_readonly_paths` and exceptions that the session's own wrap
+  applied (`acp/launch.py` records them). A backend is spawned only while the
+  live layer matches, so a session started after a change never joins a
+  backend wrapped without it.
+- **Adoption and restarts.** The adoption drift check counts per-project
+  targets apart (`launch_approval.coverage_stem`), so an incumbent daemon that
+  lacks one is asked to stand down. A session's project record lives only in
+  the daemon, so the sharing switch resets open chats when it replaces a
+  running broker.
+- **A row that cannot switch.** A per-project row whose declared env keeps it
+  per chat draws no Share switch and shows the reason on the row.
+  A row whose declared env the shared spawn would withhold reads "one per
+  chat" (`direct_env`), since the rewriter leaves it for each chat.
+- **Pre-install.** A per-project target's npm package is pre-installed in the
+  strict tier (`resolve_once._PROJECT_INSTALL_MODE`): it has no launch approval
+  and no session tier yet, so its lifecycle scripts read nothing a chat's own
+  sandbox hides.
+- **Exceptions keep today's routes.** A server any declaration of which names a
+  vault secret (`secret://`), or a fleet whose declarations cannot all be read,
+  is not per-project. With no folder-free fact it runs one copy per chat: the
+  row reports `per_chat` (and `per_chat_reason`: `vault` or `unreadable`), shows
+  no Share press and says why, and the route still refuses a press with
+  `409 per_chat`.
+- **The per-project Share switch.** The row's switch for a per-project server,
+  on by default and never prompted. While MCP sharing is off, it and the Share
+  press both read off and are disabled, each described by the page-wide switch;
+  the saved choice stays stored and shows again once sharing is on. A declined
+  per-project server counts toward enabling the page-wide switch. Off (`dont_share: true`, the same write as
+  `stub: false`) stores `mcp_gateway.stub_overrides[name] = false`, and the
+  rewriter leaves the server for each chat to launch itself; the row reads "one
+  per chat". On (`dont_share: false`) removes that entry. Either changes that one server's routing and nothing else
+  (`mcp_broker._apply_mcp_dont_share`): the overlays are rewritten through the
+  same probe an app install runs, with the name moved in the rewrite's
+  `dont_share` and served stub sets, and the warm pool is refilled. The broker,
+  every backend and every attached stub stay up. A chat that starts afterwards
+  gets the new route; a chat already open keeps the route it started with until
+  it ends, and a per-project backend it leaves is retired by the idle drain.
+  Turning sharing back on needs the daemon to hold the server's target: it does
+  when the server was shared at broker start, and otherwise the answer carries
+  `restart_required` and the next gateway start applies it.
+- **Saved facts.** `cwd_use` is written only by an `mcp.server` card that states
+  the agent's own folder claim, in the same request as its `stub` write.
+  `_resolve_stub_servers` drops a server marked `uses_cwd` from the shared set.
+  Saved values from earlier installs stay readable and are never migrated.
+- **Roots on the shared path.** For a server on the shared path, a roots
+  observation keeps the name per chat only when every source agrees
+  (`folder_use.roots_keeps_per_chat`: no vault reference in any agent, crewmate
+  or settings declaration, not edition-listed, no `not_used` fact). The
+  fingerprint's `roots_excluded` holds those names; it invalidates cached
+  overlays without changing the live refresh policy. At registration and
+  respawn, `hazards.retreat_codes` excludes `roots_requested`; any other observed
+  hazard for the launch still forces a private backend, and the batch share
+  (`_stub_eligibility`) skips a server with the hazard.
 
-The answer only gates routing today. Whether `work_dir` joins the pool signature
-for `uses_cwd` servers is a separate decision.
+## Per-project backends
+
+`mcp_gateway/daemon/project_scope.py` lets a server that reads its folder share
+one backend among the chats of one project, inside the sandbox those chats use.
+The rewriter writes such a stub with `--project-scoped`, which it sends as
+`project_scoped: true` on its Register frame; asking can only narrow what the
+connection gets. Its target goes in the `KIROCREW_MCP_PROJECT_TARGET_` map, which
+the daemon reads only for a key with a `sandbox_hash` and starts without a launch
+approval, since the backend runs inside the session's own sandbox. Every other key
+reads only the approved `KIROCREW_MCP_TARGET_` map.
+
+- **The record.** The owning gateway sends a `session-project` control frame per
+  session with the claim, before `session/new` (`_own_stub_session`): its project
+  root, which is the folder the chat starts in (the cwd and root a chat's own
+  server gets from kiro-cli, never the git toplevel above it), and the
+  sandbox plan its runtime was wrapped with (tier, hidden dirs, exposed files). A
+  session with sandbox `off` sends none.
+- **Warm-pool sessions.** A warm-pool process runs `session/new` when the pool
+  fills, with no session key, and kiro-cli starts its stubs then; each stub
+  sends `ensure_backend` before it reads kiro-cli's `initialize`, so its answer
+  cannot wait for the chat that claims the process later (a warm process waits up
+  to its pool TTL, past both kiro-cli's MCP init timeout and the stub's own wait
+  budget, and a stub that falls back has exec'd its server for good). So the
+  owner sends that session's record at `session/new`, named by its stub token,
+  its runtime pid and that pid's start token. A connection is placed under it
+  only when it carries the token AND the chain walked from its kernel-reported
+  peer pid (`_StubConn.host_pids`, never the frame's `ancestor_pids`) holds the
+  pid with that start token: the two factors `identity._token_caller` requires.
+  A claim keeps the session's working directory (a pool claim needs the pool's
+  cwd) and the runtime keeps its sandbox, so the record still holds after the
+  `rekey()` claim; a claim on the token from anyone but the owner drops it.
+  The daemon accepts it only when the kernel-reported sender pid is the owner or
+  its exec successor, the `owner-port` rule; a refusal is audited. The Register
+  frame never names a root.
+- **The key.** At acquire time the daemon reads the record of the session the
+  kernel attested for the connection (`_StubConn.session_attested`: a token whose
+  current binding is the owner's own claim, or an SO_PEERCRED walk whose signed
+  mapping names the same session; never a key the frame named, and a claim that
+  moves the connection to another session clears it). The key's
+  `work_dir` becomes the root and `sandbox_hash` the digest of root and plan. One
+  project with one plan shares a backend; another root or plan gets its own. A key
+  with an empty `sandbox_hash` hashes exactly as before the field existed.
+- **The spawn.** The backend starts in the root through `sandboxed_spawn_argv`,
+  with the session's tier, hidden dirs, exposed files and project folder, and its
+  own per-process temp dir as its only scratch. No session's scratch is opened.
+- **Roots.** The backend's `roots/list` is answered by the gateway with the one
+  root; the root never changes, so `roots/list_changed` is never sent.
+- **Fallback.** No attested session, no record, no sandbox backend on the host, a
+  Kiro Crew control-plane server, an env name the server's spec declares (a
+  `secret://` one included) that the sandbox launcher clears (also when the
+  declared value equals an inherited one; a chat's own kiro-cli hands declared
+  values to the server after the clear), or
+  `PROJECT_INSTANCES_PER_SERVER` live per-project backends for the server:
+  `ProjectScopeUnavailable`, an `isolation`
+  rejection with `fallback: true`. The stub starts the server itself inside its
+  chat's sandbox, as it would with no pool. A cleared name the daemon only
+  inherited (such as a messaging channel's token) is dropped by the scrub, as on
+  the per-chat path, and is no reason to fall back.
+- **Every attach and frame.** `project_scope.backend_serves_project` checks that the connection's
+  session still maps to the backend's root and plan; a claim that moved it to
+  another project ends the connection.
+- **Lifecycle.** Refcount and `idle_timeout_secs` drain apply as to any pooled
+  backend. A per-project key is never prewarmed: it needs a live session's record.
+
+Rejected design: one shared process for all projects with the gateway rewriting
+paths per call. MCP has no signal that a server keeps no state between calls.
 
 ## Session-bound by construction, which is not the same as "ours"
 

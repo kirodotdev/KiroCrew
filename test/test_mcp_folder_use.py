@@ -1,7 +1,9 @@
-"""Roots keep a server per chat only when no declared or saved fact disagrees.
+"""Folder facts decide which servers share one backend and which share per project.
 
-Mixed cases retain the usual question and approval path across the dashboard
-and rewriter. Batch sharing still uses its independent hazard verdict.
+On the shared path, roots keep a server out of the one backend only when no
+declared or saved fact disagrees. On the dashboard, every server no fact marks
+folder-free is listed ``per_project`` with nothing to answer, and its Share press
+is refused. Batch sharing still uses its independent hazard verdict.
 """
 
 from __future__ import annotations
@@ -46,7 +48,11 @@ def _live_socket() -> str:
 async def test_a_roots_request_is_routed_and_recorded_with_one_chat(monkeypatch):
     backend = _make_backend(refcount=1)
     backend.pool_key = SimpleNamespace(
-        server_name="srv", command_args_hash="c", effective_env_hash="e", binary_version="v"
+        server_name="srv",
+        command_args_hash="c",
+        effective_env_hash="e",
+        binary_version="v",
+        sandbox_hash="",
     )
     record = MagicMock(return_value=False)
     monkeypatch.setattr(hazards, "record_observed", record)
@@ -99,11 +105,11 @@ async def test_a_stored_folder_answer_outranks_the_edition_until_answered_again(
 
     if surface == "toggle":
         status, body = await _post({"name": "srv", "stub": True, "expected_launch": expected})
-        assert (status, body.get("code")) == (409, "cwd_unconfirmed")
+        assert (status, body.get("code")) == (409, "per_project")
     else:
         response = await mcp_mod.api_mcp_gateway_servers(_request(method="GET"))
         row = {r["name"]: r for r in _payload(response)["servers"]}["srv"]
-        assert (row["cwd_use"], row["cwd_proven"]) == ("uses_cwd", False)
+        assert row["per_project"] is True
     assert json.loads(config.read_text())["mcp_gateway"]["cwd_use"] == {"srv": "uses_cwd"}
     assert _approval_module().load_approvals().approved == {}
 
@@ -266,11 +272,11 @@ async def test_the_row_says_which_fact_decides(tmp_path, toggle_home, monkeypatc
         return {r["name"]: r for r in _payload(response)["servers"]}["srv"]
 
     row = await _row()
-    assert (row["cwd_proven"], row["cwd_roots"], row["can_stub"]) == (True, False, True)
+    assert (row["per_project"], row["can_stub"]) == (False, True)
 
     await asyncio.to_thread(_saw_roots, _live_socket())
     row = await _row()
-    assert (row["cwd_roots"], row["can_stub"], row["cwd_proven"]) == (False, True, False)
+    assert (row["per_project"], row["can_stub"]) == (True, True)
 
 
 def _name_a_vault_secret(agents) -> None:
@@ -297,7 +303,7 @@ async def test_a_vault_server_seen_asking_for_roots_keeps_its_share_switch(
     response = await mcp_mod.api_mcp_gateway_servers(_request(method="GET"))
     row = {r["name"]: r for r in _payload(response)["servers"]}["srv"]
 
-    assert (row["cwd_roots"], row["can_stub"]) == (False, True)
+    assert (row["per_project"], row["can_stub"]) == (False, True)
 
 
 @pytest.mark.asyncio
@@ -319,34 +325,6 @@ async def test_a_vault_server_seen_asking_for_roots_is_not_refused_by_the_toggle
 
     assert status == 200, body
     assert _approval_module().load_approvals().approved != {}
-
-
-@pytest.mark.asyncio
-async def test_a_roots_row_answered_no_by_itself_gets_its_share_switch_back(
-    tmp_path, toggle_home, monkeypatch
-):
-    from handlers_mcp_coverage_helpers import _payload, _request
-
-    from kiro_crew.dashboard.handlers import mcp as mcp_mod
-
-    monkeypatch.setattr(mcp_mod, "kiro_agents_dir_path", lambda: toggle_home)
-    _declare(toggle_home, "agent spec", _APPROVED_CMD, [])
-    await asyncio.to_thread(_saw_roots, _live_socket())
-
-    async def _row():
-        response = await mcp_mod.api_mcp_gateway_servers(_request(method="GET"))
-        return {r["name"]: r for r in _payload(response)["servers"]}["srv"]
-
-    row = await _row()
-    assert (row["cwd_roots"], row["can_stub"]) == (True, False)
-
-    # The row's one answer: cwd_use alone, no stub, so nothing is shared or approved.
-    status, body = await _post({"name": "srv", "cwd_use": "not_used"})
-
-    assert status == 200, body
-    assert _approval_module().load_approvals().approved == {}
-    row = await _row()
-    assert (row["cwd_roots"], row["can_stub"], row["cwd_use"]) == (False, True, "not_used")
 
 
 @pytest.mark.asyncio
@@ -406,18 +384,15 @@ async def test_roots_requires_every_source_to_agree(
     if surface == "row":
         response = await mcp_mod.api_mcp_gateway_servers(_request(method="GET"))
         row = {r["name"]: r for r in _payload(response)["servers"]}[name]
-        assert (row["cwd_roots"], row["can_stub"]) == (per_chat, not per_chat)
-        if source == "edition":
-            assert row["cwd_proven"] is False
+        assert row["can_stub"] is True
+        assert row["per_project"] is (source in {"edition", "agree"})
     elif surface == "toggle":
         request = {"name": name, "stub": True, "expected_launch": expected}
         if source not in {"edition", "answer", "alias_answer", "agree"}:
             request["cwd_use"] = "not_used"
         status, body = await _post(request)
-        if per_chat:
-            assert (status, body.get("code")) == (409, "cwd_roots")
-        elif source == "edition":
-            assert (status, body.get("code")) == (409, "cwd_unconfirmed")
+        if per_chat or source == "edition":
+            assert (status, body.get("code")) == (409, "per_project")
         else:
             assert status == 200, body
     else:
@@ -523,13 +498,14 @@ async def test_alias_roots_decides_the_raw_name_on_dashboard(
     _saw_roots(_live_socket(), "ns-srv")
 
     if surface == "toggle":
-        status, body = await _post({"name": "ns/srv", "stub": True})
-        assert (status, body.get("code")) == (409, "cwd_roots")
+        expected = await _expected_launch("ns/srv")
+        status, body = await _post({"name": "ns/srv", "stub": True, "expected_launch": expected})
+        assert (status, body.get("code")) == (409, "per_project")
         assert _approval_module().load_approvals().approved == {}
     else:
         response = await mcp_mod.api_mcp_gateway_servers(_request(method="GET"))
         row = {r["name"]: r for r in _payload(response)["servers"]}["ns/srv"]
-        assert (row["cwd_roots"], row["can_stub"]) == (True, False)
+        assert (row["per_project"], row["can_stub"]) == (True, True)
 
 
 @pytest.mark.parametrize("spelling", ["ns/srv", "ns-srv"])
@@ -613,7 +589,7 @@ async def test_raw_settings_preserve_the_saved_agent_folder_answer(
     elif surface == "row":
         response = await mcp_mod.api_mcp_gateway_servers(_request(method="GET"))
         row = {r["name"]: r for r in _payload(response)["servers"]}["foo"]
-        assert (row["cwd_roots"], row["can_stub"]) == (False, True)
+        assert (row["per_project"], row["can_stub"]) == (False, True)
     elif surface == "toggle":
         status, body = await _post({"name": "foo", "stub": True, "expected_launch": expected})
         assert status == 200, body
@@ -732,8 +708,7 @@ async def test_exact_folder_answer_outranks_conflicting_alias(
     if surface == "row":
         response = await mcp_mod.api_mcp_gateway_servers(_request(method="GET"))
         row = {r["name"]: r for r in _payload(response)["servers"]}["ns/srv"]
-        assert row["cwd_use"] == "uses_cwd"
-        assert row["cwd_roots"] is saw_roots
+        assert row["per_project"] is True
     elif surface == "per_chat":
         facts = folder_use.read_declarations(toggle_home)
         assert facts.per_chat(
@@ -742,17 +717,17 @@ async def test_exact_folder_answer_outranks_conflicting_alias(
     else:
         expected = await _expected_launch("ns/srv")
         status, body = await _post({"name": "ns/srv", "stub": True, "expected_launch": expected})
-        assert (status, body.get("code")) == (409, "cwd_roots" if saw_roots else "cwd_unconfirmed")
+        assert (status, body.get("code")) == (409, "per_project")
         assert _approval_module().load_approvals().approved == {}
         assert json.loads(config.read_text())["mcp_gateway"]["cwd_use"] == answers
-        status, body = await _post({"name": "ns/srv", "cwd_use": "not_used"})
+        status, body = await _post(
+            {"name": "ns/srv", "stub": True, "expected_launch": expected, "cwd_use": "not_used"}
+        )
         assert status == 200, body
         assert json.loads(config.read_text())["mcp_gateway"]["cwd_use"] == {
             "ns/srv": "not_used",
             "ns-srv": "not_used",
         }
-        status, body = await _post({"name": "ns/srv", "stub": True, "expected_launch": expected})
-        assert status == 200, body
         stubs, targets = _boot_rewrite(tmp_path, toggle_home)
         assert "ns/srv" in stubs and _targets_running(targets, _APPROVED_CMD)
 
@@ -784,8 +759,11 @@ async def test_an_unreadable_agent_spec_still_binds_a_new_answer(
     monkeypatch.setattr(mcp_mod, "kiro_agents_dir_path", lambda: toggle_home)
     _declare(toggle_home, "agent spec", _APPROVED_CMD, [])
     (toggle_home / "dangling.json").mkdir()
+    expected = await _expected_launch()
 
-    status, body = await _post({"name": "srv", "cwd_use": "not_used"})
+    status, body = await _post(
+        {"name": "srv", "stub": True, "expected_launch": expected, "cwd_use": "not_used"}
+    )
 
     assert status == 200, body
     current = mcp_mod.declared_launch(mcp_mod._collect_server_rows()["srv"])
@@ -793,13 +771,17 @@ async def test_an_unreadable_agent_spec_still_binds_a_new_answer(
     assert config["mcp_gateway"]["cwd_use_launch"] == {"srv": current}
 
 
-def _answer_request(body: dict, apply):
+def _answer_request(body: dict, apply, apply_dont_share=None):
     from aiohttp import web
     from body_stream_helpers import attach_body
     from dashboard_owner_helpers import owner_claims
 
     request = MagicMock(spec=web.Request)
-    request.app = {"state": SimpleNamespace(_mcp_gateway_apply_stub=apply)}
+    request.app = {
+        "state": SimpleNamespace(
+            _mcp_gateway_apply_stub=apply, _mcp_gateway_apply_dont_share=apply_dont_share
+        )
+    }
     attach_body(request, body)
     return owner_claims(request)
 
@@ -818,99 +800,9 @@ async def _answer_with_broker(body: dict) -> tuple[int, dict, list[bool]]:
     return response.status, json.loads(response.body), calls
 
 
-async def _approve_current_launch() -> None:
-    from kiro_crew.dashboard.handlers import mcp as mcp_mod
-
-    launches = await asyncio.to_thread(
-        mcp_mod.launch_resolve.resolve_launches, ["srv"], refresh_specs=False
-    )
-    await asyncio.to_thread(_approval_module().approve, {"srv": launches["srv"]})
-
-
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("section", "approved", "routes"),
-    [
-        # r12: an exact uses_cwd answer took a rostered server off routing.
-        ({"stub_servers": ["srv"], "cwd_use": {"srv": "uses_cwd"}}, True, True),
-        # r11: a rostered server with no answer, kept per chat by roots alone.
-        ({"stub_servers": ["srv"]}, True, True),
-        # Not in the roster: saving the answer routes nothing.
-        ({}, True, False),
-        # Declined: the operator's off decision outranks the roster.
-        ({"stub_servers": ["srv"], "stub_overrides": {"srv": False}}, True, False),
-    ],
-    ids=["exact-uses-cwd", "unanswered", "not-rostered", "declined"],
-)
-async def test_an_answer_that_routes_a_server_runs_the_broker_apply(
-    tmp_path, toggle_home, monkeypatch, section, approved, routes
-):
-    from kiro_crew.dashboard.handlers import mcp as mcp_mod
-
-    monkeypatch.setattr(mcp_mod, "kiro_agents_dir_path", lambda: toggle_home)
-    _declare(toggle_home, "agent spec", _APPROVED_CMD, [])
-    (tmp_path / "config.json").write_text(json.dumps({"mcp_gateway": section}), encoding="utf-8")
-    if approved:
-        await _approve_current_launch()
-    await asyncio.to_thread(_saw_roots, _live_socket())
-
-    status, body, calls = await _answer_with_broker({"name": "srv", "cwd_use": "not_used"})
-
-    assert status == 200, body
-    config = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
-    assert config["mcp_gateway"]["cwd_use"] == {"srv": "not_used"}
-    if routes:
-        assert calls == [True]
-        assert (body["applied"], body["restart_required"], body["routing_changed"]) == (
-            False,
-            True,
-            True,
-        )
-    else:
-        assert calls == []
-        assert (body["applied"], body["restart_required"], body["routing_changed"]) == (
-            True,
-            False,
-            False,
-        )
-
-
-@pytest.mark.asyncio
-async def test_an_answer_that_routes_an_unapproved_launch_asks_for_the_launch(
-    tmp_path, toggle_home, monkeypatch
-):
-    from kiro_crew.dashboard.handlers import mcp as mcp_mod
-
-    monkeypatch.setattr(mcp_mod, "kiro_agents_dir_path", lambda: toggle_home)
-    _declare(toggle_home, "agent spec", _APPROVED_CMD, [])
-    section = {"stub_servers": ["srv"], "cwd_use": {"srv": "uses_cwd"}}
-    config = tmp_path / "config.json"
-    config.write_text(json.dumps({"mcp_gateway": section}), encoding="utf-8")
-    await asyncio.to_thread(_saw_roots, _live_socket())
-
-    status, body, calls = await _answer_with_broker({"name": "srv", "cwd_use": "not_used"})
-
-    assert (status, body["code"], calls) == (409, "expected_launch_required", [])
-    assert json.loads(config.read_text(encoding="utf-8"))["mcp_gateway"] == section
-
-    # The page's preview then sends the launch with the answer in one request.
-    expected = await _expected_launch()
-    status, body, calls = await _answer_with_broker(
-        {"name": "srv", "stub": True, "expected_launch": expected, "cwd_use": "not_used"}
-    )
-
-    assert status == 200, body
-    assert calls == [True]
-    assert json.loads(config.read_text(encoding="utf-8"))["mcp_gateway"]["cwd_use"] == {
-        "srv": "not_used"
-    }
-    assert _approval_module().load_approvals().approved != {}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("share", [False, True], ids=["roots-answer", "share-answer"])
 async def test_a_folder_answer_binds_the_launch_after_specs_rebuild(
-    tmp_path, toggle_home, monkeypatch, share
+    tmp_path, toggle_home, monkeypatch
 ):
     from handlers_mcp_coverage_helpers import _payload, _request
 
@@ -932,9 +824,7 @@ async def test_a_folder_answer_binds_the_launch_after_specs_rebuild(
 
     monkeypatch.setattr(agent, "rebuild_agent_config", rebuild)
     _saw_roots(_live_socket())
-    request = {"name": "srv", "cwd_use": "not_used"}
-    if share:
-        request.update(stub=True, expected_launch=expected)
+    request = {"name": "srv", "cwd_use": "not_used", "stub": True, "expected_launch": expected}
 
     status, body = await _post(request)
 
@@ -945,4 +835,40 @@ async def test_a_folder_answer_binds_the_launch_after_specs_rebuild(
     assert config["mcp_gateway"]["cwd_use_launch"] == {"srv": current}
     response = await mcp_mod.api_mcp_gateway_servers(_request(method="GET"))
     row = {r["name"]: r for r in _payload(response)["servers"]}["srv"]
-    assert (row["cwd_roots"], row["can_stub"], row["cwd_use"]) == (False, True, "not_used")
+    assert (row["per_project"], row["can_stub"]) == (False, True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dont_share", [True, False])
+async def test_dont_share_applies_one_server_and_never_restarts_the_broker(
+    tmp_path, toggle_home, monkeypatch, dont_share
+):
+    """The switch moves one server's routing, so it takes the one-server apply."""
+    from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+    monkeypatch.setattr(mcp_mod, "kiro_agents_dir_path", lambda: toggle_home)
+    _declare(toggle_home, "agent spec", _APPROVED_CMD, [])
+    if not dont_share:
+        (tmp_path / "config.json").write_text(
+            json.dumps({"mcp_gateway": {"stub_overrides": {"srv": False}}}), encoding="utf-8"
+        )
+    restarts: list[bool] = []
+    one_server: list[tuple[str, bool]] = []
+
+    async def apply(*, launch_approved: bool = False) -> dict:
+        restarts.append(launch_approved)
+        return {"applied": True, "restart_required": False}
+
+    async def apply_dont_share(name: str, on: bool) -> dict:
+        one_server.append((name, on))
+        return {"applied": True, "restart_required": False, "sessions_reset": 0}
+
+    response = await mcp_mod.api_mcp_gateway_set_stub(
+        _answer_request({"name": "srv", "dont_share": dont_share}, apply, apply_dont_share)
+    )
+    body = json.loads(response.body)
+
+    assert response.status == 200, body
+    assert one_server == [("srv", dont_share)]
+    assert restarts == []
+    assert body["applied"] is True and body["sessions_reset"] == 0

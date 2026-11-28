@@ -58,6 +58,7 @@ from typing import Any, Collection, Iterable, Mapping, TypeGuard
 from kiro_crew.config.paths import config_dir
 from kiro_crew.mcp_gateway import launch_approval_heal as _heal
 from kiro_crew.mcp_gateway.hashing import (
+    PROJECT_TARGET_PREFIX,
     gateway_path,
     hash_command,
     hash_launch_env,
@@ -1855,6 +1856,23 @@ def target_env_stem(key: str) -> str | None:
     return None
 
 
+#: Marks a per-project stem in the drift check, apart from a shared one.
+PROJECT_STEM_TAG = "project:"
+
+
+def coverage_stem(key: str) -> str | None:
+    """The stem the adoption drift check compares for *key*, or ``None``.
+
+    A shared target's stem as :func:`target_env_stem` gives it; a per-project
+    target's stem tagged with :data:`PROJECT_STEM_TAG`, since a daemon resolves
+    the two from separate maps.
+    """
+    if key.startswith(PROJECT_TARGET_PREFIX):
+        stem = key[len(PROJECT_TARGET_PREFIX) :].split("__", 1)[0]
+        return PROJECT_STEM_TAG + stem if stem else None
+    return target_env_stem(key)
+
+
 def filter_target_env(
     target_env: Mapping[str, str], approvals: LaunchApprovals
 ) -> tuple[dict[str, str], list[str]]:
@@ -1863,7 +1881,10 @@ def filter_target_env(
     Returns ``(kept, dropped_stems)``. Runs at the last gateway-side stop
     before the map becomes gatewayd's process env, so an overlay, env sidecar
     or cache entry that reached ``target_env`` without passing the rewriter's
-    own check still cannot choose what the daemon execs.
+    own check still cannot choose what the daemon execs. A per-project target
+    (:data:`~kiro_crew.mcp_gateway.hashing.PROJECT_TARGET_PREFIX`) is kept
+    without an approval unless its server is never pooled: the daemon reads it
+    only for a backend it starts inside a session's sandbox.
     """
     kept: dict[str, str] = {}
     dropped: set[str] = set()
@@ -1874,6 +1895,13 @@ def filter_target_env(
     denied = _unpoolable_stems()
     never: set[str] = set()
     for key, spec in target_env.items():
+        if key.startswith(PROJECT_TARGET_PREFIX):
+            # A per-project target: the daemon spawns it only inside a
+            # session's own sandbox, so no approval applies. The never-pooled
+            # list still does.
+            if key[len(PROJECT_TARGET_PREFIX) :].split("__", 1)[0] not in denied:
+                kept[key] = spec
+            continue
         stem = target_env_stem(key)
         if stem is None:
             kept[key] = spec

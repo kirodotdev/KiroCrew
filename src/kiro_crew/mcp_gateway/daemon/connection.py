@@ -28,7 +28,7 @@ from kiro_crew.mcp_gateway.backend import (
     has_recyclable_in_flight,
 )
 from kiro_crew.mcp_gateway.backend_stubs import _relabel_stub
-from kiro_crew.mcp_gateway.daemon import logger, session_describe
+from kiro_crew.mcp_gateway.daemon import logger, project_scope, session_describe
 from kiro_crew.mcp_gateway.daemon.admission_protocol import (
     _LEGACY_SPAWN_WAIT_SECS,
     _await_answering_pings,
@@ -112,6 +112,7 @@ REGISTERED_CAPABILITIES: tuple[str, ...] = (
     "poolable_ack",
     "spawn_queue",
     "tenant_nonce",
+    "project_scope",
 )
 
 
@@ -336,6 +337,10 @@ async def _handle_connection(
     # a connection's blast radius beyond itself.
     poolable_requested = register.get("poolable") is True
     exclusive_stub_uuid = "" if poolable_requested else stub_uuid
+    # A per-project backend (``project_scope``): the key's root and sandbox plan
+    # come from the gateway's record of the attested session, at acquire time.
+    # Asking can only narrow what this connection gets, never widen it.
+    project_scoped = register.get("project_scoped") is True
 
     # Retreat: a server OBSERVED behaving per-client while shared is not pooled
     # again, whatever the overlay still says. This is the consuming half of the
@@ -496,7 +501,8 @@ async def _handle_connection(
         # PoolKeys can be prewarmed on the next startup. In-memory only here —
         # O(1), no IO — so it never slows the handshake; persistence is batched
         # by the flush sweeper. ``None`` when prewarming is disabled.
-        if hot_keys is not None:
+        # A per-project key needs a live session's record, so it is never prewarmed.
+        if hot_keys is not None and not project_scoped:
             hot_keys.record(register)
             # Hit-rate metric: a warm backend already pooled for this key (from a
             # prewarm or a prior chat) is a HIT; otherwise this register will fall
@@ -597,6 +603,20 @@ async def _handle_connection(
                 if backend is not None:
                     await _relabel_stub(backend, stub_uuid, stub_agent)
                     restart_for_agent = bool(exclusive_stub_uuid)
+            # A per-project backend serves only the sessions mapped to its own
+            # root and plan. A claim may have moved this connection to another
+            # session since attach; end it rather than forward across projects.
+            if (
+                project_scoped
+                and backend is not None
+                and not project_scope.backend_serves_project(backend, conn)
+            ):
+                logger.warning(
+                    "stub %s no longer maps to the project of %s; closing",
+                    stub_uuid,
+                    pool_key.human_readable(),
+                )
+                return
             if msg.get("type") == "unregister":
                 logger.info("stub %s sent Unregister; closing", stub_uuid)
                 return
@@ -663,6 +683,8 @@ async def _handle_connection(
                     )
                     _acquire_t0 = time.monotonic()
                     try:
+                        if project_scoped and not pool_key.sandbox_hash:
+                            pool_key = await project_scope.project_scoped_key(pool, pool_key, conn)
                         backend, _was_spawned = await _await_answering_pings(
                             reader,
                             writer,
@@ -688,6 +710,21 @@ async def _handle_connection(
                     except Exception as exc:
                         await _refuse_ensure_backend(
                             exc,
+                            writer,
+                            reader,
+                            exclusive=bool(exclusive_stub_uuid),
+                            caller=caller,
+                            pool_key=pool_key,
+                            admission=admission,
+                        )
+                        return
+                    if project_scoped and not project_scope.backend_serves_project(backend, conn):
+                        _release_reservation()
+                        backend = None
+                        await _refuse_ensure_backend(
+                            project_scope.ProjectScopeUnavailable(
+                                "the session's project changed during the acquire"
+                            ),
                             writer,
                             reader,
                             exclusive=bool(exclusive_stub_uuid),
@@ -732,6 +769,8 @@ async def _handle_connection(
                 )
                 _lazy_t0 = time.monotonic()
                 try:
+                    if project_scoped and not pool_key.sandbox_hash:
+                        pool_key = await project_scope.project_scoped_key(pool, pool_key, conn)
                     backend, _lazy_was_spawned = await _await_answering_pings(
                         reader,
                         writer,
@@ -759,6 +798,14 @@ async def _handle_connection(
                     return
                 except Exception as exc:
                     await _refuse_lazy_spawn(exc, writer, caller=caller, pool_key=pool_key)
+                    return
+                if project_scoped and not project_scope.backend_serves_project(backend, conn):
+                    _release_reservation()
+                    backend = None
+                    logger.warning(
+                        "stub %s: the session's project changed during the acquire; closing",
+                        stub_uuid,
+                    )
                     return
                 try:
                     inbox = await backend.attach_stub(stub_uuid, agent=stub_agent)

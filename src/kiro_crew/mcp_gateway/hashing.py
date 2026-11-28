@@ -32,6 +32,17 @@ logger = logging.getLogger(__name__)
 #: directly, and hash it identically.
 STUB_FLAGS_FLAG = "--stub-flags-b64"
 
+#: The stub flag that asks the daemon for a per-project backend
+#: (``daemon.project_scope``). The rewriter files such a stub's target under
+#: :data:`PROJECT_TARGET_PREFIX` instead of ``KIROCREW_MCP_TARGET_``.
+PROJECT_SCOPED_FLAG = "--project-scoped"
+
+#: Target-map prefix for per-project stubs. The daemon resolves it only for a
+#: key with a ``sandbox_hash``, and that backend runs inside the session's own
+#: sandbox, so it needs no launch approval; every other key reads only the
+#: approved ``KIROCREW_MCP_TARGET_`` map.
+PROJECT_TARGET_PREFIX = "KIROCREW_MCP_PROJECT_TARGET_"
+
 
 def encode_target_args(args: list[str]) -> str:
     """Carry argv boundaries in JSON, with a shell-inert base64url alphabet.

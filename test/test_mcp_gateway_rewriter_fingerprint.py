@@ -58,6 +58,10 @@ def test_rewrite_agents_signature_is_pinned_to_fingerprint_inputs() -> None:
         "cwd_answers",
         "cwd_bindings",
         "folder_free",
+        # Fingerprinted as the ``project_routing`` input, which is present only
+        # when ``project_backends`` turns per-project stubs on.
+        "dont_share",
+        "project_backends",
     }
 
 

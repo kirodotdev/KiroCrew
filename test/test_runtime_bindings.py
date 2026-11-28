@@ -164,7 +164,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     ),
     "_notification_aliases": ("function", False, "513465b2035b", "runtime_reader_loop"),
     "_one_at_a_time_ahead": ("function", False, "1250d8670681", "runtime_wire"),
-    "_own_stub_session": ("function", True, "a5917f2a34a7", "runtime_session_setup"),
+    "_own_stub_session": ("function", True, "f692c60c124a", "runtime_session_setup"),
     "_projected_spawn_spec": ("function", False, "e7ed4605a35e", "runtime_spawn_launch"),
     "_reader_has_buffered_input": ("function", False, "a6632a57e602", "runtime_liveness"),
     "_reader_loop": ("function", True, "b60c5fea256e", "runtime_reader_loop"),
@@ -355,7 +355,7 @@ _BASE_IMPORTS = frozenset("""
     apply_pod_bundle_spawn assert_voice_runtime_outside_agent_workspace asyncio
     attach_kas_custom_agents attach_stub_session_token augmented_path authorize_runtime_kill
     backends_retired_by_host_logout bind_voice_safe_agent_workspace_async
-    build_session_new_params cgroup_scope_argv
+    build_session_new_params build_session_project_frame cgroup_scope_argv
     create_subprocess_limited data_home deque emit_counter encode_frame
     ensure_agent_materialized ensure_directory finish_suspended_spawn functools
     group_vouching_available harness_for has_mirror hoist_servers_for_session importlib
@@ -370,7 +370,7 @@ _BASE_IMPORTS = frozenset("""
     required_managed_servers resolve_bound_session_workspace resolve_krb5_ccname
     response_write_window_secs roster_names runtime_death runtime_process_tree runtime_start
     sanitize_sink_text schedule_mount_check scope_unit_name scrub_agent_subprocess_env
-    send_claim session_mcp_disabled_tools session_mcp_server_is_disabled set_mode_params
+    send_claim send_session_project session_mcp_disabled_tools session_mcp_server_is_disabled set_mode_params
     settle_drain signal spec_grants_tool_search subprocess subprocess_executor sys time
     unavailable_mode_explanation unregister_protected_pid uuid
     warn_remote_header_secret_refs warn_unresolved_server_refs weakref

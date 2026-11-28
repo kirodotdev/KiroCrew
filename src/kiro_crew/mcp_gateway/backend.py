@@ -108,6 +108,7 @@ from kiro_crew.sel import SecurityEventLog  # noqa: F401
 
 if False:  # typing-only import guard
     from kiro_crew.mcp_gateway.pool import PoolKey
+    from kiro_crew.mcp_gateway.project_binding import ProjectBinding
 
 logger = logging.getLogger(__name__)
 
@@ -634,8 +635,17 @@ async def spawn_backend(
     declared_temp_keys: tuple[str, ...] = (),
     secret_env_keys: tuple[str, ...] = (),
     initialize_timeout_secs: float = _DEFAULT_INITIALIZE_TIMEOUT_SECS,
+    sandbox: Optional["ProjectBinding"] = None,
+    declared_env_keys: tuple[str, ...] = (),
 ) -> Backend:
     """Spawn a real MCP subprocess and wrap it in a :class:`Backend`.
+
+    ``sandbox`` is set for a per-project backend only (``daemon.project_scope``):
+    the process then starts inside that session plan's sandbox, and
+    :class:`~kiro_crew.mcp_gateway.project_binding.ProjectScopeUnavailable`
+    is raised when the plan cannot be applied on this host.
+    ``declared_env_keys`` names the env keys the server's agent spec declared
+    for this spawn; only those can make the sandbox refuse a cleared name.
 
     ``initialize_timeout_secs`` bounds the backend's first ``initialize``
     window (``Backend.initialize_timeout_secs``); the daemon threads its
@@ -790,6 +800,33 @@ async def spawn_backend(
             key: value for key, value in spawn_env.items() if key.upper() not in CANONICAL_TEMP_KEYS
         }
         spawn_env.update(declared_values)
+    # A per-project backend runs inside the sandbox its session would start it
+    # in: the same tier, hidden dirs and exposed files, with its project
+    # folder's MCP files sealed read-only. Its own temp dir is its only scratch.
+    # No sandbox here means no per-project backend: the stub runs its own.
+    sandbox_cleanup: Optional[str] = None
+    if sandbox is not None:
+        try:
+            from kiro_crew.sandbox_spawn import shielded_prepare_off_loop
+
+            prepare_argv, prepare_env = [command, *args], spawn_env
+            prepare_declared = (*declared_env_keys, *secret_env_keys)
+            # Shielded: a stub that leaves mid-preparation still gets its
+            # launcher file unlinked once the worker settles.
+            wrapped, spawn_env, sandbox_cleanup = await shielded_prepare_off_loop(
+                lambda: _project_sandbox_argv(
+                    prepare_argv, prepare_env, sandbox, backend_tmp, prepare_declared
+                )
+            )
+        except BaseException as exc:
+            if backend_tmp is not None:
+                await asyncio.to_thread(sweep_backend_tmp, backend_tmp)
+            if isinstance(exc, RuntimeError):
+                from kiro_crew.mcp_gateway.project_binding import ProjectScopeUnavailable
+
+                raise ProjectScopeUnavailable(f"sandbox not applied: {exc}") from exc
+            raise
+        command, args = wrapped[0], wrapped[1:]
     try:
         process = await asyncio.create_subprocess_exec(
             command,
@@ -809,6 +846,9 @@ async def spawn_backend(
         # the ONLY reclamation point for a dir whose process never existed.
         if backend_tmp is not None:
             await asyncio.to_thread(sweep_backend_tmp, backend_tmp)
+        if sandbox_cleanup:
+            with contextlib.suppress(OSError):
+                os.unlink(sandbox_cleanup)
         raise
     # Read before the first await: the child watcher cannot have reaped the
     # process yet, so this is the backend's own identity (see Backend.start_id).
@@ -831,7 +871,7 @@ async def spawn_backend(
     stderr_tail: list[str] = []
     if process.stderr is not None:
         stderr_task = asyncio.create_task(
-            _pump_stderr(process.stderr, pool_key.human_readable(), stderr_tail),
+            _pump_stderr(process.stderr, pool_key.human_readable(), stderr_tail, sandbox_cleanup),
             name=f"mcp-gateway-backend-stderr-{process.pid}",
         )
 
@@ -860,8 +900,92 @@ async def spawn_backend(
     return backend
 
 
+def _project_sandbox_argv(
+    argv: list[str],
+    env: dict[str, str],
+    plan: "ProjectBinding",
+    backend_tmp: Optional[Path],
+    declared_keys: tuple[str, ...] = (),
+) -> tuple[list[str], dict[str, str], Optional[str]]:
+    """Wrap a per-project backend's argv in its session's sandbox plan. BLOCKING.
+
+    The sandbox launcher clears credential names (``AWS_SECRET*``, ``GIT_ASKPASS``,
+    ...) from the environment it execs into. A chat's own kiro-cli hands a server
+    its declared values after that clear, so a server whose ``declared_keys``
+    carry such a name cannot be served here: it raises
+    :class:`~kiro_crew.mcp_gateway.project_binding.ProjectScopeUnavailable` and
+    the stub starts it in its chat. A cleared name the daemon only inherited is
+    dropped, as on the per-chat path. The ssh-agent socket an operator granted
+    is kept when the wrap keeps the forward on this tier.
+    """
+    from kiro_crew.mcp_gateway.project_binding import ProjectScopeUnavailable
+    from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES
+    from kiro_crew.sandbox_spawn import sandboxed_spawn_argv, scrub_env
+
+    kept = scrub_env(env)
+    # Judged by name, not value: a declaration equal to an inherited value is
+    # still a declaration the launcher would clear.
+    # The session's env layer counts as declared: a chat's own server gets it
+    # from kiro-cli after that clear, so a cleared name in it cannot be served.
+    handed = set(declared_keys) | {key for key, _value in plan.env_layer}
+    cleared_credentials = sorted(
+        key
+        for key in handed
+        if key in env
+        and key not in kept
+        and key != "SSH_AUTH_SOCK"
+        and not key.upper().startswith(tuple(_PYTHON_ENV_PREFIXES))
+    )
+    if cleared_credentials:
+        raise ProjectScopeUnavailable(
+            "credential env the sandbox launcher clears: " + ", ".join(cleared_credentials)
+        )
+    # The wrap strips the Python interpreter roots too. A server that declares
+    # one needs it to start, and gets it in its chat.
+    declared_python = sorted(
+        key for key in set(declared_keys) if key.upper().startswith(tuple(_PYTHON_ENV_PREFIXES))
+    )
+    if declared_python:
+        raise ProjectScopeUnavailable(
+            "declared Python env the sandbox launcher strips: " + ", ".join(declared_python)
+        )
+    # The wrap below reads the operator's read-only layer live. A key carries the
+    # layer its session's own wrap applied, so a changed layer gets no backend.
+    from kiro_crew.sandbox import configured_readonly_layer
+
+    live_paths, live_exceptions = configured_readonly_layer()
+    if (sorted(live_paths), sorted(live_exceptions)) != (
+        sorted(plan.readonly_paths),
+        sorted(plan.readonly_exceptions),
+    ):
+        raise ProjectScopeUnavailable("the read-only layer changed since the session started")
+    forward_ssh = "SSH_AUTH_SOCK" in env
+    verdict: list[bool] = []
+    wrapped, scrubbed, cleanup = sandboxed_spawn_argv(
+        argv,
+        plan.sandbox_mode,
+        env=env,
+        strip_python_env=True,
+        extra_hidden_dirs=plan.hidden_dirs,
+        extra_writable_dirs=(str(backend_tmp),) if backend_tmp is not None else (),
+        extra_expose_files=plan.expose_files,
+        project_folder=plan.root,
+        forward_ssh_auth_sock=forward_ssh,
+        forward_ssh_auth_sock_out=verdict,
+        # A server is never kiro-cli, whatever its executable is called: an
+        # inferred one would hand isolation to kiro-cli's own sandbox.
+        is_kiro_cli=False,
+    )
+    if forward_ssh and verdict and verdict[-1]:
+        scrubbed["SSH_AUTH_SOCK"] = env["SSH_AUTH_SOCK"]
+    return wrapped, scrubbed, cleanup
+
+
 async def _pump_stderr(
-    reader: asyncio.StreamReader, label: str, tail: Optional[list[str]] = None
+    reader: asyncio.StreamReader,
+    label: str,
+    tail: Optional[list[str]] = None,
+    sandbox_cleanup: Optional[str] = None,
 ) -> None:
     """Consume a backend's stderr line by line at DEBUG level.
 
@@ -869,30 +993,38 @@ async def _pump_stderr(
     and the tail keeps the last few (``_keep_stderr_line``) for the warning that
     names the backend's own exit. That warning judges the kept lines together,
     so they are not redacted one by one here.
+
+    *sandbox_cleanup* is a per-project backend's sandbox launcher file. It is
+    removed once stderr closes, which is when the process tree holding it ends.
     """
-    in_pem_block = False
-    while True:
-        try:
-            line = await reader.readline()
-        except (ValueError, asyncio.LimitOverrunError):
-            # An oversize (>limit) stderr line: readline() drops it from the
-            # buffer and raises. Skip it and keep draining — returning here
-            # would let the stderr pipe fill and wedge the backend (the exact
-            # self-wedge this drain exists to prevent).
-            continue
-        except Exception:  # pragma: no cover — reader closed during shutdown
-            return
-        if not line:
-            return
-        # DEBUG intentionally — backend stderr is routinely verbose
-        # (tracing/log crate output) and would otherwise flood INFO logs.
-        # redact() so a secret printed to stderr (e.g. a token fragment in a
-        # stack trace) does not land verbatim in the KiroCrew log.
-        text = line.decode("utf-8", errors="replace").rstrip()
-        redacted = redact(text)
-        logger.debug("backend[%s] stderr: %s", label, redacted)
-        if tail is not None:
-            in_pem_block = _keep_stderr_line(tail, text, redacted, in_pem_block)
+    try:
+        in_pem_block = False
+        while True:
+            try:
+                line = await reader.readline()
+            except (ValueError, asyncio.LimitOverrunError):
+                # An oversize (>limit) stderr line: readline() drops it from the
+                # buffer and raises. Skip it and keep draining — returning here
+                # would let the stderr pipe fill and wedge the backend (the exact
+                # self-wedge this drain exists to prevent).
+                continue
+            except Exception:  # pragma: no cover — reader closed during shutdown
+                return
+            if not line:
+                return
+            # DEBUG intentionally — backend stderr is routinely verbose
+            # (tracing/log crate output) and would otherwise flood INFO logs.
+            # redact() so a secret printed to stderr (e.g. a token fragment in a
+            # stack trace) does not land verbatim in the Kiro Crew log.
+            text = line.decode("utf-8", errors="replace").rstrip()
+            redacted = redact(text)
+            logger.debug("backend[%s] stderr: %s", label, redacted)
+            if tail is not None:
+                in_pem_block = _keep_stderr_line(tail, text, redacted, in_pem_block)
+    finally:
+        if sandbox_cleanup:
+            with contextlib.suppress(OSError):
+                os.unlink(sandbox_cleanup)
 
 
 # --------------------------------------------------------------------------- #
@@ -1014,6 +1146,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SUBSCRIPTION_ID_META_KEY,
         _emit_call_metric,
         _listen_stream_frame,
+        _project_roots_result,
         _write_metric_line,
     )
     from kiro_crew.mcp_gateway.backend_stubs import (  # noqa: F401

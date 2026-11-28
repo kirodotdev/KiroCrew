@@ -29,7 +29,13 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Collection, Mapping
 
-from kiro_crew.mcp_gateway.hashing import hash_command, is_secret_env_key
+from kiro_crew.mcp_gateway.hashing import (
+    PROJECT_SCOPED_FLAG,
+    PROJECT_TARGET_PREFIX,
+    expand_stub_flags,
+    hash_command,
+    is_secret_env_key,
+)
 from kiro_crew.mcp_gateway.manager import is_credential_env_key
 from kiro_crew.mcp_gateway.rewriter_launch import (
     _WRAPPER_MARKER,
@@ -392,6 +398,10 @@ def _collect_target_env(
     with different args by two agents, which the hashed keys already serve,
     apart from two different names sharing a key, which is warned about.
     Without it only the names inside this call are known.
+
+    A per-project stub (``--project-scoped``) files both entries under
+    :data:`~kiro_crew.mcp_gateway.hashing.PROJECT_TARGET_PREFIX` instead, so its
+    target never enters the map an unsandboxed shared backend is resolved from.
     """
     # Malformed maps carry no targets; the raw declaration census records the gap.
     if not isinstance(mcp_servers, dict):
@@ -402,7 +412,9 @@ def _collect_target_env(
             entry.get(_WRAPPER_MARKER) or entry.get(_WRAPPER_MARKER_LEGACY)
         ):
             continue
-        env_key = "KIROCREW_MCP_TARGET_" + server_name.replace("-", "_").upper()
+        project = PROJECT_SCOPED_FLAG in expand_stub_flags(entry.get("args", []) or [])
+        prefix = PROJECT_TARGET_PREFIX if project else "KIROCREW_MCP_TARGET_"
+        env_key = prefix + server_name.replace("-", "_").upper()
         target = _wrapped_target(entry)
         if target is not None:
             target_cmd, raw_target_args = target

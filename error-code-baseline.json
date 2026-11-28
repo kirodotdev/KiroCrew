@@ -246,9 +246,6 @@
     "dashboard/handlers/mcp_gateway_routes.py": {
       "missing_code": 4
     },
-    "dashboard/handlers/mcp_gateway_stubs.py": {
-      "missing_code": 5
-    },
     "dashboard/handlers/memory.py": {
       "dynamic_status": 1,
       "missing_code": 13

@@ -1,11 +1,13 @@
-"""A server is routed only after the operator says it does not use the working folder.
+"""A server goes on the one shared backend only when a fact marks it folder-free.
 
-A routed server's backend runs in one fixed folder outside the project, shared by
-every chat. So the toggle refuses to route a server the operator has not answered
-``not_used`` for in ``mcp_gateway.cwd_use`` (Kiro Crew's own servers are not asked),
-and the config resolver never routes one answered ``uses_cwd``. The answer is
-recorded per server, so a renamed server is unanswered and its old approval does
-not carry over, and an approval is bound to the launch it was given for.
+A shared backend runs in one fixed folder outside every sandbox. So the Share
+press refuses (``per_project``) a server that gets one backend per project
+instead: every server not marked folder-free by Kiro Crew, the edition, or a
+saved ``not_used`` fact in ``mcp_gateway.cwd_use``. The config resolver never
+routes one marked ``uses_cwd``. The fact is recorded per server, so a renamed
+server has none and its old approval does not carry over, and a ``not_used``
+fact is bound to the launch it was given for. A per-project row's Share switch
+keeps a server one per chat when off and drops that choice when on again.
 """
 
 from __future__ import annotations
@@ -112,11 +114,74 @@ async def test_routing_an_unanswered_server_is_refused_and_writes_nothing(
 
     status, body = await _post({"name": "srv", "stub": True, "expected_launch": expected})
 
-    assert (status, body["code"]) == (409, "cwd_unconfirmed")
+    assert (status, body["code"]) == (409, "per_project")
     assert "mcp_gateway" not in _config(tmp_path)
     assert _approval_module().load_approvals().approved == {}
     stubs, target_env = _boot_rewrite(tmp_path, toggle_home)
     assert "srv" not in stubs and _targets_running(target_env, _APPROVED_CMD) == []
+
+
+@pytest.mark.asyncio
+async def test_a_vault_server_with_no_folder_fact_stays_per_chat(
+    tmp_path, toggle_home, monkeypatch
+):
+    """A server that cannot go per project (its env names a vault secret) and has
+    no folder-free fact never reaches the shared backend outside every sandbox."""
+    from kiro_crew import agent
+
+    # The folder-fact scan reads the agents dir the gateway reads.
+    monkeypatch.setattr(agent, "KIRO_AGENTS_DIR", toggle_home)
+    (toggle_home / "a.json").write_text(
+        json.dumps(
+            {
+                "name": "a",
+                "tools": ["*"],
+                "mcpServers": {
+                    "srv": {
+                        "command": _APPROVED_CMD,
+                        "args": [],
+                        "env": {"TOKEN": "secret://srv-token"},
+                    }
+                },
+            }
+        )
+    )
+    expected = await _expected_launch()
+
+    status, body = await _post({"name": "srv", "stub": True, "expected_launch": expected})
+
+    assert (status, body["code"]) == (409, "per_chat")
+    assert _approval_module().load_approvals().approved == {}
+
+
+@pytest.mark.asyncio
+async def test_a_vault_server_row_says_it_runs_one_per_chat(tmp_path, rows_home, monkeypatch):
+    """The row the Share press would be refused on says so, and why, so the
+    page offers no press that can never succeed."""
+    from kiro_crew import agent
+
+    monkeypatch.setattr(agent, "KIRO_AGENTS_DIR", rows_home)
+    (rows_home / "a.json").write_text(
+        json.dumps(
+            {
+                "name": "a",
+                "tools": ["*"],
+                "mcpServers": {
+                    "srv": {
+                        "command": _APPROVED_CMD,
+                        "args": [],
+                        "env": {"TOKEN": "secret://srv-token"},
+                    },
+                    "plain": {"command": _APPROVED_CMD, "args": ["--other"]},
+                },
+            }
+        )
+    )
+
+    row = await _listed_row("srv")
+    assert (row["per_project"], row["per_chat"], row["per_chat_reason"]) == (False, True, "vault")
+    other = await _listed_row("plain")
+    assert (other["per_project"], other["per_chat"], other["per_chat_reason"]) == (True, False, "")
 
 
 @pytest.mark.asyncio
@@ -128,7 +193,7 @@ async def test_a_server_answered_uses_cwd_cannot_be_routed(tmp_path, toggle_home
         {"name": "srv", "stub": True, "expected_launch": expected, "cwd_use": "uses_cwd"}
     )
 
-    assert (status, body["code"]) == (409, "cwd_unconfirmed")
+    assert (status, body["code"]) == (409, "per_project")
     assert _approval_module().load_approvals().approved == {}
 
 
@@ -154,9 +219,9 @@ async def test_answering_uses_cwd_later_unroutes_a_routed_server(tmp_path, toggl
     expected = await _expected_launch()
     await _post({"name": "srv", "stub": True, "expected_launch": expected, "cwd_use": "not_used"})
 
-    status, body = await _post({"name": "srv", "cwd_use": "uses_cwd"})
+    status, body = await _post({"name": "srv", "stub": False, "cwd_use": "uses_cwd"})
 
-    assert status == 200 and body["stub"] is None
+    assert status == 200 and body["stub"] is False
     assert _config(tmp_path)["mcp_gateway"]["cwd_use"] == {"srv": "uses_cwd"}
     stubs, target_env = _boot_rewrite(tmp_path, toggle_home)
     assert "srv" not in stubs and _targets_running(target_env, _APPROVED_CMD) == []
@@ -178,7 +243,7 @@ async def test_a_routed_server_with_no_answer_keeps_running_but_reapproval_asks(
     assert "srv" in stubs and _targets_running(target_env, _APPROVED_CMD)
 
     status, body = await _post({"name": "srv", "stub": True, "expected_launch": expected})
-    assert (status, body["code"]) == (409, "cwd_unconfirmed")
+    assert (status, body["code"]) == (409, "per_project")
 
 
 @pytest.mark.asyncio
@@ -210,7 +275,7 @@ async def test_a_renamed_server_is_unanswered_and_unapproved(tmp_path, toggle_ho
     status, body = await _post(
         {"name": "srv2", "stub": True, "expected_launch": await _expected_launch("srv2")}
     )
-    assert (status, body["code"]) == (409, "cwd_unconfirmed")
+    assert (status, body["code"]) == (409, "per_project")
 
 
 @pytest.mark.asyncio
@@ -239,7 +304,7 @@ async def test_the_batch_share_skips_an_unanswered_server(tmp_path, toggle_home,
 
     assert status == 200
     assert body["stubbed"] == []
-    assert body["skipped"] == [{"name": "srv", "reason": "cwd_unconfirmed"}]
+    assert body["skipped"] == [{"name": "srv", "reason": "per_project"}]
     assert _approval_module().load_approvals().approved == {}
 
 
@@ -267,9 +332,10 @@ async def test_answering_uses_cwd_forgets_the_approval(tmp_path, toggle_home):
     expected = await _expected_launch()
     await _post({"name": "srv", "stub": True, "expected_launch": expected, "cwd_use": "not_used"})
 
-    await _post({"name": "srv", "cwd_use": "uses_cwd"})
+    await _post({"name": "srv", "stub": False, "cwd_use": "uses_cwd"})
     data = _config(tmp_path)
     del data["mcp_gateway"]["cwd_use"]
+    data["mcp_gateway"]["stub_overrides"] = {"srv": True}
     (tmp_path / "config.json").write_text(json.dumps(data))
 
     stubs, target_env = _boot_rewrite(tmp_path, toggle_home)
@@ -284,7 +350,9 @@ async def test_an_overlay_answer_for_another_server_keeps_the_base_answer(
 
     _declare(toggle_home, "agent spec", _APPROVED_CMD, [])
     expected = await _expected_launch()
-    await _post({"name": "srv", "cwd_use": "not_used"})
+    (tmp_path / "config.json").write_text(
+        json.dumps({"mcp_gateway": {"cwd_use": {"srv": "not_used"}}})
+    )
     monkeypatch.setattr(
         mcp_mod, "_local_overlay_section", lambda: {"cwd_use": {"other": "uses_cwd"}}
     )
@@ -301,14 +369,16 @@ async def test_a_bad_overlay_answer_hides_the_base_answer(tmp_path, toggle_home,
 
     _declare(toggle_home, "agent spec", _APPROVED_CMD, [])
     expected = await _expected_launch()
-    await _post({"name": "srv", "cwd_use": "not_used"})
+    (tmp_path / "config.json").write_text(
+        json.dumps({"mcp_gateway": {"cwd_use": {"srv": "not_used"}}})
+    )
     monkeypatch.setattr(
         mcp_mod, "_local_overlay_section", lambda: {"cwd_use": {"srv": "uses_cwds"}}
     )
 
     status, body = await _post({"name": "srv", "stub": True, "expected_launch": expected})
 
-    assert (status, body["code"]) == (409, "cwd_unconfirmed")
+    assert (status, body["code"]) == (409, "per_project")
 
 
 @pytest.fixture
@@ -320,14 +390,14 @@ def rows_home(toggle_home, monkeypatch):
     return toggle_home
 
 
-async def _listed_answer(name: str = "srv"):
+async def _listed_row(name: str = "srv") -> dict:
     from handlers_mcp_coverage_helpers import _payload, _request
 
     from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
     response = await mcp_mod.api_mcp_gateway_servers(_request(method="GET"))
     rows = {r["name"]: r for r in _payload(response)["servers"]}
-    return rows[name]["cwd_use"]
+    return rows[name]
 
 
 @pytest.mark.parametrize(
@@ -364,7 +434,7 @@ def test_the_launch_binding_is_a_modelled_config_field(tmp_path, toggle_home):
 
 
 @pytest.mark.asyncio
-async def test_the_answer_is_bound_and_a_changed_launch_asks_again(tmp_path, rows_home):
+async def test_the_answer_is_bound_and_a_changed_launch_goes_per_project(tmp_path, rows_home):
     toggle_home = rows_home
     _declare(toggle_home, "agent spec", _APPROVED_CMD, [])
     expected = await _expected_launch()
@@ -372,14 +442,14 @@ async def test_the_answer_is_bound_and_a_changed_launch_asks_again(tmp_path, row
     assert set(_config(tmp_path)["mcp_gateway"]["cwd_use_launch"]) == {"srv"}
     await _post({"name": "srv", "stub": False})
 
-    assert await _listed_answer() == "not_used"
+    assert (await _listed_row())["per_project"] is False
 
     _declare(toggle_home, "agent spec", _APPROVED_CMD, ["-m", "srv_in_this_folder"])
-    # The page reads the answer as unanswered, so it asks before routing.
-    assert await _listed_answer() is None
+    # The fact holds for another launch, so this one shares per project.
+    assert (await _listed_row())["per_project"] is True
     changed = await _expected_launch()
     status, body = await _post({"name": "srv", "stub": True, "expected_launch": changed})
-    assert (status, body["code"]) == (409, "cwd_unconfirmed")
+    assert (status, body["code"]) == (409, "per_project")
 
     status, _body = await _post(
         {"name": "srv", "stub": True, "expected_launch": changed, "cwd_use": "not_used"}
@@ -433,3 +503,48 @@ async def test_an_overlay_answer_is_bound_when_routed(tmp_path, rows_home, monke
 
     assert status == 200
     assert set(_config(tmp_path)["mcp_gateway"]["cwd_use_launch"]) == {"srv"}
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_server_is_listed_per_project_with_nothing_to_answer(
+    tmp_path, rows_home
+):
+    _declare(rows_home, "agent spec", _APPROVED_CMD, [])
+
+    row = await _listed_row()
+
+    assert row["per_project"] is True and row["declined"] is False
+    assert not {"cwd_use", "cwd_proven", "cwd_roots"} & set(row)
+
+
+@pytest.mark.asyncio
+async def test_dont_share_keeps_one_per_chat_and_turns_off_again(tmp_path, rows_home):
+    _declare(rows_home, "agent spec", _APPROVED_CMD, [])
+
+    status, body = await _post({"name": "srv", "dont_share": True})
+    assert status == 200 and body["stub"] is False
+    assert _config(tmp_path)["mcp_gateway"]["stub_overrides"] == {"srv": False}
+    assert (await _listed_row())["declined"] is True
+
+    status, body = await _post({"name": "srv", "dont_share": False})
+    assert status == 200 and body["dont_share"] is False
+    assert "stub_overrides" not in _config(tmp_path)["mcp_gateway"]
+    assert (await _listed_row())["declined"] is False
+    assert _approval_module().load_approvals().approved == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"name": "srv", "dont_share": "yes"},
+        {"names": ["srv"], "dont_share": True},
+        {"name": "srv", "dont_share": True, "stub": False},
+        {"name": "srv", "dont_share": False, "cwd_use": "uses_cwd"},
+    ],
+)
+async def test_a_bad_dont_share_is_refused(tmp_path, toggle_home, body):
+    status, answer = await _post(body)
+
+    assert (status, answer.get("code")) == (400, "dont_share_invalid")
+    assert _config(tmp_path) == {}

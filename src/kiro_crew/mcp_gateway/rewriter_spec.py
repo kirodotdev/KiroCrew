@@ -34,8 +34,12 @@ from kiro_crew.mcp_cleanup import (
     mcp_entry_is_registry_governed,
     mcp_entry_is_remote,
 )
-from kiro_crew.mcp_gateway.folder_use import roots_observed
-from kiro_crew.mcp_gateway.hashing import STUB_FLAGS_FLAG, encode_target_args
+from kiro_crew.mcp_gateway.folder_use import ProjectRouting, roots_observed
+from kiro_crew.mcp_gateway.hashing import (
+    PROJECT_SCOPED_FLAG,
+    STUB_FLAGS_FLAG,
+    encode_target_args,
+)
 from kiro_crew.mcp_gateway.launch_approval import (
     _MAX_SERVER_LAUNCHES,
     REFUSED_TOO_MANY,
@@ -133,6 +137,7 @@ def _build_stub_entry(
     identity_keys: Collection[str] = (),
     notes: _RewritePassNotes | None = None,
     read_buffer_limit: int = 0,
+    project_scoped: bool = False,
 ) -> dict[str, Any]:
     """Return the rewritten ``mcpServers[name]`` entry.
 
@@ -182,6 +187,10 @@ def _build_stub_entry(
     # fmt: on
     if poolable:
         stub_args.append("--poolable")
+    if project_scoped:
+        # One backend per project, inside the session's own sandbox
+        # (``daemon.project_scope``); its target needs no launch approval.
+        stub_args.append(PROJECT_SCOPED_FLAG)
     # Names only, never values — so this is safe on argv, which is
     # world-readable via /proc/<pid>/cmdline (the reason the env itself goes to a
     # 0600 sidecar instead). Only the names the ENTRY actually declares are
@@ -532,8 +541,15 @@ def _rewrite_single_spec(
     notes: _RewritePassNotes | None = None,
     approvals: LaunchApprovals | None = None,
     scope_muted: frozenset[str] = frozenset(),
+    project_routing: ProjectRouting | None = None,
 ) -> tuple[dict[str, Any], int]:
     """Return ``(new_spec, wrapped_count)``. Idempotent.
+
+    ``project_routing`` names the servers that get a per-project stub
+    (:class:`~kiro_crew.mcp_gateway.folder_use.ProjectRouting`). Such a server
+    is wrapped whether or not ``stub_servers`` or ``roots_excluded`` names it,
+    and without a launch approval: its backend runs inside the session's own
+    sandbox. Every other check below still applies to it.
 
     ``scope_muted`` holds the canonical aliases a config scope mutes
     (:func:`kiro_crew.mcp_cleanup.mcp_scope_muted_aliases`); such a server is
@@ -708,13 +724,23 @@ def _rewrite_single_spec(
         # call sites, uncached). Honouring it only in this function produced a
         # stub nothing pointed at, and a dashboard row that read "stub" for a
         # server that had none. One source of truth instead.
+        project = (
+            project_routing is not None
+            and name in granted
+            and not secret_reference_keys(entry.get("env"))
+            and project_routing.per_project(name)
+        )
         # The name-wide decision already includes every declaration's vault facts.
-        if roots_observed(name, roots_excluded):
+        if not project and roots_observed(name, roots_excluded):
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
-        if name not in stub_servers and not (
-            secret_reference_keys(entry.get("env"))
-            and routed_for_secret_reference(name, stub_servers)
+        if (
+            not project
+            and name not in stub_servers
+            and not (
+                secret_reference_keys(entry.get("env"))
+                and routed_for_secret_reference(name, stub_servers)
+            )
         ):
             # A spec key is the slash-free alias, while the routing list may hold
             # the raw name. A server carrying a vault reference is routed under
@@ -814,7 +840,7 @@ def _rewrite_single_spec(
             )
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
-        if not _admit_launch(
+        if not project and not _admit_launch(
             approvals,
             name=name,
             agent_name=agent_name,
@@ -848,6 +874,7 @@ def _rewrite_single_spec(
             identity_keys=identity_keys,
             read_buffer_limit=read_buffer_limit,
             notes=notes,
+            project_scoped=project and not private,
         )
         wrapped += 1
 
@@ -879,7 +906,12 @@ def _rewrite_single_spec(
         # level server nobody listed is left for the session to launch itself, so
         # this path cannot reintroduce the stub-per-server default through the
         # back door — and a spec-level ``poolable: true`` cannot either.
-        if not (name in stub_servers or alias in stub_servers):
+        inject_project = (
+            project_routing is not None
+            and not secret_reference_keys(entry.get("env"))
+            and project_routing.per_project(alias)
+        )
+        if not inject_project and not (name in stub_servers or alias in stub_servers):
             continue
         inject_sig = (entry["command"], _hashable_args(entry.get("args")))
         if inject_sig in seen_targets:
@@ -947,7 +979,7 @@ def _rewrite_single_spec(
             new_servers[alias] = {k: v for k, v in entry.items() if k != "poolable"}
             seen_targets.add(inject_sig)
             continue
-        if not _admit_launch(
+        if not inject_project and not _admit_launch(
             approvals,
             name=alias,
             agent_name=agent_name,
@@ -983,6 +1015,7 @@ def _rewrite_single_spec(
             identity_keys=identity_keys,
             read_buffer_limit=read_buffer_limit,
             notes=notes,
+            project_scoped=inject_project and not inject_private,
         )
         wrapped += 1
         seen_targets.add(inject_sig)
@@ -1018,6 +1051,7 @@ def _injectable_settings_servers(
     identity_keys: Collection[str] = (),
     notes: _RewritePassNotes | None = None,
     scope_muted: frozenset[str] = frozenset(),
+    project_routing: ProjectRouting | None = None,
 ) -> dict[str, Any]:
     """Return ``{raw_name: raw_entry}`` of stdio servers in the global
     ``settings/mcp.json`` that may be INJECTED into a per-agent overlay. Each
@@ -1075,9 +1109,14 @@ def _injectable_settings_servers(
             # HTTP/SSE — no stub needed; kiro-cli merges it from the real
             # settings file. A placeholder ``command`` does not make it stdio.
             continue
-        if roots_observed(name, roots_excluded):
+        project = (
+            project_routing is not None
+            and not secret_reference_keys(entry.get("env"))
+            and project_routing.per_project(mcp_server_alias(name))
+        )
+        if not project and roots_observed(name, roots_excluded):
             continue
-        if not (name in stub_servers or mcp_server_alias(name) in stub_servers):
+        if not project and not (name in stub_servers or mcp_server_alias(name) in stub_servers):
             # Not stubbed: leave it to kiro-cli's own merge of the real
             # settings file, so the session launches it directly.
             continue

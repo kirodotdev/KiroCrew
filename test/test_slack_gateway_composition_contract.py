@@ -266,6 +266,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_publish_paused_share_note", "async method", "(self) -> 'None'"),
         ("_schedule_paused_share_note", "method", "(self) -> 'None'"),
+        ("_schedule_project_broker", "method", "(self) -> 'None'"),
         (
             "_init_mcp_gateway",
             "async method",
@@ -300,7 +301,14 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_refresh_mcp_overlays",
             "async method",
-            "(self, register: 'Callable[[], Awaitable[bool]] | None' = None) -> 'dict'",
+            "(self, register: 'Callable[[], Awaitable[bool]] | None' = None, *, retarget: "
+            "'Callable[[dict, dict | None, frozenset[str]], tuple[dict, dict | None, "
+            "frozenset[str]]] | None' = None) -> 'dict'",
+        ),
+        (
+            "_apply_mcp_dont_share",
+            "async method",
+            "(self, name: 'str', dont_share: 'bool') -> 'dict'",
         ),
         ("_apply_mcp_gateway_enabled", "async method", "(self, enabled: 'bool') -> 'dict'"),
         (

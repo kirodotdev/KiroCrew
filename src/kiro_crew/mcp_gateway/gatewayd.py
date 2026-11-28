@@ -232,6 +232,7 @@ from kiro_crew.mcp_gateway.daemon.identity import (  # noqa: F401
     _register_pids,
     _resolve_peer_identity,
     _resolve_register_identity,
+    _resolve_signed_peer_identity,
     _sent_by_owner,
     _session_mounts,
     _session_mounts_complete,
@@ -264,6 +265,7 @@ from kiro_crew.mcp_gateway.daemon.launch import (  # noqa: F401
     _note_owner_port_unknown,
     _owner_label,
     _owner_port_pending,
+    _project_agent_socket,
     _read_declared_env_sidecar,
     _resolve_once_home,
     _resolve_target_off_loop,
@@ -276,6 +278,40 @@ from kiro_crew.mcp_gateway.daemon.launch import (  # noqa: F401
     env_target_resolver,
     resolvable_target_stems,
     resolve_once_resolver,
+)
+from kiro_crew.mcp_gateway.daemon.project_scope import (  # noqa: F401
+    _MAX_ENV_LAYER_KEYS,
+    _MAX_ENV_LAYER_VALUE,
+    _MAX_PROJECT_BINDINGS,
+    _MAX_PROJECT_PATHS,
+    _MAX_PROJECT_TEXT,
+    _OWNER_CLAIMED_TOKENS,
+    _PROJECT_BINDINGS,
+    _PROJECT_PLANS,
+    _PROJECT_SANDBOX_MODES,
+    _TOKEN_PROJECTS,
+    PROJECT_INSTANCES_PER_SERVER,
+    _apply_token_project,
+    _attested_project_binding,
+    _audit_session_project,
+    _effective_binding,
+    _env_layer,
+    _forget_session,
+    _forget_token,
+    _parse_project_binding,
+    _plan_in_use,
+    _project_paths,
+    _refuse_session_project,
+    _session_project_sender_refusal,
+    _token_project_binding,
+    apply_session_project,
+    backend_serves_project,
+    note_owner_claim,
+    owner_claimed,
+    project_binding_for_session,
+    project_plan_for_key,
+    project_scoped_key,
+    reset_project_bindings,
 )
 from kiro_crew.mcp_gateway.daemon.replacement import (  # noqa: F401
     _init_timeout_of,
@@ -359,6 +395,7 @@ from kiro_crew.mcp_gateway.pool import (
 )
 from kiro_crew.mcp_gateway.prewarm import prewarm_from_payloads  # noqa: F401 - not a seam
 from kiro_crew.mcp_gateway.prewarm import HotKeyStore, default_hot_keys_path
+from kiro_crew.mcp_gateway.project_binding import ProjectScopeUnavailable
 from kiro_crew.mcp_gateway.resolve_once import resolved_launch  # noqa: F401
 from kiro_crew.mcp_gateway.rewriter import env_sidecar_dir  # noqa: F401 - not a seam
 from kiro_crew.mcp_gateway.rewriter import env_sidecar_name  # noqa: F401 - not a seam
@@ -656,7 +693,8 @@ async def run_gatewayd(
             of the environment). When given, the resolver is wrapped by
             :func:`agent_socket_resolver`, which offers it as ``SSH_AUTH_SOCK``
             to the backends the operator names in
-            ``ssh_auth_sock_consent.json``. ``None`` (the default) wraps
+            ``ssh_auth_sock_consent.json`` and to a per-project backend whose
+            session tier forwards it. ``None`` (the default) wraps
             nothing, so the run is byte-identical to a daemon without it.
         owner_port: The port the owner's listener already bound, when the
             owner spawns this daemon after its bind (``--owner-port``). ``0``
@@ -762,7 +800,10 @@ async def run_gatewayd(
     # Outermost, so the socket lands after every resolver step has built the env.
     if backend_agent_socket:
         resolver = agent_socket_resolver(resolver, backend_agent_socket)
-        logger.info("gatewayd: offering the gateway's ssh-agent socket to operator-named backends")
+        logger.info(
+            "gatewayd: offering the gateway's ssh-agent socket to operator-named backends "
+            "and to per-project backends whose session tier forwards it"
+        )
     # Shared circuit breaker keyed by server name: a server
     # that crash-loops on spawn trips OPEN and get_or_create rejects further
     # spawns so the stub falls back to per-session exec instead of churning.
@@ -1538,17 +1579,28 @@ async def _acquire_backend(
             raise _TargetUnknown(
                 f"ssh-agent socket decision changed for server {pool_key.server_name!r}"
             )
+        # A per-project key starts in its project root, inside the sandbox plan
+        # the gateway recorded for the session (``daemon.project_scope``).
+        project_plan = None
+        if pool_key.sandbox_hash:
+            project_plan = project_plan_for_key(pool_key)
+            if project_plan is None:
+                raise ProjectScopeUnavailable("the session's project record is gone")
         backend = await spawn_backend(
             pool_key=pool_key,
             command=command,
             args=list(args),
             env=spawn_env,
-            work_dir=fresh_target[3],
+            work_dir=project_plan.root if project_plan is not None else fresh_target[3],
+            sandbox=project_plan,
             # Containment yields only to temp keys cleared by the shared rule.
             # ``spawn_backend`` checks them again after secret resolution, so a
             # path hidden behind ``secret://`` cannot bypass the runtime check.
             declared_temp_keys=accepted_temp_keys,
             secret_env_keys=tuple(_secret_keys),
+            # Only these names can make a per-project spawn fall back; a
+            # cleared name the daemon merely inherited is dropped by the scrub.
+            declared_env_keys=tuple(declared),
             **(
                 {"initialize_timeout_secs": admission.initialize_timeout_for(pool_key)}
                 if admission is not None

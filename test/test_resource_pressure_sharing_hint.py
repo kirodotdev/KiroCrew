@@ -16,6 +16,7 @@ import pytest
 
 from kiro_crew import edition_locks
 from kiro_crew.acp.chat_runtime_sharing import CHAT_RUNTIME_SHARING_PREVIEW
+from kiro_crew.mcp_gateway.folder_use import FolderDeclarations
 from kiro_crew.notifications import memory_sharing_hint as hint_mod
 from kiro_crew.notifications.bus import NotificationBus
 from kiro_crew.notifications.memory_sharing_hint import (
@@ -246,6 +247,11 @@ class TestMcpSharingCanTurnOn:
         )
         monkeypatch.setattr(routes, "refused_servers", lambda: state["refused"])
         monkeypatch.setattr(routes, "_collect_server_rows", lambda: state["rows"])
+        # Agent declarations read complete, nothing observed: a server with no
+        # folder-free fact shares one per project.
+        state["declarations"] = FolderDeclarations()
+        monkeypatch.setattr(routes, "_folder_declarations", lambda: state["declarations"])
+        monkeypatch.setattr(routes, "_load_shareability_state", lambda: ({}, {}))
         state["check"] = routes.mcp_sharing_can_turn_on
         return state
 
@@ -261,19 +267,38 @@ class TestMcpSharingCanTurnOn:
         host["rows"]["kirocrew-core"] = self._row()
         assert host["check"]() is True
 
-    def test_a_server_answered_not_used_is_eligible(self, host) -> None:
+    def test_an_unanswered_server_is_eligible(self, host) -> None:
+        """It shares per project once sharing is on, with nothing to answer."""
         host["rows"]["github"] = self._row()
-        host["cwd_use"]["github"] = "not_used"
         assert host["check"]() is True
 
     def test_no_eligible_server_means_it_cannot_turn_on(self, host) -> None:
-        host["rows"]["unanswered"] = self._row()
         host["rows"]["remote"] = self._row("http")
         host["rows"]["creds-agent"] = self._row()
         host["rows"]["kirocrew-cron"] = self._row()
         host["overrides"]["kirocrew-cron"] = False
         host["rows"]["kirocrew-core"] = self._row()
         host["refused"]["kirocrew-core"] = {"reason": "added_outside_dashboard"}
+        assert host["check"]() is False
+
+    def test_a_host_with_only_one_per_chat_servers_cannot_turn_it_on(self, host) -> None:
+        """The page keeps its switch disabled for them, so no hint may point there."""
+        host["rows"]["vault-tool"] = self._row()
+        host["declarations"].vault.add("vault-tool")
+        assert host["check"]() is False
+        # Declarations that could not be read put every non-folder-free server one per chat.
+        host["declarations"] = FolderDeclarations(complete=False)
+        host["rows"]["github"] = self._row()
+        assert host["check"]() is False
+
+    def test_a_declined_per_project_server_still_lets_it_turn_on(self, host) -> None:
+        """The page counts it: the switch is the only way back to its row."""
+        host["rows"]["github"] = self._row()
+        host["overrides"]["github"] = False
+        assert host["check"]() is True
+
+    def test_a_per_project_server_whose_env_shares_nothing_does_not_count(self, host) -> None:
+        host["rows"]["github"] = {**self._row(), "env_names": ["GITHUB_TOKEN"]}
         assert host["check"]() is False
 
     def test_an_unsupported_host_cannot_turn_it_on(self, host) -> None:

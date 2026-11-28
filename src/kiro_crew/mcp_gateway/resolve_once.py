@@ -78,6 +78,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
 from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.mcp_gateway.hashing import PROJECT_TARGET_PREFIX as _PROJECT_PREFIX
 from kiro_crew.platform_compat import kill_and_reap
 from kiro_crew.sandbox import (
     app_backend_secret_mask_targets,
@@ -672,6 +673,7 @@ async def install(
     *,
     timeout_secs: float = DEFAULT_INSTALL_TIMEOUT_SECS,
     npm: Optional[str] = None,
+    mode: str = "standard",
 ) -> Optional[ResolvedRecord]:
     """Resolve ``spec`` into the store and return the committed record.
 
@@ -746,7 +748,7 @@ async def install(
     # anyway.
     wrapped_argv, spawn_env, sandbox_cleanup = await sandboxed_spawn_argv_async(
         argv,
-        mode="standard",
+        mode=mode,
         strip_python_env=True,
         extra_writable_dirs=(real_target,),
         # The install runs third-party lifecycle scripts, which have no use for
@@ -889,6 +891,7 @@ async def ensure_resolved(
     force: bool = False,
     timeout_secs: float = DEFAULT_INSTALL_TIMEOUT_SECS,
     npm: Optional[str] = None,
+    mode: str = "standard",
 ) -> Optional[ResolvedRecord]:
     """Make sure ``command``/``args`` has a fresh resolution, installing if not.
 
@@ -902,11 +905,26 @@ async def ensure_resolved(
     existing = read_record(spec_dir(data_home, spec))
     if existing is not None and not force and not is_stale(existing, refresh_secs=refresh_secs):
         return existing
-    return await install(data_home, spec, timeout_secs=timeout_secs, npm=npm)
+    return await install(data_home, spec, timeout_secs=timeout_secs, npm=npm, mode=mode)
 
 
 #: Env keys the rewriter writes one per stubbed server, valued ``"cmd arg arg"``.
-_TARGET_PREFIXES = ("KIROCREW_MCP_TARGET_", "MC_MCP_TARGET_")
+#: The per-project map is among them: a per-project backend reads the store inside
+#: its session's sandbox, which leaves ``<data home>/mcp/resolved`` readable.
+_TARGET_PREFIXES = ("KIROCREW_MCP_TARGET_", "MC_MCP_TARGET_", _PROJECT_PREFIX)
+
+#: The tier a per-project target is installed in. It has no launch approval, and
+#: its lifecycle scripts run before any session's own tier is known, so they get
+#: the strictest one: no install reads what a chat's sandbox hides.
+_PROJECT_INSTALL_MODE = "strict"
+
+
+def _project_only_launches(target_env: Mapping[str, str]) -> frozenset[tuple[str, ...]]:
+    """The launches that only a per-project target names, as argv tuples."""
+    shared_env = {k: v for k, v in target_env.items() if not k.startswith(_PROJECT_PREFIX)}
+    project_env = {k: v for k, v in target_env.items() if k.startswith(_PROJECT_PREFIX)}
+    shared = {(c, *a) for c, a in launch_specs(shared_env)}
+    return frozenset((c, *a) for c, a in launch_specs(project_env) if (c, *a) not in shared)
 
 
 def launch_specs(target_env: Mapping[str, str]) -> list[tuple[str, list[str]]]:
@@ -953,9 +971,24 @@ async def prefetch(
     failure has to leave the caller exactly as well off as not calling it.
     """
     outcomes: dict[str, str] = {}
+    project_only = _project_only_launches(target_env)
+    # A project-only launch has no approval; only a sandbox makes running its
+    # install scripts here acceptable. Without one it is left to the chat.
+    if project_only:
+        from kiro_crew import sandbox as _sandbox
+
+        if await asyncio.to_thread(_sandbox.detect_backend, _PROJECT_INSTALL_MODE) == "none":
+            project_only_skip = project_only
+        else:
+            project_only_skip = frozenset()
+    else:
+        project_only_skip = frozenset()
     for command, args in launch_specs(target_env):
         spec = parse_npm_launcher(command, args)
         if spec is None:
+            continue
+        if (command, *args) in project_only_skip:
+            outcomes[spec.package] = "skipped"
             continue
         try:
             record = await ensure_resolved(
@@ -965,6 +998,7 @@ async def prefetch(
                 refresh_secs=refresh_secs,
                 force=force,
                 timeout_secs=timeout_secs,
+                mode=_PROJECT_INSTALL_MODE if (command, *args) in project_only else "standard",
             )
         except asyncio.CancelledError:
             # Shutdown is not an outcome to swallow.

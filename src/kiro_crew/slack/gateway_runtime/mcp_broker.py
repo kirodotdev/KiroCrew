@@ -122,18 +122,50 @@ def _schedule_paused_share_note(self: GatewayOrchestrator) -> None:
     task.add_done_callback(self._background_tasks.discard)
 
 
+def _schedule_project_broker(self: GatewayOrchestrator) -> None:
+    """Start a broker for per-project stubs only, once the process is ready.
+
+    Kept off the boot path: with no stub set there is nothing a chat needs before
+    the listener binds. Until it starts, a chat whose overlay names a stub finds no
+    daemon and that stub starts its server in the chat.
+    """
+    ready = getattr(self, "_mcp_launch_approval_ready", None)
+    if ready is None:
+        ready = asyncio.Event()
+        self._mcp_launch_approval_ready = ready
+
+    async def _start() -> None:
+        await ready.wait()  # type: ignore[union-attr]  # narrowed above
+        lock = getattr(self, "_mcp_overlay_refresh_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._mcp_overlay_refresh_lock = lock
+        async with lock:
+            # A dashboard press may have started one meanwhile.
+            if self._mcp_gateway_manager is not None or self._mcp_gateway_pending is not None:
+                return
+            await self._init_mcp_gateway(stub_servers=frozenset())
+        if self.dashboard_state is not None:
+            self.dashboard_state._mcp_gateway_manager = self._mcp_gateway_manager
+        if self.sessions is not None:
+            await self.sessions.refresh_defaults()
+
+    task = asyncio.create_task(_start(), name="mcp-project-broker")
+    self._background_tasks.add(task)
+    task.add_done_callback(self._background_tasks.discard)
+
+
 async def _init_mcp_gateway(
     self: GatewayOrchestrator, stub_servers: frozenset[str] | None = None
 ) -> None:
     """Start the MCP gateway sidecar and populate the agent-JSON overlay.
 
-    Runs iff at least one server gets a stub
-    (``mcp_gateway.stub_servers``). Routing is what interposes a stub, and
-    the stub is what carries both the render/callback path and any sharing —
+    Runs iff at least one server gets a stub (``mcp_gateway.stub_servers``) or
+    sharing (``mcp_gateway.enabled``) is on. Routing is what interposes a stub,
+    and the stub is what carries both the render/callback path and any sharing —
     so nothing stubbed means there is nothing for a broker to serve. Sharing
-    (``mcp_gateway.enabled``) is deliberately NOT part of this condition: it
-    decides how a stubbed server's backend is acquired, and on its own routes
-    nothing. Any failure downgrades to today's per-session MCP path — the
+    routes on its own: every stdio server not known to be folder-free gets a
+    per-project stub, so an empty stub set still has servers to serve. Any failure downgrades to today's per-session MCP path — the
     stub's graceful fallback keeps kiro-cli sessions working even when the
     broker is unreachable.
 
@@ -144,10 +176,15 @@ async def _init_mcp_gateway(
     """
     cfg_gw = self._cfg.mcp_gateway
     stubs = frozenset(cfg_gw.stub_servers) if stub_servers is None else stub_servers
-    if not stubs:
+    if not stubs and not cfg_gw.enabled:
         # No broker, so no approval persist: a note naming servers that left
         # the share list is removed here instead.
         self._schedule_paused_share_note()
+        return
+    if not stubs and stub_servers is None:
+        # Boot with sharing on and only per-project stubs: started after readiness.
+        self._schedule_paused_share_note()
+        self._schedule_project_broker()
         return
     self._mcp_stub_servers_started = stubs
     # Runs on every platform the transport layer covers -- an AF_UNIX socket
@@ -690,9 +727,10 @@ async def _apply_mcp_gateway_enabled(self: GatewayOrchestrator, enabled: bool) -
     async with lock:
         # A start still being retried counts as a broker here: left running, it
         # would drive the old manager against the socket the new one starts on.
-        if self._mcp_gateway_manager is not None or self._mcp_gateway_pending is not None:
+        was_running = self._mcp_gateway_manager is not None or self._mcp_gateway_pending is not None
+        if was_running:
             await self._stop_mcp_broker()
-        if serving:
+        if serving or enabled:
             await self._init_mcp_gateway(stub_servers=serving)
     mgr = self._mcp_gateway_manager
     if self.dashboard_state is not None:
@@ -700,9 +738,8 @@ async def _apply_mcp_gateway_enabled(self: GatewayOrchestrator, enabled: bool) -
     # Rebuild the provider factory so new sessions resolve the overlay
     # path from the CURRENT config, not the value captured at boot.
     # refresh_defaults() rebuilds the factory and drains the warm pool
-    # without killing live sessions — the correct semantics since a
-    # running session has already sent session/new and cannot be
-    # retrofitted.
+    # without killing live sessions. When a broker was replaced, open chats are
+    # reset instead: their stubs were attached to the old daemon.
     #
     # Skipped while the configured set disagrees with what is being served,
     # because the factory's overlay decision is all-or-nothing on the
@@ -714,7 +751,15 @@ async def _apply_mcp_gateway_enabled(self: GatewayOrchestrator, enabled: bool) -
     # pending change taking effect early on an unrelated sharing edit. When
     # the two agree the refresh is a no-op for the overlay, so the guard only
     # ever suppresses the disagreeing case.
-    if self.sessions is not None and configured == serving:
+    if self.sessions is not None and was_running and self.dashboard_state is not None:
+        # An open chat's per-project stub cannot reattach: its session record
+        # lived in the daemon this stopped. Open chats are reset, as for every
+        # other broker restart (``_apply_mcp_stub``). While a stub change is
+        # pending, on the factory they already have, for the reason above.
+        from kiro_crew.dashboard.handlers.sessions import reset_sessions
+
+        await reset_sessions(self.dashboard_state, reload_factory=configured == serving)
+    elif self.sessions is not None and configured == serving:
         await self.sessions.refresh_defaults()
     running = ping_ok = False
     if mgr is not None:
@@ -756,6 +801,8 @@ async def _apply_mcp_stub(self: GatewayOrchestrator, *, launch_approved: bool = 
 
     self._cfg = KiroCrewConfig.load()
     configured = frozenset(self._cfg.mcp_gateway.stub_servers)
+    # Sharing on runs a broker for its per-project stubs even with no stub set.
+    wanted = bool(configured) or bool(self._cfg.mcp_gateway.enabled)
     lock = getattr(self, "_mcp_overlay_refresh_lock", None)
     if lock is None:
         lock = asyncio.Lock()
@@ -770,7 +817,7 @@ async def _apply_mcp_stub(self: GatewayOrchestrator, *, launch_approved: bool = 
             if running:
                 await self._stop_mcp_broker()
             self._mcp_stub_servers_started = frozenset()
-            if configured:
+            if wanted:
                 await self._init_mcp_gateway(stub_servers=configured)
     mgr = self._mcp_gateway_manager
     if self.dashboard_state is not None:
@@ -783,7 +830,7 @@ async def _apply_mcp_stub(self: GatewayOrchestrator, *, launch_approved: bool = 
             sessions_reset = await reset_sessions(self.dashboard_state)
         else:
             await self.sessions.refresh_defaults()
-    applied = not configured or mgr is not None
+    applied = not wanted or mgr is not None
     return {
         "applied": applied,
         "restart_required": not applied,
@@ -793,7 +840,13 @@ async def _apply_mcp_stub(self: GatewayOrchestrator, *, launch_approved: bool = 
 
 
 async def _refresh_mcp_overlays(
-    self: GatewayOrchestrator, register: Callable[[], Awaitable[bool]] | None = None
+    self: GatewayOrchestrator,
+    register: Callable[[], Awaitable[bool]] | None = None,
+    *,
+    retarget: (
+        Callable[[dict, dict | None, frozenset[str]], tuple[dict, dict | None, frozenset[str]]]
+        | None
+    ) = None,
 ) -> dict:
     """Rebuild the agent overlays for the broker already serving, no restart.
 
@@ -815,6 +868,11 @@ async def _refresh_mcp_overlays(
     An applied answer also names the stub set the running broker serves
     (``serving_stub_servers``, read under the lock), which a stub change saved
     since start does not reach.
+
+    *retarget* (``_apply_mcp_dont_share``) maps the inputs, the start policy and
+    the served stub set to the ones one routing change makes, under the lock. The
+    probe must then match that changed policy, and an applied pass makes the three
+    the broker's own, so a later refresh compares against them.
     """
     from kiro_crew.mcp_gateway.overlay_refresh import changes_a_launch_decision, rewrite_policy
     from kiro_crew.mcp_gateway.rewriter import take_pass_inputs as rewriter_take_pass_inputs
@@ -856,21 +914,82 @@ async def _refresh_mcp_overlays(
             return {"applied": False, "restart_required": False}
         inputs = getattr(self, "_mcp_rewrite_inputs", None)
         serving = self._mcp_stub_servers_started
-        if self._mcp_gateway_manager is None or not serving or not inputs:
+        if self._mcp_gateway_manager is None or not inputs:
             return {"applied": False, "restart_required": False}
+        if not serving and not self._cfg.mcp_gateway.enabled:
+            return {"applied": False, "restart_required": False}
+        inputs = dict(inputs)
+        policy = getattr(self, "_mcp_rewrite_policy", None)
+        if retarget is not None:
+            inputs, policy, serving = retarget(inputs, policy, serving)
         applied, reason = await asyncio.get_running_loop().run_in_executor(
             maintenance_executor(),
             _probe_then_rewrite,
             dict(inputs),
-            getattr(self, "_mcp_rewrite_policy", None),
+            policy,
             dict(self._mcp_target_env),
         )
+        if applied and retarget is not None:
+            self._mcp_rewrite_inputs = inputs
+            self._mcp_rewrite_policy = policy
+            self._mcp_stub_servers_started = serving
     if not applied:
         logger.warning(
             "mcp-gateway: overlays left unchanged until the next gateway restart: %s", reason
         )
         return {"applied": False, "restart_required": True}
     return {"applied": True, "restart_required": False, "serving_stub_servers": sorted(serving)}
+
+
+async def _apply_mcp_dont_share(self: GatewayOrchestrator, name: str, dont_share: bool) -> dict:
+    """Dashboard callback: apply one per-project server's Share switch with no broker restart.
+
+    Only the overlays change, through the same probe-then-rewrite an app install
+    runs (:func:`_refresh_mcp_overlays`), with *name* added to or taken out of the
+    rewrite's ``dont_share`` set and the served stub set. The daemon, every
+    backend and every attached stub are left as they are:
+
+    * a chat that starts after this gets the new routing for *name*, and the
+      warm pool is refilled so no idle process carries the old one;
+    * a chat already open keeps the route it started with until it ends: its
+      own copy of the server, or its connection to the per-project backend,
+      which the idle drain retires once its last chat leaves.
+
+    Turning sharing back on needs the daemon to hold *name*'s target. It holds
+    it when the server was shared at broker start; otherwise nothing is written,
+    *name* stays one per chat, and ``restart_required`` reports that the next
+    gateway start applies it. No broker here means there is nothing live to
+    change: the next start reads the saved choice.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    self._cfg = KiroCrewConfig.load()
+    configured = frozenset(self._cfg.mcp_gateway.stub_servers)
+
+    def _retarget(
+        inputs: dict, policy: dict | None, serving: frozenset[str]
+    ) -> tuple[dict, dict | None, frozenset[str]]:
+        names = frozenset(inputs.get("dont_share") or ())
+        names = names | {name} if dont_share else names - {name}
+        stubs = serving - {name} if dont_share else serving | ({name} & configured)
+        expected = None
+        if policy is not None:
+            expected = {**policy, "stub_servers": sorted(stubs)}
+            routing = policy.get("project_routing")
+            if isinstance(routing, dict):
+                expected["project_routing"] = {**routing, "dont_share": sorted(names)}
+        return {**inputs, "dont_share": names, "stub_servers": stubs}, expected, stubs
+
+    if self._mcp_gateway_manager is None:
+        return {"applied": True, "restart_required": False, "sessions_reset": 0}
+    out = await self._refresh_mcp_overlays(retarget=_retarget)
+    if out.get("applied") and self.sessions is not None:
+        await self.sessions.refresh_defaults()
+    return {
+        "applied": bool(out.get("applied")),
+        "restart_required": bool(out.get("restart_required")),
+        "sessions_reset": 0,
+    }
 
 
 def _wire_mcp_gateway_dashboard(self: GatewayOrchestrator) -> None:
@@ -886,6 +1005,7 @@ def _wire_mcp_gateway_dashboard(self: GatewayOrchestrator) -> None:
     self.dashboard_state._mcp_gateway_manager = self._mcp_gateway_manager
     self.dashboard_state._mcp_gateway_apply = self._apply_mcp_gateway_enabled
     self.dashboard_state._mcp_gateway_apply_stub = self._apply_mcp_stub
+    self.dashboard_state._mcp_gateway_apply_dont_share = self._apply_mcp_dont_share
     self.dashboard_state._mcp_resolve_refresh = self._refresh_mcp_resolutions
     # Read by the dashboard restart handler, which execs without running
     # ``_shutdown``: the broker this process owns must still die with it.

@@ -163,7 +163,7 @@ describe('McpManagement', () => {
   })
 
   it('asks for a restart without painting it as a failure', async () => {
-    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: true }) as never)
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server()] } as never)
     // The normal outcome: the allowlist is stored and nothing was cycled, so the
     // change is pending a restart rather than broken.

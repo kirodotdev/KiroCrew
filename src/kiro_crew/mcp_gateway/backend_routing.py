@@ -16,7 +16,8 @@ Instance fields written: ``_dead_reason``, ``_grant_callers``,
 
 Instance fields read: ``_gateway_ending``, ``_inbox_lock``, ``_init_state``,
 ``_stub_inboxes``, ``attempt_id``, ``backend_generation_id``, ``exclusive_token``,
-``pool_key``, ``process``, ``refcount``, ``stdout``, ``supports_caller_identity``.
+``pool_key``, ``process``, ``refcount``, ``stdin``, ``stdout``,
+``supports_caller_identity``.
 """
 
 from __future__ import annotations
@@ -57,6 +58,7 @@ from kiro_crew.mcp_gateway.backend_wire import (
     _log_safe_identifier,
     _PendingRequest,
     _tool_call_error_text,
+    _write_json_line,
 )
 from kiro_crew.mcp_gateway.image_budget import (
     line_may_carry_image_block,
@@ -793,7 +795,17 @@ async def _route_backend_message(
     # rather than guess, to avoid a cross-tenant leak.
     if method is not None and msg_id is not None:
         if method == "roots/list":
-            # Still routed below: the chat that owns it answers with its folder.
+            if self.pool_key.sandbox_hash:
+                # A per-project backend (a key with a sandbox hash) has one fixed
+                # root, so the gateway answers for every chat it serves.
+                try:
+                    await _write_json_line(
+                        self.stdin, _project_roots_result(self.pool_key.work_dir, msg_id)
+                    )
+                except (OSError, ConnectionError):
+                    logger.debug("backend pid=%s: roots/list answer not written", self.pid)
+                return
+            # Otherwise routed below: the chat that owns it answers with its folder.
             self._record_hazard(hazards.HAZARD_ROOTS_REQUESTED, any_client=True)
         target_stub: Optional[str] = None
         # Priority 1: _meta.relatedRequestId lookup
@@ -835,6 +847,21 @@ async def _route_backend_message(
             await self._broadcast_backend_gone(reason)
         return
     logger.debug("backend pid=%s emitted malformed JSON-RPC: %r", self.pid, msg)
+
+
+def _project_roots_result(project_root: str, msg_id: Any) -> dict[str, Any]:
+    """The ``roots/list`` result naming a per-project backend's one root.
+
+    A per-project key's ``work_dir`` is its project root (``daemon.project_scope``).
+    """
+    from pathlib import Path
+
+    root = Path(project_root)
+    return {
+        "jsonrpc": "2.0",
+        "id": msg_id,
+        "result": {"roots": [{"uri": root.as_uri(), "name": root.name or str(root)}]},
+    }
 
 
 def _record_hazard(self: Backend, code: str, *, any_client: bool = False) -> None:

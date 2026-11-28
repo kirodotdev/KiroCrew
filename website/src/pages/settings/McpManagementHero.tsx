@@ -36,7 +36,7 @@ import {
   type LaunchRefusal,
   withCurrentLaunch,
 } from './mcpManagementModel'
-import { RefusalLaunch, SHARE_BUTTON_CLASS } from './McpManagementLaunchReview'
+import { HERO_SWITCH_ID, RefusalLaunch, SHARE_BUTTON_CLASS } from './McpManagementLaunchReview'
 import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
 import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { McpShareDiagram } from './McpShareDiagram'
@@ -70,6 +70,7 @@ function HeroSwitch({
   return (
     <button
       type="button"
+      id={HERO_SWITCH_ID}
       role="switch"
       aria-checked={on}
       aria-label={i18nT('pages.mcpManagement.share_switch_label')}

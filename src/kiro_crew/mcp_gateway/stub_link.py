@@ -281,6 +281,18 @@ def must_degrade_unshareable(poolable: bool, capabilities: list[str]) -> bool:
     return not poolable and "poolable_ack" not in capabilities
 
 
+def must_degrade_project_blind(project_scoped: bool, capabilities: list[str]) -> bool:
+    """Should this connection abandon the gateway rather than share across projects?
+
+    True only when the stub asked for a per-project backend and the daemon did
+    not attest that it reads the ``project_scoped`` register field. Such a daemon
+    ignores the flag and pools the server in its own folder, outside any session
+    sandbox, for every project at once. Degrading gives the per-session exec,
+    which runs inside the chat's own sandbox.
+    """
+    return project_scoped and "project_scope" not in capabilities
+
+
 def must_degrade_nonce_blind(server: str, poolable: bool, capabilities: list[str]) -> bool:
     """Should this connection abandon the gateway rather than pool without a nonce?
 
@@ -1015,6 +1027,18 @@ async def _reconnect(
         # can be replaced by an adopted one between two attempts, and pooling on
         # without a nonce would put every unnamed co-tenant of this server in one
         # namespace.
+        # A per-project stub refuses a generation that would pool it in the
+        # daemon's own folder for every project, on the same terms.
+        if must_degrade_project_blind(bool(payload.get("project_scoped")), _caps):
+            await _safe_close(writer)
+            logger.warning(
+                "stub reconnect: the new gateway generation does not honour the "
+                "project_scoped field; refusing rather than sharing across "
+                "projects pool=%s",
+                pool_label,
+            )
+            return None
+
         if must_degrade_nonce_blind(str(payload.get("server_name") or ""), poolable, _caps):
             await _safe_close(writer)
             logger.warning(

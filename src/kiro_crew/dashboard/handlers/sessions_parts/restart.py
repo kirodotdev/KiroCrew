@@ -44,7 +44,7 @@ async def _reset_all_sessions(request: web.Request) -> int:
     return await reset_sessions(request.app["state"])
 
 
-async def reset_sessions(state: DashboardState) -> int:
+async def reset_sessions(state: DashboardState, *, reload_factory: bool = True) -> int:
     """Reset all active sessions so they pick up config changes.
 
     Reloads provider factory (handles provider switch ACP→CC or vice versa),
@@ -52,13 +52,18 @@ async def reset_sessions(state: DashboardState) -> int:
     processes loaded the old MCP config at spawn time).
     New sessions cold-start on next message.
     Returns the number of sessions reset.
+
+    ``reload_factory=False`` resets the sessions on the factory they already
+    have: for a broker replaced while a saved config change is still waiting
+    for the next start, which a reload would apply early.
     """
     sessions = state.sessions
 
     # Reload factory so provider switch takes effect immediately. A session a
     # turn holds (a cron run, a chat reply) is reset when that turn ends, so a
     # settings change never cuts work in flight.
-    await sessions.reload_provider_factory(defer_busy=True)
+    if reload_factory:
+        await sessions.reload_provider_factory(defer_busy=True)
 
     # Pop all active sessions
     providers: list[LLMProvider] = []

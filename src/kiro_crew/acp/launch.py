@@ -67,6 +67,7 @@ from kiro_crew.port_resolution import _well_formed_port, drop_foreign_inherited_
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
     RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST,
+    configured_readonly_layer,
     ssh_auth_sock_consent_notice,
 )
 
@@ -872,6 +873,9 @@ class LaunchHost(Protocol):
     _sandbox_cleanup: str | None
     _sandbox_wrapped_by_crew: bool
     _sandbox_hidden_dirs: tuple[str, ...]
+    _sandbox_expose_files: tuple[str, ...]
+    _sandbox_readonly_layer: tuple[tuple[str, ...], tuple[str, ...]]
+    _session_env_layer: dict[str, str]
     _ssh_auth_sock_forwarded: bool
     _child_env_names: frozenset[str]
     _spawn_work_dir: str
@@ -1198,6 +1202,10 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     host._sandbox_wrapped_by_crew = tools.wrapped_by_crew_sandbox(argv)
     sandbox_wrapped_argv = tuple(argv)
     host._sandbox_hidden_dirs = tuple(request.extra_hidden_dirs)
+    host._sandbox_expose_files = tuple(request.extra_expose_files)
+    # The operator's read-only paths and exceptions, read as the wrap just read
+    # them: a per-project MCP backend of this runtime's sessions is keyed by them.
+    host._sandbox_readonly_layer = await host._to_thread_guarding_sandbox(configured_readonly_layer)
     # The verdict this child's environment is built with -- the wrap's own, so a
     # socket the wrap dropped stays dropped -- so a server the engine starts later
     # is judged on it, not on a later config or floor.
@@ -1240,12 +1248,17 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # scrub, which still removes any denied name. Off-loop (reads config);
     # guarded because the sandbox launcher above is live. A driver that already
     # read it for this spawn hands that snapshot over instead.
-    if request.agent_env is not None:
-        env.update(request.agent_env)
-    else:
-        env.update(await host._to_thread_guarding_sandbox(tools.agent_env_overlay))
+    agent_layer = (
+        request.agent_env
+        if request.agent_env is not None
+        else await host._to_thread_guarding_sandbox(tools.agent_env_overlay)
+    )
+    env.update(agent_layer)
     if request.extra_env:
         env.update(request.extra_env)
+    # The layer this spawn added over the gateway env, kept in memory only: a
+    # per-project MCP backend of this runtime's sessions starts from it.
+    host._session_env_layer = {**agent_layer, **(request.extra_env or {})}
     # The contributed MCP launcher dirs go LAST, after everything the gateway's
     # PATH already resolves, so a bare-name MCP server kiro-cli starts is found
     # even when the gateway itself was started without them (a service installed

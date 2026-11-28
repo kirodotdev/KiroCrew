@@ -431,6 +431,7 @@ class DashboardState:
         self._mcp_gateway_manager: Any = None  # GatewayManager | None
         self._mcp_gateway_apply: Any = None  # async (enabled: bool) -> dict
         self._mcp_gateway_apply_stub: Any = None  # async () -> dict
+        self._mcp_gateway_apply_dont_share: Any = None  # async (name, on) -> dict
         self._mcp_resolve_refresh: Any = None  # async () -> dict
         # Read by the restart handler: stops the broker this gateway owns before
         # the exec, so a successor never meets a daemon still owned by this pid.

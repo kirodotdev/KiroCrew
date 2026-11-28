@@ -146,6 +146,72 @@ class FolderDeclarations:
         )
 
 
+@dataclass(frozen=True)
+class ProjectRouting:
+    """Which servers get one backend per project (``daemon.project_scope``).
+
+    A server known to be folder-free (Kiro Crew's own, the edition's list, or a
+    ``not_used`` answer for its current launch) keeps the one shared backend.
+    Every other server is treated as reading its folder and gets a per-project
+    stub, unless its name is in *dont_share* (an operator's ``stub_overrides``
+    ``false``), a declaration names a vault secret, or a source could not be read.
+    """
+
+    edition: frozenset[str]
+    answers: Mapping[str, str]
+    bindings: Mapping[str, str]
+    observed_roots: frozenset[str]
+    dont_share: frozenset[str]
+    declarations: FolderDeclarations
+
+    def per_project(self, name: str) -> bool:
+        if not self.declarations.complete:
+            return False
+        if roots_observed(name, self.dont_share) or roots_observed(name, self.declarations.vault):
+            return False
+        answer = effective_answer(name, self.answers, self.bindings, self.declarations.launch(name))
+        if answer == "not_used":
+            return False
+        return (
+            folder_free_source(
+                name,
+                self.edition,
+                answer,
+                asked_roots=roots_observed(name, self.observed_roots),
+            )
+            is None
+        )
+
+    def folder_free(self, name: str) -> bool:
+        """Whether a fact says *name* can run in one folder for all chats."""
+        answer = effective_answer(name, self.answers, self.bindings, self.declarations.launch(name))
+        if answer == "not_used":
+            return True
+        return (
+            folder_free_source(
+                name,
+                self.edition,
+                answer,
+                asked_roots=roots_observed(name, self.observed_roots),
+            )
+            is not None
+        )
+
+    def fingerprint(self) -> dict[str, Any]:
+        """The restart-only inputs a cached overlay was routed by.
+
+        *observed_roots* is left out: it moves while the gateway runs, so the
+        rewrite fingerprints it on its own, among the inputs a refresh may change.
+        """
+        return {
+            "edition": sorted(self.edition),
+            "answers": sorted(self.answers.items()),
+            "bindings": sorted(self.bindings.items()),
+            "dont_share": sorted(self.dont_share),
+            "complete": self.declarations.complete,
+        }
+
+
 def read_declarations(source_dir: Path, mate_source_dir: Path | None = None) -> FolderDeclarations:
     """Read agent, settings and admitted crewmate declarations. BLOCKING, values discarded."""
     from kiro_crew.agent_discovery import read_agent_spec_strict

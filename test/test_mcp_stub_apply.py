@@ -20,9 +20,11 @@ import pytest
 from kiro_crew.slack.gateway import GatewayOrchestrator
 
 
-def _orch(stub: list[str]) -> GatewayOrchestrator:
+def _orch(stub: list[str], *, enabled: bool = False) -> GatewayOrchestrator:
     orch = GatewayOrchestrator.__new__(GatewayOrchestrator)
-    orch._cfg = SimpleNamespace(mcp_gateway=SimpleNamespace(stub_servers=list(stub)))
+    orch._cfg = SimpleNamespace(
+        mcp_gateway=SimpleNamespace(stub_servers=list(stub), enabled=enabled)
+    )
     orch._mcp_gateway_manager = None
     orch._mcp_gateway_pending = None
     orch.dashboard_state = SimpleNamespace(_mcp_gateway_manager=None)
@@ -204,15 +206,22 @@ async def test_a_sharing_toggle_does_not_republish_a_pending_unstub(monkeypatch)
         "kiro_crew.config.loader.KiroCrewConfig.load", staticmethod(lambda: orch._cfg)
     )
 
+    reset = AsyncMock(return_value=1)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions.reset_sessions", reset)
+
     await orch._apply_mcp_gateway_enabled(True)
 
     orch.sessions.refresh_defaults.assert_not_awaited()
+    # Open chats lost the daemon their stubs were attached to, so they are
+    # reset, but on the factory they have: a reload would apply the unstub.
+    reset.assert_awaited_once_with(orch.dashboard_state, reload_factory=False)
 
 
 @pytest.mark.asyncio
-async def test_a_sharing_toggle_still_refreshes_when_config_and_served_agree(monkeypatch) -> None:
-    """The guard must suppress only the disagreeing case: with nothing pending the
-    refresh is what lets a new session pick up the rebuilt factory."""
+async def test_a_sharing_toggle_resets_open_chats_when_config_and_served_agree(monkeypatch) -> None:
+    """The guard must suppress only the disagreeing case. With nothing pending the
+    restarted broker reaches the chats: open ones are reset, since a per-project
+    stub's session record lived in the old daemon and cannot reattach."""
     orch = _orch(["alpha-mcp"])
     orch._mcp_gateway_manager = MagicMock()
     orch._mcp_stub_servers_started = frozenset({"alpha-mcp"})
@@ -229,8 +238,28 @@ async def test_a_sharing_toggle_still_refreshes_when_config_and_served_agree(mon
         "kiro_crew.config.loader.KiroCrewConfig.load", staticmethod(lambda: orch._cfg)
     )
 
+    reset = AsyncMock(return_value=1)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions.reset_sessions", reset)
+
     await orch._apply_mcp_gateway_enabled(True)
 
+    reset.assert_awaited_once_with(orch.dashboard_state, reload_factory=True)
+    orch.sessions.refresh_defaults.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_first_broker_from_the_sharing_toggle_only_refreshes(monkeypatch) -> None:
+    """No broker before: no chat is attached to anything, so none is reset."""
+    orch = _orch(["alpha-mcp"], enabled=True)
+    orch._mcp_stub_servers_started = frozenset({"alpha-mcp"})
+    _pin_broker_calls(monkeypatch, orch)
+    monkeypatch.setattr(orch, "_init_mcp_gateway", AsyncMock())
+    reset = AsyncMock(return_value=0)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions.reset_sessions", reset)
+
+    await orch._apply_mcp_gateway_enabled(True)
+
+    reset.assert_not_awaited()
     orch.sessions.refresh_defaults.assert_awaited_once_with()
 
 
@@ -263,9 +292,13 @@ async def test_a_sharing_toggle_does_not_apply_the_pending_stub_set(monkeypatch)
     monkeypatch.setattr(
         "kiro_crew.config.loader.KiroCrewConfig.load", staticmethod(lambda: orch._cfg)
     )
+    reset = AsyncMock(return_value=1)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions.reset_sessions", reset)
 
     await orch._apply_mcp_gateway_enabled(True)
 
+    # A pending addition: open chats are reset on the factory they have.
+    reset.assert_awaited_once_with(orch.dashboard_state, reload_factory=False)
     assert started_with == [frozenset({"alpha-mcp"})], (
         "the sharing restart re-emitted the configured set, applying a stub "
         "change that was reported as pending"
@@ -273,16 +306,17 @@ async def test_a_sharing_toggle_does_not_apply_the_pending_stub_set(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_a_sharing_toggle_starts_nothing_when_no_stub_is_served(monkeypatch) -> None:
-    """A first stub is recorded, not applied, so there is no broker to share
-    between yet. Starting one here would apply that pending stub early."""
-    orch = _orch(["alpha-mcp"])
+async def test_a_sharing_toggle_serves_no_pending_stub(monkeypatch) -> None:
+    """A first stub is recorded, not applied. Sharing on starts a broker for the
+    per-project stubs, with the served set (empty), so that pending stub is not
+    applied early."""
+    orch = _orch(["alpha-mcp"], enabled=True)
     orch._mcp_gateway_manager = None
     orch._mcp_stub_servers_started = frozenset()
-    calls: list[str] = []
+    calls: list[frozenset[str]] = []
 
     async def _init(stub_servers: frozenset[str] | None = None) -> None:
-        calls.append("init")
+        calls.append(frozenset(stub_servers or ()))
 
     monkeypatch.setattr(orch, "_init_mcp_gateway", _init)
     monkeypatch.setattr(orch, "_stop_mcp_broker", AsyncMock())
@@ -292,7 +326,38 @@ async def test_a_sharing_toggle_starts_nothing_when_no_stub_is_served(monkeypatc
 
     await orch._apply_mcp_gateway_enabled(True)
 
+    assert calls == [frozenset()]
+
+
+@pytest.mark.asyncio
+async def test_sharing_off_with_nothing_served_starts_nothing(monkeypatch) -> None:
+    orch = _orch(["alpha-mcp"])
+    orch._mcp_stub_servers_started = frozenset()
+    calls = _pin_broker_calls(monkeypatch, orch)
+
+    await orch._apply_mcp_gateway_enabled(False)
+
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_sharing_on_keeps_a_broker_for_per_project_stubs_when_the_set_empties(
+    monkeypatch,
+) -> None:
+    """With sharing on, every server not known to be folder-free is a
+    per-project stub, so an empty stub set still has servers to serve."""
+    orch = _orch([], enabled=True)
+    orch._mcp_gateway_manager = MagicMock()
+    orch._mcp_stub_servers_started = frozenset({"alpha-mcp"})
+    calls = _pin_broker_calls(monkeypatch, orch)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.sessions.reset_sessions", AsyncMock(return_value=0)
+    )
+
+    out = await orch._apply_mcp_stub()
+
+    assert calls == [("stop", frozenset()), ("init", frozenset())]
+    assert out["applied"] is True
 
 
 @pytest.mark.asyncio
@@ -409,3 +474,66 @@ async def test_a_sharing_toggle_needs_no_restart_when_every_marked_server_is_ser
     out = await orch._apply_mcp_gateway_enabled(True)
 
     assert out == {"enabled": True, "running": True, "ping_ok": True, "restart_required": False}
+
+
+@pytest.mark.asyncio
+async def test_a_boot_with_only_per_project_stubs_starts_the_broker_after_readiness(
+    monkeypatch,
+) -> None:
+    """Off the boot path: nothing a chat needs waits on it before the listener binds."""
+    import asyncio
+
+    from kiro_crew.slack.gateway_runtime import mcp_broker
+
+    orch = _orch([], enabled=True)
+    orch.dashboard_state = None
+    orch._background_tasks = set()
+    orch._mcp_launch_approval_ready = asyncio.Event()
+    started: list[frozenset[str]] = []
+
+    async def _init(stub_servers: frozenset[str] | None = None) -> None:
+        started.append(frozenset(stub_servers or ()))
+
+    await mcp_broker._init_mcp_gateway(orch)  # the boot call: returns at once
+    monkeypatch.setattr(orch, "_init_mcp_gateway", _init)
+    await asyncio.sleep(0)
+    assert started == []
+
+    orch._mcp_launch_approval_ready.set()
+    await asyncio.gather(*list(orch._background_tasks))
+
+    assert started == [frozenset()]
+    orch.sessions.refresh_defaults.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_a_reset_on_the_current_factory_still_drains_every_chat() -> None:
+    """``reload_factory=False``: open chats and the warm pool go, the factory stays."""
+    import asyncio
+
+    from kiro_crew.dashboard.handlers.sessions import reset_sessions
+
+    provider = SimpleNamespace(shutdown=AsyncMock())
+    sessions = SimpleNamespace(
+        count=1,
+        reload_provider_factory=AsyncMock(),
+        drain_all_providers=AsyncMock(return_value=[provider]),
+        drain_warm_pool=AsyncMock(return_value=[]),
+        start_pool=AsyncMock(),
+    )
+    state = SimpleNamespace(
+        sessions=sessions,
+        _background_tasks=set(),
+        broadcast_ws=MagicMock(),
+        push_refresh=MagicMock(),
+        push_slots_update=MagicMock(),
+    )
+
+    assert await reset_sessions(state, reload_factory=False) == 1
+    if state._background_tasks:
+        await asyncio.gather(*list(state._background_tasks))
+
+    sessions.reload_provider_factory.assert_not_awaited()
+    sessions.drain_all_providers.assert_awaited_once_with(keep_busy=True)
+    sessions.drain_warm_pool.assert_awaited_once_with()
+    provider.shutdown.assert_awaited_once_with()
