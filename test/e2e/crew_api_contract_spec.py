@@ -54,8 +54,8 @@ NO_BODY: Any = object()
 class Case:
     """One call and the answer the spec gives for it.
 
-    ``json`` and ``path`` may be a function of the booted gateway, for a value only a
-    running gateway has (a model id, the id of something the case made first).
+    ``json``, ``path`` and ``query`` may be a function of the booted gateway, for a value
+    only a running gateway has (a model id, the id of something the case made first).
     ``before`` runs on the booted gateway ahead of the call, to make what the call needs.
     ``check`` receives the parsed body after every spec check passed.
     """
@@ -66,6 +66,7 @@ class Case:
     code: str = ""
     json: Any = NO_BODY
     path: Mapping[str, str] | Callable[[Any], Mapping[str, str]] = field(default_factory=dict)
+    query: Mapping[str, str] | Callable[[Any], Mapping[str, str]] = field(default_factory=dict)
     check: Callable[[Any], None] | None = None
     before: Callable[[Any], None] | None = None
 

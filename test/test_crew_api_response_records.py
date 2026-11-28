@@ -120,7 +120,8 @@ def test_save_syncs_the_published_record_directory_and_its_parent_before_sweepin
     write = records.atomic_write
 
     def publish(path: Path, serialized: str, **kwargs: Any) -> None:
-        assert kwargs == {"fsync": True, "restrict_to_owner": True}
+        # No newline translation: the file holds the bytes the size check counted.
+        assert kwargs == {"fsync": True, "restrict_to_owner": True, "newline": "\n"}
         write(path, serialized, **kwargs)
         events.append(("published", path))
 

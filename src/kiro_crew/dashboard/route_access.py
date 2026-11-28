@@ -183,6 +183,9 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("GET", "/v1/conversations/{conversation_id}/items"): RouteAccess(
         "crew_api.conversations.items.resolve", PREVIEW
     ),
+    # One conversation's event stream (crew_api_events), behind the same two checks.
+    # Contract test: test_crew_api_events.py.
+    ("GET", "/v1/crew/events"): RouteAccess("crew_api.events.resolve", PREVIEW),
     # Connected computers, this computer's own side (feature preview). Owner dashboard
     # only (connected_computers/local_routes.py `_owner`); the action names are the
     # handlers' own audit operation names.

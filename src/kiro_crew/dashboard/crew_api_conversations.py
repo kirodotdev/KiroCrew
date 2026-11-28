@@ -67,6 +67,7 @@ from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retr
 from kiro_crew.dashboard.crew_api_approval_records import set_aside
 from kiro_crew.dashboard.crew_api_auth import OWNER_ONLY_PUBLIC_ROUTES
 from kiro_crew.dashboard.crew_api_errors import contract_error, request_id_for
+from kiro_crew.dashboard.crew_api_event_records import EventLog
 from kiro_crew.dashboard.crew_api_grant_requests import _host_owner_refusal
 from kiro_crew.dashboard.crew_api_owner import owner_route
 from kiro_crew.dashboard.crew_api_response_records import (
@@ -184,9 +185,19 @@ class ConversationStore:
 
     directory: Path | None = None
     clock: Callable[[], float] = time.time
+    #: Each conversation's event stream, kept as long as the conversation and removed
+    #: with it (``GET /v1/crew/events``).
+    events: EventLog = field(default_factory=EventLog)
     #: The conversations a turn is running in. Memory only: a restart empties it.
     _busy: set[str] = field(default_factory=set)
     _swept_at: float | None = None
+
+    def __post_init__(self) -> None:
+        # A test's directory keeps its streams inside it; the gateway's own are the
+        # ``crew-api-events`` member records.
+        if self.directory is not None and self.events.directory is None:
+            self.events.directory = self.directory / "events"
+            self.events.clock = self.clock
 
     def _dir(self) -> Path:
         if self.directory is None:
@@ -233,7 +244,8 @@ class ConversationStore:
             platform_compat.restrict_dir_to_owner(path.parent)
         except OSError:
             pass
-        atomic_write(path, serialized, fsync=True, restrict_to_owner=True)
+        # No newline translation: the file holds the bytes the size above counted.
+        atomic_write(path, serialized, fsync=True, restrict_to_owner=True, newline="\n")
         try:
             # The sweep reads a record's age from its file, without opening it.
             os.utime(path, (record["updated_at"], record["updated_at"]))
@@ -290,6 +302,7 @@ class ConversationStore:
                 return None
             if self._expired(record["updated_at"]):
                 path.unlink(missing_ok=True)
+                self._drop_events(conversation_id)
                 return None
             if record["created_by_grant"] != caller.grant:
                 return None
@@ -433,6 +446,7 @@ class ConversationStore:
                 return False
             path = self._path(conversation_id)
             path.unlink()
+            self._drop_events(conversation_id)
             for response_id in record["turns"]:
                 try:
                     responses.discard(response_id)
@@ -455,6 +469,19 @@ class ConversationStore:
                     type(exc).__name__,
                 )
             return True
+
+    def _drop_events(self, conversation_id: str) -> None:
+        """Remove the event stream of a conversation whose record is gone. A stream
+        that cannot be removed is unreadable without its conversation, and goes with
+        the sweep."""
+        try:
+            self.events.remove(conversation_id)
+        except OSError as exc:
+            logger.warning(
+                "Crew API event stream of the removed conversation %s is still on disk: %s",
+                conversation_id,
+                type(exc).__name__,
+            )
 
     def _set_aside(self, path: Path) -> None:
         try:
@@ -494,6 +521,8 @@ class ConversationStore:
                         removed += 1
             except OSError:
                 continue
+        # The streams of the conversations that went, here or by any other way.
+        self.events.remove_without(lambda conversation_id: self._path(conversation_id).exists())
         return removed
 
 

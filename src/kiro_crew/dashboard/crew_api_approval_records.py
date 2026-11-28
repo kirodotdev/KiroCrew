@@ -105,6 +105,7 @@ def save(path: Path, rows: list[dict[str, Any]]) -> None:
         platform_compat.restrict_dir_to_owner(path.parent)
     except OSError:
         pass
-    atomic_write(path, serialized, fsync=True)
+    # No newline translation: the file holds the bytes the size above counted.
+    atomic_write(path, serialized, fsync=True, newline="\n")
     fsync_dir(path.parent)
     fsync_dir(path.parent.parent)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from collections.abc import Mapping
 
 from aiohttp import web
 
@@ -44,6 +45,7 @@ _ERROR_TYPES = {
     403: "permission_error",
     404: "not_found_error",
     409: "conflict_error",
+    410: "resync_required_error",
     429: "rate_limit_error",
 }
 # A code whose type is its own, whatever its status says: 422 is shared with
@@ -102,12 +104,13 @@ def contract_error(
     message: str,
     request_id: str,
     headers: dict[str, str] | None = None,
-    extra: dict[str, str] | None = None,
+    extra: Mapping[str, str | int] | None = None,
 ) -> web.Response:
     """A Crew API error response, with its request id and version headers set.
 
     *extra* holds the fields the contract adds to one code's body, such as
-    ``entitlement`` on ``entitlement_required``. It never replaces a fixed field.
+    ``entitlement`` on ``entitlement_required`` and the two ``seq`` numbers on
+    ``resync_required``. It never replaces a fixed field.
     """
     if status == 401:
         message = f"{message} {CREDENTIAL_HINT}".strip()

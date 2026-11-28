@@ -81,6 +81,8 @@ OWNER_ONLY_PUBLIC_ROUTES = {
     # Not a ``.read``, for the same reason as a response's.
     "/v1/conversations/{conversation_id}": "crew_api.conversations.resolve",
     "/v1/conversations/{conversation_id}/items": "crew_api.conversations.items.resolve",
+    # Not a ``.read``, for the same reason as a conversation's.
+    "/v1/crew/events": "crew_api.events.resolve",
     "/v1/crew/capabilities": "crew_api.capabilities.read",
     # Not a ``.read``: the first call on a data home makes and keeps the instance id.
     "/v1/crew/info": "crew_api.info.resolve",

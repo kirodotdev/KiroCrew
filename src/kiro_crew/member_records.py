@@ -68,6 +68,7 @@ RECORD_KINDS: tuple[str, ...] = (
     "crew-api-approvals",
     "crew-api-responses",
     "crew-api-conversations",
+    "crew-api-events",
 )
 
 #: The kinds the one-time move carries from ``trust/``: the ones an older build kept

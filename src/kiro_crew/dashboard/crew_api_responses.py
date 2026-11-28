@@ -34,6 +34,7 @@ retention period, and ``crew_api_response_reads`` reads it back. The
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import time
@@ -66,6 +67,12 @@ from kiro_crew.dashboard.crew_api_errors import (
     VERSION_HEADER,
     contract_error,
     request_id_for,
+)
+from kiro_crew.dashboard.crew_api_event_records import (
+    MESSAGE_CREATED,
+    TURN_COMPLETED,
+    TURN_STARTED,
+    EventLog,
 )
 from kiro_crew.dashboard.crew_api_grant_requests import _host_owner_refusal
 from kiro_crew.dashboard.crew_api_models import usable_models_off_loop
@@ -841,6 +848,74 @@ def _continued(
     return prompt
 
 
+def _turn_ended_events(
+    events: EventLog, conversation_id: str, response_id: str, item_ids: list[str], result: str
+) -> None:
+    """Write what the conversation's stream holds of a turn that ended: one
+    ``message.created`` for each of its items the history now lists, then
+    ``turn.completed``. Blocks; never raises."""
+    for item_id in item_ids:
+        events.append(conversation_id, MESSAGE_CREATED, response_id, item_id=item_id)
+    events.append(conversation_id, TURN_COMPLETED, response_id, result=result)
+
+
+class _TurnStream:
+    """What one turn writes to its conversation's event stream. Event-loop only.
+
+    Each write is handed to a thread once the write before it has finished, and it
+    is handed whether or not the handler that asked for it is cancelled meanwhile.
+    Await what a method returns through ``asyncio.shield``. So a turn that was
+    announced always gets its end, and never ahead of its start.
+    """
+
+    def __init__(self, events: EventLog, conversation_id: str, response_id: str) -> None:
+        self._events = events
+        self._conversation_id = conversation_id
+        self._response_id = response_id
+        self._last: asyncio.Future[None] | None = None
+        self.ended = False
+
+    def _then(self, write: Callable[[], None]) -> asyncio.Future[None]:
+        loop = asyncio.get_running_loop()
+        before = self._last
+        if before is None or before.done():
+            job: asyncio.Future[None] = loop.run_in_executor(None, write)
+        else:
+            job = loop.create_future()
+
+            def _finished(_written: asyncio.Future[None]) -> None:
+                if not job.done():
+                    job.set_result(None)
+
+            def _handed(_before: asyncio.Future[None]) -> None:
+                loop.run_in_executor(None, write).add_done_callback(_finished)
+
+            before.add_done_callback(_handed)
+        self._last = job
+        return job
+
+    def started(self) -> asyncio.Future[None]:
+        return self._then(
+            functools.partial(
+                self._events.append, self._conversation_id, TURN_STARTED, self._response_id
+            )
+        )
+
+    def ended_with(self, item_ids: list[str], result: str) -> asyncio.Future[None]:
+        """The turn ended as *result*, and the history now lists *item_ids* of it."""
+        self.ended = True
+        return self._then(
+            functools.partial(
+                _turn_ended_events,
+                self._events,
+                self._conversation_id,
+                self._response_id,
+                item_ids,
+                result,
+            )
+        )
+
+
 async def _note_turn(
     conversations: ConversationStore,
     store: ResponseStore,
@@ -978,6 +1053,8 @@ async def _run(
     slot.agent = parsed.model
     task: asyncio.Task[Any] | None = None
     started: str | None = None
+    #: This turn's writes to its conversation's event stream, once it is announced.
+    stream_of_turn: _TurnStream | None = None
     try:
         refusal = await _engine_refusal(request, state, slot)
         if refusal is not None:
@@ -1043,6 +1120,14 @@ async def _run(
                     noted = await _note_turn(conversations, store, conversation_id, response, kept)
                     if kept and not noted:
                         await _unkeep(store, response_id)
+                    # After the records: an event names only what can be read.
+                    listed = [*(items or []), *response["output"]] if kept and noted else []
+                    if stream_of_turn is not None:
+                        await asyncio.shield(
+                            stream_of_turn.ended_with(
+                                [item["id"] for item in listed], response["status"]
+                            )
+                        )
 
             if items is not None:
                 # Readable as in_progress until its record is written.
@@ -1050,6 +1135,9 @@ async def _run(
                     "response": answering.response("in_progress"),
                     "input": items,
                 }
+            if conversation_id is not None:
+                stream_of_turn = _TurnStream(conversations.events, conversation_id, response_id)
+                await asyncio.shield(stream_of_turn.started())
             if parsed.stream:
                 return await _stream(request, state, slot, task, answering, _keep)
             final = await _answer(request, state, slot, task, answering)
@@ -1060,6 +1148,19 @@ async def _run(
             # The caller of this function releases a conversation it named.
             conversations.release(started)
         store.live.pop(response_id, None)
+        if stream_of_turn is not None and not stream_of_turn.ended:
+            # The turn was announced and this handler ends without its answer. Not
+            # awaited: a cancelled handler must not wait here, and the write never raises.
+            try:
+                stream_of_turn.ended_with([], "failed")
+            except RuntimeError as exc:
+                # The gateway is stopping and takes no more writes. The stream's open
+                # marker stays, so the next process takes the stream as broken.
+                logger.warning(
+                    "Crew API turn %s ended; its end was not written to the event stream: %s",
+                    response_id,
+                    type(exc).__name__,
+                )
         task = slot.task or task
         if task is not None and not task.done():
             task.cancel()
