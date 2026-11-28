@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from kiro_crew.dashboard.agent_folders import announce_moved as announce_moved_agent_folders
 from kiro_crew.dashboard.chat_utils import SYNTHESIS_HELD, SYNTHESIS_UNKNOWN
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, RESTORED_SEND_CHOSEN_KEY
 from kiro_crew.dashboard.state import SUBAGENT_FINAL_COMPLETION_NOTE, SUBAGENT_SYNTHESIS_PROMPT
@@ -486,6 +487,11 @@ async def _finish_queue_cycle(
     # The Older Sessions listing drops open slots, so a turn cannot change it;
     # ``turn_end`` refreshes the caches a turn can write and skips that listing.
     state.push_refresh("turn_end")
+    # It skips the agent catalog too: a spec file this turn wrote from a shell is
+    # announced as ``agents`` by the folder check instead.
+    folders_task = asyncio.create_task(announce_moved_agent_folders(state))
+    state._background_tasks.add(folders_task)
+    folders_task.add_done_callback(state._background_tasks.discard)
     # Chain the titling attempt into a refresh check, waiting out a
     # still-running on-send attempt first (see title_then_refresh). Both the
     # untitled and the already-titled case go through the same chain: an

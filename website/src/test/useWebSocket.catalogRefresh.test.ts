@@ -3,14 +3,15 @@
  *
  * `refreshTrigger` moves for every frame; `catalogRefreshTrigger` only for a frame that
  * can have changed an agent or a crewmate. A cron run pushes a frame when it starts and
- * when it ends, and no cron run changes either.
+ * when it ends, and no cron run changes either. A turn's own changes to the catalog are
+ * announced as `agents` by the gateway, so a turn-end frame leaves it alone too.
  */
 import { renderHook, act } from '@testing-library/react'
 import { createElement } from 'react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
-import { useWebSocket } from '../hooks/useWebSocket'
+import { __resetTurnEndCronRefreshForTests, TURN_END_CRON_REFRESH_MS, useWebSocket } from '../hooks/useWebSocket'
 
 vi.mock('../hooks/useTheme', () => ({ useTheme: () => ({ theme: 'dark', colorTheme: 'default', themeVersion: 0 }) }))
 
@@ -61,6 +62,8 @@ describe('useWebSocket refresh frames and the catalog counter', () => {
     qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     vi.stubGlobal('WebSocket', MockWebSocket)
     vi.useFakeTimers()
+    // The turn-end window is module state: each test starts after a quiet window.
+    __resetTurnEndCronRefreshForTests()
   })
 
   afterEach(() => {
@@ -107,8 +110,24 @@ describe('useWebSocket refresh frames and the catalog counter', () => {
     },
   )
 
-  it('moves both counters for the first turn end after a quiet window', () => {
-    expect(send(['turn_end'])).toEqual({ refresh: 1, catalog: 1 })
+  it('moves the refresh counter but not the catalog counter for the first turn end after a quiet window', () => {
+    expect(send(['turn_end'])).toEqual({ refresh: 1, catalog: 0 })
+  })
+
+  it('leaves the catalog counter alone when a held turn end is paid at the end of its window', () => {
+    send(['turn_end'])
+    expect(send(['turn_end'])).toEqual({ refresh: 0, catalog: 0 })
+    const before = counters()
+    act(() => { vi.advanceTimersByTime(TURN_END_CRON_REFRESH_MS) })
+    const after = counters()
+    expect({ refresh: after.refresh - before.refresh, catalog: after.catalog - before.catalog }).toEqual({ refresh: 1, catalog: 0 })
+  })
+
+  it('moves the catalog counter on a reconnect, which an agents frame sent meanwhile missed', () => {
+    const before = counters()
+    act(() => { WS_INSTANCES[0].onclose?.(new CloseEvent('close')) })
+    act(() => { WS_INSTANCES[WS_INSTANCES.length - 1].simulateOpen() })
+    expect(counters().catalog - before.catalog).toBe(1)
   })
 
   it('moves both counters for a cron frame that also names an agent write', () => {

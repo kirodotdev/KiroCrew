@@ -70,7 +70,7 @@ import {
   handleThreadReply,
   invalidateChatPins,
   invalidateRefreshQueries,
-  refreshMayChangeRegistry,
+  refreshMayChangeCatalog,
 } from './websocket/serverState'
 import { DASHBOARD_FIELDS_FRAME, handleDashboardFields } from './websocket/dashboardFields'
 import { useChatStream } from './websocket/chatStream'
@@ -95,7 +95,7 @@ import { noteCrewSteerReceipt } from '../lib/crewSteerNotice'
    `chat_segment` and `chat_done` arms), and the silence watchdog, whose
    constants and thaw grace test/test_ws_status_cadence_contract.py reads
    from this file. Every export below keeps its original import path. */
-export { __resetRedactionHealForTests, healRedactionSwitchAfterReconnect } from './websocket/serverState'
+export { __resetRedactionHealForTests, __resetTurnEndCronRefreshForTests, healRedactionSwitchAfterReconnect, TURN_END_CRON_REFRESH_MS } from './websocket/serverState'
 // The crewmate dashboard's cache prefix and its frame handler, reached through
 // this facade like every other owner binding. Both are named so a caller can
 // invalidate the same key the handler invalidates: a second spelling of that
@@ -577,7 +577,7 @@ export function useWebSocket() {
             let othersNow = false
             invalidateRefreshQueries(queryClient, kinds, () => dispatch(triggerCronRefresh()), () => {
               othersNow = true
-              dispatch(refreshMayChangeRegistry(kinds) ? triggerRefresh() : triggerRefreshExceptCatalog())
+              dispatch(refreshMayChangeCatalog(kinds) ? triggerRefresh() : triggerRefreshExceptCatalog())
             })
             if (!othersNow) dispatch(triggerLiveRefresh())
             if (kinds.includes('history')) dispatch(fetchHistory(false))

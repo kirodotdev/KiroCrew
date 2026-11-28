@@ -3537,6 +3537,10 @@ process-wide registry state
 live in `dashboard/server_runtime/config_watch.py::_register_config_watch` —
 `agents` (→ `dashboard/bot_chat_follow.py::follow_config_change`: a Bot's changed `model` or
 `reasoning_effort` clears its own chat's pick, after the session manager's applier),
+`agents`, `agent.acp_backend`, `agent.member_acp_backend` and `agent.default_agent` (→ an
+`agents` refresh frame: the agent catalog lists the crewmates and reads those keys, no writer of
+them announces itself, and a `turn_end` refresh does not re-read the catalog; `agent.kas_bundle`
+takes a restart, and a dashboard re-reads the catalog when its socket reconnects),
 `agent.provider`,
 `agent.model`, `agent.role_models.background`, `agent.log_level`
 (→ `handlers/updates_streams.py::apply_log_level_from_config`),

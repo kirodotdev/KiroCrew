@@ -146,10 +146,10 @@ export interface DashboardState extends CloseWatchState {
    *  user is looking at re-reads on (the Memory view's store list). */
   liveRefreshTrigger: number
   /** Bumped when a `refresh` frame names something that can change the agent
-   *  catalog or the crew roster, and by every caller that dispatches
-   *  `triggerRefresh` after a write of its own. What `useAgents` re-reads the
-   *  catalog on: a cron run or a saved lesson moves `refreshTrigger` but not this
-   *  one (see `refreshMayChangeRegistry`). */
+   *  catalog, and by every caller that dispatches `triggerRefresh` after a write
+   *  of its own. What `useAgents` re-reads the catalog on: a cron run, a saved
+   *  lesson or the end of a turn moves `refreshTrigger` but not this one (see
+   *  `refreshMayChangeCatalog`). */
   catalogRefreshTrigger: number
   /** Bumped when the cron caches are re-read (see `invalidateRefreshQueries`):
    *  what the Schedule page reloads its job list on. */

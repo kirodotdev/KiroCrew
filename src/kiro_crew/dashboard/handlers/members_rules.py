@@ -274,4 +274,11 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
         # Best-effort: the write LANDED (the durable state is correct), and a
         # cold session picks the new rules up at its next start regardless.
         logger.debug("could not flag member session for reinjection", exc_info=True)
+    # The agent catalog counts rules as the crewmate's own setup, which decides whether a
+    # picker hides it as covered by its template, so every picker re-reads it.
+    # Best-effort, like the flag above: the write LANDED, and a reconnect re-reads it.
+    try:
+        request.app["state"].push_refresh("agents")
+    except Exception:
+        logger.debug("could not announce the rules write to the agent pickers", exc_info=True)
     return web.json_response({"slug": slug, "ok": True})

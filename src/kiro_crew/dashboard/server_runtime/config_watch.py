@@ -340,6 +340,14 @@ def _register_config_watch(
         if change.touched("apps"):
             state.push_refresh("config")
 
+    def _push_catalog_config(change: ConfigChange) -> None:
+        # The agent catalog lists the crewmates and reads these keys, and no writer
+        # of them announces itself (the CLI, $EDITOR, a turn's shell, the dashboard's
+        # crewmate routes), so this frame is what makes every open picker re-read it.
+        # ``agent.kas_bundle`` takes a restart, and a dashboard re-reads the catalog
+        # when its socket reconnects.
+        state.push_refresh("agents")
+
     def _push_bot_session_listing(change: ConfigChange) -> None:
         # Each Bot thread's row carries whether its sessions are listed
         # (``crew_mode.stamp_rows``: the global switch, else the Bot's own), so a
@@ -463,6 +471,14 @@ def _register_config_watch(
             name="agent.bot_chat_execution_trust",
         ),
         live.subscribe("apps", callback=_push_app_settings, name="apps"),
+        live.subscribe(
+            "agents",
+            "agent.acp_backend",
+            "agent.member_acp_backend",
+            "agent.default_agent",
+            callback=_push_catalog_config,
+            name="agent_catalog.config",
+        ),
         live.subscribe(
             "dashboard.show_bot_sessions_in_list",
             callback=_push_bot_session_listing,

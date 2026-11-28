@@ -1498,6 +1498,8 @@ _EXPECTED_SCOPE_GUARD_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # The reaper decides a recorded checkout's sensitivity once, then lists it
     # itself, so a failed listing keeps the file instead of reading as "no agents".
     "kiro_crew/dashboard/side_readonly_spec.py": [("side_readonly_reap", "unknown")],
+    # The end-of-turn check stats each open chat's project, and asks first.
+    "kiro_crew/dashboard/agent_folders.py": [("agent_folders_turn_end", "dashboard")],
 }
 
 

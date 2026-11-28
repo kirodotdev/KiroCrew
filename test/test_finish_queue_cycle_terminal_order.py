@@ -194,7 +194,9 @@ async def test_turn_end_pushes_one_coalesced_refresh_only_after_the_provider(
 ):
     """A turn that reached the provider pushes one ``turn_end`` refresh after
     ``chat_done``; one that never did pushes none. ``history`` is never pushed
-    here: the Older Sessions listing drops open slots, so a turn cannot change it."""
+    here: the Older Sessions listing drops open slots, so a turn cannot change it.
+    The first turn end sees the agents folders for the first time, which counts as
+    a move, so its folder check pushes one ``agents`` after the ``turn_end``."""
     state, slot, events = _recorded_cycle(tmp_path, monkeypatch)
     slot._cycle_reached_provider = reached_provider
     state.refresh_slot_source_status = MagicMock()  # type: ignore[method-assign]
@@ -209,7 +211,7 @@ async def test_turn_end_pushes_one_coalesced_refresh_only_after_the_provider(
     if not reached_provider:
         assert refreshes == [], events
         return
-    assert [events[i][1] for i in refreshes] == [("turn_end",)], events
+    assert [events[i][1] for i in refreshes] == [("turn_end",), ("agents",)], events
     chat_done_at = next(
         i
         for i, event in enumerate(events)

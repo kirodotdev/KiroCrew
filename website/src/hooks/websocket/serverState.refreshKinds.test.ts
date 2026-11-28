@@ -161,13 +161,36 @@ describe('a turn-end history frame', () => {
     // The gateway sends at most one turn-end frame per 1.5 s; two windows of them.
     for (let t = 0; t < TURN_END_CRON_REFRESH_MS * 2; t += 1_500) {
       invalidateRefreshQueries(qc, ['turn_end'], undefined, others)
-      vi.advanceTimersByTime(1_500)
+      await vi.advanceTimersByTimeAsync(1_500)
     }
     vi.useRealTimers()
     await settle()
     // The first frame at once, then one re-read as each window ends.
     for (const id of ['kirocrew-agents/members-roster', 'kirocrewConfig', 'agents-installed']) expect(fetches[id]).toBe(3)
     expect(others).toHaveBeenCalledTimes(3)
+  })
+
+  it('starts no second roster read while one is out, and reads once more after it lands', async () => {
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    let reads = 0
+    let land = () => {}
+    const observer = new QueryObserver(qc, {
+      queryKey: ['kirocrew-agents', 'members-roster'],
+      queryFn: () => new Promise(resolve => { reads += 1; land = () => resolve({ reads }) }),
+    })
+    unsubscribe.push(observer.subscribe(() => {}))
+    land()
+    await settle()
+    reads = 0
+    invalidateRefreshQueries(qc, ['agents'])
+    invalidateRefreshQueries(qc, ['agents'])
+    expect(reads).toBe(1)
+    land()
+    await settle()
+    await settle()
+    expect(reads).toBe(2)
+    land()
+    await settle()
   })
 
   it('does not hold a frame that names what changed, and that frame pays the owed re-read', async () => {
