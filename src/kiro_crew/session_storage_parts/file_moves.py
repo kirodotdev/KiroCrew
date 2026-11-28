@@ -647,13 +647,18 @@ def _unlisted_files(batch: Path) -> list[Path]:
             failures.append(OSError(f"traversal exceeded the recursion limit: {exc}"))
     else:
         for root, dirs, names in os.walk(batch, onerror=failures.append):
+            descend = []
             for name in dirs:
                 path = Path(root) / name
                 # Not is_symlink(): this is the Windows branch, and a junction is not one.
                 if not platform_compat.is_link_or_junction(path):
+                    descend.append(name)
                     continue
                 if path.relative_to(batch).as_posix() not in listed:
                     unlisted.append(path)
+            # os.walk's own link test misses a junction and would enter it, listing the
+            # target's files as staged ones, so a link is pruned here and never entered.
+            dirs[:] = descend
             for name in names:
                 path = Path(root) / name
                 if name == MANIFEST_NAME:

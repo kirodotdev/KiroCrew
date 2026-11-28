@@ -152,6 +152,39 @@ class TestEmptyTrashRemoval:
         assert skips == [session_storage.SKIP_UNLISTED_FILES]
         assert platform_compat.is_link_or_junction(link)
 
+    def test_a_linked_directory_is_reported_and_never_entered(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The name walk prunes a link, so the target's files never count as staged.
+
+        On Windows ``os.walk``'s own link test misses a junction and descends into it.
+        Making ``os.walk`` follow links reproduces that descent on every host, so the
+        guard must prune the link itself; a plain subdirectory is still walked.
+        """
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=64, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"], reason="manual", index=_index(), now=_NOW
+        )
+        staged = session_storage.trash_root() / batch.batch_id
+        target = kiro_home.parent / "linked"
+        target.mkdir()
+        (target / "sentinel.txt").write_bytes(b"outside the trash")
+        link = staged / "jlink"
+        make_dir_link(link, target)
+        (staged / "sub").mkdir()
+        loose = staged / "sub" / "loose.bin"
+        loose.write_bytes(b"x")
+        real_walk = os.walk
+
+        def _entering_walk(top, **kwargs):  # type: ignore[no-untyped-def]
+            return real_walk(top, **{**kwargs, "followlinks": True})
+
+        monkeypatch.setattr(session_storage.os, "fwalk", None, raising=False)
+        monkeypatch.setattr(session_storage.os, "walk", _entering_walk)
+
+        assert sorted(session_storage._unlisted_files(staged)) == sorted([link, loose])
+
     @pytest.mark.parametrize(
         "rel",
         [
