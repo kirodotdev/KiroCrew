@@ -22,6 +22,7 @@
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, Loader2 } from 'lucide-react'
+import { ApiError } from '../../api/apiError'
 import {
   capabilityKey, crewCapabilitiesApi, crewCapabilitiesKey,
   type CapabilityDraft, type CapabilityOperation, type CapabilityPreview, type CapabilityRow,
@@ -29,6 +30,7 @@ import {
 import { toolMeta } from './toolMeta'
 import { i18nT } from '../../i18n/t'
 import { compareText } from '../../i18n/format'
+import { parseErrorCode, parseErrorField } from '../../utils/errorReport'
 import ErrorNotice from '../ErrorNotice'
 
 /** How a grant participates in the server/verb hierarchy. */
@@ -50,6 +52,13 @@ interface Grant {
   state: CapabilityRow['state']
   label: string
   sublabel: string
+}
+
+/** The agent file an `unreviewable_drift` Save refusal names: a basename Crew
+ *  chose, never a path or a value from the file. Undefined for any other failure. */
+function unreviewableDriftFile(error: unknown): string | undefined {
+  if (!(error instanceof ApiError) || parseErrorCode(error.body) !== 'unreviewable_drift') return undefined
+  return parseErrorField(error.body, 'file')
 }
 
 /** Resolve a capability row into a display Grant. */
@@ -425,6 +434,15 @@ export default function CrewApprovalsEditor({
   const runtimeFailMessage = runtimeDrifted
     ? i18nT('crewApprovalsEditor.driftHint', { member })
     : i18nT(view.runtime.error_code ? 'crewApprovalsEditor.sourceFailed' : 'crewApprovalsEditor.runtime_failed')
+  // Save refuses a drifted file whose change sits in a setting this page cannot
+  // show, and repeats that refusal until the file is put back, so its notice
+  // names the file to fix rather than offering a retry.
+  const driftFile = unreviewableDriftFile(save.error)
+  const opErrorMessage = prepare.error
+    ? i18nT('crewApprovalsEditor.preview_failed')
+    : driftFile
+      ? i18nT('crewApprovalsEditor.unreviewableDrift', { member, file: driftFile })
+      : i18nT('crewApprovalsEditor.save_failed')
 
   return (
     <div className="flex min-h-0 flex-col gap-4" data-testid="next-approvals">
@@ -512,7 +530,7 @@ export default function CrewApprovalsEditor({
         /* No hand-off: the toggles the user set stay on screen (dirty draft is
            preserved) so they can retry; surfaced through the shared ErrorNotice. */
         <ErrorNotice
-          message={prepare.error ? i18nT('crewApprovalsEditor.preview_failed') : i18nT('crewApprovalsEditor.save_failed')}
+          message={opErrorMessage}
           variant="inline"
           askAgent={false}
           testId="next-approvals-op-error"

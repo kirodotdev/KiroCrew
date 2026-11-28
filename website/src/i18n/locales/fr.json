@@ -25736,6 +25736,7 @@
     "state_this_mate": "ce Bot",
     "state_removed": "retiré",
     "driftHint": "Le fichier d’agent de {{member}} a été modifié en dehors de cette page. Clique sur « Examiner la modification » pour voir cette modification externe avec ton propre brouillon ; « Enregistrer » applique alors le correctif ou explique pourquoi il ne le peut pas.",
+    "unreviewableDrift": "Le fichier d’agent {{file}} de {{member}} a été modifié en dehors de cette page dans un paramètre que cette page ne peut pas afficher, donc « Enregistrer » ne peut pas appliquer le correctif. Annule cette modification externe dans {{file}}, puis recharge cette page.",
     "sourceFailed": "Impossible de valider la configuration enregistrée. Recharge cette page pour réessayer.",
     "runtime_failed": "Échec du chargement de l'exécution. La version enregistrée est conservée.",
     "server_verb_count": "{{on}} sur {{total}} approuvés automatiquement",

@@ -25736,6 +25736,7 @@
     "state_this_mate": "este Bot",
     "state_removed": "eliminado",
     "driftHint": "El archivo de agente de {{member}} se editó fuera de esta página. Pulsa «Revisar cambio» para ver esa edición externa junto con tu propio borrador; luego «Guardar» aplica la corrección o indica por qué no puede.",
+    "unreviewableDrift": "El archivo de agente {{file}} de {{member}} se editó fuera de esta página en un ajuste que esta página no puede mostrar, así que \"Guardar\" no puede aplicar la corrección. Deshaz esa edición externa en {{file}} y luego recarga esta página.",
     "sourceFailed": "No se pudo validar la configuración guardada. Recarga esta página para reintentar.",
     "runtime_failed": "Error al cargar el entorno de ejecución. La versión guardada permanece.",
     "server_verb_count": "{{on}} de {{total}} aprobados automáticamente",

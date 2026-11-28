@@ -10,8 +10,8 @@
  *                with no edit.
  *   refused   -- the same section after Review + Save on a file whose drift sits in
  *                a setting the page cannot show: the 409 `unreviewable_drift`
- *                refusal leaves the save-failed notice. The runner performs the
- *                clicks.
+ *                refusal's notice names the file and says to undo the outside
+ *                edit, then reload. The runner performs the clicks.
  *
  * A capture page has no gateway behind it, so the section's three calls are
  * answered here with the shapes the backend returns.
