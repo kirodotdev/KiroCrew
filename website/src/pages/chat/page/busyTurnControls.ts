@@ -14,7 +14,8 @@ import { drainPendingChunks } from '../../../lib/pendingChunkDrain'
 import { store, type AppDispatch } from '../../../store'
 import { appendMessage, appendSlotMessage, capturePendingAskId, requestStop, selectComposerBusy, selectSendConfirmed, type pendingQuestionFor } from '../../../store/chatSlice'
 import type { ChatMessage, ChatSlot } from '../../../types'
-import { mergeIntoDraft, mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
+import { mergeIntoDraft, mergeRecoveredDraft, setDraft, takeDraftApplied } from '../../../utils/chatDrafts'
+import { forgetSendRecovery } from '../../../utils/sendRecoveryStore'
 import { setFileDraft } from '../../../utils/chatFileDrafts'
 import { restoreToComposer } from '../../../utils/composerRestore'
 import { expandAll as expandPasteTokens } from '../../../utils/pasteTokens'
@@ -301,10 +302,15 @@ export function useBusyTurnControls({
     // is in flight, and a queue answer replaces this row through the same
     // `queue_push` reconcile a manual queue uses.
     const steerSlot = activeSlot
-    const verdict = steerMutation.mutateAsync({ text: llmTxt, sendId: steerSendId, slot: steerSlot, auto: opts?.auto === true, quote: steerQuote, askId: askAtSteer, files: steerFiles, baseAtPress: baseRevisionFor(steerSlot), typedText: typedTxt, dictated: wasDictated })
+    const recovered = takeDraftApplied(steerSlot, drafts.current[steerSlot] ?? '')
+    const verdict = steerMutation.mutateAsync({ text: llmTxt, sendId: steerSendId, slot: steerSlot, auto: opts?.auto === true, quote: steerQuote, askId: askAtSteer, files: steerFiles, baseAtPress: baseRevisionFor(steerSlot), typedText: typedTxt, dictated: wasDictated, recovered })
       .then(
-        receipt => receipt.status === 'dispatched' || receipt.status === 'queued'
-          || selectSendConfirmed(store.getState(), steerSlot, steerSendId),
+        receipt => {
+          const landed = receipt.status === 'dispatched' || receipt.status === 'queued' || selectSendConfirmed(store.getState(), steerSlot, steerSendId)
+          // An `unknown` answer accepted the steer and restores nothing, so it retires the records too.
+          if (landed || receipt.status === 'unknown') for (const id of recovered) forgetSendRecovery(steerSlot, id)
+          return landed
+        },
         () => false,
       )
     // Staged session references were appended to `llmTxt` as links, so they

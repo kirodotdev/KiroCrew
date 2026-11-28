@@ -191,6 +191,12 @@ async function readNewestPage(slot: string, limit: number, read: SlotDetailRead)
 }
 
 export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetch: fetch, sessionKeyHeader: _sk, sendResponseAuthRecovery }: ClientTransport) {
+  const plainSlotDetail = (slot: string, limit?: number, before?: number, signal?: AbortSignal): Promise<ChatSlotDetailResponse> => {
+    const p = new URLSearchParams()
+    if (limit) p.set('limit', String(limit))
+    if (before !== undefined) p.set('before', String(before))
+    return fetch(chatSlotDetailPath(slot) + '?' + p, { signal }).then(j)
+  }
   const summaries = {
     /** Intent summary for the chat summary panel.
      *
@@ -356,12 +362,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
       if (isLookPreviewFrame()) return { key: slot, ...lookPreviewSlotDetail() }
       // Only the newest bounded page is incremental: an older page (`before`) or
       // the whole-history read has no cursor to echo.
-      if (before !== undefined || !limit) {
-        const p = new URLSearchParams()
-        if (limit) p.set('limit', String(limit))
-        if (before !== undefined) p.set('before', String(before))
-        return fetch(chatSlotDetailPath(slot) + '?' + p, { signal }).then(j)
-      }
+      if (before !== undefined || !limit) return plainSlotDetail(slot, limit, before, signal)
       return readNewestPage(slot, limit, async (query, etag) => {
         // `page_bytes=1`: a cursor page is cut by the server's byte budget like a
         // plain one. Safe here because this store pages older with
@@ -376,6 +377,9 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
         return { page, etag: r.headers?.get('etag') ?? null }
       })
     },
+    /** A slot-detail page read past the held newest page, so a one-off scan cannot
+     *  change how the transcript's own refreshes read. */
+    chatSlotPage: (slot: string, limit: number, before?: number): Promise<ChatSlotDetailResponse> => plainSlotDetail(slot, limit, before),
     /** Create a chat slot on this machine. A session on a connected crew is
      *  created on that crew and opened through its window, never here. */
     createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, agent_kind?: 'member' | 'template', no_session_folder?: boolean, app_agent_owner?: string, default_folder?: boolean, project_from_slot?: string, start_mode_default?: boolean, project?: string) => {

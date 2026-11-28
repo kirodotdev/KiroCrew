@@ -155,7 +155,26 @@ export function typedDuringCreate(baseline: string, current: string): string | n
   return current.slice(baseline.length)
 }
 
-const isNonEmptyString = (v: unknown): string | null => (typeof v === 'string' && v ? v : null)
+/** Recovered sends merged into each slot's draft, HELD WITH the text they were merged into (a load publishes a stored entry's ids whether or not its text is adopted, so a tab keeping its own older draft must not read them as describing THAT text) and written by the same save as it (`encode`). */
+const appliedIds = new Map<string, { text: string; ids: Set<string> }>()
+
+/** `slot`'s ids when `text` is the draft they describe: `setDraft` carries them through every edit of it, so another tab's different draft never reads them. */
+const heldIds = (slot: string, text: string): Set<string> | undefined => { const held = appliedIds.get(slot); return held?.text === text ? held.ids : undefined }
+
+/** A stored entry is the text, or `{ text, applied }` once recovered sends were merged into it. */
+function sanitizeDraft(v: unknown, slot: string): string | null {
+  if (typeof v === 'string') return v || null
+  if (!v || typeof v !== 'object') return null
+  const { text, applied } = v as { text?: unknown; applied?: unknown }
+  if (typeof text !== 'string' || !text) return null
+  const held = appliedIds.get(slot)
+  if (Array.isArray(applied) && (!held || held.text === text)) {
+    const ids = held?.ids ?? new Set<string>()
+    for (const id of applied) if (typeof id === 'string' && id) ids.add(id)
+    if (ids.size) appliedIds.set(slot, { text, ids })
+  }
+  return text
+}
 
 const store = createSlotDraftStore<string>({
   key: DRAFTS_KEY,
@@ -163,11 +182,39 @@ const store = createSlotDraftStore<string>({
   ttlMs: DRAFT_TTL_MS,
   maxEntries: DRAFT_MAX_ENTRIES,
   maxStoreBytes: DRAFT_MAX_STORE_BYTES,
-  sanitize: isNonEmptyString,
+  sanitize: sanitizeDraft,
+  encode: (slot, text) => { const ids = heldIds(slot, text); return ids?.size ? { text, applied: [...ids] } : text },
 })
+
+/** Record that recovered sends `ids` were merged into `slot`'s draft, which now reads `text`. */
+export function markDraftApplied(slot: string, ids: readonly string[], text: string): void {
+  if (!slot || !ids.length) return
+  const held = heldIds(slot, text) ?? new Set<string>()
+  for (const id of ids) held.add(id)
+  appliedIds.set(slot, { text, ids: held })
+}
+
+/** Whether recovered send `sendId` is already in `text` — the draft the CALLER holds for `slot`, since only it knows whether the stored text was adopted. */
+export const isDraftApplied = (slot: string, sendId: string, text: string): boolean => heldIds(slot, text)?.has(sendId) === true
+
+/** The ids follow edits of the text they describe, and go when it does. */
+export function setDraft(drafts: Record<string, string>, slot: string, value: string): void {
+  const held = appliedIds.get(slot)
+  const follows = held?.text === (drafts[slot] ?? '')
+  store.set(drafts, slot, value)
+  const now = drafts[slot] ?? ''
+  if (held && follows && (now || !held.text)) held.text = now
+  else if (!now) appliedIds.delete(slot)
+}
+
+/** For a send taking `slot`'s draft `text`: the recovered sends leaving with it. */
+export function takeDraftApplied(slot: string, text: string): string[] {
+  const ids = heldIds(slot, text)
+  appliedIds.delete(slot)
+  return ids ? [...ids] : []
+}
 
 export const loadDrafts = store.load
 export const saveDrafts = store.save
 export const draftsSaveFailed = store.lastSaveFailed
-export const setDraft = store.set
-export const __resetForTests = store.__resetForTests
+export const __resetForTests = (): void => { appliedIds.clear(); store.__resetForTests() }

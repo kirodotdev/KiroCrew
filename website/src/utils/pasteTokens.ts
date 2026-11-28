@@ -215,6 +215,20 @@ export function carryPastes(text: string, carried: PasteBlock[], kept: PasteBloc
   return { text: remapped, full, pastes: [...kept, ...blocks] }
 }
 
+/** The blocks the draft's tokens point at that `kept` lost, taken from `sent` by id, or by seq for a legacy token. Each keeps the
+ *  seq its token shows now, since applying the payload earlier may have renumbered it. */
+export function restoreMissingBlocks(text: string, kept: PasteBlock[], sent: PasteBlock[]): PasteBlock[] {
+  if (!text || !sent.length) return kept
+  const have = new Set(kept.map(b => b.id))
+  const out = kept.slice()
+  for (const { start, end, block } of findTokenRanges(text, sent)) {
+    if (have.has(block.id)) continue
+    have.add(block.id)
+    out.push({ ...block, seq: Number(new RegExp(PASTE_TOKEN_REGEX.source).exec(text.slice(start, end))![1]) })
+  }
+  return out.length === kept.length ? kept : out
+}
+
 /**
  * Put a carried payload back into a composer's text under the shared recovery
  * rule. The exact-duplicate test runs against the payload WITH its tokens

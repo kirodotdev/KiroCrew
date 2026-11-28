@@ -9,11 +9,11 @@ import { useUserRowSpeaker } from './chat/shared-crew/MessageByline'
 import {
   switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput, selectPageLoaded,
 } from '../store/chatSlice'
-import { mergeReplyIntoDraft } from '../utils/chatDrafts'
+import { isDraftApplied, mergeReplyIntoDraft } from '../utils/chatDrafts'
 import type { ComposeSendOutcome, ComposeSendResult } from '../components/chat/GrillCard'
 import { DeliveryWarningStrip } from '../components/DeliveryWarningStrip'
 import { useDeliveryWarningStrip } from '../components/useDeliveryWarningStrip'
-import { mergeSentTurns, type SentTurnRestore } from './chat/page/composerSend'
+import { mergeSentTurns, parseSentTurn, type SentTurnRestore } from './chat/page/composerSend'
 import { slotIsRemoteBound } from '../store/dashboardSlice'
 import { useScrollManager } from './chat/useScrollManager'
 import { useStableCallbackProps } from './chat/useStableCallbackProps'
@@ -1181,7 +1181,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   const currentChatSlot = useCallback(() => activeSlotRef.current, [activeSlotRef])
   const deliveryStrip = useDeliveryWarningStrip<SentTurnRestore>({
-    slot: activeSlot, surface: 'page', currentSlot: currentChatSlot, restore: restoreSentTurn, merge: mergeSentTurns,
+    slot: activeSlot, surface: 'page', currentSlot: currentChatSlot, restore: restoreSentTurn, applied: (s, id) => isDraftApplied(s, id, drafts.current[s] ?? ''), merge: mergeSentTurns,
+    ready: !slotLoading && slotSwitchTarget !== activeSlot, parse: parseSentTurn,
   })
   const composerBand = useMemo(() => (
     <>
