@@ -354,9 +354,9 @@ class TestValidateToolArgs:
         assert result["include_project"] is False
 
     def test_spawn_run_context_groups_omitted(self):
-        """Absent flags must not materialize as False — omitted means all groups on."""
+        """Omitted: memory off (the parent writes the facts into the task), the rest on."""
         result = validate_tool_args({"task": "x"}, SPAWN_RUN_SCHEMA)
-        assert result.get("include_memory") is not False
+        assert result.get("include_memory") is False
         assert result.get("include_lessons") is not False
         assert result.get("include_project") is not False
 

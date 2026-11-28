@@ -37,7 +37,7 @@ Never hand the whole request to one worker just to wait for it and relay its ans
 2. Report the dispatch and **END YOUR TURN**. Only when the spawn receipt says parent work is supported may you keep one independent task yourself and first finish at most one minute of it. Do not poll or duplicate child work. `spawn_continue` always means yield immediately.
 3. Results arrive as `[Subagent completion event]` messages. Wait for the whole batch before spawning again. Read actual outcomes: a dispatch receipt or a child's success claim is not completion, and failed/cancelled runs are not success. Inspect side effects before retrying, and say work is still in progress while any remains.
 
-**Scope context deliberately** with `include_memory`, `include_lessons` and `include_project` (all default true); each parameter says when to turn it off. Agents are told which groups were withheld and must report gaps, not guess.
+**Scope context deliberately** with `include_memory` (default false: write the facts a child needs into its task), `include_lessons` and `include_project` (default true); each parameter says when to change it. Agents are told which groups were withheld and must report gaps, not guess.
 - `task_run`: run a spec file or inline task when asked to run/start a task or execute a spec.
 - `workflow_run(intent=…)`: multi-phase, resumable workflows in the Workflows tab; prefer over hand-rolled spawns when parts may need restarting. One-shot fan-out uses `spawn_run`.
 {{SUBAGENTS_END}}

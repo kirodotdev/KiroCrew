@@ -36,8 +36,10 @@ if TYPE_CHECKING:
 #
 # A spawning parent decides which of these groups its sub-agent inherits (the
 # ``include_memory`` / ``include_lessons`` / ``include_project`` flags on
-# spawn_run). ``None`` means every group and is what every other caller passes,
-# so the dashboard / Slack / cron / eval paths are unaffected.
+# spawn_run); a workflow node and a task step run with
+# ``CHILD_GROUPS_WITHOUT_MEMORY`` unless their call asked for memory. ``None``
+# means every group and is what every other caller passes, so the dashboard /
+# Slack / cron / eval paths are unaffected.
 #
 # The unlisted fourth group is conduct — critical rules, date, agent identity,
 # runtime, UI language, workspace identity, skills index. It is not switchable:
@@ -51,6 +53,11 @@ SWITCHABLE_CONTEXT_GROUPS = (
     CONTEXT_GROUP_LESSONS,
     CONTEXT_GROUP_PROJECT,
 )
+
+#: The scope a workflow node or a task step runs with unless its caller asked
+#: for memory: the parent's memory stays with the parent, lessons and project
+#: are kept as a full scope would give them.
+CHILD_GROUPS_WITHOUT_MEMORY = frozenset({CONTEXT_GROUP_LESSONS, CONTEXT_GROUP_PROJECT})
 
 _GROUP_DESCRIPTIONS = {
     CONTEXT_GROUP_MEMORY: "memory (user preferences, projects, prior sessions)",
@@ -77,10 +84,17 @@ def _build_context_scope_section(groups: frozenset[str] | None) -> str:
     missing = [g for g in SWITCHABLE_CONTEXT_GROUPS if g not in groups]
     if not missing:
         return ""
+    recall = (
+        "If you have memory_recall, ask it one specific question.\n"
+        if CONTEXT_GROUP_MEMORY in missing
+        else ""
+    )
     return (
         "[CONTEXT SCOPE] Your parent withheld: "
         + "; ".join(_GROUP_DESCRIPTIONS[g] for g in missing)
-        + ".\nIf the task needs any of it, say it was not provided and ask the "
+        + ".\n"
+        + recall
+        + "If the task needs any of it, say it was not provided and ask the "
         "parent — do not guess.\n[End of context scope]\n\n"
     )
 

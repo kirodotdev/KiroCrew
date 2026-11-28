@@ -200,13 +200,18 @@ def step_backend_kwargs(opts: dict) -> dict[str, str]:
 
 
 def step_session_name(opts: dict) -> Optional[str]:
-    """The step's ``session=`` name, scoped to its ``backend=`` when it names one.
+    """The step's ``session=`` name, scoped to its ``backend=`` and ``memory=``.
 
     A live session cannot change harness, so the same name on two backends must be
-    two sessions. A step that names no backend keeps its name, and so its key.
+    two sessions. Memory is injected when a session starts, so a session started
+    without it cannot take it on later: a ``memory=True`` step's name is its own
+    session too. A step that names neither keeps its name, and so its key.
     """
     session, backend = opts.get("session"), opts.get("backend")
-    return f"{session}@{backend}" if session is not None and backend else session
+    if session is None:
+        return None
+    name = f"{session}@{backend}" if backend else session
+    return f"{name}#memory" if opts.get("memory") is True else name
 
 
 async def apply_step_effort(provider: Any, level: Optional[str]) -> None:
@@ -457,6 +462,7 @@ def build_agent_fn(
                     resumed=_resumed,
                     agent=opts.get("agent") or default_agent,
                     cwd=step_cwd or cwd,
+                    include_memory=opts.get("memory") is True,
                 )
             # A step is never a person's turn and no session applier reads its
             # stream, so a person-only directive it calls is refused out loud.

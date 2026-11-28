@@ -184,6 +184,10 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "Human-readable task name (auto-derived from spec if omitted)",
                     },
+                    "include_memory": {
+                        "type": "boolean",
+                        "description": "Default false: steps get no memory; put needed facts in the spec.",
+                    },
                 },
                 "required": ["spec"],
             },

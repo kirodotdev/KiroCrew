@@ -193,14 +193,15 @@ class TestGatewayKeepsMain:
 
 
 class TestToolForwarding:
-    def test_a_call_that_names_nothing_posts_no_include_key(self):
+    def test_a_call_that_names_nothing_withholds_only_memory(self):
         for args in ({"task": "x"}, {"task": "x", "light": True}):
             (body,) = _tool(args)
-            assert not {"include_memory", "include_lessons", "include_project"} & body.keys()
+            assert body["include_memory"] is False
+            assert not {"include_lessons", "include_project"} & body.keys()
 
     def test_a_light_task_that_names_true_forwards_it(self):
         (body,) = _tool({"task": "x", "light": True, "include_lessons": True})
-        assert body["include_lessons"] is True and "include_memory" not in body
+        assert body["include_lessons"] is True and body["include_memory"] is False
 
     def test_a_task_that_is_not_light_forwards_no_true(self):
         (body,) = _tool({"task": "x", "include_lessons": True, "include_memory": True})

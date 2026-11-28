@@ -31,7 +31,9 @@ The `spawn_run` tool accepts:
 - `task` — single task description
 - `tasks` — array of tasks for parallel execution
 - `agent` / `agents` — optional agent name(s) for each task
-- `include_memory` / `include_lessons` / `include_project` — booleans (default `true`) switching off a context group the sub-agent would otherwise inherit
+- `include_memory` — boolean, default `false`: the sub-agent gets none of the parent's memory (preferences, stored facts, history, episodes, memory index). The parent writes the facts the child needs into the task; `true` gives the child the full memory block. A delegation to a crew member (`crew` / `target_member`) keeps that member's own memory unless the call sets `false`
+- `include_lessons` / `include_project` — booleans (default `true`) switching off a context group the sub-agent would otherwise inherit
+- A spawn started from the dashboard (`POST /api/spawn` with no flag) keeps every group. A workflow `ctx.agent()` node also starts without memory unless it asks (`ctx.agent(memory=True)`), and the `task_run` tool withholds memory from its steps unless asked (`task_run(include_memory=true)`); a task run a person starts (Task Runner page, chat command) keeps it
 - `max_turns` — per-spawn tool-call budget override (0 = unset, max 1000)
 - `model` — model override for this spawn (e.g. `deepseek-3.2`)
 - `reasoning_effort` — `low` / `medium` / `high` / `xhigh` / `max`, batch-wide
