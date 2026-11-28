@@ -1062,7 +1062,11 @@ all matter more to the operator than a pointer -- and those flags reach the stac
   get SIGTERM (unless the teardown already sent one), then SIGKILL, each followed
   by a bounded wait for the group to empty (`platform_compat.pgroup_exists`). Only
   that one group is signalled, so another forward's plugin is never touched; a
-  Popen-like object without the record keeps the pid-resolved group signal. Every
+  Popen-like object without the record keeps the pid-resolved group signal. On
+  **Windows** `open_port_forward` records the wrapper's creation time and the
+  port; once the wrapper has exited, `kill_port_forward` ends its attributed
+  descendants through `kill_pid_pinned` and logs one WARNING naming the port for
+  any that survive. Every
   no-URL exit reaps its tunnel too: `connect()` folds a mint failure — whether
   `mint_token` returns `""` **or raises** — into a `ready=False` Connection after
   `_terminate`; and the **social-login** paths close their callback tunnel on the
