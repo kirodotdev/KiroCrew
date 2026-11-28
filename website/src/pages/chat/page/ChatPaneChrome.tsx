@@ -37,7 +37,8 @@ interface ChatPaneChromeProps {
   navigate: NavigateFunction
   provider: ProviderAdapter
   setVoiceRecoverySlot: Dispatch<SetStateAction<string | null>>
-  switchSlotGone: { name: string; kind: 'gone' | 'failed' | 'closed'; report?: ErrorReport; } | null
+  switchSlotGone: { name: string; kind: 'gone' | 'failed' | 'closed'; key?: string; reason?: string; report?: ErrorReport; } | null
+  retryOpen: (key: string) => void
   titleInTopbar: boolean
   undeletableHistory: HistoryDeleteRefusal | null
   unresumableResume: { key: string; title: string; surface: string; reason: 'surface' | 'failed'; } | null
@@ -80,7 +81,7 @@ interface ChatPaneChromeProps {
  * The chat pane's top chrome: the crew window cover, the screen-snip overlay, the pane notices, the phone's floating sessions opener, and the open-session tab strip.
  */
 export default function ChatPaneChrome({
-  embedded, activeSlot, connected, dispatch, isMobile, navigate, provider, setVoiceRecoverySlot, switchSlotGone, titleInTopbar, undeletableHistory, unresumableResume, crewWindow, messages,
+  embedded, activeSlot, connected, dispatch, isMobile, navigate, provider, setVoiceRecoverySlot, switchSlotGone, retryOpen, titleInTopbar, undeletableHistory, unresumableResume, crewWindow, messages,
   slotRunning, splitMode, selectionCapabilitiesQ, actionError, setActionError, setUploadError, setUploadHint, snipFrame, uploadError, uploadHint, handleSnipCancel, handleSnipComplete, closeSessionTab,
   openShortNameMatch, resumeSidClosed, ownsSessionTabs, selectSessionTab, sessionTabs, setSidError, setSidMatches, sidError, sidMatches, splitFeatureEnabled, chipDefault, dismissPinStatus, pinError, pinStatus,
   inlineSidePanelShowing, openSidebar, sidebarOpen, COLLAPSED_SESSION_TABS_INSET,
@@ -130,6 +131,7 @@ export default function ChatPaneChrome({
         actionError={actionError}
         setActionError={setActionError}
         switchSlotGone={switchSlotGone}
+        retryOpen={retryOpen}
         setVoiceRecoverySlot={setVoiceRecoverySlot}
         pinError={pinError}
         pinStatus={pinStatus}

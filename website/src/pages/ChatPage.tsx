@@ -1139,6 +1139,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (sidebarClickOpensTab) ensureSlotTab(key)
     flyout.close()
   }, [dispatch, flyout, setSplitMode, sidebarClickOpensTab, ensureSlotTab])
+  // The failed-open notice's Retry: the user opening that chat again.
+  const retryOpen = useCallback((key: string) => {
+    void dispatch(switchSlot({ key, announceOnMissing: true, gesture: true }))
+  }, [dispatch])
   const {
     flyoutNew, panelMaximized, panelFillWidth, mobileSessionsToggle, topbarSessionsToggle, mobileNewSessionItem, switchMemoryMode, showComposerMemoryChip, memorySwitching, composerOptimizing, handleOptimizingChange,
   } = usePanelLayout({
@@ -1226,7 +1230,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       <div ref={setChatPaneEl} data-chat-scope="" onPointerDownCapture={launchedDraftInteracted} onKeyDownCapture={launchedDraftInteracted} onInputCapture={launchedDraftInteracted} onChangeCapture={launchedDraftInteracted} className={`relative flex flex-col ${embedded || popout ? 'bg-bg ' : ''}min-w-0 min-h-0 h-full overflow-hidden ${(activityOpen && !activitySlot) || search.isOpen ? 'flex-[1_1_60%]' : 'flex-1'}`} style={{ transition: 'flex 0.2s', ...(!sidebarOpen && !isMobile ? { marginLeft: -COLLAPSED_PANE_RECLAIM_PX } : {}), '--mc-content-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).messages, '--mc-input-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).input } as React.CSSProperties}>
         <ChatPaneChrome
           embedded={embedded} activeSlot={activeSlot} connected={connected} dispatch={dispatch} isMobile={isMobile} navigate={navigate} provider={provider} setVoiceRecoverySlot={setVoiceRecoverySlot}
-          switchSlotGone={switchSlotGone} titleInTopbar={titleInTopbar} undeletableHistory={undeletableHistory} unresumableResume={unresumableResume} crewWindow={crewWindow} messages={messages}
+          switchSlotGone={switchSlotGone} retryOpen={retryOpen} titleInTopbar={titleInTopbar} undeletableHistory={undeletableHistory} unresumableResume={unresumableResume} crewWindow={crewWindow} messages={messages}
           slotRunning={slotRunning} splitMode={splitMode} selectionCapabilitiesQ={selectionCapabilitiesQ} actionError={actionError} setActionError={setActionError} setUploadError={setUploadError}
           setUploadHint={setUploadHint} snipFrame={snipFrame} uploadError={uploadError} uploadHint={uploadHint} handleSnipCancel={handleSnipCancel} handleSnipComplete={handleSnipComplete}
           closeSessionTab={closeSessionTab} openShortNameMatch={openShortNameMatch} resumeSidClosed={resumeSidClosed} ownsSessionTabs={ownsSessionTabs} selectSessionTab={selectSessionTab} sessionTabs={sessionTabs}
