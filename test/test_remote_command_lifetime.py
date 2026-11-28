@@ -49,7 +49,12 @@ def _wait_dead(pid: int) -> None:
 def test_a_timed_out_command_takes_its_whole_group_with_it(tmp_path):
     marker = tmp_path / "bg.pid"
     ws = wt.Workspace(str(tmp_path))
-    out = ws.run_command(f"sleep 60 & echo $! > {marker}; echo partial; sleep 60", timeout=1)
+    # timeout=1: run_command's floor is max(1, ...) so 1 s is the minimum
+    # usable value; 0 would clamp to DEFAULT_TIMEOUT (120 s).
+    out = ws.run_command(
+        f"sleep 3600 & echo $! > {marker}; echo partial; sleep 3600",
+        timeout=1,
+    )
     assert out.startswith("partial\n") and out.endswith("[timed out after 1s]")
     _wait_dead(_background_pid(marker))
 
@@ -61,7 +66,8 @@ def test_a_retired_command_takes_its_whole_group_with_it(tmp_path, monkeypatch):
 
     class RetiredWhileWaiting(real_popen):
         def wait(self, timeout=None):
-            if timeout is not None and timeout > 10:
+            # Fire on the long initial wait, not on _unwind's short one.
+            if timeout is not None and timeout > wt._KILL_GRACE_SECS * 2:
                 _background_pid(marker)
                 raise SystemExit(0)  # what main()'s SIGTERM handler raises
             return super().wait(timeout=timeout)
@@ -69,7 +75,10 @@ def test_a_retired_command_takes_its_whole_group_with_it(tmp_path, monkeypatch):
     monkeypatch.setattr(wt.subprocess, "Popen", RetiredWhileWaiting)
     ws = wt.Workspace(str(tmp_path))
     with pytest.raises(SystemExit):
-        ws.run_command(f"sleep 60 & echo $! > {marker}; sleep 60", timeout=60)
+        ws.run_command(
+            f"sleep 3600 & echo $! > {marker}; sleep 3600",
+            timeout=0,
+        )
     _wait_dead(_background_pid(marker))
 
 
