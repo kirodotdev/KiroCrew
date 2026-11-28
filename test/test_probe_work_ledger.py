@@ -11,6 +11,8 @@ out of the probe: a probe defect cannot look like a policy defect.
 
 from __future__ import annotations
 
+import functools
+
 import pytest
 
 from kiro_crew import ledger_wake as lw
@@ -300,8 +302,11 @@ class TestRateLimit:
         assert planted.exists(), "the write consumed the planted temporary path"
         assert planted.read_text(encoding="utf-8") == "do not touch"
         planted.unlink()
-        # No temporary survives a successful write, in a directory nothing sweeps.
-        assert sorted(p.name for p in path.parent.iterdir()) == [path.name]
+        # No temporary survives a successful write, in a directory nothing sweeps;
+        # the lock sidecar is the only other entry.
+        assert sorted(p.name for p in path.parent.iterdir()) == sorted(
+            [path.name, f"{path.name}.lock"]
+        )
         if sys.platform != "win32":
             # POSIX only. ``mkstemp`` creates at 0o600 there, which is the second
             # thing it buys us. Windows does not express permissions in ``st_mode``
@@ -339,6 +344,95 @@ class TestRateLimit:
     def test_the_bound_is_derived_from_the_stores_own_item_cap(self):
         """A hardcoded number would drift from the cap it is meant to cover."""
         assert lw._MAX_TRACKED_ITEMS >= work_ledger.MAX_ITEMS_PER_CONDUCTOR
+
+
+class TestTwoWatchesShareOneRateFile:
+    """Two watches on one ledger charge one rate file, and neither charge is lost.
+
+    The overlap is forced in one thread: the first rate-file read runs a second
+    watch's whole call before it returns, which is two ticks that both read before
+    either writes. In one thread the lock's holder is the caller itself, so the
+    nested take uses the helper's single-shot form, which refuses at once.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _single_shot_lock(self, _floor_monkeypatch):
+        from kiro_crew import platform_lock_compat
+
+        single_shot = functools.partial(platform_lock_compat.file_lock, wait=False)
+        _floor_monkeypatch.setattr(lw, "file_lock", single_shot, raising=False)
+
+    @staticmethod
+    def _during_first_read(monkeypatch, other_watch):
+        """Run *other_watch* inside the next rate-file read; its answer lands in the list."""
+        real_read = lw._read_rate
+        armed = [True]
+        answers: list[bool] = []
+
+        def read(conductor_key):
+            snapshot = real_read(conductor_key)
+            if armed:
+                armed.clear()
+                answers.append(other_watch())
+            return snapshot
+
+        monkeypatch.setattr(lw, "_read_rate", read)
+        return answers, real_read
+
+    def test_every_charge_that_reports_landed_is_in_the_stored_budget(self, monkeypatch):
+        answers, real_read = self._during_first_read(
+            monkeypatch,
+            lambda: lw.note_wake(CONDUCTOR, ITEM, token="tok-b", watcher="b", now=1001.0),
+        )
+        first = lw.note_wake(CONDUCTOR, ITEM, token="tok-a", watcher="a", now=1000.0)
+
+        assert first is True
+        assert len(answers) == 1
+        entry = real_read(CONDUCTOR)[ITEM]
+        for landed, moment, watcher, token in (
+            (first, 1000.0, "a", "tok-a"),
+            (answers[0], 1001.0, "b", "tok-b"),
+        ):
+            if landed:
+                assert moment in entry["wakes"], watcher
+                assert entry["seen"][watcher][0] == token, watcher
+        # A charge that did not land left the budget unspent, so the next tick charges it.
+        assert lw.note_wake(CONDUCTOR, ITEM, token="tok-b", watcher="b", now=1001.0) is True
+        entry = real_read(CONDUCTOR)[ITEM]
+        assert sorted(entry["wakes"]) == [1000.0, 1001.0]
+        assert sorted(entry["seen"]) == ["a", "b"]
+
+    def test_closing_an_item_keeps_a_charge_another_watch_made_meanwhile(self, monkeypatch):
+        lw.note_wake(CONDUCTOR, ITEM, token="tok-a", watcher="a", now=1000.0)
+        answers, real_read = self._during_first_read(
+            monkeypatch,
+            lambda: lw.note_wake(CONDUCTOR, OTHER_ITEM, token="tok-b", watcher="b", now=1001.0),
+        )
+
+        assert lw.forget_items(CONDUCTOR, [ITEM]) is True
+
+        assert answers == [True]
+        stored = real_read(CONDUCTOR)
+        assert ITEM not in stored
+        assert stored.get(OTHER_ITEM, {}).get("wakes") == [1001.0]
+
+    def test_a_lock_that_cannot_be_taken_charges_nothing_and_says_so(self, monkeypatch):
+        """The probe refuses a wake it could not charge, so no wake goes out uncounted."""
+        lw.note_wake(CONDUCTOR, ITEM, now=1000.0)
+        path = lw._rate_path(CONDUCTOR)
+        before = path.read_bytes()
+
+        def _held(*_args, **_kwargs):
+            raise BlockingIOError("file lock is held; not waiting for it")
+
+        monkeypatch.setattr(lw, "file_lock", _held, raising=False)
+        assert lw.note_wake(CONDUCTOR, OTHER_ITEM, now=1001.0) is False
+        assert lw.forget_items(CONDUCTOR, [ITEM]) is False
+        assert path.read_bytes() == before
+
+    def test_a_quiet_close_takes_no_lock_and_creates_no_directory(self):
+        assert lw.forget_items(CONDUCTOR, [ITEM]) is True
+        assert not lw._rate_path(CONDUCTOR).parent.exists()
 
 
 class TestBriefs:
