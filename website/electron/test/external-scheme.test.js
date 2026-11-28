@@ -76,6 +76,8 @@ describe("classifyNavigation", () => {
       "vscode://file/D:/work/x.py:3:2",
       "vscode-insiders://file/C:/Users/me/a.ts",
       "kiro://vscode-remote/ssh-remote+dev-box/home/me/a.ts:1",
+      "kiro://vscode-remote/ssh-remote+dev-box/home/me/proj?windowId=_blank",
+      "vscode://vscode-remote/ssh-remote+dev-box/home/me/proj?windowId=_blank",
       "kiro://file/Users/me/repo/a.ts",
     ]) {
       assert.equal(classifyNavigation(url, ORIGIN), "confirm", url);
@@ -96,6 +98,10 @@ describe("classifyNavigation", () => {
       "vscode://file/Users/me/a.ts%00",
       "vscode://file/Users/me/%E0%A4%A",
       "vscode://file/Users/me/a.ts?x=1",
+      "kiro://vscode-remote/ssh-remote+dev-box/home/me/proj?windowId=1",
+      "kiro://vscode-remote/ssh-remote+dev-box/home/me/proj?windowId=_blank&x=1",
+      "kiro://vscode-remote/ssh-remote+dev-box/home/me/a.ts:1?windowId=_blank",
+      "kiro://some.extension/run?windowId=_blank",
       "vscode://file/Users/me/a.ts#x",
       "vscode://file/Users/me/a b.ts",
       "VSCODE://file/Users/me/a.ts",

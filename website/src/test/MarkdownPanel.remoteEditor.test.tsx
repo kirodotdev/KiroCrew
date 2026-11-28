@@ -134,9 +134,9 @@ describe('remoteEditorUrl', () => {
     expect(remoteEditorUrl('vscode', 'dev-box', '/home/u/.env')).toBe('vscode://vscode-remote/ssh-remote+dev-box/home/u/.env:1')
   })
 
-  it('ends a file link in :1 and leaves a folder link bare, so each opens as what it is', () => {
+  it('ends a file link in :1 and a folder link in ?windowId=_blank, so each opens as what it is', () => {
     expect(remoteEditorUrl('kiro', 'dev-box', '/home/u/a.md')).toBe('kiro://vscode-remote/ssh-remote+dev-box/home/u/a.md:1')
-    expect(remoteEditorUrl('kiro', 'dev-box', '/home/u/proj', 'dir')).toBe('kiro://vscode-remote/ssh-remote+dev-box/home/u/proj')
+    expect(remoteEditorUrl('kiro', 'dev-box', '/home/u/proj', 'dir')).toBe('kiro://vscode-remote/ssh-remote+dev-box/home/u/proj?windowId=_blank')
   })
 
   it('builds no link for a name the desktop editor-link check refuses', () => {
