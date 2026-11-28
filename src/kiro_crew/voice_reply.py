@@ -248,6 +248,15 @@ OUTPUT_FORMAT = "mp3"
 OGG_OPUS_FORMAT = "ogg_opus"
 MAX_CHARS = 2900  # Polly SSML limit ~3000 chars, leave margin
 
+#: A Latin mark ends a sentence only before whitespace, so "3.5" stays whole.
+_LATIN_SENTENCE_ENDS = ".!?"
+#: CJK 。！？；, the Devanagari and Bengali danda ।॥, the Arabic question mark ؟ and
+#: the Urdu full stop ۔ never occur inside a word, so they need no following space.
+_SPACELESS_SENTENCE_ENDS = "。！？；।॥؟۔"
+_SENTENCE_SPLIT_RE = re.compile(
+    rf"(?<=[{re.escape(_LATIN_SENTENCE_ENDS)}])\s+|(?<=[{_SPACELESS_SENTENCE_ENDS}])\s*|\n+"
+)
+
 VALID_ENGINES = frozenset({"neural", "generative", "long-form", "standard"})
 _RATE_RE = re.compile(r"^\d{1,3}%$")
 _PITCH_RE = re.compile(r"^[+-]\d{1,2}%$")
@@ -554,8 +563,9 @@ def text_to_ssml(
         return ""
     if len(clean) > MAX_CHARS:
         # Truncate at last sentence boundary before limit
-        trunc = clean[:MAX_CHARS].rsplit(".", 1)[0]
-        clean = (trunc or clean[:MAX_CHARS]) + "."
+        head = clean[:MAX_CHARS]
+        end = max(head.rfind(mark) for mark in _LATIN_SENTENCE_ENDS + _SPACELESS_SENTENCE_ENDS)
+        clean = head[: end + 1] if end > 0 else head + "."
     # Escape XML entities
     clean = clean.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     # Natural pauses
@@ -1356,11 +1366,11 @@ async def upload_voice_to_slack(
 
 
 def split_sentences(text: str) -> list[str]:
-    """Split speakable text at Latin/CJK sentence and paragraph boundaries."""
+    """Split speakable text at sentence and paragraph boundaries in any supported script."""
     clean = strip_markdown(text)
     if not clean:
         return []
-    parts = re.split(r"(?<=[.!?])\s+|(?<=[。！？；])\s*|\n+", clean)
+    parts = _SENTENCE_SPLIT_RE.split(clean)
     return [s.strip() for s in parts if s.strip()]
 
 
