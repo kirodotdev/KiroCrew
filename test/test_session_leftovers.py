@@ -56,7 +56,8 @@ class TestSessionMembers:
         footprint = {100: 10 * mib, 200: 20 * mib, 300: 300 * mib, 310: 5 * mib}
         children = {100: [200], 300: [310]}
         monkeypatch.setattr(platform_compat, "IS_MACOS", True)
-        monkeypatch.setattr(proctable, "_darwin_process_phys_footprint_bytes", footprint.get)
+        # Through the facade: platform_compat_metrics binds this name too.
+        monkeypatch.setattr(platform_compat, "_darwin_process_phys_footprint_bytes", footprint.get)
         monkeypatch.setattr(platform_compat, "darwin_child_pids", lambda p: children.get(p, []))
         monkeypatch.setattr(proctable, "darwin_session_pids", lambda sid: [100, 200, 300])
         assert proctable.darwin_footprint_tree_mb(100) == 335.0

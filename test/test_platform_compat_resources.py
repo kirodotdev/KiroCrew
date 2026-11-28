@@ -337,6 +337,7 @@ class TestProcSubtreePss:
         import io
 
         monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "IS_MACOS", False)
         monkeypatch.setattr(pc, "_proc_children", lambda pid: tree.get(pid, []))
         real_open = builtins.open
         rollups = {f"/proc/{pid}/smaps_rollup": body for pid, body in files.items()}
