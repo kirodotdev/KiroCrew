@@ -8,12 +8,12 @@ interface MainWindowSettingAPI<In> {
 
 /**
  * One desktop-app setting the main process answers only to the main window's
- * own dashboard (useCloseAction, useTrayIcon). Like the local-gateway switch,
- * the choice lives in the desktop app's own config, because it governs the app
- * on THIS machine.
+ * own dashboard (useCloseAction, useTrayIcon, useLocalGateway). The choice
+ * lives in the desktop app's own config, because it governs the app on THIS
+ * machine.
  *
- * Unlike useLocalGateway, a present bridge is not enough: `supported` turns
- * true only once a read succeeds. The value is only ever one the main process
+ * A present bridge is not enough: `supported` turns true only once a read
+ * succeeds. The value is only ever one the main process
  * returned, and a write is ignored while another is in flight. A change of
  * `readKey` reads the value again.
  */

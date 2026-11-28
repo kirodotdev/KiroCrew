@@ -995,11 +995,16 @@ function createIpcRegistrar({
       app.setBadgeCount(clampBadgeCount(count));
     });
 
-    // This setting deliberately has next-launch semantics. Toggling it never
-    // starts or stops the gateway which owns the current session.
-    ipcMain.handle("local-gateway:get", () => isLocalGatewayEnabled(store));
-    ipcMain.handle("local-gateway:set", (_event, enabled) =>
-      setLocalGatewayEnabled(store, enabled));
+    // Next-launch semantics: toggling never starts or stops the running gateway.
+    // Main window only: a connection window shares this preload but shows another machine.
+    ipcMain.handle("local-gateway:get", async (event) => {
+      assertMainWindowDashboard(event, "local-gateway:get");
+      return isLocalGatewayEnabled(store);
+    });
+    ipcMain.handle("local-gateway:set", async (event, enabled) => {
+      assertMainWindowDashboard(event, "local-gateway:set");
+      return setLocalGatewayEnabled(store, enabled);
+    });
 
     // THE local-dashboard gate. Every channel whose answer is a fact about the
     // machine in front of the user — rather than about the gateway a window

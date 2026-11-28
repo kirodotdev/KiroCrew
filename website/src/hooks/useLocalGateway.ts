@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useMainWindowSetting } from './useMainWindowSetting'
 
 // Local-gateway bridge exposed by electron/preload.js. The setting lives in the
 // desktop app's own config, not in the gateway's, because it decides whether a
@@ -8,32 +8,24 @@ import { useState, useEffect, useCallback } from 'react'
 // control rather than showing one that cannot work.
 const localGatewayAPI = (): LocalGatewayAPI | undefined => window.localGatewayAPI
 
+const canonical = (v: unknown): boolean => v !== false
+
 /**
  * Read/write the desktop app's "run a local gateway" choice.
  *
- * `enabled` starts true so a first paint before the bridge answers matches the
- * shipped default instead of flashing the opposite state.
+ * main.js answers only the main window's dashboard, so `supported` turns true
+ * only once a read succeeds: a connection window to another machine, whose
+ * read is refused, never paints the switch, rather than painting it and then
+ * pulling it out. The switch shows only values main.js returned, so a refused
+ * write leaves it where it was. `enabled` starts true, the shipped default.
  */
 export function useLocalGateway() {
-  const supported = !!localGatewayAPI()
-  const [enabled, setEnabled] = useState(true)
-
-  useEffect(() => {
-    const api = localGatewayAPI()
-    if (!api) return
-    let alive = true
-    void api.get().then(v => { if (alive) setEnabled(v) }).catch(() => {})
-    return () => { alive = false }
-  }, [])
-
-  // The stored value is authoritative, so the switch renders what main.js
-  // actually wrote rather than what was asked for.
-  const setLocalGatewayEnabled = useCallback((next: boolean) => {
-    const api = localGatewayAPI()
-    if (!api) return
-    setEnabled(next)
-    void api.set(next).then(v => setEnabled(v)).catch(() => {})
-  }, [])
-
-  return { localGatewayEnabled: enabled, localGatewaySupported: supported, setLocalGatewayEnabled }
+  const s = useMainWindowSetting(localGatewayAPI, canonical, true)
+  return {
+    localGatewayEnabled: s.value,
+    localGatewaySupported: s.supported,
+    localGatewayPending: s.pending,
+    localGatewayFailed: s.failed,
+    setLocalGatewayEnabled: s.set,
+  }
 }
