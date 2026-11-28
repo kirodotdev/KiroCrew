@@ -84,6 +84,41 @@ class TestPathLauncherOwnership:
         out = capsys.readouterr().out
         assert f"kirocrew CLI: ✅ {os.path.realpath(exe)}" in out
         assert "different install" not in out
+        # cmd.exe re-parses a batch launcher's arguments, so the row names its kind.
+        assert "launcher kind: batch file (kirocrew.cmd)" in out
+        # Quoting does not stop %NAME% expansion, so the note must not imply it does.
+        assert "%NAME% expands even inside quotes" in " ".join(out.split())
+
+    def test_a_divergent_batch_launcher_still_names_its_kind(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        other = tmp_path / "other" / "Scripts" / "kirocrew.bat"
+        other.parent.mkdir(parents=True)
+        other.write_text("")
+        running = tmp_path / "install" / "Scripts" / "kirocrew.cmd"
+        running.parent.mkdir(parents=True)
+        running.write_text("")
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda c, **kw: str(other))
+        monkeypatch.setattr("kiro_crew.agent._resolve_kirocrew_bin", lambda: str(running))
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert "different install" in out
+        assert "launcher kind: batch file (kirocrew.bat)" in out
+
+    def test_a_posix_launcher_has_no_launcher_kind_line(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        exe = tmp_path / "opt" / "bin" / "kirocrew"
+        exe.parent.mkdir(parents=True)
+        exe.write_text("")
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda c, **kw: str(exe))
+        monkeypatch.setattr("kiro_crew.agent._resolve_kirocrew_bin", lambda: str(exe))
+
+        cli_doctor._doctor_path_launcher()
+
+        assert "launcher kind" not in capsys.readouterr().out
 
     def test_divergent_launcher_names_both_paths(self, monkeypatch, tmp_path, capsys) -> None:
         wheel = tmp_path / "crew-venv" / "bin" / "kirocrew"
