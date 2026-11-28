@@ -62,9 +62,12 @@ _UNQUOTABLE = frozenset('"\r\n\0!')
 def windows_forwarder(target: str) -> bytes | None:
     """The ``kirocrew.cmd`` body that runs *target* with the caller's arguments.
 
-    One line, ``@"<target>" %*``: ``%*`` passes every argument through as typed,
-    and the batch file's exit code is the target's, including when the target is
-    itself a ``.cmd`` (control passes to it and does not return). ``%`` in the
+    One line, ``@"<target>" %*``: ``%*`` passes the arguments cmd.exe parsed, and
+    cmd.exe parses them before this file runs, so an unquoted ``&``, ``|`` or
+    ``^`` in an argument splits or drops it, and ``%NAME%`` expands even inside
+    quotes (``kirocrew doctor`` says so on the launcher row). The batch file's
+    exit code is the target's, including when the target is itself a ``.cmd``
+    (control passes to it and does not return). ``%`` in the
     path is doubled so cmd does not expand it as a variable; ``^``, ``&`` and the
     other metacharacters are inert inside the quotes.
 

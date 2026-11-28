@@ -389,7 +389,8 @@ def _doctor_path_launcher() -> None:
     from kiro_crew.agent import _resolve_kirocrew_bin
     from kiro_crew.env_own_kirocrew import forwarder_target
 
-    on_path = shutil.which("kirocrew")
+    found = shutil.which("kirocrew")
+    on_path = found
     if on_path:
         # An agent shell on Windows finds the crew home's forwarder first.
         on_path = forwarder_target(on_path) or on_path
@@ -402,22 +403,30 @@ def _doctor_path_launcher() -> None:
     if not os.path.isabs(running) or os.path.realpath(on_path) == os.path.realpath(running):
         # Canonical spelling, matching the Data Home row and the comparison above.
         print(f"  kirocrew CLI: ✅ {os.path.realpath(on_path)}")
-        return
-    if _toolbox_launcher_runs_this_version(on_path):
+    elif _toolbox_launcher_runs_this_version(on_path):
         # The realpath can be Toolbox's shared dispatcher, so the PATH spelling is
         # the one that names the tool.
         print(f"  kirocrew CLI: ✅ {on_path} (Toolbox launcher, same version)")
-        return
-    print("  ⚠ kirocrew CLI on PATH belongs to a different install than this one.")
-    # Paths are printed UNWRAPPED, one per line: a wrapped path cannot be copied
-    # or pasted into a command, which is the first thing someone does with it.
-    print(f"{render._INDENT}on PATH:      {os.path.realpath(on_path)}")
-    print(f"{render._INDENT}this install: {os.path.realpath(running)}")
-    render._print_wrapped(
-        "Both can coexist — the wheel keeps its own updates — but `kirocrew` in a "
-        "terminal runs the one on PATH, which may be a different version or "
-        "channel. Run `kirocrew setup` from the install you want to own the name."
-    )
+    else:
+        print("  ⚠ kirocrew CLI on PATH belongs to a different install than this one.")
+        # Paths are printed UNWRAPPED, one per line: a wrapped path cannot be copied
+        # or pasted into a command, which is the first thing someone does with it.
+        print(f"{render._INDENT}on PATH:      {os.path.realpath(on_path)}")
+        print(f"{render._INDENT}this install: {os.path.realpath(running)}")
+        render._print_wrapped(
+            "Both can coexist — the wheel keeps its own updates — but `kirocrew` in a "
+            "terminal runs the one on PATH, which may be a different version or "
+            "channel. Run `kirocrew setup` from the install you want to own the name."
+        )
+    if found and found.lower().endswith((".cmd", ".bat")):
+        # cmd.exe parses a batch launcher's arguments before Python sees them, so
+        # a value is cut or rewritten with exit code 0 and nothing else says so.
+        print(f"{render._INDENT}launcher kind: batch file ({os.path.basename(found)})")
+        render._print_wrapped(
+            "cmd.exe reads its arguments first: an unquoted &, | or ^ splits or "
+            "drops one, and %NAME% expands even inside quotes. Pass such a value "
+            "in a file or on standard input."
+        )
 
 
 #: The prefix an earlier version's browser CLI installer wrote under the data
