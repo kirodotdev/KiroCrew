@@ -89,23 +89,34 @@ def _sandbox_can_spawn() -> bool:
     The probe owns the ``sel()`` singleton and builds it ``sync=True``. An async writer
     thread would hold the log open on Windows and re-create the deleted home later,
     leaking a temp directory per xdist worker.
+
+    It also clears the sandbox markers a Kiro Crew agent session exports, as the
+    isolation floor does for every test. With them set ``wrap_argv()`` passes the
+    child through as already sandboxed, so the probe says yes on a host where the
+    lifecycle tests then fail.
     """
     try:
         from kiro_crew import sandbox as _sb
 
         with tempfile.TemporaryDirectory() as empty_home:
-            saved = os.environ.get("KIROCREW_HOME")
+            saved = {
+                name: os.environ.get(name)
+                for name in ("KIROCREW_HOME", "KIROCREW_SANDBOX_ACTIVE", "KIROCREW_SANDBOX_LEVEL")
+            }
             os.environ["KIROCREW_HOME"] = empty_home
+            os.environ.pop("KIROCREW_SANDBOX_ACTIVE", None)
+            os.environ.pop("KIROCREW_SANDBOX_LEVEL", None)
             owned = None
             cleanup = None
             try:
                 owned = _own_probe_sel(empty_home)
                 argv, cleanup = _sb.wrap_argv([sys.executable, "-c", "pass"], mode="standard")
             finally:
-                if saved is None:
-                    os.environ.pop("KIROCREW_HOME", None)
-                else:
-                    os.environ["KIROCREW_HOME"] = saved
+                for name, value in saved.items():
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
                 _retire_probe_sel(owned)
             try:
                 # cwd=empty_home: a child inherits pytest's CWD (the checkout)
@@ -132,6 +143,34 @@ _needs_sandbox_spawn = pytest.mark.skipif(
     reason="OS sandbox cannot spawn a surviving child here (e.g. GitHub hosted "
     "runners deny unshare(NEWNS)); start_app_backend() correctly fail-closes to None",
 )
+
+
+def test_the_spawn_probe_does_not_see_an_agent_sessions_sandbox_markers(monkeypatch):
+    from kiro_crew import sandbox as _sb
+
+    monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+    monkeypatch.setenv("KIROCREW_SANDBOX_LEVEL", "standard")
+    seen = []
+
+    def record(argv, mode="auto", **_kw):
+        seen.append(
+            (os.environ.get("KIROCREW_SANDBOX_ACTIVE"), os.environ.get("KIROCREW_SANDBOX_LEVEL"))
+        )
+        return ["wrapped", *argv], None
+
+    spawned = []
+
+    def spawn(argv, **_kw):
+        spawned.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(_sb, "wrap_argv", record)
+    monkeypatch.setattr(subprocess, "run", spawn)
+    assert _sandbox_can_spawn()
+    assert seen == [(None, None)]
+    assert spawned == [["wrapped", sys.executable, "-c", "pass"]]
+    assert os.environ["KIROCREW_SANDBOX_ACTIVE"] == "1"
+    assert os.environ["KIROCREW_SANDBOX_LEVEL"] == "standard"
 
 
 class TestPortAllocation:
