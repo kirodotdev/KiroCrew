@@ -131,8 +131,14 @@ def _tar_archive_targets_self(operand: str) -> bool:
         return False
     if _glob_host_is_self(operand.strip(), host):  # read like a git remote host
         return True
+    # After a plain host the word is a remote file name, read like an scp file
+    # operand (``far:b-$((i)).tar`` dials ``far``).  An expansion or bracket in the
+    # host part, or an ``@`` or expansion other than arithmetic after the colon,
+    # keeps the host-position read.
+    pre, _, post = t.partition(":")
+    host_position = bool(set(pre) & set("$`[") or set(post.replace("$((", "")) & set("$`@"))
     return _host_is_self(host, dns_fallback=False, match_globs=False) or _operand_targets_self(
-        t, host_position=True, dns=False, match_globs=False, file_operand=True
+        t, host_position=host_position, dns=False, match_globs=False, file_operand=True
     )
 
 

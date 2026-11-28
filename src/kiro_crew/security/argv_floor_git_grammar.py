@@ -121,21 +121,24 @@ _GIT_NON_ESCAPE_SCHEMES: tuple[str, ...] = (
 _GIT_SSH_SCHEME_ALIASES: tuple[str, ...] = ("git+ssh://", "ssh+git://")
 
 
-def _git_remote_targets_self(operand: str) -> bool:
+def _git_remote_targets_self(operand: str, *, remote_word: bool = False) -> bool:
     """True if a git remote *operand* dials THIS host (``_git_remote_word_dials_self``).
 
     The word is read as a git word (``_GIT_WORD``): a Windows own-name counts
     only in a URL authority or an scp-like ``user@host:path``, since a git word
-    may be a refspec or a remote name.
+    may be a refspec or a remote name.  *remote_word* marks a word git itself
+    reads as a remote (an argv word, a remote URL value, a rewrite base), whose
+    scp-like path names no host; a word of a command value is not one, since it
+    may be an ssh forward spec (``2222:host:22``).
     """
     git_word = _GIT_WORD.set(True)
     try:
-        return _git_remote_word_dials_self(operand)
+        return _git_remote_word_dials_self(operand, remote_word=remote_word)
     finally:
         _GIT_WORD.reset(git_word)
 
 
-def _git_remote_word_dials_self(operand: str) -> bool:
+def _git_remote_word_dials_self(operand: str, *, remote_word: bool = False) -> bool:
     """True if a git remote *operand* dials THIS host over an ssh transport.
 
     Only a transport-shaped operand can dial: a URL (``scheme://``) or a
@@ -181,8 +184,14 @@ def _git_remote_word_dials_self(operand: str) -> bool:
                 host = before_port
             if _operand_targets_self(host, host_position=True, dns=False, match_globs=False):
                 return True
+    # In a remote word the path after a plain host names no host, read as a tar
+    # remote archive is (``_tar_archive_targets_self``).
+    pre, _, post = t.partition(":")
+    host_position = not remote_word or bool(
+        set(pre) & set("$`[") or set(post.replace("$((", "")) & set("$`@")
+    )
     return _operand_targets_self(
-        t, host_position=True, dns=False, match_globs=False, file_operand=True
+        t, host_position=host_position, dns=False, match_globs=False, file_operand=True
     )
 
 

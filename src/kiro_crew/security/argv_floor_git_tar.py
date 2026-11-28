@@ -463,7 +463,8 @@ def _git_tokens_target_self(tokens: "list[str]") -> bool:
     for idx, token_candidates in enumerate(candidates):
         for position, masked_candidate in enumerate(token_candidates):
             candidate = _unmasked(masked_candidate)
-            if _git_remote_targets_self(candidate) or _command_value_dials_self(candidate):
+            dials = _git_remote_targets_self(candidate, remote_word=True)
+            if dials or _command_value_dials_self(candidate):
                 return True
             # Position 0 is the whole token; the rest are an option's attached value.
             following = words[idx + 1 : payload_ends[idx][min(position, 1)]]
@@ -702,7 +703,7 @@ def _sshcommand_config_dials_self(
         # a command (``core.sshCommand``, ``core.gitProxy`` and the rest) is read
         # as one.
         verdict = any(_command_value_dials_self(value) for value in values) or (
-            remote and any(_git_remote_targets_self(value) for value in values)
+            remote and any(_git_remote_targets_self(value, remote_word=True) for value in values)
         )
         if cache is not None and name:
             cache[("dials", name, remote)] = verdict
@@ -727,7 +728,7 @@ def _url_rewrite_base_dials_self(base: str) -> bool:
     so ``url.ext::ssh localhost id.insteadOf`` is refused while an ``ext::`` base
     to a remote host stays allowed.  A base that is neither names no transport.
     """
-    if _git_remote_targets_self(base):
+    if _git_remote_targets_self(base, remote_word=True):
         return True
     ext_command = _git_ext_command(base, [])
     return ext_command is not None and _command_value_dials_self(ext_command)
