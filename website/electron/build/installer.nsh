@@ -42,6 +42,16 @@
 !define KIRO_AW_BLEND 0x00080000
 !define KIRO_FADE_IN_MS 180
 !define KIRO_FADE_OUT_MS 120
+; MUI's two bottom divider lines and the version (branding) text drawn over them.
+!define KIRO_MUI_LINE_STANDARD 1035
+!define KIRO_MUI_LINE_FULLWINDOW 1045
+!define KIRO_GWL_STYLE -16
+!define KIRO_WS_CLIPSIBLINGS 0x04000000
+!define KIRO_HWND_BOTTOM 1
+; SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_FRAMECHANGED
+!define KIRO_SWP_LINE_FLAGS 0x33
+; RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW
+!define KIRO_RDW_REPAINT 0x185
 ; The longest path the previous version's uninstaller can move a file to (MAX_PATH
 ; less its terminating NUL), and the longest directory it can create there
 ; (CreateDirectoryW also reserves 12 characters for an 8.3 file name). Without the
@@ -217,10 +227,33 @@ Function KiroDetectAnimations
   Pop $0
 FunctionEnd
 
+; MUI lays its branding text (the "<product> <version>" label) over the bottom
+; divider line, and nothing orders the two overlapping siblings when the faded
+; window repaints them, so the line can strike through the version. Keep each
+; line at the bottom of the z-order and clipped to the siblings above it, so
+; the text always covers its stretch of the line.
+Function KiroKeepBrandingAboveLine
+  Exch $0
+  Push $1
+  GetDlgItem $0 $HWNDPARENT $0
+  ${If} $0 != 0
+    System::Call "user32::GetWindowLongW(p r0, i ${KIRO_GWL_STYLE})i.r1"
+    IntOp $1 $1 | ${KIRO_WS_CLIPSIBLINGS}
+    System::Call "user32::SetWindowLongW(p r0, i ${KIRO_GWL_STYLE}, i r1)"
+    System::Call "user32::SetWindowPos(p r0, p ${KIRO_HWND_BOTTOM}, i 0, i 0, i 0, i 0, i ${KIRO_SWP_LINE_FLAGS})"
+  ${EndIf}
+  Pop $1
+  Pop $0
+FunctionEnd
+
 Function KiroFadeInPage
   ${If} ${Silent}
     Return
   ${EndIf}
+  Push ${KIRO_MUI_LINE_STANDARD}
+  Call KiroKeepBrandingAboveLine
+  Push ${KIRO_MUI_LINE_FULLWINDOW}
+  Call KiroKeepBrandingAboveLine
   ${If} $KiroAnimationsEnabled == 0
     ShowWindow $HWNDPARENT ${KIRO_SW_SHOW}
     StrCpy $KiroWindowVisible 1
@@ -234,6 +267,9 @@ Function KiroFadeInPage
   ${If} $0 == 0
     ShowWindow $HWNDPARENT ${KIRO_SW_SHOW}
   ${EndIf}
+  ; The blend shows a WM_PRINT capture, which ignores sibling clipping; end on
+  ; the window's own paint so the branding text sits above the line.
+  System::Call "user32::RedrawWindow(p $HWNDPARENT, p 0, p 0, i ${KIRO_RDW_REPAINT})"
   StrCpy $KiroWindowVisible 1
   Pop $0
 FunctionEnd

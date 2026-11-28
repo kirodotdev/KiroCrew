@@ -50,7 +50,8 @@ The electron-builder configuration lives in
   localization, the per-user default, and the no-UAC default path. The installer
   cross-fades the native top-level dialog at page boundaries with Win32's
   alpha-blended window animation, honoring the client-area animation preference.
-  It performs no timer-driven bitmap work or `Sleep` on the NSIS UI thread;
+  Each shown page keeps MUI's bottom divider lines below, and clipped by, the
+  version branding text, so the line never strikes through it. It performs no timer-driven bitmap work or `Sleep` on the NSIS UI thread;
   Windows CI installs the real artifact, records its duration, and enforces a
   5-minute ceiling. Auto-updates skip the assisted wizard's decision pages but
   keep its native extraction progress visible, then close automatically,
