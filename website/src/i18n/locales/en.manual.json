@@ -9528,7 +9528,7 @@
         "restart_failed": "Restart failed",
         "restart_after_installer_note": "Already ran it? Restart to load the new version — active sessions briefly disconnect.",
         "restart_confirm": "Click again to restart",
-        "restart_row_note": "Restart the gateway process without updating. Active sessions briefly disconnect.",
+        "restart_row_note": "Restart the gateway without updating. On macOS and Linux it starts fresh in the same process, so its process ID stays the same. Active sessions briefly disconnect.",
         "desktop_restart_row_note": "Restart the gateway this app runs on this computer, without updating. Replies in progress stop, and the app reconnects when the gateway is back.",
         "desktop_restart_unavailable": "The app can't restart its gateway right now. Wait for it to finish connecting, then try again.",
         "upcoming_update_title": "Upcoming update",
