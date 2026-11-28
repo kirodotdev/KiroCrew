@@ -1233,7 +1233,10 @@ imported from checks for that before each `tools/call`, because anything it
 imports later would fail. It refuses the call with JSON-RPC error `-32000` and a
 SEL `rejected_install_pruned` record. When the gateway pool can respawn it
 (`KIROCREW_MCP_POOLED_BACKEND` is set and `KIROCREW_MCP_POOLED_RESPAWN_COMMAND`
-still resolves), the refusal asks for a retry, every queued call gets the same
+still resolves to a file outside the pruned install: neither its folder nor, for
+a `bin`/`Scripts` folder, that folder's parent contains the removed package; a
+running `python.exe` that Windows would not delete stays behind in it),
+the refusal asks for a retry, every queued call gets the same
 answer, and the process exits with status `75` so the pool relaunches it from the
 current install. Otherwise nothing would bring it back, so it keeps its transport
 and refuses each call with a message to restart Kiro Crew.

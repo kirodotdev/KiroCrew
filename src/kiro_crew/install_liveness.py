@@ -41,6 +41,9 @@ POOLED_RESPAWN_COMMAND_ENV = "KIROCREW_MCP_POOLED_RESPAWN_COMMAND"
 #: judged by the tree the modules were actually read from.
 _PACKAGE_ROOT = Path(__file__).resolve().parent
 
+#: Folders an install keeps its interpreter and launchers in, below its root.
+_SCRIPTS_FOLDERS = frozenset({"bin", "scripts"})
+
 
 def _one_line(value: str) -> str:
     """*value* as one line that always encodes as UTF-8.
@@ -108,13 +111,36 @@ def respawned_by_pool() -> bool:
 
     The pool relaunches from the command it spawned this backend with, so that
     command must still resolve. Absent or unresolvable means no working
-    respawn: the caller keeps its transport instead of exiting.
+    respawn: the caller keeps its transport instead of exiting. So does a
+    command inside the pruned tree itself: a prune can leave a file behind
+    (Windows refuses to delete a running ``python.exe``), but a relaunch from
+    there cannot import the package that went with it.
     """
     if not is_pooled_backend():
         return False
     command = os.environ.get(POOLED_RESPAWN_COMMAND_ENV, "")
     if not command:
         return False
-    if os.path.isabs(command):
-        return os.path.isfile(command) and os.access(command, os.X_OK)
-    return shutil.which(command) is not None
+    resolved = command if os.path.isabs(command) else shutil.which(command)
+    if resolved is None or not (os.path.isfile(resolved) and os.access(resolved, os.X_OK)):
+        return False
+    return not (install_pruned() and _inside_running_tree(Path(resolved)))
+
+
+def _inside_running_tree(command: Path) -> bool:
+    """True when *command* sits in the install the running package came from.
+
+    The install tree is the command's folder (a ``python.exe`` beside the
+    package's ``Lib``), or the parent of a ``bin``/``Scripts`` folder (a venv's
+    interpreter or launcher), when it is an ancestor of the package folder.
+    Only a scripts folder climbs one level: versions installed side by side
+    share their parent, so any other parent would claim the current install
+    too. A filesystem root is never taken for an install tree. Only the
+    folder is resolved, never the command itself: a venv's ``bin/python`` is
+    often a link to an interpreter outside the venv.
+    """
+    package = Path(os.path.realpath(_PACKAGE_ROOT))
+    anchor = Path(os.path.realpath(os.path.dirname(os.path.abspath(command))))
+    if anchor.name.lower() in _SCRIPTS_FOLDERS:
+        anchor = anchor.parent
+    return anchor != anchor.parent and package.is_relative_to(anchor)
