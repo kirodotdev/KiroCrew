@@ -380,7 +380,7 @@ async def test_antigravity_unstartable_mcp_prompt_fails_turn(
             pass
 
     assert exc_info.value.transient is False
-    assert "missing-mcp" in str(exc_info.value)
+    assert "one of this session's MCP servers" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -879,9 +879,40 @@ def test_antigravity_unattributed_error_regex_and_fixed_exception() -> None:
     assert isinstance(exc, AcpError)
     assert exc.transient is False
     assert exc.user_worded is True
-    assert "missing-mcp" in str(exc)
-    for forbidden in ("401", "503", "quota exceeded", "please login", "context limit"):
+    for forbidden in (
+        "missing-mcp",
+        "401",
+        "503",
+        "quota exceeded",
+        "please login",
+        "context limit",
+    ):
         assert forbidden not in str(exc)
+
+
+@pytest.mark.parametrize("server", ["rate-limit", "throttled 503", "connection reset"])
+def test_antigravity_mcp_startup_error_is_never_a_provider_retry(server: str) -> None:
+    """A server name shaped like a provider error does not reach the dependency classifier."""
+    from kiro_crew.taskq.dependency import classify_exception
+
+    chunk = (
+        f"The MCP server '{server}' failed to initialize: spawn failed. "
+        "Fix the MCP server, or remove it from your configuration and start a new session, "
+        "to continue."
+    )
+    exc = _dispatch.antigravity_unattributed_error_exception(chunk)
+    assert server not in str(exc)
+    signal = classify_exception(exc)
+    assert signal is None or signal.terminal
+
+
+def test_antigravity_invalid_api_key_error_names_where_the_key_is_read() -> None:
+    exc = _dispatch.antigravity_unattributed_error_exception(
+        "API key not valid. Please pass a valid API key."
+    )
+    assert "GEMINI_API_KEY" in str(exc)
+    assert "launch environment" in str(exc)
+    assert "Settings" not in str(exc)
 
 
 @pytest.mark.asyncio
@@ -917,7 +948,7 @@ async def test_antigravity_spoofed_error_chunk_does_not_leak_into_acp_error(
             pass
 
     assert exc_info.value.transient is False
-    assert "missing-mcp" in str(exc_info.value)
+    assert "missing-mcp" not in str(exc_info.value)
     assert "503" not in str(exc_info.value)
     assert "quota exceeded" not in str(exc_info.value)
 

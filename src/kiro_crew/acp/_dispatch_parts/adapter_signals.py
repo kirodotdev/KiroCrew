@@ -243,17 +243,23 @@ def antigravity_unattributed_error_exception(text: str) -> Any:
     if parsed is not None:
         kind, server = parsed
         if kind == "mcp_init":
+            # The server name stays out of the error text: the dependency classifier
+            # reads ``str(exc)`` before ``transient``, so a name such as ``rate-limit``
+            # would turn this permanent failure into a provider retry. It is logged.
+            logger.warning("Google Antigravity ACP failed to start MCP server %r", server)
             return AcpError(
-                f"Google Antigravity ACP failed to start the MCP server '{server}'. "
-                "Fix the MCP server or remove it from your configuration, "
-                "then start a new session.",
+                "Google Antigravity ACP failed to start one of this session's MCP servers "
+                "(the gateway log names it). Fix the MCP server or remove it from your "
+                "configuration, then start a new session.",
                 transient=False,
                 user_worded=True,
             )
         if kind == "invalid_api_key":
             return AcpError(
-                "API key not valid: Google Antigravity ACP rejected the API key. "
-                "Update your API key in Settings, then start a new session.",
+                "API key not valid: Google Antigravity ACP rejected the API key. Set a "
+                "valid GEMINI_API_KEY in the gateway's launch environment, or change "
+                "auth.type in $GEMINI_HOME/antigravity-acp/settings.json, then start a "
+                "new session.",
                 transient=False,
                 user_worded=True,
             )
