@@ -186,8 +186,9 @@ export interface TranscriptRendererOptions {
    *  the very mechanics the surface hides. Off (default) the SDK's `user`
    *  entry is used unchanged. */
   hideSteerBadge?: boolean
-  /** Fix affordance for an `auth_required` row: deep-link to the Kiro sign-in
-   *  card in Settings. Omitted on a surface with no settings route. */
+  /** Set where the surface offers Kiro Crew's own sign-in on an `auth_required`
+   *  row: the row then draws the Sign in strip, which opens the sign-in dialog
+   *  in place. Omitted (embed, popout, a crew window's peer rows): plain text. */
   onOpenSignIn?: () => void
   /** True while Kiro's own sign-in works (`/api/kas-login`). The newest
    *  `kas_signed_out` row then offers Resume with the sign-in, since a

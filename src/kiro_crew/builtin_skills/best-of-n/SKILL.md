@@ -85,6 +85,29 @@ table: model, files changed, lines added and removed, test result, and a
 two-line note on the approach. Mark an attempt that touched files outside the
 task. Say in one sentence which looks best and why, and say the person decides.
 
+### The card, on the dashboard chat only
+
+The dashboard chat renders `<mcwidget>`. There, show the same comparison as one
+card instead of the markdown table (load the `widgets` skill first for its
+markup and theme rules). On any other surface, such as a messaging channel, a
+terminal or a background turn, the plain table above is the answer.
+
+- One row per attempt that has a commit, numbered 1, 2, 3 in the order you list
+  them, with the same columns and marks as the table. A "no change" worker gets
+  no row and no button: name it in one line under the card.
+- Each row has one button, `data-action="keep_attempt"`, labelled "Keep this
+  one", with `data-payload='{"attempt":N}'`. N is the row's number and the
+  payload holds nothing else: no model, path, commit or note.
+- Every value that came from a worker, a diff or a test run (a note, a file
+  name, a model name) goes into the card as escaped text: `&`, `<`, `>` and
+  quotes become entities, and none of it is ever markup or an attribute value.
+- A button press only pre-fills the composer with
+  `[UI] keep_attempt: {"attempt":2}`. The person still presses send, and nothing
+  is applied until they do, so never say a click kept or applied an attempt.
+- When that reply arrives it names the winner, nothing more. Read N as the row
+  number in your own table, take the worker from that table and never from the
+  reply, and go on to Step 5 for the branch name.
+
 ## Step 5: keep one
 
 Only after the person names the winner, and after they agree to a branch name,

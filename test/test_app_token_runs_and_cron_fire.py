@@ -651,7 +651,7 @@ async def test_queued_terminal_preserves_app_scope(
     monkeypatch.setattr(sa, "_validate_agent", lambda *args: (OWN_AGENT, "", ""))
     mgr = sa.SubagentManager(sessions=MagicMock(), ctx_builder=None, on_done=AsyncMock())
     monkeypatch.setattr(mgr, "_emit_queue_depth", MagicMock())
-    monkeypatch.setattr(mgr, "_should_stagger_queue", lambda now: (True, False))
+    monkeypatch.setattr(mgr, "_should_stagger_queue", lambda now, **_: (True, False))
     monkeypatch.setattr(mgr, "_memory_pressure_hold", lambda **kw: None)
     monkeypatch.setattr(
         messaging, "read_panel_records", lambda **kw: messaging.PanelRecords([], 0, False)

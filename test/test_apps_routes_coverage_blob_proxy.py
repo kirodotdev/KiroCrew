@@ -791,6 +791,9 @@ class TestFetchGitBlobCredentialPosture:
             captured["mode"] = mode
             # ``wrap_argv_async`` hands the socket request on only when it is set.
             captured["forward"] = kwargs.get("forward_ssh_auth_sock", False)
+            # Asked which forward it applied, the wrap reports the request, or a refusal.
+            applied = captured["forward"] and not captured.get("wrap_refuses_agent")
+            kwargs.get("forward_ssh_auth_sock_out", []).append(applied)
             # The clone argv is ``git clone ... <git_url> <tmp_root>`` — the URL
             # the process will actually clone is the second-to-last element.  We
             # DON'T assert the full argv (wrap_argv/cgroup lesson); we read back
@@ -895,6 +898,40 @@ class TestFetchGitBlobCredentialPosture:
 
         assert ok is False  # the fake clone fails → graceful fallback
         assert cap["forward"] is owner_designated
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("posture", ["default", "owner", "owner-wrap-refuses-agent"])
+    async def test_blob_clone_is_handed_a_live_agent_socket_only_for_the_owners_url(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, posture: str
+    ) -> None:
+        """Only the owner's clone, and only when its wrap keeps the agent, is found a socket."""
+        from kiro_crew.apps.registry_pipeline import subprocess_env
+
+        _setup_env(tmp_path, monkeypatch)
+        url = "ssh://forge.example/org/registry.git"
+        cap = self._capture(monkeypatch, url)
+        cap["wrap_refuses_agent"] = posture == "owner-wrap-refuses-agent"
+        live = "/tmp/ssh-live/agent.2"
+        # raising=False: on a tree without the repair this fails on its assertion below.
+        monkeypatch.setattr(
+            subprocess_env,
+            "resolve_ssh_auth_sock",
+            lambda env: env.update(SSH_AUTH_SOCK=live),
+            raising=False,
+        )
+
+        ok = await routes_mod._fetch_git_blob(
+            url,
+            "main",
+            "assets/logo.png",
+            tmp_path / "out.png",
+            git_url=url,
+            owner_designated=posture != "default",
+        )
+
+        assert ok is False  # the fake clone fails → graceful fallback
+        agent = {"SSH_AUTH_SOCK": live} if posture == "owner" else {}
+        assert cap["env"] == {"_env": "anonymous" if posture == "default" else "minimal", **agent}
 
     @pytest.mark.asyncio
     async def test_injected_cloneurl_never_becomes_the_credentialed_clone_target(

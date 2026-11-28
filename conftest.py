@@ -1755,16 +1755,20 @@ def _not_ignored(names: set[str]) -> list[str] | None:
     the question is unanswerable. A guard that cries wolf gets deleted, and then
     it protects nothing -- so the caller reports that it could not check and
     leaves the verdict alone.
+
+    NUL-delimited bytes (``-z``) rather than text lines: in line mode git quotes
+    a path with a byte outside printable ASCII (``core.quotePath``), so an ignored
+    ``測試.scratch`` never matched the name ``iterdir`` gave and was reported as
+    residue. ``os.fsencode``/``os.fsdecode`` round-trip the name byte for byte.
     """
     if not names:
         return []
     try:
         proc = subprocess.run(
-            ["git", "check-ignore", "--stdin"],
+            ["git", "check-ignore", "--stdin", "-z"],
             cwd=str(_REPO_ROOT),
-            input="\n".join(sorted(names)),
+            input=b"\0".join(os.fsencode(name) for name in sorted(names)),
             capture_output=True,
-            text=True,
             timeout=30,
             check=False,
         )
@@ -1772,7 +1776,7 @@ def _not_ignored(names: set[str]) -> list[str] | None:
         return None
     if proc.returncode not in (0, 1):
         return None
-    ignored = {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+    ignored = {os.fsdecode(entry) for entry in proc.stdout.split(b"\0") if entry}
     return [name for name in sorted(names) if name not in ignored]
 
 
@@ -1900,8 +1904,9 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     # INTERNAL_ERROR (3) tell a caller the run did not complete, and overwriting
     # either with TESTS_FAILED would report a finished, failing suite instead.
     # The residue is reported either way, since it is real regardless of how the
-    # run ended.
-    if exitstatus == pytest.ExitCode.OK:
+    # run ended. Read from the session, not the argument: a plugin's earlier
+    # hook (scripts/ci_shard_retry.py, after a green retry) can clear a failure.
+    if session.exitstatus == pytest.ExitCode.OK:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
     if reporter is None:
         return

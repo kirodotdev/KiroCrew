@@ -574,6 +574,8 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
     handoff = _ClaimHandoff()
     # Set at launch, below; a failure before it has no run output to route.
     run_dest: tuple[str, str] | None = None
+    # The failure the run itself reported, raised to reach the error arm below.
+    reported_failure: RuntimeError | None = None
     try:
         try:
             sel().log_tool_invocation(
@@ -798,7 +800,8 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
                 # Schedule page shows something to approve; the run itself is
                 # still recorded as the failure below.
                 await resurface_stale_grant(self.cron_svc, job.id, run_pin)
-            raise RuntimeError(err)
+            reported_failure = RuntimeError(err)
+            raise reported_failure
     except CronQueueTimeout as exc:
         # Pool starvation, not a broken script: every worker was
         # busy for the whole budget so this never ran a line.  The
@@ -954,8 +957,11 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
         # The reason a script cron dies is often environmental (a
         # startup RuntimeError, a missing dependency) and identical on
         # every fire, so it read as an idle job rather than a broken
-        # one until this alert carried the reason out.
-        await self._alert_cron_failure(job, f"{type(exc).__name__}: {exc}", pin=run_dest)
+        # one until this alert carried the reason out. A failure the run
+        # reported (an exit code, the script's own exception) is told in its
+        # own words: the RuntimeError carrying it here is not the script's.
+        detail = str(exc) if exc is reported_failure else f"{type(exc).__name__}: {exc}"
+        await self._alert_cron_failure(job, detail, pin=run_dest)
         return None
     finally:
         # Abandon BEFORE releasing the overlap guard, and do it here

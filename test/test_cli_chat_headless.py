@@ -571,6 +571,36 @@ def test_an_error_row_is_a_failure_not_done(monkeypatch):
     assert (r.status, r.completed, r.to_json()["exit_code"]) == ("error", False, h.EXIT_ERROR)
 
 
+def test_a_run_says_whether_the_agent_ever_answered(monkeypatch):
+    # An error before any reply or spend: the agent never started.
+    gw = FakeGateway([{"row": {}, "role": "error", "text": "agent not found"}])
+    r = _run(_opts(), gw, monkeypatch)
+    assert (r.status, r.started, r.to_json()["started"]) == ("error", False, False)
+    # A conductor chat that did not open in conductor mode never ran a turn either.
+    assert _run(_opts(mode="conductor"), FakeGateway([REPLY]), monkeypatch).started is False
+    # A reply, or spend with no reply, is an agent that ran.
+    assert _run(_opts(), FakeGateway([REPLY]), monkeypatch).started is True
+    # Spend counted only once the stopped turn is saved, after the last poll, still counts.
+    spend = iter([0.0, 0.4])
+    gw = FakeGateway([{"row": {}, "role": "error", "text": "tool crashed"}])
+    assert _run(_opts(), gw, monkeypatch, credits=lambda: next(spend)).started is True
+
+
+def test_a_refused_chat_reports_the_agent_never_started(monkeypatch, capsys):
+    class Refusing(FakeGateway):
+        def call(self, method, path, body=None, timeout=60):
+            if path == "/api/chat/slots" and method == "POST":
+                raise RuntimeError("POST /api/chat/slots: HTTP 409 agent_choice_unavailable")
+            return super().call(method, path, body, timeout)
+
+    monkeypatch.setattr("kiro_crew.port_resolution.resolve_client_port", lambda port=None: 1)
+    monkeypatch.setattr(h, "GatewayClient", lambda port: Refusing([REPLY]))
+    monkeypatch.setattr(h, "run_spend", lambda *a, **k: 0.0)
+    assert h.main(_parse(["--headless", "-m", "go", "--json"])) == h.EXIT_ERROR
+    out = json.loads(capsys.readouterr().out)
+    assert (out["status"], out["started"]) == ("error", False) and "409" in out["error"]
+
+
 def test_not_signed_in_only_from_an_error_row(monkeypatch):
     gw = FakeGateway([{"row": {}, "role": "error", "text": "Not signed in to Kiro."}])
     assert _run(_opts(), gw, monkeypatch).status == "not_signed_in"

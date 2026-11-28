@@ -1135,6 +1135,11 @@ class AcpProvider(LLMProvider):
         if isinstance(self._client, AcpSessionProvider):
             self._client.set_mcp_sign_in_ended_hook(hook)
 
+    def set_mcp_consent_hook(self, hook: Callable[[dict[str, str]], bool]) -> None:
+        # Only the shared runtime's session receives a KAS consent link, as above.
+        if isinstance(self._client, AcpSessionProvider):
+            self._client.set_mcp_consent_hook(hook)
+
     def mcp_sign_in_ended(self, server_name: str) -> bool:
         return isinstance(self._client, AcpSessionProvider) and self._client.mcp_sign_in_ended(
             server_name

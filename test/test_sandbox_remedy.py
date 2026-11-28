@@ -455,6 +455,9 @@ class TestUsernsCapZeroWording:
         monkeypatch.setattr(sb, "_inside_macos_sandbox", lambda: False)
         # The undeclared refusal prefix, so the text before the marker is pinned too.
         monkeypatch.setattr(sb, "_unsandboxed_exec_key_declared", lambda: False)
+        # A config that was read: on a Windows runner the test home has no
+        # config.json, which would select the missing-config prefix instead.
+        monkeypatch.setattr(sb, "_config_not_read", lambda: "")
 
     @staticmethod
     def _refusal(argv: list[str] | None = None, **kwargs: Any) -> sb.SandboxUnavailableError:

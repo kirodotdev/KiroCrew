@@ -448,6 +448,13 @@
 .win-electron .win-titlebar-menu{
   -webkit-app-region:no-drag;
 }
+/* A relay Crew pane's own header (#42922) sits one row below the desktop app's
+   tab strip, inside that app's window, so it is never a window drag region,
+   whatever shell class the page carries. After the rule above on purpose. */
+header.topbar-glass[data-relay-pane-header],
+header.topbar-glass[data-relay-pane-header] *{
+  -webkit-app-region:no-drag;
+}
 .win-titlebar-menu-item{
   border:0;
   background:transparent;

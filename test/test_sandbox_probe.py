@@ -15,6 +15,7 @@ import pytest
 
 import kiro_crew.sandbox as sb
 from conftest import absent_sysconf
+from kiro_crew import sandbox_probe
 from kiro_crew.sandbox import _probe_sandbox_exec
 
 # The namespace probe internals are Linux-only by construction: they call
@@ -109,6 +110,62 @@ def test_missing_trusted_probe_binary_fails_closed(mock_run, mock_exists, mock_s
 def test_subprocess_exception_returns_false(mock_run, mock_exists, mock_sys):
     mock_sys.platform = "darwin"
     assert _probe_sandbox_exec() is False
+
+
+@patch("kiro_crew.sandbox._macos_sandbox_state", return_value=False)
+@patch("kiro_crew.sandbox.sys")
+@patch("kiro_crew.sandbox.os.path.exists", return_value=True)
+@patch("kiro_crew.sandbox.subprocess.run")
+def test_a_refused_probe_keeps_its_exit_and_stderr(mock_run, mock_exists, mock_sys, _state):
+    mock_sys.platform = "darwin"
+    mock_run.return_value = subprocess.CompletedProcess(
+        args=[], returncode=65, stderr=b"sandbox_apply: Operation not permitted\n"
+    )
+
+    assert _probe_sandbox_exec() is False
+    assert sandbox_probe.sandbox_exec_failure_reason() == (
+        "sandbox-exec probe exited 65: sandbox_apply: Operation not permitted"
+    )
+
+
+@patch("kiro_crew.sandbox.sys")
+@patch("kiro_crew.sandbox.os.path.exists", return_value=True)
+@patch(
+    "kiro_crew.sandbox.subprocess.run",
+    side_effect=subprocess.TimeoutExpired(  # flake-ok: an exception value; nothing waits
+        cmd="sandbox-exec", timeout=sandbox_probe._SANDBOX_BACKEND_PROBE_TIMEOUT_SECS
+    ),
+)
+def test_a_timed_out_probe_says_so(mock_run, mock_exists, mock_sys):
+    mock_sys.platform = "darwin"
+
+    assert _probe_sandbox_exec() is False
+    reason = sandbox_probe.sandbox_exec_failure_reason()
+    assert reason.startswith("sandbox-exec probe failed: ")
+    assert f"timed out after {sandbox_probe._SANDBOX_BACKEND_PROBE_TIMEOUT_SECS} seconds" in reason
+
+
+@patch("kiro_crew.sandbox.sys")
+@patch("kiro_crew.sandbox.os.path.exists", return_value=False)
+def test_a_missing_sandbox_exec_is_named(mock_exists, mock_sys):
+    mock_sys.platform = "darwin"
+
+    assert _probe_sandbox_exec() is False
+    assert sandbox_probe.sandbox_exec_failure_reason() == (
+        "sandbox-exec probe: /usr/bin/sandbox-exec not found"
+    )
+
+
+@patch("kiro_crew.sandbox.sys")
+@patch("kiro_crew.sandbox.os.path.exists", return_value=True)
+@patch("kiro_crew.sandbox.subprocess.run")
+def test_a_passing_probe_clears_the_last_reason(mock_run, mock_exists, mock_sys):
+    mock_sys.platform = "darwin"
+    sandbox_probe._sandbox_exec_failed("sandbox-exec probe exited 1: earlier")
+    mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+
+    assert _probe_sandbox_exec() is True
+    assert sandbox_probe.sandbox_exec_failure_reason() == ""
 
 
 def test_userns_available_delegates_to_probe(monkeypatch):

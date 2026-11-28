@@ -66,14 +66,17 @@ def _keeps_thread_path(channel: str) -> bool:
     return bool(activation == handler.ACTIVATION_REVIEW)
 
 
-def bot_chat_target(state: Any, bot: str, channel: str, thread_ts: str) -> tuple[Any | None, str]:
+def bot_chat_target(
+    state: Any, bot: str, channel: str, thread_ts: str, shown: str
+) -> tuple[Any | None, str]:
     """The Bot chat ``!bot <bot>`` would join from this thread, checked but not linked.
 
     ``(slot, "")`` when the chat can take the thread, ``(None, refusal)`` when it may
     not, and ``(None, "")`` when there is no chat to join, so the caller keeps the older
     per-thread Bot session. A chat answers one conversation at a time (Discord's
     ``binding_conflict``): one already linked to another Slack thread, or bound to
-    another channel, refuses.
+    another channel, refuses. The refusal names the Bot as *shown*, the label the
+    caller read off the loop (``handler.bot_label``), since this runs on it.
     """
     if state is None or not hasattr(state, "link_slack"):
         return None, ""
@@ -91,7 +94,7 @@ def bot_chat_target(state: Any, bot: str, channel: str, thread_ts: str) -> tuple
         else:
             where = str(held.channel_type).title()
         return None, (
-            f"Bot *{bot}*'s chat is already talking to {where}. "
+            f"Bot *{shown}*'s chat is already talking to {where}. "
             "Send `!bot off` there, or unlink it on the dashboard, first."
         )
     return slot, ""
@@ -133,7 +136,8 @@ async def switch_refusal(
     if key is None or await asyncio.to_thread(handler.resolve_channel_crew, key) is None:
         bots = await asyncio.to_thread(handler.bots_text)
         return f"❌ Unknown Bot `{typed}`. Crew Bots: {bots}"
-    slot, refusal = bot_chat_target(state, key, channel, thread_ts)
+    shown = await asyncio.to_thread(handler.bot_label, key)
+    slot, refusal = bot_chat_target(state, key, channel, thread_ts, shown)
     if refusal:
         return f"❌ {refusal}"
     if slot is not None:
@@ -165,19 +169,21 @@ async def join_bot_chat(
     """
     from kiro_crew.dashboard.chat_slack import _drop_unsaved_link, _slack_link_lock
     from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.slack import handler, thread_trust
     from kiro_crew.slack.code_channels.binding import AnchorHandoffRefused, load_store_for_links
 
     # Loaded first, as every link to an existing thread does, so the anchor check in
     # ``link_slack`` reads the code channel store and not an empty one.
     if state is not None:
         await load_store_for_links("slack.bot_chat_join")
-    slot, refusal = bot_chat_target(state, bot, channel, thread_ts)
+    shown = await asyncio.to_thread(handler.bot_label, bot)
+    slot, refusal = bot_chat_target(state, bot, channel, thread_ts, shown)
     if slot is None:
         return None, refusal
     async with _slack_link_lock(state, effective_session_key(slot)):
         # A dashboard Connect may have linked the chat while we waited for its lock.
         # Re-check under the lock, with no await between this check and the link.
-        slot, refusal = bot_chat_target(state, bot, channel, thread_ts)
+        slot, refusal = bot_chat_target(state, bot, channel, thread_ts, shown)
         if slot is None:
             return None, refusal
         try:
@@ -188,8 +194,7 @@ async def join_bot_chat(
         except Exception:
             logger.warning("slack !bot: joining %s's chat was not saved", bot, exc_info=True)
             _drop_unsaved_link(state, slot, effective_session_key(slot), thread_ts)
-            return None, f"Could not save joining Bot *{bot}*'s chat. Try again."
-    from kiro_crew.slack import handler, thread_trust
+            return None, f"Could not save joining Bot *{shown}*'s chat. Try again."
 
     # The thread now runs on the Bot's chat: a shared user's own Trust on the
     # thread's own session does not resume when it leaves.

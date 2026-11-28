@@ -772,7 +772,10 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
         "method",
         "(self, info: 'SubagentInfo', *, cfg: 'Any' = None, child_aws_profile: 'ResolvedAwsProfile | None' = None) -> '_SharingPlan'",
     ),
-    "_should_stagger_queue": ("method", "(self, now: 'float') -> 'tuple[bool, bool]'"),
+    "_should_stagger_queue": (
+        "method",
+        "(self, now: 'float', *, shared: 'bool' = False) -> 'tuple[bool, bool]'",
+    ),
     "_should_use_session_sharing": ("method", "(self, info: 'SubagentInfo') -> 'bool'"),
     "_sigkill_session": (
         "async method",

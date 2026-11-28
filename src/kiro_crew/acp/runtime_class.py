@@ -261,6 +261,7 @@ class AcpRuntime:
     mcp_sign_in_holds = _rt_host.mcp_sign_in_holds
     begin_mcp_sign_in = _rt_host.begin_mcp_sign_in
     set_mcp_sign_in_ended_hook = _rt_host.set_mcp_sign_in_ended_hook
+    set_mcp_consent_hook = _rt_host.set_mcp_consent_hook
     _run_mcp_sign_in = _rt_host._run_mcp_sign_in
     begin_mcp_reattempt = _rt_host.begin_mcp_reattempt
     _run_mcp_reattempt = _rt_host._run_mcp_reattempt
@@ -440,6 +441,9 @@ class AcpRuntime:
         # Per session, the hook told when one of its sign-ins ends unconnected,
         # so the chat withdraws the dead link -- see set_mcp_sign_in_ended_hook.
         self._mcp_sign_in_ended_hooks: dict[str, Callable[[str], None]] = {}
+        # Per session, the hook offered its consent frame before it is queued, so
+        # a link that lands between turns reaches the chat -- see set_mcp_consent_hook.
+        self._mcp_consent_hooks: dict[str, Callable[[JsonRpcMessage], bool]] = {}
         if model is not None:
             if not MODEL_ID_RE.fullmatch(model):
                 raise ValueError(

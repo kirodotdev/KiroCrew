@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from cli_helpers import (  # noqa: F401 -- the autouse fixtures register by import
     _doctor_reads_current_tz_data,
+    _doctor_reads_no_installed_service,
     _doctor_reads_the_warm_probe_cache,
     _healthy_agent_file,
     _noop_probe_server,

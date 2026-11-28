@@ -66,7 +66,9 @@ This RFC proposes:
 
 ## 4. Non-goals
 
-- A 3D view, or edges between similar memories.
+- A 3D view.
+- Dense similarity edges. The graph draws a few thin links between similar
+  memories, under the rules in §12; it never draws every pair above a floor.
 - Any change to recall, ranking or what is stored in memory.
 - New Python dependencies.
 
@@ -258,8 +260,8 @@ graph adds (`GET /api/memory/graph`, §2), or the edges by project name:
 - **History** is the last 14 days of chat, not memory. Recall reads the
   experiences that consolidation writes from it, and those are on the graph.
 - **The project edges** joined nodes that shared a project name. Position by
-  meaning shows that relation for every record, so the graph draws no edges
-  (§4).
+  meaning shows that relation for every record, so the graph draws no project
+  edges. It draws a few similarity links instead (§12).
 
 All three stay on the page: preferences and projects on the Profile tab,
 experiences in the Memories list and on the graph.
@@ -345,5 +347,16 @@ decisions were made while building it, in
 - **Where it lives:** a Graph tab on the memory page
   ([rfc-memory-page-audit-and-recall.md](rfc-memory-page-audit-and-recall.md),
   [#43064](https://github.com/kirodotdev/KiroCrew/pull/43064)).
-- **Later, in their own changes:** edges to a node's nearest neighbours on
-  hover (a change to §4 first), and group-by, colour-by and density contours.
+- **Similarity links: a few, thin, tidy.** Ray asked for animated zoom with
+  thin nearest-neighbour links on 2026-11-26, and on 2026-11-27 said the first
+  links looked messy: related memories may be joined, but strong joining reads
+  as clutter. The build keeps each memory's 3 nearest rows at recall's own
+  cosine floor (0.55) as `links` in the layout file, and the canvas draws:
+  - at most 2 links per memory, closest first;
+  - curved links, fainter for a less similar pair and faint at the overview,
+    stronger as the view zooms in;
+  - at the farthest level, no memory's own links, only one link between two
+    neighbouring topics;
+  - in the middle levels, links inside a topic only; close up, also a short
+    link to a neighbouring topic, never a long one across the map.
+- **Later, in their own changes:** group-by, colour-by and density contours.

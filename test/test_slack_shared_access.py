@@ -1368,6 +1368,62 @@ async def test_a_harness_command_from_a_shared_user_never_reaches_the_turn() -> 
     slack.post_message.assert_awaited_once_with("D1", shared_access.SHARED_OWNER_ONLY_TEXT, "t1")
 
 
+# A dashboard chat's local commands that start work outliving the turn: a goal
+# loop and a saved workflow run. Typed in a Slack thread linked to that chat,
+# they reach the chat's slash gate only through the linked-thread hand-off.
+_LINKED_CHAT_COMMANDS = ("/goal ship it", "/goal clear", "/workflow nightly", "<@UBOT0001> /goal x")
+
+
+def _linked_thread_turn(text: str, user_id: str) -> SimpleNamespace:
+    names = (
+        "sessions thread_ts msg_ts context_builder cron_service conversation_log "
+        "subagent_manager task_runner channel_agent target_slot_name route_pinned "
+        "asker_key spool_text user_meta action_context"
+    ).split()
+    return SimpleNamespace(
+        slack=SimpleNamespace(post_message=AsyncMock()),
+        channel="C0LINKED",
+        text=text,
+        user_id=user_id,
+        reply_ts="t1",
+        session_key=THREAD_KEY,
+        interpret_commands=True,
+        had_voice_input=False,
+        **{n: None for n in names},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", _LINKED_CHAT_COMMANDS)
+async def test_a_shared_users_linked_chat_command_is_refused_before_the_hand_off(
+    _floor_monkeypatch, text: str
+) -> None:
+    await _confirmed_friend()
+    routed = AsyncMock(return_value=True)
+    _floor_monkeypatch.setattr(handler, "maybe_route_linked_thread", routed)
+    turn = _linked_thread_turn(text, FRIEND)
+    assert await handler._dispatch_before_turn(turn) is False  # type: ignore[arg-type]
+    turn.slack.post_message.assert_awaited_once_with(
+        "C0LINKED", shared_access.SHARED_OWNER_ONLY_TEXT, "t1"
+    )
+    routed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", _LINKED_CHAT_COMMANDS)
+async def test_the_owners_linked_chat_command_reaches_the_hand_off(
+    _floor_monkeypatch, text: str
+) -> None:
+    await _confirmed_friend()
+    routed = AsyncMock(return_value=True)
+    _floor_monkeypatch.setattr(handler, "maybe_route_linked_thread", routed)
+    turn = _linked_thread_turn(text, OWNER)
+    assert await handler._dispatch_before_turn(turn) is False  # type: ignore[arg-type]
+    turn.slack.post_message.assert_not_awaited()
+    routed.assert_awaited_once()
+    assert routed.await_args.args[:3] == (text, THREAD_KEY, OWNER)
+
+
 def test_a_listed_user_is_refused_the_owner_keywords_even_with_an_aged_confirmation(
     _floor_monkeypatch,
 ) -> None:

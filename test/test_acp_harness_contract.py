@@ -439,13 +439,17 @@ def test_client_capabilities_are_the_shared_constants():
 
 def test_kas_capabilities_open_only_settings_external_urls_and_user_input():
     """KAS's extra capabilities are the settings channel, ``openExternalUrl``,
-    ``userInput`` and ``approveForMeOption``.
+    ``userInput``, ``approveForMeOption`` and ``sessionScopedMcpStatus``.
 
     Any other ``_meta.kiro`` capability would invite a request with no handler
     (``secretStorage`` would make Crew the MCP token store). ``userInput`` is served
     by ``acp/elicitation.py``; ``approveForMeOption`` only lists a session option,
-    which ``acp/kas_approve_for_me.py`` sets. The settings channel carries only
-    ``codeIntelligence`` here; the runtime adds the rest at spawn.
+    which ``acp/kas_approve_for_me.py`` sets. ``sessionScopedMcpStatus`` invites no
+    request: it makes each session's ``_kiro/mcp/status`` list only that session's
+    servers, where KAS otherwise merges every session's on the process and a
+    sub-agent's readiness wait reads a sibling's "connecting" as its own. The
+    settings channel carries only ``codeIntelligence`` here; the runtime adds the
+    rest at spawn.
     """
     kas = harness_for(ACP_BACKEND_KAS).client_capabilities
     assert kas["_meta"] == {
@@ -454,6 +458,7 @@ def test_kas_capabilities_open_only_settings_external_urls_and_user_input():
             "openExternalUrl": True,
             "userInput": True,
             "approveForMeOption": True,
+            "sessionScopedMcpStatus": True,
         }
     }
     assert harness_for(ACP_BACKEND_KAS).opens_external_urls is True

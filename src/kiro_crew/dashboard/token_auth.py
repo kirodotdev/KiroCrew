@@ -1640,9 +1640,11 @@ def token_auth_middleware(
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.token_auth_app_scope import (  # noqa: F401
+        _APP_ID_PREFIXES,
         _APP_PERMS_PRIME_MARGIN,
         _APP_PERMS_TTL,
         _APP_TOKEN_IMPLICIT_ALLOW,
+        _URL_PATH_SEP,
         EXACT_API_ENTRY_MARK,
         RESERVED_APP_PATH_SEGMENTS,
         _api_pattern_matches,
@@ -1653,6 +1655,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _app_perms_denied,
         _app_perms_lock,
         _disabled_facts_locked,
+        _path_names_one_app,
         _read_grant_facts,
         _scope_refusal,
         app_token_path_allowed,

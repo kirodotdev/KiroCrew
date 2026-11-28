@@ -145,6 +145,7 @@ export default function ChatPane({
   onHistorySearchOpenChange,
   onHistorySearchOpener,
   hideEmptyHint,
+  noSignIn = false,
   openSideChat,
   leading,
   onFileOpen,
@@ -836,7 +837,7 @@ export default function ChatPane({
   // The slot whose playback the browser blocked, as the crewmate's
   // VoicePlaybackNotice reports it; its replies reveal their action rows.
   const [voiceRecoverySlot, setVoiceRecoverySlot] = useState<string | null>(null)
-  const { listMessages, renderers, unfold } = useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume, revealActions: voiceRecoverySlot === slotKey, linkPreviews: dashCfg?.link_previews === true })
+  const { listMessages, renderers, unfold } = useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume, noSignIn, revealActions: voiceRecoverySlot === slotKey, linkPreviews: dashCfg?.link_previews === true })
   // ⌘F / Ctrl+F opens the chat's history search while this pane offers it.
   const search = useMessageSearch(slotKey, findInChat)
   const { open: openSearch, close: closeSearch } = search

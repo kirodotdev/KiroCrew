@@ -10,6 +10,8 @@ Pinned:
 * REFUSE -- a failed read or a restored file that is not a ledger fails and
   uploads nothing; a pool under the reserve uploads nothing and does not fail;
   only a workflow that never kept a ledger starts an empty one unasked.
+* NOTES -- the notes beside the ledger are restored with it, handed to the pass
+  and the report, and an archive without them restores none.
 * WORKFLOW -- read-only, this repository only, never two passes at once,
   bounded passes in the quiet hours, and an upload only on the pass's word.
 """
@@ -29,6 +31,7 @@ import yaml
 from ci_test_selection_ledger_fake import SKIP
 
 from scripts import ci_test_selection_ledger as ledger
+from scripts import ci_test_selection_ledger_causes as causes
 from scripts import ci_test_selection_ledger_night as night
 from scripts import ci_test_selection_step as step
 
@@ -270,6 +273,33 @@ def test_the_token_goes_to_the_api_alone_and_old_rows_are_dropped_and_counted(
     lines, out, _run_ = _night(tmp_path, Api((_run(70), _ledger_zip(stale, edge))))
     assert f"1 rows, 1 older than {night.KEEP_DAYS} days dropped" in lines[0]
     assert ledger.read_ledger(out / night.LEDGER_NAME) == [edge]
+
+
+def test_the_notes_are_restored_with_the_ledger_and_handed_to_the_pass_and_the_report(
+    tmp_path: Path,
+) -> None:
+    settled = causes.pass_note(TODAY - timedelta(hours=1), True, True)
+    notes = json.dumps(settled).encode() + b"\n"
+    archive = _zip({night.LEDGER_NAME: _lines([_row(1)]), night.NOTES_NAME: notes})
+    _lines_, out, run = _night(tmp_path, Api((_run(70), archive)))
+    assert causes.read_notes(out / night.NOTES_NAME) == [settled]
+    for argv in run.calls:
+        assert argv[argv.index("--notes") + 1] == str(out / night.NOTES_NAME)
+    # What the next pass restores holds them too.
+    assert night.NOTES_NAME in zipfile.ZipFile(io.BytesIO(_uploaded(out))).namelist()
+    # An archive kept before there were notes restores none, and the pass goes on.
+    _lines_, out, run = _night(tmp_path, Api((_run(70), _ledger_zip(_row(1)))))
+    assert not (out / night.NOTES_NAME).exists()
+    assert ledger.read_ledger(out / night.LEDGER_NAME) == [_row(1)]
+    assert '"settled": false' in (out / night.SUMMARY_NAME).read_text(encoding="utf-8")
+
+
+def test_restored_notes_that_are_not_notes_label_nothing_and_fail_no_pass(tmp_path: Path) -> None:
+    archive = _zip({night.LEDGER_NAME: _lines([_row(1)]), night.NOTES_NAME: b"<<<<<<<\n"})
+    lines, out, _run_ = _night(tmp_path, Api((_run(70), archive)))
+    assert "continues from run 70" in lines[0]
+    assert causes.read_notes(out / night.NOTES_NAME) == []
+    assert '"settled": false' in (out / night.SUMMARY_NAME).read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("why", sorted(UNTRUSTED))

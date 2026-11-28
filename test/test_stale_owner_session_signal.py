@@ -141,8 +141,8 @@ def test_owner_mint_claim_survives_refresh_token_round_trip() -> None:
         refresh_token_owner_minted,
     )
 
-    marked, *_ = generate_refresh_token("U_OWNER", owner_mint=True)
-    plain, *_ = generate_refresh_token("U_OWNER")
+    marked, *_ = generate_refresh_token("U_OWNER", family="fam", owner_mint=True)
+    plain, *_ = generate_refresh_token("U_OWNER", family="fam")
     assert refresh_token_owner_minted(marked) is True
     assert refresh_token_owner_minted(plain) is False
     assert refresh_token_owner_minted("not-a-token") is False

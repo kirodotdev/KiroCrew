@@ -386,7 +386,13 @@ milliseconds (`[WinError 5]` on `sessions/<key>.jsonl`). `member_memory_helpers`
 flake-pattern ratchet counts an `update_metadata` or `update_metadata_if` call made in
 a coroutine's own frame (K20; a sync helper that calls it is not counted), so a new one
 fails a change; hand the method to
-`await asyncio.to_thread(log.update_metadata, ...)` instead.
+`await asyncio.to_thread(log.update_metadata, ...)` instead. The miss the ratchet
+names is real: a "never raises" helper that writes a session record and reports a
+failure as a skipped item (`cron_service.identity.migrate_legacy_member_schedules`
+logs the schedule "left uncaptured" and returns it absent) turns that one-attempt
+rename into a wrong return value, `[] == ['lj1']`, with the `PermissionError` only
+in the captured log. The gateway runs such helpers on its memory worker thread, so
+a coroutine that drives one does the same, `await asyncio.to_thread(helper, ...)`.
 
 A test that drives code to `RecursionError` on purpose must hold the cyclic
 collector off for the walk. Its innermost frames have no headroom, and a gen0
@@ -3108,6 +3114,18 @@ about the code. Each is a hermeticity gap, and each has one fix:
   spawns and waits for overrides `server_bind` to call `socketserver.TCPServer.server_bind`
   and set `server_name` from the address it already has, as the stand-in in
   `test_decisions_local_runtime_real_spawn.py` and `plumb_cpu.py` do.
+- **A live ssh-agent is the operator's, not the test's.** A registry git network step
+  that keeps the ssh agent repairs a stale `SSH_AUTH_SOCK` from the agent sockets on the
+  host (`subprocess_env._git_network_step_env`), so on a developer host with a live
+  agent the environment a fake spawn received named that socket: four env-equality
+  tests in `test_apps_registry_coverage_manifests.py` and
+  `test_apps_routes_coverage_blob_proxy.py` failed there and passed on CI, which has no
+  agent. `_no_host_ssh_agent_in_registry_git_env` (`test/conftest_resets_app_registry.py`)
+  pins the resolver to a no-op for every test, and `agent_socket_refusal`, which stats a
+  socket the resolver finds, to accept; a test of the repair sets
+  `resolve_ssh_auth_sock` on `subprocess_env` itself, and its stand-in wrap reports the
+  forward it applied through `forward_ssh_auth_sock_out`: a wrap that reports nothing
+  reads as a refused forward, and the step then starts with no agent socket.
 
 ## Running the suite: the defaults, and how to narrow safely
 
@@ -3129,6 +3147,23 @@ runs. A proof lasts an hour, a failure is never kept, and a pass is kept only wh
 tree did not move while the command ran. After changing something that no package list or
 lockfile names (a built `dist/`, a hand edit under `node_modules`), run
 `python3 scripts/local-gate.py --no-reuse`.
+
+The backend related set reaches pytest as explicit file paths, collected with
+`-p scripts.explicit_file_targets` loaded. pytest resolves a file argument by
+collecting its directory again for every argument and offering each sibling entry to
+`pytest_ignore_collect` and `pytest_collect_file`; `test/` has about 8,900 entries,
+so a related set of hundreds of files is millions of offers per xdist worker, which on
+Windows also fall back to `samefile` on each path mismatch, and the gate spent 18 to 40
+minutes collecting before its first test. The plugin answers the ignore hook first,
+with "ignore", for every path pytest asks about. pytest asks about no initial path and
+no directory above one (`Dir.collect` and `Package.collect` check `Session.isinitpath`
+first), so everything it is asked about is a sibling no argument names, and the
+collected node IDs, their order and the conftests loaded along each argument's path are
+the ones the plain walk produces. Explicit arguments still bypass every ignore rule,
+which is why `run_scoped_tests.py` keeps subtracting the platform collect-ignore list
+itself. The plugin refuses a directory argument as a usage error, since it would collect
+nothing under it. `test/test_explicit_file_targets.py` pins the runner's own argv
+against a file-offer counter and the node-ID parity with and without the plugin.
 
 The whole suite with the configured defaults is a human's run, not a gate:
 

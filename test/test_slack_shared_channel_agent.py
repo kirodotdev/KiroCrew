@@ -82,6 +82,8 @@ def crew(monkeypatch, tmp_path):
         cfg = KiroCrewConfig.load()
         cfg.agents.update(bots)
         cfg.workspaces.update({n: WorkspaceConfig(dir=str(tmp_path / n)) for n in bots})
+        # The first crewmate, never renamed: the Bots page calls it "Bot".
+        cfg.agents["mate"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
         return cfg
 
     monkeypatch.setattr(live, "snapshot", _live)
@@ -167,6 +169,16 @@ class TestASharedUserSetsABot:
         assert _disk()["agent"] == "research"
         assert "*web-frontend*" in _say("!channel agent WEB-FRONTEND")
         assert _disk()["agent"] == "web-frontend"
+
+    @pytest.mark.parametrize(
+        ("typed", "shown"),
+        [("mate", "Bot"), ("research", "Research Bot"), ("web-frontend", "web-frontend")],
+    )
+    def test_the_reply_names_the_bot_as_the_dashboard_does(self, crew, typed, shown):
+        reply = _say(f"!channel agent {typed}")
+
+        assert reply.startswith(f"Agent for this channel: *{typed}*. Bot *{shown}* now answers")
+        assert _disk()["agent"] == typed
 
     def test_another_shared_user_may_replace_it(self, crew):
         _say("!channel agent research")
@@ -783,6 +795,16 @@ class TestTheCommandRouter:
             resources="!channel",
             error="unauthorized sender",
         )
+
+    @pytest.mark.parametrize("text", ["/goal ship it", "/workflow nightly"])
+    def test_a_shared_users_linked_chat_command_is_refused(self, crew, monkeypatch, text):
+        # Refused before the linked-thread hand-off, which would carry it into a
+        # dashboard chat's slash gate as that chat's own command. The refusal
+        # reads the list (``is_shared_listed``), which a confirmed user is on.
+        from kiro_crew.slack.shared_access import SHARED_OWNER_ONLY_TEXT
+
+        monkeypatch.setattr(_handler, "is_shared_listed", lambda user: user == _SHARED)
+        assert _route(text, _SHARED) == [SHARED_OWNER_ONLY_TEXT]
 
     def test_the_agent_word_is_read_in_any_case(self, crew):
         assert _route("!channel Agent research", _SHARED)[0].startswith("Agent for this channel")

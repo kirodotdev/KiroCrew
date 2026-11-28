@@ -321,6 +321,8 @@ HEAD /api/artifacts/{slug} api_artifact_detail
 GET /api/artifacts/{slug} api_artifact_detail
 HEAD /api/artifacts/{slug}/asset api_artifact_asset
 GET /api/artifacts/{slug}/asset api_artifact_asset
+HEAD /api/artifacts/{slug}/docx api_artifact_docx
+GET /api/artifacts/{slug}/docx api_artifact_docx
 PATCH /api/artifacts/{slug} api_artifact_update
 DELETE /api/artifacts/{slug} api_artifact_delete
 POST /api/artifacts/{slug}/settle api_artifact_settle_blank

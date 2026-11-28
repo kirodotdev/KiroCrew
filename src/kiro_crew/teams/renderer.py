@@ -814,7 +814,7 @@ class TeamsRenderer(Renderer):
         # ``_IMAGE_MARKER`` is the cheapest sound pre-check: extraction only ever
         # acts on ``![…](…)``, so a reply without the marker needs neither the root
         # lookup nor the scan. Wrong only in the safe direction.
-        if body and self.capabilities.files_outbound and _IMAGE_MARKER in body:
+        if self.capabilities.files_outbound and _IMAGE_MARKER in body:
             body, files = await self._extract_uploads(body)
         safe, redacted = await asyncio.to_thread(redact_for_display, body, _default_redactor)
         safe_choices: list[str] = []

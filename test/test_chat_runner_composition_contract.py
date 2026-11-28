@@ -1313,6 +1313,7 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
     r"create_task\(": (
         "dashboard/chat_turn/account_identity.py",
         "dashboard/chat_turn/eager_spawn.py",
+        "dashboard/chat_turn/mcp_session.py",
         "dashboard/chat_turn/prompt_assembly.py",
         "dashboard/chat_turn/queue_cycle.py",
         "dashboard/chat_turn/queue_drain.py",

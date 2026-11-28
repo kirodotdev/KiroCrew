@@ -37,7 +37,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.context_assembly.mcp_servers import MCP_SIGN_IN_HEADER, sign_in_started_block
-from kiro_crew.testing.wait import await_until, finished
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, await_until, finished
 
 _DEAD_URL = "https://auth.example.com/authorize?state=passive"
 _LIVE_URL = "https://auth.example.com/authorize?state=explicit"
@@ -50,11 +50,16 @@ _LIVE_URL = "https://auth.example.com/authorize?state=explicit"
 #: so the test, which the reset's answer unblocks, never reads a missing or
 #: half-written file. ``KIROCREW_TEST_SIGN_IN_STALL`` holds the stub inside its
 #: last capture write for that many seconds, standing in for a descheduled process.
+#: With ``KIROCREW_TEST_SIGN_IN_AFTER_TURN`` the stub answers ``session/prompt``
+#: with ``end_turn`` and sends the live URL only once both the reset and that
+#: terminal are out, as the engine does when discovery outlasts a short turn; it
+#: records each prompt it receives.
 _STUB_AGENT = """
 import json, os, sys, time
 
 CAPTURE = os.environ["KIROCREW_TEST_SIGN_IN_CAPTURE"]
 STALL = float(os.environ.get("KIROCREW_TEST_SIGN_IN_STALL") or 0)
+AFTER_TURN = bool(os.environ.get("KIROCREW_TEST_SIGN_IN_AFTER_TURN"))
 seen = {}
 
 def record(key, value, stall=0.0):
@@ -73,7 +78,13 @@ def status(sid, **server):
     send({"jsonrpc": "2.0", "method": "_kiro/mcp/status",
           "params": {"sessionId": sid, "servers": [{"name": "remote", **server}]}})
 
+def open_url():
+    send({"jsonrpc": "2.0", "id": 900, "method": "_kiro/openExternalUrl",
+          "params": {"url": %(live)r}})
+
 pending_reset = None
+turn_ended = False
+prompts = 0
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -94,8 +105,15 @@ for line in sys.stdin:
         record("reset", params)
         pending_reset = mid
         status(params["sessionId"], status="connecting")
-        send({"jsonrpc": "2.0", "id": 900, "method": "_kiro/openExternalUrl",
-              "params": {"url": %(live)r}})
+        if not AFTER_TURN or turn_ended:
+            open_url()
+    elif method == "session/prompt" and AFTER_TURN:
+        prompts += 1
+        record("prompts", prompts)
+        send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
+        turn_ended = True
+        if pending_reset is not None and prompts == 1:
+            open_url()
     elif mid == 900 and method is None:
         record("openReply", msg.get("result"), stall=STALL)
         status("kas-stub-session", status="connected", tools=[{"name": "ping"}])
@@ -139,12 +157,17 @@ def kas_sign_in_stub(tmp_path, monkeypatch):
     return capture
 
 
+# The module's three stub tests each start a real interpreter child; the group
+# serialises them with the suite's other real spawns, so their cold starts never
+# land side by side on other workers (D8).
+@pytest.mark.xdist_group(name="subprocess_spawn")
 @pytest.mark.skipif(sys.platform == "win32", reason="the stub launcher is a POSIX shell script")
 @pytest.mark.asyncio
 async def test_an_unauthorized_server_gets_the_live_consent_url(kas_sign_in_stub, tmp_path):
     await _sign_in_through_the_stub(kas_sign_in_stub, tmp_path)
 
 
+@pytest.mark.xdist_group(name="subprocess_spawn")
 @pytest.mark.skipif(sys.platform == "win32", reason="the stub launcher is a POSIX shell script")
 @pytest.mark.asyncio
 async def test_the_capture_is_whole_however_long_the_stub_takes_to_write_it(
@@ -190,6 +213,59 @@ async def _sign_in_through_the_stub(kas_sign_in_stub, tmp_path) -> None:
     assert requests == [{"serverName": "remote", "oauthUrl": _LIVE_URL}]
     assert runtime._mcp_sign_in is None
     assert handle._mcp_sign_in_needed == set()
+
+
+@pytest.mark.xdist_group(name="subprocess_spawn")
+@pytest.mark.skipif(sys.platform == "win32", reason="the stub launcher is a POSIX shell script")
+@pytest.mark.asyncio
+async def test_a_link_sent_after_the_turn_ended_reaches_the_chat_before_any_new_prompt(
+    kas_sign_in_stub, tmp_path, monkeypatch
+):
+    """The engine's discovery outlasts a short turn: its consent URL comes after the
+    turn's terminal, when no turn reads the session queue. The chat's consent hook
+    gets it at once, before the person sends anything else."""
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+    from kiro_crew.providers.acp import AcpProvider
+
+    monkeypatch.setenv("KIROCREW_TEST_SIGN_IN_AFTER_TURN", "1")
+    runtime = AcpRuntime(work_dir=tmp_path / "ws", sandbox_mode="off", acp_backend=ACP_BACKEND_KAS)
+    shown: list[dict[str, str]] = []
+    drawn = asyncio.Event()
+
+    def show(request: dict[str, str]) -> bool:
+        shown.append(request)
+        drawn.set()
+        return True
+
+    try:
+        await runtime.spawn()
+        handle = await runtime.create_session(cwd=tmp_path / "ws")
+        inner = AcpSessionProvider.__new__(AcpSessionProvider)
+        inner._handle = handle
+        inner._runtime = runtime
+        outer = AcpProvider.__new__(AcpProvider)
+        outer._client = inner
+        outer.set_mcp_consent_hook(show)
+        async for _event in handle.prompt(
+            "hi", timeout=FALLBACK_TIMEOUT_SECS, sign_in_ask="sign in to remote"
+        ):
+            pass
+        assert not handle.is_turn_active
+        await await_until(drawn, what="the consent hook got the link")
+        # The stub writes its capture before it answers the reset.
+        await finished(asyncio.gather(*runtime._answer_tasks), "the reset's answer")
+        seen = json.loads(kas_sign_in_stub.read_text())
+        queued = []
+        while not handle._queue.empty():
+            queued.append(handle._queue.get_nowait())
+    finally:
+        await runtime.kill()
+
+    assert shown == [{"serverName": "remote", "oauthUrl": _LIVE_URL}]
+    assert seen["prompts"] == 1
+    assert seen["openReply"] == {"success": True}
+    # Delivered once, to the chat: the link is not also left on the queue.
+    assert not [f for f in queued if f is not None and f.is_method(METHOD_MCP_OAUTH_REQUEST)]
 
 
 # ── runtime: the consent URL and the one sign-in slot ─────────────────────────
@@ -345,6 +421,104 @@ async def test_a_sign_in_that_ends_unconnected_tells_the_chat_that_showed_its_li
     assert outer.mcp_sign_in_ended("remote") is True
     runtime.unregister_session("s1")
     assert "s1" not in runtime._mcp_sign_in_ended_hooks
+
+
+@pytest.mark.asyncio
+async def test_a_link_the_consent_hook_delivers_is_not_queued(monkeypatch):
+    runtime = _runtime()
+    replies = _capture_answers(runtime, monkeypatch)
+    runtime._mcp_sign_in = ("s1", "remote")
+    offered: list[dict] = []
+    runtime.set_mcp_consent_hook("s1", lambda frame: offered.append(frame.params) or True)
+
+    await runtime._answer_open_external_url(8, {"url": _LIVE_URL})
+
+    assert offered == [{"sessionId": "s1", "serverName": "remote", "oauthUrl": _LIVE_URL}]
+    assert runtime._session_queues["s1"].empty()
+    assert replies == [("result", 8, {"success": True})]
+
+
+def _refusing_hook(frame):
+    return False
+
+
+def _raising_hook(frame):
+    raise RuntimeError("chat gone")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hook", [_refusing_hook, _raising_hook], ids=["refused", "raised"])
+async def test_a_link_the_consent_hook_does_not_take_is_queued(monkeypatch, caplog, hook):
+    runtime = _runtime()
+    replies = _capture_answers(runtime, monkeypatch)
+    runtime._mcp_sign_in = ("s1", "remote")
+    runtime.set_mcp_consent_hook("s1", hook)
+
+    await runtime._answer_open_external_url(8, {"url": _LIVE_URL})
+
+    frame = runtime._session_queues["s1"].get_nowait()
+    assert frame.params == {"sessionId": "s1", "serverName": "remote", "oauthUrl": _LIVE_URL}
+    assert replies == [("result", 8, {"success": True})]
+    assert ("MCP consent hook failed" in caplog.text) is (hook is _raising_hook)
+
+
+def test_unregistering_a_session_drops_its_consent_hook():
+    runtime = _runtime()
+    runtime.set_mcp_consent_hook("s1", _refusing_hook)
+    runtime.unregister_session("s1")
+    assert "s1" not in runtime._mcp_consent_hooks
+
+
+def _consent_provider(handle: AcpSessionHandle, runtime: AcpRuntime):
+    """The dashboard's provider chain over a real handle, its chat hook recording."""
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+    from kiro_crew.providers.acp import AcpProvider
+
+    inner = AcpSessionProvider.__new__(AcpSessionProvider)
+    inner._handle = handle
+    inner._runtime = runtime
+    outer = AcpProvider.__new__(AcpProvider)
+    outer._client = inner
+    shown: list[dict[str, str]] = []
+    outer.set_mcp_consent_hook(lambda request: shown.append(request) or True)
+    return shown
+
+
+@pytest.mark.asyncio
+async def test_a_link_during_a_turn_is_left_for_that_turn(monkeypatch):
+    handle, queue = _turn_handle([])
+    runtime = handle._runtime
+    monkeypatch.setattr(runtime, "is_alive", lambda: True)
+    _capture_answers(runtime, monkeypatch)
+    shown = _consent_provider(handle, runtime)
+    runtime._mcp_sign_in = ("s1", "remote")
+    handle._turn_done.clear()
+    assert handle.is_turn_active
+
+    await runtime._answer_open_external_url(8, {"url": _LIVE_URL})
+
+    assert shown == []
+    assert queue.get_nowait().params["oauthUrl"] == _LIVE_URL
+
+
+@pytest.mark.asyncio
+async def test_a_link_between_turns_takes_the_turns_checks_and_reaches_the_chat(monkeypatch):
+    handle, queue = _turn_handle([])
+    runtime = handle._runtime
+    _capture_answers(runtime, monkeypatch)
+    shown = _consent_provider(handle, runtime)
+    runtime._mcp_sign_in = ("s1", "remote")
+    assert not handle.is_turn_active
+    google = "https://accounts.google.com/o/oauth2/v2/auth?client_id=x&state=s"
+
+    await runtime._answer_open_external_url(8, {"url": google})
+    # The same server's link again: dropped by the dedupe, never queued.
+    await runtime._answer_open_external_url(9, {"url": google})
+
+    assert len(shown) == 1 and shown[0]["serverName"] == "remote"
+    assert "access_type=offline" in shown[0]["oauthUrl"]
+    assert queue.empty()
+    assert handle._oauth_emitted_servers == {"remote"}
 
 
 # ── session handle: which servers still need a sign-in ────────────────────────
@@ -756,6 +930,9 @@ async def test_a_server_that_was_up_is_not_probed_when_it_later_fails(monkeypatc
         ("GH", "Sign in to gh"),
         ("mcp", "sign in to mcp"),
         ("server", "use the server"),
+        # The words may also be written together.
+        ("acme-docs", "sign in to acmedocs"),
+        ("acme-docs", "Sign in to AcmeDocs"),
         # A registry provider's sign_in_words name its server too.
         ("atlassian", "show my Jira issues"),
         ("atlassian", "search CONFLUENCE for the runbook"),

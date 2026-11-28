@@ -28,6 +28,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from kiro_crew.agent_files import member_label
+from kiro_crew.slack.format import escape_mrkdwn
 
 logger = logging.getLogger(__name__)
 
@@ -153,12 +154,27 @@ def resolve_bot_name(typed: str) -> str | None:
     return None
 
 
+def bot_label(key: str) -> str:
+    """The name a reply that speaks of ONE Bot gives it: its :func:`crew_bots` label.
+
+    The display name, else "Bot" for the first crewmate, else the key, so a reply
+    agrees with the Bots page and with :func:`bots_text`. The key is not repeated:
+    none of these replies asks for the name back (``!bot off`` takes none), and the
+    label itself resolves through :func:`resolve_bot_name`. Escaped for Slack's
+    ``text``: a Bot may name itself (``update_self``), so a label reading
+    ``<!channel>`` must not page the channel. Blocking like :func:`crew_bots`; a
+    key with no record reads as its own label.
+    """
+    return escape_mrkdwn(member_label(key, _bot_records().get(key)))
+
+
 def bots_text() -> str:
     """The Bots as one Slack line: `` `key` (Label), ...``. Blocking.
 
     The key is what a person types; the label is the name the dashboard's Bots page
-    shows. The reserved ``default`` record is left out: it is the install's main
-    agent, not a Bot a person made. Its key still resolves.
+    shows, escaped for Slack's ``text`` as :func:`bot_label` is. The reserved
+    ``default`` record is left out: it is the install's main agent, not a Bot a
+    person made. Its key still resolves.
     """
     # Deferred: the members facade loads the dashboard handlers, which importing the
     # Slack handler alone does not; a gateway that lists Bots has loaded them already.
@@ -170,7 +186,8 @@ def bots_text() -> str:
     if not bots:
         return "(none found)"
     return ", ".join(
-        f"`{key}`" + (f" ({label})" if label != key else "") for key, label in bots.items()
+        f"`{key}`" + (f" ({escape_mrkdwn(label)})" if label != key else "")
+        for key, label in bots.items()
     )
 
 

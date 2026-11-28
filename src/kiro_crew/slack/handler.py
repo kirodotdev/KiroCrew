@@ -254,6 +254,7 @@ from kiro_crew.slack.blocks import (  # noqa: F401 - read by the owners
 )
 from kiro_crew.slack.channel_crew import (  # noqa: F401 - read by the owners
     bind_bot_memory,
+    bot_label,
     bots_text,
     context_template,
     crew_bots,

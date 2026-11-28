@@ -97,3 +97,56 @@ def test_a_request_to_compare_models_selects_the_skill(text: str) -> None:
     score, negated = trigger_score(_front()["triggers"], words_of(text))
     assert not negated
     assert score >= MIN_TRIGGER_OVERLAP, f"{text!r} scored {score}"
+
+
+def _section(start: str, end: str) -> str:
+    body = _body()
+    head = body.index(start)
+    return body[head : body.index(end, head)]
+
+
+_STEP_5 = """## Step 5: keep one
+
+Only after the person names the winner, and after they agree to a branch name,
+create that branch in the main checkout and apply the winner's commits to it
+with `git cherry-pick <base>..<winner head>`. On a conflict, stop and report it.
+Never push.
+
+The other worktrees stay where they are. Give their paths so the person can open
+them. A clean worktree is removed by Kiro Crew when the run's record expires, and
+one with commits is kept. Never remove a worktree or a folder yourself unless
+the person asks.
+
+"""
+
+
+def test_step_5_is_the_text_that_gates_the_cherry_pick() -> None:
+    assert _section("## Step 5", "## Refusals") == _STEP_5
+
+
+@pytest.mark.parametrize(
+    ("needle", "rule"),
+    [
+        ("`<mcwidget>`", "shows the comparison as one widget card"),
+        ("the plain table above is the answer", "keeps the plain table off the dashboard"),
+        ('`data-action="keep_attempt"`', "names the keep action"),
+        ("""`data-payload='{"attempt":n}'`""", "sends the attempt's number only"),
+        ("holds nothing else", "keeps the payload to the number"),
+        ("gets no row and no button", "offers no button for an attempt with no commit"),
+        ("goes into the card as escaped text", "escapes text that a model wrote"),
+        ("only pre-fills the composer", "says a click does not send"),
+        ("the person still presses send", "leaves the send to the person"),
+        ("never say a click kept or applied an attempt", "never calls a click a keep"),
+        ("never from the reply", "reads the worker from its own table"),
+        ("go on to step 5 for the branch name", "still asks for the branch name"),
+    ],
+)
+def test_the_card_keeps_the_rule(needle: str, rule: str) -> None:
+    card = " ".join(_section("### The card", "## Step 5").lower().split())
+    assert needle in card, f"the card no longer says it {rule}"
+
+
+def test_the_card_sits_in_the_compare_step_and_adds_no_second_trigger() -> None:
+    assert "keep_attempt" not in _section("## Step 0", "## Step 4")
+    assert "keep_attempt" not in _section("## Step 5", "## Refusals")
+    assert _front()["inject_on_trigger"] == "false"

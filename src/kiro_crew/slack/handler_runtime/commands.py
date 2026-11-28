@@ -50,6 +50,7 @@ if TYPE_CHECKING:
         _vc,
         agent_switch_target,
         bind_bot_memory,
+        bot_label,
         bots_text,
         build_timing_footer,
         canonical_key,
@@ -999,9 +1000,10 @@ async def _bang_thread_agent(
     )
     await sessions.remove(session_key)
     if bot:
+        shown = await asyncio.to_thread(bot_label, resolved)
         await slack.post_message(
             channel,
-            f"🤖 This thread now runs as Bot *{resolved}*. `!bot off` to go back.",
+            f"🤖 This thread now runs as Bot *{shown}*. `!bot off` to go back.",
             reply_ts,
         )
     else:
@@ -1113,12 +1115,14 @@ async def _bang_bot(
         await slack.post_message(channel, "⛔ Owner-only command.", reply_ts)
         return ""
     if joined is not None and typed:
+        # Named as the Bots page names it (``bot_label``), not by its config key.
+        shown = await asyncio.to_thread(bot_label, joined.agent)
         if typed.lower() != "off":
             target = await asyncio.to_thread(resolve_bot_name, typed)
             notice = (
-                f"🤖 This thread already talks to Bot *{joined.agent}*."
+                f"🤖 This thread already talks to Bot *{shown}*."
                 if target == joined.agent
-                else f"❌ This thread talks to Bot *{joined.agent}* in its own chat."
+                else f"❌ This thread talks to Bot *{shown}* in its own chat."
                 " Send `!bot off` first, then `!bot <name>`."
             )
             await slack.post_message(channel, notice, reply_ts)
@@ -1135,7 +1139,7 @@ async def _bang_bot(
             )
             await slack.post_message(
                 channel,
-                f"❌ Could not save leaving Bot *{joined.agent}*'s chat. Try `!bot off` again.",
+                f"❌ Could not save leaving Bot *{shown}*'s chat. Try `!bot off` again.",
                 reply_ts,
             )
             return ""
@@ -1147,7 +1151,7 @@ async def _bang_bot(
             else ""
         )
         await slack.post_message(
-            channel, f"👋 This thread left Bot *{joined.agent}*'s chat.{still}", reply_ts
+            channel, f"👋 This thread left Bot *{shown}*'s chat.{still}", reply_ts
         )
         return ""
     if not typed:
@@ -1155,7 +1159,11 @@ async def _bang_bot(
         if joined is not None:
             current = joined.agent
         on_bot = bool(current) and current in await asyncio.to_thread(crew_bots)
-        head = f"This thread runs as Bot *{current}*.\n" if on_bot else ""
+        head = (
+            f"This thread runs as Bot *{await asyncio.to_thread(bot_label, current)}*.\n"
+            if on_bot
+            else ""
+        )
         await slack.post_message(
             channel,
             f"{head}Crew Bots: {await asyncio.to_thread(bots_text)}\n"
@@ -1216,9 +1224,10 @@ async def _bang_bot(
         return ""
     if slot is not None:
         bot_chat.audit("bot_chat_join", session_key, user_id, channel, agent=key, slot=slot.key)
+        shown = await asyncio.to_thread(bot_label, key)
         await slack.post_message(
             channel,
-            f"🤖 This thread now talks to Bot *{key}* in its own chat, so it shows on the"
+            f"🤖 This thread now talks to Bot *{shown}* in its own chat, so it shows on the"
             " dashboard's Bots page too. `!bot off` to leave.",
             reply_ts,
         )

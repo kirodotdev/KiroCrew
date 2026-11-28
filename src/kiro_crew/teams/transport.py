@@ -81,15 +81,17 @@ DispatchFn = Callable[[TeamsInbound], Awaitable[None]]
 def allowed_emails_from_config(entries: object) -> list[str] | None:
     """Normalize ``teams.allowed_emails`` to the lowercased identities to admit.
 
-    The ONE reading of that field's shape, shared by the boot factory and the
-    live reconfigure path so the two can never disagree about who is on the
-    roster. Entries that are not a non-empty string are skipped. Returns
-    ``None`` when the whole value is not a list -- the caller decides what a
-    malformed roster means (boot: nobody; reload: keep the old set).
+    The ONE reading of that field's shape on the live reload path, shared by
+    ``TeamsTransport.reconfigure`` and ``TeamsDispatcher.reconfigure`` so the
+    two can never disagree about who is on the roster. Entries that are not a
+    non-empty string are skipped. Returns ``None`` when the whole value is not
+    a list, and both callers then keep the roster they already hold. Boot does
+    not come through here: the factory in ``teams/gateway.py`` lowercases the
+    orchestrator's copy of ``teams.allowed_emails`` itself.
 
-    Lowercasing here is what makes the comparison in ``authorize`` and in
-    ``TeamsSessionResume.is_owner`` correct: Azure AD hands the UPN back in
-    whatever case the directory holds.
+    Lowercasing, here and at boot, is what makes the comparison in
+    ``authorize`` and in ``TeamsSessionResume.is_owner`` correct: Azure AD
+    hands the UPN back in whatever case the directory holds.
     """
     if not isinstance(entries, list):
         return None

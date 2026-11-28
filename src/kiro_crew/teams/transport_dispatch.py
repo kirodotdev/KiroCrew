@@ -4,8 +4,7 @@
 activity and hands the ``TeamsInbound`` (carrying ``conversation_id`` +
 ``service_url``) to :meth:`TeamsDispatcher.handle_message`:
 
-    command intercept (COMMAND_SPEC: /new /compact /stop /yolo /link /unlink
-                       /dashboard /help,
+    command intercept (every COMMAND_SPEC row in ``teams/commands.py``,
                        plus the /queue and /steer per-message directives)
     -> mid-turn routing: steer the running turn, or queue it behind a single
        in-place receipt bubble and drain the burst as ONE combined turn
@@ -53,6 +52,7 @@ from kiro_crew.messaging.commands import (
     compact_unsupported_reply,
     context_recycle_warning,
     format_ttl,
+    is_channel_owner,
     parse_dashboard_ttl,
     recycle_backend,
     recycle_warning_should_send,
@@ -1086,6 +1086,9 @@ class TeamsDispatcher:
         candidates = self._click_session_keys(inbound, identity)
         if payload["kc"] == KIND_APPROVAL:
             decision = payload["decision"]
+            if not self._is_owner(inbound):
+                # Only the owner approves a tool; anyone else's press is a Deny.
+                decision = DECISION_DENY
             approved = decision in (DECISION_APPROVE, DECISION_TRUST)
             # At most one candidate can hold this (rid, nonce) pair, so trying them in
             # order resolves exactly the prompt that is waiting and no other.
@@ -1139,6 +1142,7 @@ class TeamsDispatcher:
                     "on",
                     source="teams_card",
                     caller=identity or "unknown",
+                    caller_is_owner=self._is_owner(inbound),
                     phrasing=YOLO_PHRASING_MARKDOWN,
                 )
                 await self._reply(inbound, grant)
@@ -1538,6 +1542,7 @@ class TeamsDispatcher:
             arg,
             source="teams",
             caller=identity or "unknown",
+            caller_is_owner=self._is_owner(inbound),
             phrasing=YOLO_PHRASING_MARKDOWN,
         )
         await self._reply(inbound, reply)
@@ -1788,6 +1793,18 @@ class TeamsDispatcher:
         whenever only one form is present.
         """
         return inbound.resolved_identity or inbound.user_email or inbound.aad_object_id
+
+    def _is_owner(self, inbound: "TeamsInbound") -> bool:
+        """Whether the sender may change YOLO and answer approval prompts here.
+
+        ``teams.owner_id`` when it is set, else the only allow-listed identity
+        (:func:`is_channel_owner`), matched on either form Teams attests. Read live.
+        """
+        return is_channel_owner(
+            (inbound.resolved_identity, inbound.user_email, inbound.aad_object_id),
+            owner=getattr(self._live_cfg().teams, "owner_id", ""),
+            allowed=self._allowed_emails,
+        )
 
     async def _reply(self, inbound: "TeamsInbound", body: str) -> bool:
         """Send a command/notice reply into the inbound conversation; did it land?

@@ -519,6 +519,16 @@ KIRO_CLI_CLIENT_APPLICATION = "kirocrew"
 # ``agent.kas_persist_mcp_sign_in`` is on (the default; ``acp/kas_secret_storage.py``),
 # and every other callback stays undeclared (= false).
 # ``approveForMeOption`` and the opt-in ``checksAutoApprovals``: ``acp/kas_approve_for_me.py``.
+#
+# ``sessionScopedMcpStatus`` is declared so each session's ``_kiro/mcp/status``
+# lists only the servers that session declares. Undeclared, KAS sends every local
+# session the merged status of all of them, and on a name clash the newest
+# session's entry wins: sub-agents sharing one KAS process declare the same Crew
+# servers, so an older child's readiness wait (``KasMcpReadiness``) read its
+# newest sibling's "connecting" as its own and held its first prompt until that
+# sibling connected, and could read a sibling's "connected" as its own. The mode
+# is process-wide and taken from the first ``initialize``, which on a process
+# Crew spawns is Crew's. The kiro-cli relay forwards this ``_meta.kiro`` block.
 KAS_CLIENT_CAPABILITIES: dict = {
     **ACP_CLIENT_CAPABILITIES,
     "_meta": {
@@ -527,6 +537,7 @@ KAS_CLIENT_CAPABILITIES: dict = {
             "openExternalUrl": True,
             "userInput": True,
             "approveForMeOption": True,
+            "sessionScopedMcpStatus": True,
         }
     },
 }

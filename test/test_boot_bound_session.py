@@ -96,7 +96,9 @@ class TestRefreshChainBinding:
     def test_an_unbound_chain_payload_is_unchanged(self) -> None:
         """No claim is written when unbound, so an existing chain's shape is
         byte-identical to before this feature."""
-        token, _chain, _jti, _exp = refresh_tokens.generate_refresh_token("u@example.com")
+        token, _chain, _jti, _exp = refresh_tokens.generate_refresh_token(
+            "u@example.com", family="fam"
+        )
         assert "boot" not in _claims(token)
 
     def test_a_bound_chain_is_rejected_after_a_restart(self) -> None:
@@ -107,7 +109,7 @@ class TestRefreshChainBinding:
         false.
         """
         token, _chain, _jti, _exp = refresh_tokens.generate_refresh_token(
-            "u@example.com", boot=boot_id.current_boot_id()
+            "u@example.com", family="fam", boot=boot_id.current_boot_id()
         )
         valid, _uid, reason, _c, _j, _e = refresh_tokens.validate_refresh_token(token)
         assert valid, reason
@@ -117,8 +119,12 @@ class TestRefreshChainBinding:
         assert reason == "session ended at gateway restart"
 
     def test_the_boot_claim_is_readable_for_carrying(self) -> None:
-        bound, _c, _j, _e = refresh_tokens.generate_refresh_token("u@example.com", boot="abc123")
-        unbound, _c2, _j2, _e2 = refresh_tokens.generate_refresh_token("u@example.com")
+        bound, _c, _j, _e = refresh_tokens.generate_refresh_token(
+            "u@example.com", family="fam", boot="abc123"
+        )
+        unbound, _c2, _j2, _e2 = refresh_tokens.generate_refresh_token(
+            "u@example.com", family="fam"
+        )
         assert refresh_tokens.refresh_token_boot(bound) == "abc123"
         assert refresh_tokens.refresh_token_boot(unbound) == ""
 

@@ -271,7 +271,7 @@ def _rows(
         )
     else:
         sql = f"SELECT b.*, '' AS derived_from{search_meta} FROM ({sql}) b{search_join} ORDER BY b.kind,b.id"
-    cursor = store.db.execute(sql, sem_ids + epi_ids)
+    cursor = _scan(store, sql, sem_ids + epi_ids, packable=identities is None)
     filters: dict = query.get("filters") or {}
     matched = -1
     try:
@@ -331,6 +331,115 @@ def _rows(
             yield _record(record)
     finally:
         cursor.close()
+
+
+#: Packing rows needs ``ORDER BY`` inside an aggregate (3.44); 3.44's aggregate
+#: ``ORDER BY`` could also drop a JSON value's subtype, fixed in 3.45.
+_PACKED_ROWS_MIN_SQLITE = (3, 45, 0)
+#: Rows per SQLite step when packed.
+_PACKED_ROWS_CHUNK = 2000
+#: A scan whose first _SCAN_PROBE_ROWS rows took _SCAN_SLOW_SECS or longer reads
+#: the rest packed. Unloaded, those rows take under 10 ms with the caller's work;
+#: while other threads hold the GIL they take over half a second.
+_SCAN_PROBE_ROWS = 256
+_SCAN_SLOW_SECS = 0.1
+
+
+def _scan(store: Any, sql: str, params: list, *, packable: bool):
+    """The rows of *sql*, from a cursor, or packed once the cursor proves slow.
+
+    A cursor gives the GIL away and takes it back for every row. While other threads
+    keep the GIL busy, as during a gateway's first minutes, each take waits out the
+    interpreter's switch interval: 23,000 rows took 57 s instead of 0.9 s. When the
+    first rows show that wait, the rest come packed (:func:`_packed_rows`), which
+    pays it once per chunk. An unloaded scan stays on the cursor, which is faster.
+    It switches only inside the caller's open transaction (``_read_snapshot``): a
+    cursor's own implicit snapshot can end with its last row, and the packed rows
+    must be numbered in the snapshot the cursor read.
+    """
+    cursor = store.db.execute(sql, params)
+    try:
+        started = time.monotonic()
+        for read, row in enumerate(cursor, 1):
+            yield row
+            if (
+                packable
+                and read == _SCAN_PROBE_ROWS
+                and store.db.in_transaction
+                and time.monotonic() - started >= _SCAN_SLOW_SECS
+            ):
+                rest = _packed_rows(store, sql, params, skip=read)
+                if rest is not None:
+                    cursor.close()
+                    yield from rest
+                    return
+    finally:
+        cursor.close()
+
+
+def _packed_rows(store: Any, sql: str, params: list, *, skip: int = 0) -> Any:
+    """The rows of *sql* after the first *skip*, as dicts, _PACKED_ROWS_CHUNK rows per
+    SQLite step, or ``None`` when this SQLite cannot pack them.
+
+    Each step returns a chunk of rows as one JSON array. A REAL travels as
+    ``%!.17g`` text, which round-trips exactly where SQLite's JSON and plain
+    ``%.17g`` may round (``importance`` is the only REAL column the query reads); a
+    ``text`` equal to ``value_json`` is sent once. Every chunk is fetched before the
+    first row is yielded, so any SQLite error (an older library, a BLOB, which JSON
+    cannot hold, in any chunk) returns ``None`` instead of escaping mid-scan.
+    """
+    from kiro_crew import _sqlite_compat
+
+    if _sqlite_compat.sqlite3.sqlite_version_info < _PACKED_ROWS_MIN_SQLITE:
+        return None
+    # The window numbers the rows in the cursor's own order, so the outer sort goes.
+    unordered = sql.removesuffix(" ORDER BY b.kind,b.id")
+    try:
+        shape = store.db.execute(f"SELECT * FROM ({unordered}) LIMIT 0", params)
+        columns = [d[0] for d in shape.description]
+        shape.close()
+        values = []
+        for column in columns:
+            value = f'"{column}"'
+            if column == "text":
+                value = (
+                    'CASE WHEN "value_json" IS NULL OR "text" IS NOT "value_json" '
+                    'THEN "text" END'
+                )
+            elif column == "importance":
+                value = (
+                    "CASE WHEN typeof(importance) = 'real' "
+                    "THEN printf('%!.17g', importance) ELSE importance END"
+                )
+            values.append(value)
+        cursor = store.db.execute(
+            # Plain text joined into one array: no step depends on a JSON subtype.
+            f"SELECT '[' || group_concat(json_array({', '.join(values)}), ',' ORDER BY n) || ']'"
+            " FROM ("
+            f"SELECT *, row_number() OVER (ORDER BY kind, id) - 1 AS n FROM ({unordered})"
+            f") WHERE n >= ? GROUP BY n / {_PACKED_ROWS_CHUNK} ORDER BY n / {_PACKED_ROWS_CHUNK}",
+            [*params, skip],
+        )
+        try:
+            chunks = [chunk for (chunk,) in cursor.fetchall()]
+        finally:
+            cursor.close()
+    except _sqlite_compat.sqlite3.Error:
+        return None
+    return _unpack_rows(chunks, columns)
+
+
+def _unpack_rows(chunks: list[str], columns: list[str]):
+    real_at = columns.index("importance") if "importance" in columns else None
+    text_at = columns.index("text") if "text" in columns else None
+    value_at = columns.index("value_json") if "value_json" in columns else None
+    while chunks:
+        for row in json.loads(chunks.pop(0)):
+            if real_at is not None and isinstance(row[real_at], str):
+                row[real_at] = float(row[real_at])
+            if text_at is not None and value_at is not None and row[text_at] is None:
+                row[text_at] = row[value_at]
+            yield dict(zip(columns, row))
 
 
 def _summary(store: Any, row: Any, tokens: list[str], folded: str) -> dict:
@@ -514,7 +623,8 @@ def list_records(
             ) from None
     if sort is None and not facets:
         entries, total = [], 0
-        with store._db_lock:
+        # One snapshot, so a scan that switches to packed reads sees the rows it started on.
+        with store._db_lock, _read_snapshot(store):
             for row in _rows(store, query, page=range(offset, offset + limit)):
                 if row is not None:
                     _conflict_count(store, row)

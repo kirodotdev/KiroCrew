@@ -1198,6 +1198,28 @@ invariants:
   wait ended) is granted before the stagger check and does not bump
   `_last_spawn_ts`: the run is already resident, so there is no process burst
   to smooth, and an in-place recovery does not pay the stagger interval.
+- **A shared start is not a process launch.** The gate reads the run's own
+  sharing plan (`_sharing_plan`) once, whatever the memory floor, and a start
+  it predicts will put its session on its parent's running runtime is not held
+  by the stagger (`_should_stagger_queue(now, shared=True)`) and does not stamp
+  `_last_spawn_ts`, at registration, at a `ClaimPoint` reservation or at an
+  approval release (`SubagentInfo._admitted_shared`). A wave of shared children
+  is admitted at once, a dedicated start after it is spaced from the last
+  dedicated start only, and dedicated starts stay one per interval; an approval
+  release the pressure hold passes on from a shared head to a dedicated entry
+  still waits the interval. The running cap, the in-startup bound and the
+  session-start gate still meter the shared ones: `_in_startup` counts a shared
+  start before `_exec_started` once it is handed to its run
+  (`_startup_before_exec`, set at registration or at its approval release), never
+  while it is parked at, or waiting for release from, the approval prompt. On a KAS parent the plan counts siblings admitted shared but
+  not yet placed (`_kas_shared_places_left(admitted=True)`), and claims admitted
+  shared but not yet registered (`_shared_claims`, which the claim re-entry also
+  reads back instead of re-planning), so a burst past
+  `KAS_SHARED_CHILDREN_PER_PARENT` is planned, priced and spaced as the dedicated
+  starts it becomes; the run clears `_admitted_shared` once it has placed itself.
+  shortcut: rows already in the queue drain one per interval through the pump
+  whatever their placement; skip that for shared rows if a capacity-bound shared
+  backlog is ever measured slow. Pinned by `TestSharedStartsSkipTheStagger`.
 - **The in-startup population is bounded separately from both the cap and the
   stagger.** The cap bounds how many RUN, the stagger bounds the RATE of
   starts, and neither bounds how many admitted agents are still STARTING:

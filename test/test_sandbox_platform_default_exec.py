@@ -584,3 +584,101 @@ class TestFloorMandateNamesTheFloorNotThePowerlessKey:
                         else:
                             wrapped, _ = wrap_argv(list(_ARGV), mode="standard")
                             assert wrapped is not None, label
+
+
+class TestTheRefusalNamesTheRealCauseOnWindows:
+    """What a backend-less refusal says when the platform default could not apply."""
+
+    @pytest.fixture
+    def no_backend(self, monkeypatch):
+        monkeypatch.setattr(sandbox_mod, "detect_backend", lambda config_mode="auto": "none")
+        monkeypatch.setattr(sandbox_mod, "_inside_macos_sandbox", lambda: False)
+        monkeypatch.setattr(sandbox_mod, "_governance_sandbox_floor", lambda: "")
+
+    def test_an_unreadable_config_is_named_instead_of_an_unset_key(
+        self, no_backend, monkeypatch
+    ) -> None:
+        """The opt-in may be set in a file the gate could not read."""
+        monkeypatch.setattr(
+            loader_mod.KiroCrewConfig,
+            "load",
+            classmethod(
+                lambda cls: SimpleNamespace(
+                    agent=SimpleNamespace(sandbox_allow_unsandboxed_exec=False),
+                    _base_unreadable=True,
+                    _overlay_unreadable=False,
+                )
+            ),
+        )
+        monkeypatch.setattr(loader_mod, "unsandboxed_exec_declared", lambda: False)
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(SandboxUnavailableError) as excinfo:
+                wrap_argv(list(_ARGV), mode="standard")
+        message = str(excinfo.value)
+        assert "could not read ~/.kiro/crew/config.json" in message
+        assert "Failed to load config" in message
+        assert "Config is not a JSON object" in message
+        assert "allow_unsandboxed_exec is not set" not in message
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "win32")
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(SandboxUnavailableError) as excinfo:
+                wrap_argv(list(_ARGV), mode="standard")
+        # Editing the key is no step while the file holding it cannot be read.
+        assert "Remove a false value" not in str(excinfo.value)
+
+    def _no_config_files(self, monkeypatch, tmp_path, *, platform_allows: bool) -> None:
+        monkeypatch.setattr(
+            loader_mod.KiroCrewConfig,
+            "load",
+            classmethod(
+                lambda cls: SimpleNamespace(
+                    agent=SimpleNamespace(sandbox_allow_unsandboxed_exec=False)
+                )
+            ),
+        )
+        monkeypatch.setattr(loader_mod, "unsandboxed_exec_declared", lambda: False)
+        monkeypatch.setattr(loader_mod, "config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr(loader_mod, "config_local_path", lambda: tmp_path / "config.local.json")
+        monkeypatch.setattr(
+            loader_mod, "unsandboxed_exec_platform_default", lambda: platform_allows
+        )
+
+    def test_a_missing_config_says_so_where_the_platform_would_allow(
+        self, no_backend, monkeypatch, tmp_path
+    ) -> None:
+        """No file to read keeps the gate closed; the step is the gateway's boot write."""
+        self._no_config_files(monkeypatch, tmp_path, platform_allows=True)
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(SandboxUnavailableError) as excinfo:
+                wrap_argv(list(_ARGV), mode="standard")
+        message = str(excinfo.value)
+        assert "there is no ~/.kiro/crew/config.json" in message
+        assert "kirocrew restart" in message
+        # test_windows_fail_closed_optin.py's fresh-home refusal asserts the key is named.
+        assert "sandbox_allow_unsandboxed_exec" in message
+        assert "allow_unsandboxed_exec is not set" not in message
+
+    def test_a_missing_config_is_unset_where_the_platform_refuses(
+        self, no_backend, monkeypatch, tmp_path
+    ) -> None:
+        """Off Windows a missing config and an unset key refuse alike, so the text is unchanged."""
+        self._no_config_files(monkeypatch, tmp_path, platform_allows=False)
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(SandboxUnavailableError) as excinfo:
+                wrap_argv(list(_ARGV), mode="standard")
+        assert "allow_unsandboxed_exec is not set" in str(excinfo.value)
+
+    def test_the_windows_probe_detail_names_windows(self, monkeypatch) -> None:
+        monkeypatch.setattr(sandbox_mod, "sys", SimpleNamespace(platform="win32"))
+        assert sandbox_mod._probe_unshare() is False
+        assert sandbox_mod.unavailable_reason() == "Kiro Crew has no OS sandbox backend on Windows"
+
+    def test_windows_guidance_offers_a_step_that_exists_there(self, monkeypatch) -> None:
+        """Nothing installable gives Windows a backend, so "install one" is no step."""
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "win32")
+        guidance = sandbox_mod._no_backend_guidance()
+        assert "Windows has no OS sandbox backend" in guidance
+        assert "agent.sandbox_allow_unsandboxed_exec is true by default here" in guidance
+        assert "install a supported sandbox backend" not in guidance
+        floor_guidance = sandbox_mod._no_backend_guidance(include_optout=False)
+        assert "sandbox_allow_unsandboxed_exec" not in floor_guidance

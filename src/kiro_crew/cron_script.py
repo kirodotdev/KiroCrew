@@ -104,6 +104,32 @@ def _envelope_line(stdout: str, tag: str) -> str:
     raise LookupError("no launcher status line")
 
 
+_SCRIPT_EXIT_NEXT_STEP = "Next: fix what it reports, or run `kirocrew cron preview <script>:<function>` to see all of it."
+
+
+def _script_exit_error(returncode: int, tail: str) -> str:
+    """The failure reason of a script child that exited ``returncode`` (non-zero).
+
+    ``tail`` is the redacted stderr window. The whole reason fits in
+    ``_MAX_SCRIPT_STDERR_TAIL`` chars, the length the failure alert keeps, so
+    the output kept is the end of ``tail``; when that cut lands inside a line
+    the severed part is dropped, so the output shown starts at a line. A last
+    line longer than the whole budget is shown from its start, cut at its end.
+    ``tail`` starts at a line (``_safe_tail_redaction_window`` masks a severed
+    first line), so its last line's start is a real one.
+    """
+    head = f"Script exited with code {returncode}."
+    if not tail:
+        return f"{head} It wrote no error output.\n{_SCRIPT_EXIT_NEXT_STEP}"
+    budget = _MAX_SCRIPT_STDERR_TAIL - len(head) - 30 - len(_SCRIPT_EXIT_NEXT_STEP) - 2
+    kept = tail[-budget:]
+    if len(tail) > len(kept) and tail[-len(kept) - 1] != "\n":
+        kept = kept[kept.find("\n") + 1 :] if "\n" in kept else ""
+    if not kept:
+        kept = tail[tail.rfind("\n") + 1 :][: budget - 3] + "..."
+    return f"{head} The end of its error output:\n{kept}\n\n{_SCRIPT_EXIT_NEXT_STEP}"
+
+
 def run_script_sandboxed(
     script_path: str,
     job_id: str,
@@ -602,8 +628,11 @@ def run_script_sandboxed(
             # past the kept region (see ``_REDACT_STRADDLE_MARGIN``).
             scrubbed = _scrub_grant_values(stderr.rstrip(), resolved_secret_env)
             tail = redact(_safe_tail_redaction_window(scrubbed, _MAX_SCRIPT_STDERR_TAIL))
-            error_text = tail[-_MAX_SCRIPT_STDERR_TAIL:] if tail else f"exit {proc.returncode}"
-            return {"status": "error", "error": error_text}
+            return {
+                "status": "error",
+                "error": _script_exit_error(proc.returncode, tail),
+                "exit_code": proc.returncode,
+            }
 
         try:
             parsed = json.loads(_envelope_line(stdout, envelope_tag))

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 from test_memory_edit import store  # noqa: F401  (the v1 / v2 store fixture)
 
 from kiro_crew import memory_edit, memory_record_facets
+from kiro_crew._sqlite_compat import sqlite3 as _driver
 
 
 def _lesson(store, key, rule, category, applies, repo_scope=None, confidence=0.5):  # noqa: F811
@@ -159,6 +162,39 @@ def test_bad_filters_are_a_client_error(store, filters):  # noqa: F811
         memory_edit.list_records(store, {"filters": filters})
 
 
+def _outcome(call):
+    """What *call* returns, or the client error or OverflowError it raises, as text."""
+    try:
+        return call()
+    except (memory_edit.MemoryEditError, OverflowError) as exc:
+        return f"{type(exc).__name__}: {exc}"
+
+
+# Valid ISO times whose UTC instant falls in year 0 or year 10000, past datetime's range.
+@pytest.mark.parametrize(
+    "name,value", [("since", "0001-01-01T00:00:00+05:00"), ("until", "9999-12-31T23:59:59-05:00")]
+)
+def test_an_offset_bound_past_the_calendar_is_a_client_error(store, name, value):  # noqa: F811
+    assert store.set_semantic("user.editor", "vim", 1.0, "user_explicit") is None
+    assert _outcome(lambda: memory_record_facets.utc_time(value)) is None
+    assert _outcome(lambda: memory_edit.list_records(store, {"filters": {name: value}})) == (
+        f"MemoryEditError: {name} must be an ISO date or time."
+    )
+    # The same edge day written in UTC is an ordinary bound.
+    utc_edge = {name: value[:19] + "Z"}
+    assert memory_edit.list_records(store, {"filters": utc_edge})["total"] == 1
+
+
+def test_a_stored_time_past_the_calendar_is_outside_every_range(store):  # noqa: F811
+    for key in ("user.timezone", "project.flaky"):
+        assert store.set_semantic(key, "x", 1.0, "user_explicit") is None
+    _stamp(store, "user.timezone", "2026-03-05T00:00:00+00:00", "9999-12-31T23:59:59-05:00")
+    _stamp(store, "project.flaky", "2026-03-05T00:00:00+00:00", "2026-03-05T00:00:00+00:00")
+    march = {"since": "2026-03-01T00:00:00Z", "until": "2026-04-01T00:00:00Z"}
+    listed = _outcome(lambda: _ids(memory_edit.list_records(store, {"filters": march})))
+    assert listed == ["project.flaky"]
+
+
 def test_unusable_scope_has_its_own_facet_value():
     assert (
         memory_record_facets.lesson_facets('{"rule": "x", "repo_scope": ["a"]}')["scope"]
@@ -305,6 +341,138 @@ def test_a_repeated_listing_reuses_its_pass_until_the_store_changes(
     assert len(passes) == 2
     assert after["total"] == first["total"] + 1
     assert "user.editor" in _ids(after)
+
+
+#: Whether this test run's SQLite can pack rows; below it every scan keeps the cursor.
+_CAN_PACK = _driver.sqlite_version_info >= memory_edit._PACKED_ROWS_MIN_SQLITE
+
+
+def test_rows_read_in_chunks_match_rows_read_one_by_one(store, monkeypatch):  # noqa: F811
+    _seed(store)
+    # REALs that SQLite's JSON and plain %.17g round; each needs all 17 digits.
+    assert store.set_semantic("project.ratio", "x", 0.8333333333333334, "taskrunner") is None
+    assert store.write_episodic(
+        "A ratio to keep exact.", conversation_id="c2", importance=0.12345678901234566
+    )
+    assert store.write_episodic(
+        "Another exact ratio.", conversation_id="c3", importance=0.30000000000000004
+    )
+    query = {"q": "", "kind": "all"}
+    by_cursor = list(memory_edit._rows(store, query, summaries=True))
+    paged_by_cursor = list(memory_edit._rows(store, query, page=range(100)))
+    _every_scan_is_slow_after_two_rows(monkeypatch)
+    skipped = []
+    real = memory_edit._packed_rows
+
+    def counted(*args, **kwargs):
+        out = real(*args, **kwargs)
+        skipped.append(kwargs["skip"] if out is not None else None)
+        return out
+
+    monkeypatch.setattr(memory_edit, "_packed_rows", counted)
+    with memory_edit._read_snapshot(store):
+        packed = list(memory_edit._rows(store, query, summaries=True))
+        paged = list(memory_edit._rows(store, query, page=range(100)))
+    # An older SQLite cannot pack, and the scan keeps its cursor: the rows still match.
+    assert skipped == ([2, 2] if _CAN_PACK else [None, None])
+    assert len(packed) == 9
+    assert packed == by_cursor
+    assert paged == paged_by_cursor
+    assert 0.8333333333333334 in {s["confidence"] for s in packed}
+    assert {0.12345678901234566, 0.30000000000000004} <= {s["importance"] for s in packed}
+
+
+@pytest.mark.parametrize("store", ["v1"], indirect=True)
+def test_a_blob_in_a_later_chunk_keeps_the_cursor(store, monkeypatch):  # noqa: F811
+    _seed(store)
+    # A legacy BLOB key sorts after every text key, so it lands in the last chunk.
+    store.db.execute(
+        "INSERT INTO semantic_memory (key, value_json, source, created_at, updated_at)"
+        " VALUES (?, '\"x\"', 'user_explicit', '2026-01-01', '2026-01-01')",
+        (b"ab",),
+    )
+    store.db.commit()
+    monkeypatch.setattr(memory_edit, "_PACKED_ROWS_CHUNK", 2)
+    sql, params = _scan_sql(store, {"q": "", "kind": "all"})
+    # The first chunks pack fine; the BLOB's chunk fails, and that is seen before any
+    # row is handed out, so the caller can keep reading from its cursor.
+    assert memory_edit._packed_rows(store, sql, params, skip=2) is None
+    # The cursor still reads every row: the six seeded records and the BLOB key.
+    assert len(list(memory_edit._scan(store, sql, params, packable=False))) == 7
+
+
+def _scan_sql(store, query):  # noqa: F811
+    """The SQL and parameters ``_rows`` hands its scan for *query*."""
+    seen = {}
+
+    def capture(st, sql, params, *, packable):
+        seen["args"] = (sql, params)
+        yield from ()
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(memory_edit, "_scan", capture)
+        list(memory_edit._rows(store, query, summaries=True))
+    return seen["args"]
+
+
+def _every_scan_is_slow_after_two_rows(monkeypatch):
+    monkeypatch.setattr(memory_edit, "_SCAN_PROBE_ROWS", 2)
+    # Zero makes every scan count as slow, whatever the clock resolution.
+    monkeypatch.setattr(memory_edit, "_SCAN_SLOW_SECS", 0)
+
+
+@pytest.mark.parametrize("store", ["v1"], indirect=True)
+def test_a_write_from_another_connection_mid_scan_does_not_shift_the_rest(
+    store, monkeypatch  # noqa: F811
+):
+    _seed(store)
+    query = {"q": "", "kind": "all"}
+    by_cursor = list(memory_edit._rows(store, query, summaries=True))
+    _every_scan_is_slow_after_two_rows(monkeypatch)
+    real = memory_edit._packed_rows
+
+    def after_a_commit(*args, **kwargs):
+        # Committed after the cursor's first rows: had the packed rest read a new
+        # snapshot, its row numbers would skip a record.
+        other = sqlite3.connect(store._db_path)
+        other.execute("UPDATE semantic_memory SET is_deleted = 1 WHERE key = 'lesson.a'")
+        other.commit()
+        other.close()
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(memory_edit, "_packed_rows", after_a_commit)
+    with memory_edit._read_snapshot(store):
+        assert list(memory_edit._rows(store, query, summaries=True)) == by_cursor
+
+
+def test_a_slow_scan_outside_a_transaction_stays_on_its_cursor(store, monkeypatch):  # noqa: F811
+    # Without the caller's snapshot the cursor's own one can end with its last row,
+    # so the rows a packed read would number may not be the rows the cursor read.
+    _seed(store)
+    _every_scan_is_slow_after_two_rows(monkeypatch)
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("packed read outside a transaction")
+
+    monkeypatch.setattr(memory_edit, "_packed_rows", refuse)
+    assert not store.db.in_transaction
+    assert len(list(memory_edit._rows(store, {"q": "", "kind": "all"}, summaries=True))) == 6
+
+
+def test_the_unsorted_page_reads_in_one_snapshot(store, monkeypatch):  # noqa: F811
+    _seed(store)
+    _every_scan_is_slow_after_two_rows(monkeypatch)
+    in_transaction = []
+    real = memory_edit._packed_rows
+
+    def seen(st, *args, **kwargs):
+        in_transaction.append(st.db.in_transaction)
+        return real(st, *args, **kwargs)
+
+    monkeypatch.setattr(memory_edit, "_packed_rows", seen)
+    body = memory_edit.list_records(store, {}, limit=50)
+    assert body["total"] == 6
+    assert in_transaction == [True]
 
 
 def test_a_store_over_the_row_budget_is_not_kept(store, monkeypatch):  # noqa: F811

@@ -77,6 +77,7 @@ def _make_request(
     """Build a mock aiohttp request."""
     req = MagicMock(spec=web.Request)
     req.path = path
+    req.raw_path = path
     req.query = query or {}
     req.cookies = cookies or {}
     req.remote = remote

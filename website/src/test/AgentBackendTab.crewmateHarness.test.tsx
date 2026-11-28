@@ -51,7 +51,7 @@ describe('the Crew bot harness line', () => {
     const line = await screen.findByTestId('crewmate-harness')
     expect(line.dataset.source).toBe('settings')
     expect(line.textContent).toBe(
-      'Bots run on Claude Code, the harness picked here. A bot can pin its own in its settings.',
+      "Bots use Claude Code too. To give one bot a different agent, change it in that bot's settings.",
     )
     expect(line.getAttribute('role')).toBeNull()
   })
@@ -76,7 +76,7 @@ describe('the Crew bot harness line', () => {
     const line = await screen.findByTestId('crewmate-harness')
     expect(line.getAttribute('role')).toBe('alert')
     expect(line.textContent).toBe(
-      "Bots can't run on Claude Code, so they run on Kiro Agent instead. A bot can pin its own harness in its settings.",
+      "Bots can't run on Claude Code, so they use Kiro Agent. To give one bot a different agent, change it in that bot's settings.",
     )
   })
 

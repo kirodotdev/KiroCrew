@@ -103,6 +103,22 @@ UNPORTABLE_APP_NAMES = WINDOWS_DEVICE_STEMS
 APP_NAME_MAX_LENGTH = 128
 
 
+def is_app_dir_name(name: str) -> bool:
+    """Whether *name*, joined onto the apps folder, stays a direct child of it (or the folder).
+
+    Refuses ``.``, ``..`` and any name holding ``/``, ``\\`` or NUL, and nothing
+    else: an installed name from before :func:`app_name_error`, the gateway's own
+    ``.``-prefixed sidecar names and the empty name (which :func:`app_name_error`
+    refuses at admission) still pass. A route's ``{name}`` is decoded by the router,
+    so ``a%2F..%2Fb`` arrives as ``a/../b``.
+    """
+    return (
+        isinstance(name, str)
+        and name not in (".", "..")
+        and not any(ch in name for ch in ("/", "\\", "\x00"))
+    )
+
+
 def app_name_error(name: str) -> str | None:
     """Return why *name* is inadmissible as an app identifier, else ``None``.
 

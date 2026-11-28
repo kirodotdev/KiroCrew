@@ -57,7 +57,7 @@ def isolated_state(tmp_path: Path):
 
 def test_tr_u_01_generate_basic():
     """Returns dotted token, fresh chain_id (12 hex), fresh jti (24 hex)."""
-    token, chain_id, jti, exp = generate_refresh_token("alice")
+    token, chain_id, jti, exp = generate_refresh_token("alice", family="fam")
     assert "." in token
     assert len(chain_id) == 12
     assert len(jti) == 24
@@ -72,7 +72,7 @@ def test_tr_u_01_generate_basic():
 def test_tr_u_02_generate_with_chain_id():
     """Passing chain_id continues an existing chain."""
     token, chain_id, _jti, _exp = generate_refresh_token(
-        "alice", chain_id="abc123def456"
+        "alice", family="fam", chain_id="abc123def456"
     )
     assert chain_id == "abc123def456"
     # Token decodes back to the same chain_id
@@ -85,15 +85,15 @@ def test_tr_u_02_generate_with_chain_id():
 
 def test_tr_u_03_jti_chain_uniqueness():
     """Two back-to-back mints have different jti AND different chain_id."""
-    _t1, c1, j1, _ = generate_refresh_token("alice")
-    _t2, c2, j2, _ = generate_refresh_token("alice")
+    _t1, c1, j1, _ = generate_refresh_token("alice", family="fam")
+    _t2, c2, j2, _ = generate_refresh_token("alice", family="fam")
     assert j1 != j2
     assert c1 != c2
 
 
 def test_tr_u_04_session_exp_within_max():
     """session_exp - iat is exactly MAX_REFRESH_TTL_SECS."""
-    token, _chain, _jti, exp = generate_refresh_token("alice")
+    token, _chain, _jti, exp = generate_refresh_token("alice", family="fam")
     parts = token.split(".")
     import base64
 
@@ -107,7 +107,7 @@ def test_tr_u_04_session_exp_within_max():
 
 
 def test_tr_u_05_validate_happy_path():
-    token, chain_id, jti, _exp = generate_refresh_token("alice")
+    token, chain_id, jti, _exp = generate_refresh_token("alice", family="fam")
     valid, user, reason, decoded_chain, decoded_jti, _exp = validate_refresh_token(
         token
     )
@@ -119,7 +119,7 @@ def test_tr_u_05_validate_happy_path():
 
 
 def test_tr_u_06_validate_tampered_signature():
-    token, _chain, _jti, _exp = generate_refresh_token("alice")
+    token, _chain, _jti, _exp = generate_refresh_token("alice", family="fam")
     # Tamper the signature
     parts = token.split(".")
     tampered = f"{parts[0]}.{'A' * len(parts[1])}"
@@ -131,7 +131,7 @@ def test_tr_u_06_validate_tampered_signature():
 def test_tr_u_07_validate_expired():
     """Expiry checks fire when session_exp is in the past."""
     # Mint with a 1-second TTL, sleep, validate
-    token, _chain, _jti, _exp = generate_refresh_token("alice", ttl_seconds=1)
+    token, _chain, _jti, _exp = generate_refresh_token("alice", family="fam", ttl_seconds=1)
     time.sleep(1.1)
     valid, _user, reason, _c, _j, _e = validate_refresh_token(token)
     assert valid is False
@@ -190,7 +190,7 @@ def test_tr_u_13_revoke_chain(isolated_state: RefreshStateManager):
 
 
 def test_tr_u_14_validate_rejects_revoked_chain(isolated_state: RefreshStateManager):
-    token, chain_id, _jti, _exp = generate_refresh_token("alice")
+    token, chain_id, _jti, _exp = generate_refresh_token("alice", family="fam")
     isolated_state.revoke_chain(chain_id, time.time() + 30 * 86400)
     valid, _user, reason, _c, _j, _e = validate_refresh_token(token)
     assert valid is False
@@ -1218,7 +1218,7 @@ def test_tr_u_23_logout_revokes_chain_and_clears_cookies(
     from kiro_crew.dashboard.handlers import auth_refresh as ar
 
     # Mint a real refresh token so validate_refresh_token accepts it
-    token, chain_id, _jti, _exp = generate_refresh_token("alice")
+    token, chain_id, _jti, _exp = generate_refresh_token("alice", family="fam")
     cookie_name = refresh_cookie_name(7777)
 
     request = MagicMock(spec=web.Request)
@@ -1454,7 +1454,7 @@ def test_tr_u_27_logout_revokes_access_cookie(tmp_path, monkeypatch):
 
     # Establish a session: a real access cookie + a real refresh cookie.
     access_token = generate_token("alice", ttl_seconds=MAX_REFRESH_TTL_SECS)
-    refresh_token, chain_id, _jti, _exp = generate_refresh_token("alice")
+    refresh_token, chain_id, _jti, _exp = generate_refresh_token("alice", family="fam")
 
     # Cookie is valid BEFORE logout (the pentest "confirm valid" step).
     assert validate_token(access_token, use_session_exp=True)[0] is True
@@ -1505,7 +1505,7 @@ def test_refresh_expires_foreign_port_cookies_keeps_current(
 
     from kiro_crew.dashboard.handlers import auth_refresh as ar
 
-    token, _chain_id, _jti, _exp = generate_refresh_token("alice")
+    token, _chain_id, _jti, _exp = generate_refresh_token("alice", family="fam")
 
     request = MagicMock(spec=web.Request)
     request.app = {"port": 7777, "allowed_origins": set()}
@@ -1555,7 +1555,7 @@ def test_refresh_leaves_small_jar_untouched(
 
     from kiro_crew.dashboard.handlers import auth_refresh as ar
 
-    token, _chain_id, _jti, _exp = generate_refresh_token("alice")
+    token, _chain_id, _jti, _exp = generate_refresh_token("alice", family="fam")
 
     request = MagicMock(spec=web.Request)
     request.app = {"port": 7777, "allowed_origins": set()}
@@ -1619,7 +1619,7 @@ def test_tr_u_28_revoke_all_sessions_kills_refresh_token(
     # Fresh revoked-nonce store bound to this test's tmp config_dir.
     monkeypatch.setattr(ta, "_revoked_store_singleton", None)
 
-    token, chain_id, _jti, exp = generate_refresh_token("alice")
+    token, chain_id, _jti, exp = generate_refresh_token("alice", family="fam")
     valid_before, _, _, _, _, _ = validate_refresh_token(token)
     assert valid_before is True
 
@@ -1644,7 +1644,7 @@ def test_tr_u_29_refresh_token_minted_after_bump_validates(
     monkeypatch.setattr(ta, "_revoked_store_singleton", None)
 
     revoke_all_sessions()
-    token, _chain_id, _jti, _exp = generate_refresh_token("alice")
+    token, _chain_id, _jti, _exp = generate_refresh_token("alice", family="fam")
     valid, user, reason, _cid, _j, _e = validate_refresh_token(token)
     assert valid is True
     assert user == "alice"
@@ -1671,7 +1671,9 @@ def test_tr_u_30_legacy_payload_without_gen_fails_closed(
         "jti": "a" * 24,
         "iat": now,
         "session_exp": now + 3600,
-        # no "gen" claim — pre-upgrade token
+        # no "gen" claim — pre-upgrade token. A family keeps this test on the gen
+        # check: a real token this old has none, and is refused for that first.
+        "family": "fam",
     }
     raw = json.dumps(legacy_payload, separators=(",", ":")).encode()
     token = f"{rt._b64url_encode(raw)}.{rt._sign(raw)}"
@@ -1705,7 +1707,7 @@ def test_tr_u_31_refresh_endpoint_rejects_pre_logout_cookie(
 
     monkeypatch.setattr(ta, "_revoked_store_singleton", None)
 
-    token, _chain_id, _jti, _exp = generate_refresh_token("alice")
+    token, _chain_id, _jti, _exp = generate_refresh_token("alice", family="fam")
     revoke_all_sessions()
 
     request = MagicMock(spec=web.Request)
@@ -1757,7 +1759,7 @@ def test_tr_u_33_validator_fails_closed_when_counter_unreadable(
     """
     from kiro_crew.dashboard.token_auth import generate_token, validate_token
 
-    refresh_token, _cid, _jti, _exp = generate_refresh_token("alice")  # minted at gen 0
+    refresh_token, _cid, _jti, _exp = generate_refresh_token("alice", family="fam")  # minted at gen 0
     access_token = generate_token("alice", ttl_seconds=3600)
 
     import kiro_crew.dashboard.revocation_gen as rg
@@ -1840,7 +1842,7 @@ def test_tr_u_36_unreadable_counter_file_logs_recovery(
     assert "delete only" in caplog.text
     assert "re-enables unexpired sessions revoked by kirocrew logout" in caplog.text
 
-    token, _cid, _jti, _exp = generate_refresh_token("alice")  # mint degrades to gen 0
+    token, _cid, _jti, _exp = generate_refresh_token("alice", family="fam")  # mint degrades to gen 0
     valid, _, reason, _, _, _ = validate_refresh_token(token)
     assert valid is False
     assert reason == "revocation state unavailable"
@@ -1960,7 +1962,7 @@ def test_tr_u_16n_the_degraded_warnings_do_not_promise_a_recovery_that_cannot_ha
 
 @pytest.mark.parametrize("bad", ["é", "\udcff", "\ud800"])
 def test_non_ascii_signature_is_a_bad_signature_not_a_crash(bad: str) -> None:
-    token, _chain, _jti, _exp = generate_refresh_token("alice")
+    token, _chain, _jti, _exp = generate_refresh_token("alice", family="fam")
     payload = token.split(".", 1)[0]
     valid, _user, reason, _c, _j, _e = validate_refresh_token(f"{payload}.{bad}")
     assert (valid, reason) == (False, "bad signature")

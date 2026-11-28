@@ -16,6 +16,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Collection, Optional
 
+from kiro_crew import platform_compat
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_caller import CallerContext, new_tenant_nonce
 from kiro_crew.mcp_gateway import socketsec
@@ -441,6 +442,11 @@ def _caller_from_register(register: dict[str, Any]) -> Optional[CallerContext]:
 
     Missing fields default to the empty string. ``from_gateway=True`` is
     forced since this context came through the gateway register path.
+
+    This only PARSES a frame. A Register or ``recaller`` is written by the
+    connecting process, so the result names a caller only where the daemon
+    vouches for the sender (:func:`_resolve_register_identity`,
+    :func:`_apply_recaller`); a ``claim`` is gateway-sent.
     """
     nested = register.get("caller")
     src: dict[str, Any] = nested if isinstance(nested, dict) else register
@@ -529,12 +535,19 @@ async def _resolve_register_identity(
 
     The caller is, in order: the session a claim bound to this connection's token,
     when the kernel attests the peer under the runtime that claim named; nobody,
-    for any other token; else the Register frame's own caller, or for a key-less
-    one the session the kernel-attested peer walk resolves. The token is asked once,
-    after the last await, and the connection is indexed before anything can await
-    again.
+    for any other token; else the Register frame's own caller when the daemon's
+    owning gateway sent the frame; else the session the kernel-attested peer walk
+    resolves. The token is asked once, after the last await, and the connection is
+    indexed before anything can await again.
     """
-    caller = _caller_from_register(register)
+    # The Register is written by whatever process connected, and every process at
+    # this uid passes the peer gate, so the frame's session_key / principal_id /
+    # channel_id are a request, not an identity. They are taken only from the
+    # owning gateway itself (a resource-subscription holder registers from it),
+    # which the kernel peer pid proves. Any other connection is named by what the
+    # daemon can attest: a claim-bound token, the peer walk below, or a later claim.
+    frame_caller = _caller_from_register(register)
+    caller = frame_caller if frame_caller is not None and await _sent_by_owner(writer) else None
 
     # Per-session identity. The token on the stub's ACP entry names ONE of the
     # sessions this runtime hosts, so a binding for it outranks every
@@ -548,8 +561,8 @@ async def _resolve_register_identity(
     stub_session_token = str(register.pop("stub_session_token", "") or "")
     stub_pids = _register_pids(register)
 
-    # Server-side peer identity: when the stub self-reports an empty
-    # session_key, resolve it from the peer's REAL pid (SO_PEERCRED) via a
+    # Server-side peer identity: when no caller was taken above, resolve the
+    # session from the peer's REAL pid (SO_PEERCRED) via a
     # host-side /proc ancestry walk — and capture the host ancestor chain for
     # claim indexing below. Deny-by-default: never grant an identity (nor
     # index host pids) without the kernel positively attesting the peer uid.
@@ -570,7 +583,7 @@ async def _resolve_register_identity(
     needs_identity = caller is None or not caller.session_key
     if needs_identity or stub_session_token:
         if peer_pid is None or peer_uid_ok is not socketsec.PeerCredResult.MATCH:
-            if needs_identity:
+            if needs_identity and not stub_session_token:
                 # Only an unidentified stub is being REFUSED an identity here; a
                 # token-carrying stub that walked purely for its host chain has
                 # been granted nothing and denied nothing.
@@ -670,18 +683,11 @@ async def _resolve_register_identity(
             stub_uuid=stub_uuid,
         )
     elif needs_identity and resolved_session_key and peer_pid is not None:
+        # Only the key the walk resolved: the frame's principal_id and
+        # channel_id are the registrant's own words, so a claim fills them in.
         caller = CallerContext(
             session_key=resolved_session_key,
             session_type="peer-resolved",
-            principal_id=str(
-                # ``user_identity`` is the legacy spelling an older
-                # stub may still send; the field was deleted from
-                # PoolKey but stays honored here as a diagnostic.
-                register.get("principal_id")
-                or register.get("user_identity")
-                or ""
-            ),
-            channel_id=str(register.get("channel_id") or ""),
             from_gateway=True,
         )
         _audit_peer_identity_resolved(resolved_session_key, peer_pid, stub_uuid)
@@ -689,6 +695,20 @@ async def _resolve_register_identity(
             "peer-resolved session_key for stub %s via peer_pid=%d",
             stub_uuid,
             peer_pid,
+        )
+    if (
+        not stub_session_token
+        and frame_caller is not None
+        and (caller is None or caller.session_key != frame_caller.session_key)
+    ):
+        # The frame named a session the daemon did not attest for this peer.
+        _audit_peer_identity_denied(
+            reason=(
+                f"Register named session_key={frame_caller.session_key}, which the "
+                "owning gateway did not send and the peer walk does not resolve"
+            ),
+            peer_pid=peer_pid,
+            stub_uuid=stub_uuid,
         )
 
     conn = _StubConn(
@@ -704,12 +724,48 @@ async def _resolve_register_identity(
     return conn
 
 
-def _apply_recaller(msg: dict[str, Any], conn: _StubConn, pool_label: str) -> None:
+async def _sent_by_owner(writer: asyncio.StreamWriter) -> bool:
+    """Whether the kernel reports the sender as this daemon's owning gateway.
+
+    The owner pid or its exec successor, the same rule an ``owner-port`` announce
+    is held to (``control._apply_owner_port``). An unowned daemon has no owner.
+    """
+    owner = facade._OWNER_PID
+    peer_pid = socketsec.get_peer_pid(writer)
+    if owner <= 0 or peer_pid is None:
+        return False
+    if peer_pid == owner:
+        return True
+    return bool(await asyncio.to_thread(platform_compat.is_exec_supervisor_of, owner, peer_pid))
+
+
+async def _attested_session_key(writer: asyncio.StreamWriter, stub_uuid: str) -> str:
+    """The session gatewayd's own walk from the kernel-reported peer pid resolves, or ``""``."""
+    peer_pid = socketsec.get_peer_pid(writer)
+    if (
+        peer_pid is None
+        or socketsec.check_peer_is_self(writer) is not socketsec.PeerCredResult.MATCH
+    ):
+        return ""
+    try:
+        key, _chain = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), facade._resolve_peer_identity, peer_pid
+        )
+    except Exception:  # graceful degradation: nothing attested
+        logger.exception("peer identity resolution failed for stub %s", stub_uuid)
+        return ""
+    return key
+
+
+async def _apply_recaller(
+    msg: dict[str, Any], conn: _StubConn, pool_label: str, writer: asyncio.StreamWriter
+) -> None:
     """Apply a stub's ``recaller`` frame to ``conn``: deny by default, audited.
 
     Warm-pool caller repair: a stub that registered key-less (its kiro-cli was
     pool-spawned before the session was claimed) sends this once its session
-    key materializes. Never forwarded to the backend.
+    key materializes. The key is adopted only when the daemon's own peer walk
+    resolves the same session. Never forwarded to the backend.
     """
     caller = conn.caller
     stub_uuid = conn.stub_uuid
@@ -788,10 +844,34 @@ def _apply_recaller(msg: dict[str, Any], conn: _StubConn, pool_label: str) -> No
             "recaller frame with empty/malformed session_key",
         )
         return
-    # Positive confirmation: key-less connection + valid recaller
-    # key — the one allowed transition. Audit the identity change.
-    caller = updated
-    conn.caller = updated
+    # The frame's key is the stub's own word, like the Register's: adopt it only
+    # when the daemon's own walk from the kernel-reported peer pid resolves the
+    # same session, the warm-pool case where the mapping appeared after register.
+    attested_key = await _attested_session_key(writer, stub_uuid)
+    if attested_key != updated.session_key:
+        logger.warning(
+            "stub %s sent recaller naming session_key=%s, which the peer walk does "
+            "not resolve; ignoring",
+            stub_uuid,
+            updated.session_key,
+        )
+        _audit_recaller_rejected(
+            "",
+            pool_label,
+            f"recaller session_key={updated.session_key} not attested by the peer walk",
+        )
+        return
+    if conn.caller is not None or conn.identity_refused:
+        # A claim named (or refused) this connection while the walk ran: it wins.
+        return
+    # Positive confirmation: key-less connection + a key the daemon itself
+    # attests — the one allowed transition. Audit the identity change.
+    caller = CallerContext(
+        session_key=attested_key,
+        session_type="peer-resolved",
+        from_gateway=True,
+    )
+    conn.caller = caller
     _audit_caller_rekey(caller.session_key, pool_label)
     logger.info(
         "stub %s recaller → session_key=%s type=%s",

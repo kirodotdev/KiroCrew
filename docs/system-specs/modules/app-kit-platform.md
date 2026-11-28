@@ -1120,7 +1120,10 @@ network for `dns`, `network` and `timeout`; run `ssh <host>` once to add or fix 
 entry in `~/.ssh/known_hosts` for `host_key`; renew the git credentials for `auth`;
 install `gh` and sign in with an account that can read the named `owner/repo` for a `gh_*` cause;
 then try again, which the marker never holds back because the store's refresh calls
-the fetch directly. The refresh banner uses the same remedies and the same split of
+the fetch directly. The `auth` remedy names the credentials and not the gateway because
+every network step that keeps the ssh agent repairs a stale `SSH_AUTH_SOCK` first
+(`_git_network_step_env`): a gateway that outlived the login session whose agent
+socket it was started with reaches the live agent again without a restart. The refresh banner uses the same remedies and the same split of
 missing from last-synced registries (a row without `cached` reads as last synced).
 The notice stays on screen beside that banner, because the banner speaks for one
 refresh, a refresh request that failed outright included, and the notice for the
@@ -5327,7 +5330,12 @@ sends it once on success, through `_announce_app_ui_changed`: `handle_install_ap
 both branches of `handle_update_app` (`kirocrew app update` and the Sync button),
 `handle_registry_install` and `handle_registry_install_stream`. The dev-mode
 watcher sends the same frame on a `ui/` edit. A failed install or update replaced
-nothing and sends nothing. A mounted host reloads at once. A document that
+nothing and sends nothing. A mounted host on screen reloads at once, unless another
+app's page is kept hidden (below): then it shows the reload notice instead, so the
+reload does not end the hidden page's work unasked. Every host under the kept-page
+provider reads that hold itself (`keptAppReloadHold.ts`), a routed page and a chat
+side-panel tab alike; `appHostRenderSites.test.ts` lists each render site. A hidden kept host is released
+instead of reloading. A document that
 imported the app's bundle earlier and hears the announcement while no host shows
 the app records it, and the next host that mounts that app reloads the window
 instead of importing, because the import would return the module the page already
@@ -5345,6 +5353,25 @@ Apart from those views, an announcement for an app the document never imported
 changes nothing.
 The boot-time adoption swap (§33) sends no frame: it runs
 before any route is registered, so no dashboard socket is open to hear one.
+
+**Kept pages.** Every routed installed-app page, `AppPage` and an adopted former
+built-in in `InstalledAppSurface` alike, renders through one shell layer
+(`website/src/components/KeptAppPages.tsx`): the route lends only a slot, and the
+page's host is portalled into an element that moves between that slot and a hidden
+park, so leaving the route never unmounts a page whose app is busy (`useKeepAlive`,
+level 16). Each portalled page has its own `ErrorBoundary`, since the route's is not
+above it. The store (`keptAppPagesStore.ts`) keeps one holder per `useKeepAlive`
+call; an app is busy while any holder is, and the release after the last holder
+lets go waits for the end of the commit, so a caller that remounts keeps the page.
+A hidden page's host passes `active=false`, and the SDK's paths to shared dashboard
+state wait on it: `navigate` (and so `openChat` and `useChatSession`) does nothing,
+`openChat` leaves no launch intent, and `ChatPanel`'s `useOwnSlotChat` neither
+activates nor switches back to its session and mounts no chat until shown. Its
+overlays and key handlers are off screen (`OffScreenOverlayScope`), and an embed's
+read marks already wait on `active`; the app's own work keeps running.
+At most two apps hold a keep-alive. A hidden page is released when its last holder
+lets go, when the person presses Stop, when the app throws, is turned off or
+uninstalled, or when its files are replaced. A page reload keeps nothing.
 
 Shared host capability reaches an app through `@kirocrew/app-sdk`, which the host
 provides rather than publishing to npm — the SDK lives in the dashboard bundle, so
@@ -6653,7 +6680,7 @@ change lands in its owner.
 | Module under `src/kiro_crew/apps/` | Owns |
 |---|---|
 | `registry.py` | The facade: the only import path and patch surface, plus the build step (`_run_app_build`) and the two index-entry name gates (`_admit_cached_index_entries`, `_admit_fetched_index_entries`) |
-| `registry_pipeline/subprocess_env.py` | The environments registry children start with: `minimal_env`, the credential-free `anonymous_git_env`, the `detectInstalled` probe env, and `_git_network_env`, which adds the operator's proxy and CA-bundle variables (`_GIT_NETWORK_ENV_KEYS`) to the git clone/fetch/pull spawn only, never to an install, build or app child, because a proxy URL can carry credentials. A fetch, pull or clone that cannot reach the remote appends the fixed `_GIT_NETWORK_FAILURE_HINT` (`git_targets.py`), which names the variables and never their values. The `_SAFE_ENV_KEYS` allowlist that `minimal_env` and `anonymous_git_env` share carries `ProgramData`, a path rather than a credential, because Win32-OpenSSH exits 255 with no output when it is unset and every ssh:// clone on Windows then fails |
+| `registry_pipeline/subprocess_env.py` | The environments registry children start with: `minimal_env`, the credential-free `anonymous_git_env`, the `detectInstalled` probe env, and `_git_network_env`, which adds the operator's proxy and CA-bundle variables (`_GIT_NETWORK_ENV_KEYS`) to the git clone/fetch/pull spawn only, never to an install, build or app child, because a proxy URL can carry credentials. `_git_network_step_env` builds that environment for one network step from the ssh-agent forward the step's own `wrap_argv` applied (`forward_ssh_auth_sock_out`), not the one it asked for. Kept, it repairs a stale `SSH_AUTH_SOCK` off the event loop (`resolve_ssh_auth_sock`, the agent-session spawn's repair): the gateway's own value names the agent socket of the login session it was started in. A socket the repair finds is used only when it is the operator's own (`_found_agent_socket`, through `agent_socket_refusal`). Not kept, it runs no repair and removes `SSH_AUTH_SOCK` and `SSH_AGENT_PID`. A fetch, pull or clone that cannot reach the remote appends the fixed `_GIT_NETWORK_FAILURE_HINT` (`git_targets.py`), which names the variables and never their values. The `_SAFE_ENV_KEYS` allowlist that `minimal_env` and `anonymous_git_env` share carries `ProgramData`, a path rather than a credential, because Win32-OpenSSH exits 255 with no output when it is unset and every ssh:// clone on Windows then fails |
 | `registry_pipeline/git_targets.py` | Clone-target text: the target an entry names, host and SSH parsing, the unsupported query, fragment and ambiguous SSH/SCP forms, userinfo stripping, normalization and comparison, the one-shot credential environment, the fixed classes credentialed git output is reduced to, and the fixed cause a failed registry index fetch is classified into (`_classify_registry_fetch_failure`) |
 | `registry_pipeline/gh_credential.py` | The second attempt at a private `https://github.com/<owner>/<repo>` source: the URL check that is the only repository text reaching a `gh` argv (`_github_https_repo`), the output shape that reads like a private repository (`_private_github_shaped`), the argv-only access check through the hardened `github_runner` (`_gh_access`, causes `gh_missing`, `gh_signed_out`, `gh_no_access`, and `gh_strict_mode` when strict provider-binary mode is on), the network-step env that makes `gh` git's only credential helper (`_gh_credential_env`), and the install banner sentence. Kiro Crew never reads the token; an index-originated fetch never reaches it |
 | `registry_pipeline/caches.py` | Everything under `cache/app-manifests`: manifest-cache and index-cache identity, paths, TTLs, reads and writes, expiry, garbage collection, and the legacy-filename migration |
@@ -8190,6 +8217,9 @@ share level 7, three share level 8, the open batch that level 10 starts shares l
 batch shares level 14, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
+
+Level 16 adds the SDK's `useKeepAlive`, which keeps a routed page mounted, hidden, while the
+app says it is busy. An app detects it by the export, as for every level.
 
 **Structural routes.** `RouteRegistry` reads each item a `routes` hook returns through
 `_route_fields`: an `AppRoute`, or any object whose `method` is a str naming GET, POST,

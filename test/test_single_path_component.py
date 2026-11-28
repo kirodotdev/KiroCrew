@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_crew.members_parts.member_space import is_single_path_component
+from kiro_crew.path_component import is_single_path_component
 
 
 @pytest.mark.parametrize(
@@ -50,3 +50,11 @@ def test_the_overlay_file_id_rule_is_the_same_function():
     assert mate_overlays._is_file_id("a/b") is False
     assert mate_overlays._is_file_id("my.pkg") is True
     assert mate_overlays._is_file_id("a\nb") is False
+
+
+def test_the_roster_facade_serves_the_same_rule():
+    """The rule lives in a light module the config loader can import; the roster facade
+    still serves it, as the one object, to its other callers."""
+    from kiro_crew import members
+
+    assert members.is_single_path_component is is_single_path_component

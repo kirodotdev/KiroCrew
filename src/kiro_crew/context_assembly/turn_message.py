@@ -540,13 +540,13 @@ def build_message(
                     "skills index were injected at the original session start "
                     "and sit in the restored conversation history above, which "
                     "may have been compacted. The critical rules and date/identity "
-                    "follow, and the standing lessons and steering, when there "
-                    "are any, are re-sent after them.]\n"
+                    "follow, and the owner's preferences, standing lessons and "
+                    "steering, when there are any, are re-sent after them.]\n"
                     + _resume_rules
                     + session_ctx
                     + _resume_member
                 )
-                # Lessons and steering carry rules the user set, and a compacted
+                # Preferences, lessons and steering carry rules the user set, and a compacted
                 # restored transcript may have lost them: re-send them under the
                 # post-compaction gates, which keep them out of minimal turns.
                 # The post-compaction parts carry both when they are re-sent.

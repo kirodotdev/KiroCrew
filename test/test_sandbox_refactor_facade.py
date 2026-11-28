@@ -283,7 +283,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _probe_unshare_via_spawn _probe_unshare_via_fork is_wsl is_docker_container
         _probe_sandbox_exec _inside_kirocrew_sandbox _macos_sandbox_state
         _inside_macos_sandbox _MAX_USER_NAMESPACES_PATH _read_max_user_namespaces
-        REMEDY_USERNS_CAP_ZERO
+        REMEDY_USERNS_CAP_ZERO _last_sandbox_exec_failure _sandbox_exec_failed
+        sandbox_exec_failure_reason
         """.split()),
     "kiro_crew.sandbox_unavailable": tuple("""
         _allow_no_isolation UNSANDBOXED_BY_OPERATOR UNSANDBOXED_BY_PLATFORM
@@ -291,7 +292,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _SSH_VISIBLE_TIERS _ssh_dir_masked _tier_lists_ssh _forward_ssh_auth_sock
         _forward_for_effective_tier _forwards_without_consent ssh_auth_sock_consent_notice
         unsandboxed_exec_permitted_by _bundled_cli_invocation
-        _apparmor_userns_restricted _no_backend_guidance _classify_unavailable
+        _apparmor_userns_restricted _no_backend_guidance _classify_unavailable _config_not_read _platform_allows_unsandboxed
+        CONFIG_MISSING CONFIG_UNREADABLE
         agent_confinement_evidence agent_confinement_is_kirocrew_own _warn_mode_off_unconfined
         _warn_first_party_unconfined_once _first_party_no_backend_passthrough
         CRON_SCRIPT_CHILD_ENV UnauditedSpawnRefused refuse_unaudited_on_dead_fs

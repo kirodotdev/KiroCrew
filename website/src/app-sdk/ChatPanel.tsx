@@ -20,7 +20,7 @@
  *   const { ChatPanel } = window.__kirocrew_modules['@kirocrew/app-sdk']
  *   <ChatPanel slotKey="coder-abc123" />
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { useAppDispatch, useAppStore } from '../store'
 import { addSlotOptimistic, fetchSlots } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
@@ -29,6 +29,7 @@ import ErrorNotice from '../components/ErrorNotice'
 import { Btn } from '../components/ui'
 import { useOwnSlotChat } from '../hooks/useOwnSlotChat'
 import { ExpandStepsContext } from '../hooks/useToolCallsStartExpanded'
+import { AppSdkContext } from './scopedApi'
 
 import { i18nT } from '../i18n/t'
 
@@ -41,6 +42,9 @@ export interface ChatPanelProps {
 export default function ChatPanel({ slotKey, conversationOnly = false, expandSteps = false }: ChatPanelProps) {
   const dispatch = useAppDispatch()
   const store = useAppStore()
+  // Off screen (a kept app page the person left), the panel leaves the visible chat
+  // alone. Read softly: the panel also renders with no app host above it.
+  const hostActive = useContext(AppSdkContext)?.info.active !== false
   const prevSlotRef = useRef<string | null>(null)
   // A memory-mode pick replaces the session while the app still names the old
   // key, so the panel follows the replacement itself.
@@ -69,6 +73,7 @@ export default function ChatPanel({ slotKey, conversationOnly = false, expandSte
     onSessionGone: setGoneKey,
     onSessionReplaced: followReplacement,
     followsNavigation: !conversationOnly,
+    active: hostActive,
   })
 
   return (

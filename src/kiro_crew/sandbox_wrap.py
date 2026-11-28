@@ -48,6 +48,7 @@ from kiro_crew.sandbox_probe import (
     _probe_sandbox_exec,
     _probe_unshare_once,
     is_docker_container,
+    sandbox_exec_failure_reason,
 )
 from kiro_crew.sandbox_seals import _warn_aliased_strict_leaves
 from kiro_crew.sandbox_tiers import (
@@ -62,15 +63,19 @@ from kiro_crew.sandbox_tiers import (
     warn_readonly_layer_unenforced,
 )
 from kiro_crew.sandbox_unavailable import (
+    CONFIG_MISSING,
+    CONFIG_UNREADABLE,
     UNSANDBOXED_BY_OPERATOR,
     UNSANDBOXED_BY_PLATFORM,
     SandboxUnavailableError,
     _allow_no_isolation,
     _allow_unsandboxed_exec,
     _classify_unavailable,
+    _config_not_read,
     _first_party_no_backend_passthrough,
     _forward_for_effective_tier,
     _no_backend_guidance,
+    _platform_allows_unsandboxed,
     _unsandboxed_exec_key_declared,
     _unsandboxed_grant_source,
     _warn_mode_off_unconfined,
@@ -342,6 +347,9 @@ def _probe_unshare() -> bool:
     a sandbox backend.
     """
     global _last_unshare_failure
+    if sys.platform == "win32":
+        _record_probe_failure(False, "Kiro Crew has no OS sandbox backend on Windows")
+        return False
     if sys.platform != "linux":
         _record_probe_failure(False, "not Linux")
         return False
@@ -519,6 +527,14 @@ def detect_backend(config_mode: str = "auto") -> str:
     elif _probe_sandbox_exec():
         _backend = "sandbox-exec"
     else:
+        prior = _last_unshare_failure
+        if sys.platform == "darwin" and not (prior is not None and prior[0]):
+            # The namespace probe can only record "not Linux" here; the backend
+            # that failed on a Mac is sandbox-exec, so its reason is the detail.
+            # A transient verdict is never replaced: it must stay uncached.
+            _record_probe_failure(
+                False, sandbox_exec_failure_reason() or "sandbox-exec probe failed"
+            )
         transient, reason, remedy = _last_unshare_failure or (False, "none", "")
         if transient:
             if remedy == REMEDY_USERNS_CAP_ZERO:
@@ -1300,8 +1316,46 @@ def wrap_argv(
                     "platform's default) if you want these spawns to run unconfined. "
                 )
             else:
-                sel_reason = "No sandbox backend available and allow_unsandboxed_exec is not set"
-                refusal = "Sandbox backend unavailable and allow_unsandboxed_exec is not set. "
+                # When no config file was read the gate keeps its fail-closed
+                # default even where the platform default allows, on purpose: a
+                # missing or broken config must never loosen the sandbox. Saying
+                # "is not set" there would send the reader to set a key that may
+                # already be set, or that the platform would already supply.
+                config_state = _config_not_read()
+                if config_state == CONFIG_UNREADABLE:
+                    sel_reason = (
+                        "No sandbox backend available and the config file holding "
+                        "allow_unsandboxed_exec could not be read"
+                    )
+                    refusal = (
+                        "Sandbox backend unavailable and Kiro Crew could not read "
+                        "~/.kiro/crew/config.json (or config.local.json), so it refuses "
+                        "unsandboxed execution (agent.sandbox_allow_unsandboxed_exec). Make "
+                        "the file readable, valid JSON (the gateway log says why after "
+                        "'Failed to load config' or 'Config is not a JSON object'). "
+                    )
+                    if sys.platform == "win32":
+                        # Windows guidance says to edit the key, which a file that
+                        # cannot be read cannot take; the sentence above is the remedy.
+                        guidance = ""
+                elif config_state == CONFIG_MISSING and _platform_allows_unsandboxed():
+                    sel_reason = (
+                        "No sandbox backend available and no config file exists to "
+                        "read allow_unsandboxed_exec from"
+                    )
+                    refusal = (
+                        "Sandbox backend unavailable and there is no "
+                        "~/.kiro/crew/config.json, so Kiro Crew cannot tell whether "
+                        "unsandboxed execution (agent.sandbox_allow_unsandboxed_exec) is "
+                        "allowed and refuses it. Restart the "
+                        "gateway (`kirocrew restart`), which writes a default "
+                        "config.json when none exists. "
+                    )
+                else:
+                    sel_reason = (
+                        "No sandbox backend available and allow_unsandboxed_exec is not set"
+                    )
+                    refusal = "Sandbox backend unavailable and allow_unsandboxed_exec is not set. "
             # Emit SEL audit event for this security-relevant denial so it
             # appears in the tamper-evident audit log (security-review requirement).
             try:

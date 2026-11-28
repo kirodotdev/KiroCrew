@@ -540,7 +540,7 @@ describe('AgentBackendTab detail card', () => {
     acpBackendsMock.mockResolvedValue({ backends: [probeRow('kiro', card())] })
     schemaMock.mockReturnValue(schemaWith(['kiro']))
     wrap()
-    const note = await screen.findByText(/decided when the gateway starts/)
+    const note = await screen.findByText(/This list is set when .* starts/)
     const fold = screen.getByTestId('agent-harness-missing-agent') as HTMLDetailsElement
     expect(note.closest('details')).toBe(fold)
     expect(fold.open).toBe(false)

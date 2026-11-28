@@ -214,6 +214,8 @@ class TestWrapArgvDockerGuidance:
         from kiro_crew import sandbox
         from kiro_crew.sandbox import SandboxUnavailableError, wrap_argv
 
+        # A Mac gets its own sandbox-exec guidance, so the scenario pins Linux.
+        monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setattr(sandbox, "detect_backend", lambda **_kw: "none")
         monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: False)
         monkeypatch.setattr(sandbox, "_inside_kirocrew_sandbox", lambda: False)

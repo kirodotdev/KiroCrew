@@ -47,6 +47,25 @@ describe('countLines', () => {
     expect(countLines('', 'a')).toEqual({ added: 1, removed: 0 })
   })
 
+  it('does not count the empty tail after a final newline as a line', () => {
+    // A newline-terminated file of two lines is two lines: git numstat reads
+    // +2 for it when created and -2 when cleared.
+    expect(countLines('', 'a\nb\n')).toEqual({ added: 2, removed: 0 })
+    expect(countLines('a\nb\n', '')).toEqual({ added: 0, removed: 2 })
+    // Both sides non-empty and newline-terminated already agreed with git.
+    expect(countLines('a\nb\n', 'a\nb\nc\n')).toEqual({ added: 1, removed: 0 })
+    // A change that only adds or removes the final newline changes the last line, as git counts it.
+    expect(countLines('a', 'a\n')).toEqual({ added: 1, removed: 1 })
+    expect(countLines('a\n', 'a')).toEqual({ added: 1, removed: 1 })
+    expect(countLines('', '\n')).toEqual({ added: 1, removed: 0 })
+    // A blank line added or removed after a final newline is that one line, as git counts it.
+    expect(countLines('a\n', 'a\n\n')).toEqual({ added: 1, removed: 0 })
+    expect(countLines('a\n\n', 'a\n')).toEqual({ added: 0, removed: 1 })
+    // Only one side ends in a newline: its other side's last line counts as changed, as in git.
+    expect(countLines('a\nb', 'a\nb\nc\n')).toEqual({ added: 2, removed: 1 })
+    expect(countLines('x\na', 'y\na\n')).toEqual({ added: 2, removed: 2 })
+  })
+
   /* Past 1M LCS cells the counter drops to a multiset count to bound cost.
    * That fallback is cheaper and measurably weaker, so these pin what it
    * reports at that size — including the one case where it disagrees with

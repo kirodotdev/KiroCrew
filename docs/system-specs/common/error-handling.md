@@ -264,6 +264,11 @@ Notable terminal (non-retryable) classes:
   backend through the prompt transport everywhere, even on Slack, which also
   offers `!compact` as its own alias. The same rule governs the sibling
   prompt-busy branch, which for the same reason names no command at all.
+  The claude adapter's `API Error: 400 The request body is not valid JSON`
+  (matched at the start of the JSON-RPC `message`) is the same class of
+  rejection with one difference in the remedy: `/compact` re-sends the
+  unparsable history to be summarized, so it is not offered, and the message
+  names only a fresh session.
 - **Lost backend session**: when `acp_error_is_session_not_found` matches, the
   turn resets the session binding and queues ONE `SYNTHETIC_RECOVERY_KIND` retry
   with a reconnect notice, armed as `ReplayFamily.SESSION_NOT_FOUND`. A Stop that

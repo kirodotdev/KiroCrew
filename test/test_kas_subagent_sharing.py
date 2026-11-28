@@ -325,6 +325,22 @@ class TestPerParentCap:
         assert self._taken(parent, info) is False
         assert info._shared_slot_reserved is False
 
+    def test_a_pending_shared_claim_holds_its_place_in_the_plan(self, tmp_path, cfg):
+        """A claim admitted shared has no row yet; its reservation still counts."""
+        parent = self._parent(tmp_path, ACP_BACKEND_KAS, KAS_SHARED_CHILDREN_PER_PARENT - 1)
+        parent.manager._shared_claims["claimed"] = _PARENT
+        plan = parent.manager._sharing_plan(parent.info(id="second"))
+        assert (plan.shared, plan.reason) == (False, "the KAS parent's process is full")
+        assert parent.shared(parent.info(id="claimed")) is True
+
+    def test_the_plan_counts_siblings_admitted_but_not_yet_placed(self, tmp_path, cfg):
+        """Admission plans a whole burst before any of its runs reserves a place."""
+        parent = self._parent(tmp_path, ACP_BACKEND_KAS, KAS_SHARED_CHILDREN_PER_PARENT - 1)
+        assert parent.shared(parent.info(id="first")) is True
+        parent.manager._agents["first"]._admitted_shared = True
+        plan = parent.manager._sharing_plan(parent.info(id="second"))
+        assert (plan.shared, plan.reason) == (False, "the KAS parent's process is full")
+
 
 class TestSharedTeardownKeepsTheRecord:
     """The shared arm's teardown (``AcpSessionProvider.shutdown``, not owning the runtime)."""
@@ -483,3 +499,130 @@ class TestTheRunHonoursTheCap:
         runtime.create_session.assert_awaited()
         sessions.get_or_create.assert_awaited()
         assert info._shared_slot_reserved is False
+
+
+class TestSharedStartsSkipTheStagger:
+    """The spawn stagger spaces process launches; a start on the parent's runtime launches none.
+
+    Through ``spawn``, on a KAS parent whose runtime hosts its children, with a 2 s
+    stagger and the memory floor off (``_cfg_patch``): shared starts are admitted
+    back to back and leave the stagger clock alone, dedicated starts are still
+    spaced, and a burst past the per-parent bound is spaced as the dedicated
+    starts it becomes.
+    """
+
+    @staticmethod
+    def _manager(live_shared: int = 0):
+        manager, sessions, runtime = TestTheRunHonoursTheCap._manager(live_shared)
+        manager._spawn_stagger_secs = 2.0
+        manager._last_spawn_ts = 0.0
+        return manager, sessions, runtime
+
+    @staticmethod
+    async def _spawn_all(manager, specs: list[dict]) -> tuple[list[bool], float]:
+        """Spawn *specs* in one pass; return which were queued and the stagger clock after."""
+        from test_session_sharing import _cfg_patch, _wait_until_done
+
+        with (
+            _cfg_patch() as load,
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+        ):
+            load.return_value.resolve_session_effort.return_value = ""
+            infos = [
+                manager.spawn("t", parent_session_key="dashboard:slot1", **spec) for spec in specs
+            ]
+            stamped = manager._last_spawn_ts
+            queued = [info.queued for info in infos]
+            for info in infos:
+                if not info.queued:
+                    await _wait_until_done(info)
+            await manager.cancel_all()
+        return queued, stamped
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("healthy_host_memory")
+    async def test_a_burst_of_shared_starts_is_admitted_at_once(self):
+        manager, sessions, runtime = self._manager()
+        queued, stamped = await self._spawn_all(manager, [{}, {}, {}])
+        assert queued == [False, False, False]
+        assert stamped == 0.0
+        assert runtime.create_session.await_count == 3
+        sessions.get_or_create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("healthy_host_memory")
+    async def test_dedicated_starts_are_still_spaced(self):
+        manager, _sessions, _runtime = self._manager()
+        specs = [{"reasoning_effort": "high"}, {"reasoning_effort": "high"}]
+        queued, stamped = await self._spawn_all(manager, specs)
+        assert queued == [False, True]
+        assert stamped > 0.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("healthy_host_memory")
+    async def test_a_shared_burst_does_not_delay_the_next_dedicated_start(self):
+        manager, sessions, runtime = self._manager()
+        specs = [{}, {}, {"reasoning_effort": "high"}]
+        queued, _stamped = await self._spawn_all(manager, specs)
+        assert queued == [False, False, False]
+        assert runtime.create_session.await_count == 2
+        sessions.get_or_create.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("healthy_host_memory")
+    async def test_past_the_per_parent_bound_a_burst_is_spaced_as_dedicated(self):
+        """Admitted siblings count before any run reserves: the 9th and 10th are dedicated."""
+        manager, sessions, runtime = self._manager(KAS_SHARED_CHILDREN_PER_PARENT - 1)
+        queued, _stamped = await self._spawn_all(manager, [{}, {}, {}])
+        assert queued == [False, False, True]
+        assert runtime.create_session.await_count == 1
+        sessions.get_or_create.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("healthy_host_memory")
+    async def test_pending_claims_take_the_last_place_once_and_stay_spaced(self):
+        """The event-loop spawn path reserves a ``ClaimPoint`` before its row exists.
+
+        Three claims race for the one place left on the parent's process: the first
+        holds it, the second is a dedicated start and stamps the clock, and the
+        third is a dedicated start inside the interval and queues.
+        """
+        from test_session_sharing import _cfg_patch
+
+        from kiro_crew.subagent_manager.admission.types import ClaimPoint
+
+        manager, _sessions, _runtime = self._manager(KAS_SHARED_CHILDREN_PER_PARENT - 1)
+        with (
+            _cfg_patch() as load,
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+        ):
+            load.return_value.resolve_session_effort.return_value = ""
+            results = [
+                manager.spawn("t", parent_session_key="dashboard:slot1", _stop_before_claim=True)
+                for _ in range(3)
+            ]
+            shapes = [
+                "claim" if isinstance(r, ClaimPoint) else ("queued" if r.queued else "started")
+                for r in results
+            ]
+            held = dict(manager._shared_claims)
+            for r in results:
+                if isinstance(r, ClaimPoint):
+                    manager._admission.release_reservation(r.agent_id)
+            await manager.cancel_all()
+        assert shapes == ["claim", "claim", "queued"]
+        assert list(held) == [results[0].agent_id]
+        assert manager._shared_claims == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("healthy_host_memory")
+    async def test_the_in_startup_bound_still_meters_a_shared_burst(self):
+        """A shared start counts in startup from registration: it stamps no clock,
+        so a burst admitted in one pass would otherwise all pass the bound."""
+        manager, _sessions, _runtime = self._manager()
+        manager._session_start_concurrency = 1  # in-startup bound 2 x 1
+        queued, stamped = await self._spawn_all(manager, [{}, {}, {}])
+        assert queued == [False, False, True]
+        assert stamped == 0.0
