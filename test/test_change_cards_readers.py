@@ -114,6 +114,98 @@ def test_a_scope_file_that_is_not_utf8_is_unreadable_not_an_error(tmp_path, monk
     assert scopes["kirocrew"] not in ("", "unreadable")
 
 
+# ── the enabled bit a server-level mcp.toggle card reads ──
+
+
+def _toggle_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    global_servers: dict[str, Any],
+    store_servers: dict[str, Any],
+) -> None:
+    global_path, store_path = tmp_path / "global.json", tmp_path / "store.json"
+    global_path.write_text(json.dumps({"mcpServers": global_servers}), encoding="utf-8")
+    store_path.write_text(json.dumps({"mcpServers": store_servers}), encoding="utf-8")
+    _global_mcp_json(monkeypatch, global_path)
+    monkeypatch.setattr(mcp_handlers, "_KIROCREW_MCP_JSON", store_path)
+    _discovered(monkeypatch, "ccms")
+
+
+def _toggle_snapshot(*, enabled: bool = True, tool: str | None = None) -> dict[str, Any]:
+    params: dict[str, Any] = {"enabled": enabled}
+    if tool is None:
+        params["name"] = "ccms"
+    else:
+        params["server"], params["tool"] = "ccms", tool
+    return cards._sync_read_state(catalog.KIND_MCP_TOGGLE, params, [])
+
+
+def test_a_store_only_disabled_server_reads_off(tmp_path, monkeypatch):
+    _toggle_files(monkeypatch, tmp_path, {}, {"ccms": {"command": "bash", "disabled": True}})
+
+    assert _toggle_snapshot() == {"exists": True, "enabled": False}
+
+
+def test_a_store_mute_behind_an_enabled_global_entry_reads_off(tmp_path, monkeypatch):
+    _toggle_files(
+        monkeypatch,
+        tmp_path,
+        {"ccms": {"command": "bash"}},
+        {"ccms": {"command": "bash", "disabled": True}},
+    )
+
+    assert _toggle_snapshot() == {"exists": True, "enabled": False}
+
+
+def test_a_non_boolean_global_disabled_reads_off(tmp_path, monkeypatch):
+    _toggle_files(monkeypatch, tmp_path, {"ccms": {"command": "bash", "disabled": None}}, {})
+
+    assert _toggle_snapshot() == {"exists": True, "enabled": False}
+
+
+def test_a_store_disabled_string_reads_off(tmp_path, monkeypatch):
+    _toggle_files(monkeypatch, tmp_path, {}, {"ccms": {"command": "bash", "disabled": "false"}})
+
+    assert _toggle_snapshot() == {"exists": True, "enabled": False}
+
+
+def test_a_store_only_enabled_server_stays_on(tmp_path, monkeypatch):
+    _toggle_files(monkeypatch, tmp_path, {}, {"ccms": {"command": "bash"}})
+
+    assert _toggle_snapshot() == {"exists": True, "enabled": True}
+
+
+def test_a_global_disabled_true_stays_off(tmp_path, monkeypatch):
+    _toggle_files(monkeypatch, tmp_path, {"ccms": {"command": "bash", "disabled": True}}, {})
+
+    assert _toggle_snapshot() == {"exists": True, "enabled": False}
+
+
+def test_a_tool_toggle_ignores_store_disabled_tools(tmp_path, monkeypatch):
+    _toggle_files(
+        monkeypatch,
+        tmp_path,
+        {"ccms": {"command": "bash"}},
+        {"ccms": {"command": "bash", "disabledTools": ["echo"]}},
+    )
+
+    assert _toggle_snapshot(enabled=False, tool="echo") == {"exists": True, "enabled": True}
+
+
+def test_a_store_disable_reads_back_off(tmp_path, monkeypatch):
+    _toggle_files(monkeypatch, tmp_path, {}, {"ccms": {"command": "bash"}})
+
+    assert mcp_handlers._set_kirocrew_entry("ccms", enabled=False, existing_only=True) == "disabled"
+    snap = _toggle_snapshot(enabled=False)
+    assert snap == {"exists": True, "enabled": False}
+    assert (
+        cards.after_shows_the_write(
+            catalog.KIND_MCP_TOGGLE, {"name": "ccms", "enabled": False}, snap, []
+        )
+        is True
+    )
+
+
 # ── the server names an MCP undo plan removes ──
 
 
