@@ -1382,6 +1382,19 @@ class VoiceSynthesisError(RuntimeError):
         self.code = code
 
 
+def _ffmpeg_on_path() -> str | None:
+    """The first ffmpeg in an absolute ``PATH`` entry, by absolute path, or ``None``."""
+    from kiro_crew import soffice_discovery
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry or not os.path.isabs(entry):
+            continue
+        found = soffice_discovery.which_within(os.path.join(entry, "ffmpeg"), entry)
+        if found is not None:
+            return found
+    return None
+
+
 def _stitch_ffmpeg() -> str | None:
     """The ffmpeg the stitch runs: a trusted directory first, then ``PATH``.
 
@@ -1393,6 +1406,13 @@ def _stitch_ffmpeg() -> str | None:
     ffmpeg, and a ``PATH`` entry cannot shadow them. Only when none does is the
     ``PATH`` lookup used, so every ffmpeg the stitch found before is still
     found; that fallback is logged with the path it chose.
+
+    The ``PATH`` lookup walks the absolute entries one by one through
+    ``soffice_discovery.which_within``, not ``shutil.which("ffmpeg")``. On
+    Windows ``shutil.which`` searches the working directory before ``PATH``, so
+    an ``ffmpeg.exe`` (or ``ffmpeg.cmd``) beside the gateway would answer for every
+    entry and run outside the sandbox. A relative entry is skipped for
+    the same reason: it names the working directory too.
     """
     # Read through the facade at call time, which is the patch surface every
     # ffmpeg caller shares.
@@ -1401,7 +1421,7 @@ def _stitch_ffmpeg() -> str | None:
     trusted = transcribe._find_system_ffmpeg()
     if trusted is not None:
         return trusted
-    found = shutil.which("ffmpeg")
+    found = _ffmpeg_on_path()
     if found is not None:
         logger.warning(
             "voice_reply: no ffmpeg in a trusted system directory; " "stitching with %s from PATH",
