@@ -54,13 +54,15 @@ async def _validate_discord_token(token: str) -> str | None:
     # proxy verifies the token the way the running bot will use it. Imported
     # here: the client module is heavy and only this call needs it.
     from kiro_crew.discord.client import _resolve_proxy
+    from kiro_crew.http_proxy import proxy_for_url
 
+    url = "https://discord.com/api/v10/users/@me"
     timeout = aiohttp.ClientTimeout(total=_TOKEN_VERIFY_TIMEOUT)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(
-            "https://discord.com/api/v10/users/@me",
+            url,
             headers={"Authorization": f"Bot {token}"},
-            proxy=_resolve_proxy(),
+            proxy=proxy_for_url(_resolve_proxy(), url),
         ) as resp:
             if 200 <= resp.status < 300:
                 return None

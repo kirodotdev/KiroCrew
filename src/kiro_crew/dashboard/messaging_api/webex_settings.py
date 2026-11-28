@@ -100,14 +100,16 @@ async def _validate_webex_token(token: str) -> str | None:
     # The client's own proxy rule, so the check reaches Webex the way the
     # running channel does. Imported here: the client module is heavy and only
     # this call needs it.
+    from kiro_crew.http_proxy import proxy_for_url
     from kiro_crew.webex.client import _resolve_proxy
 
+    url = "https://webexapis.com/v1/people/me"
     async with aiohttp.ClientSession() as session:
         async with session.get(
-            "https://webexapis.com/v1/people/me",
+            url,
             headers={"Authorization": f"Bearer {token}"},
             timeout=aiohttp.ClientTimeout(total=_WEBEX_VERIFY_TIMEOUT),
-            proxy=_resolve_proxy(),
+            proxy=proxy_for_url(_resolve_proxy(), url),
         ) as resp:
             if 200 <= resp.status < 300:
                 return None
