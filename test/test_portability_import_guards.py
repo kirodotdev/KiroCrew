@@ -172,6 +172,87 @@ def test_import_installs_a_memory_store_named_like_a_rebuildable_folder(tmp_path
     assert (target / "memory_stores" / "venv" / "notes.md").is_file()
 
 
+#: The folder an export's archive opens with (`portability_stream`).
+_EXPORT_TOP = "kirocrew-export-20261123T120000Z"
+#: How an AppleDouble file starts: the RFC 1740 magic and version 2, then padding.
+_APPLE_DOUBLE = b"\x00\x05\x16\x07\x00\x02\x00\x00" + b"\x00" * 16
+
+
+def _backup_zip(path, *, finder_copy):
+    """A small backup; with *finder_copy*, laid out the way macOS Finder zips the folder.
+
+    Finder's Compress (the engine of ``ditto -c -k --sequesterRsrc --keepParent``)
+    stores each file's extended attributes as ``__MACOSX/<top>/._<file>``, beside the
+    folder entries ``__MACOSX/`` and ``__MACOSX/<top>/``.
+    """
+    files = {
+        "MANIFEST.json": json.dumps({"version": 2}),
+        "crons.json": json.dumps({"jobs": [_cron_job("j1", "daily-check")]}),
+    }
+    with zipfile.ZipFile(str(path), "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{_EXPORT_TOP}/", b"")
+        for name, body in files.items():
+            zf.writestr(f"{_EXPORT_TOP}/{name}", body)
+        if finder_copy:
+            zf.writestr("__MACOSX/", b"")
+            zf.writestr(f"__MACOSX/{_EXPORT_TOP}/", b"")
+            for name in files:
+                zf.writestr(f"__MACOSX/{_EXPORT_TOP}/._{name}", _APPLE_DOUBLE)
+    return path
+
+
+@pytest.mark.parametrize("finder_copy", [False, True], ids=["plain-zip", "finder-rezip"])
+def test_import_skips_the_folder_finder_adds_when_it_zips_a_backup(tmp_path, finder_copy):
+    # What the validator accepts must import: Finder's __MACOSX/ folder is not a
+    # second top directory, and none of it lands in the data home.
+    import kiro_crew.portability as port
+
+    z = _backup_zip(tmp_path / "Archive.zip", finder_copy=finder_copy)
+    ok, error, manifest = port.validate_import_zip(z)
+    assert (ok, error, manifest.get("version")) == (True, "", 2)
+    target = tmp_path / "target_mc"
+    target.mkdir()
+    with patch.object(port, "config_dir", return_value=target):
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+            try:
+                outcome = port.apply_import_zip(z, mode="merge")
+            except ValueError as exc:
+                outcome = f"ValueError: {exc}"
+    assert isinstance(outcome, dict), outcome
+    crons = json.loads((target / "crons.json").read_text(encoding="utf-8"))
+    assert [job["name"] for job in crons["jobs"]] == ["daily-check"]
+    leftovers = [p for p in target.rglob("*") if "__MACOSX" in p.parts or p.name.startswith("._")]
+    assert leftovers == []
+
+
+def test_a_manifest_under_the_finder_folder_does_not_vouch_for_an_archive(tmp_path):
+    # The import skips __MACOSX/, so a manifest there cannot make the archive valid.
+    import kiro_crew.portability as port
+
+    z = tmp_path / "only.zip"
+    with zipfile.ZipFile(str(z), "w") as zf:
+        zf.writestr("__MACOSX/MANIFEST.json", json.dumps({"version": 2}))
+        zf.writestr("__MACOSX/crons.json", json.dumps({"jobs": []}))
+    assert port.validate_import_zip(z) == (False, "Rejected: No MANIFEST.json found in archive", {})
+
+
+def test_a_manifest_under_the_finder_folder_does_not_conflict_with_the_real_one(tmp_path):
+    # Nor does one there count as a second manifest, for the validator or for the
+    # session times the import reads from the manifest.
+    import kiro_crew.portability as port
+
+    times = {f"{_EXPORT_TOP}/sessions/chat.jsonl": 1.7e9}
+    z = tmp_path / "beside.zip"
+    with zipfile.ZipFile(str(z), "w") as zf:
+        zf.writestr(
+            f"{_EXPORT_TOP}/MANIFEST.json", json.dumps({"version": 2, "session_mtimes": times})
+        )
+        zf.writestr("__MACOSX/MANIFEST.json", json.dumps({"version": 1}))
+    assert port.validate_import_zip(z)[:2] == (True, "")
+    with zipfile.ZipFile(str(z)) as zf:
+        assert port._read_session_mtimes(zf) == times
+
+
 def _cron_job(jid, name, **extra):
     """One job in the shape `CronService` actually writes and reads.
 

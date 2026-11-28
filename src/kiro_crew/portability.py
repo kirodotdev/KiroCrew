@@ -729,6 +729,7 @@ def _read_session_mtimes(zf: zipfile.ZipFile) -> dict[str, float]:
         for info in zf.infolist()
         if len(PurePosixPath(info.filename).parts) == 2
         and PurePosixPath(info.filename).name == "MANIFEST.json"
+        and not _skipped_on_import(PurePosixPath(info.filename).parts)
     ]
     if len(manifests) != 1 or manifests[0].file_size > _MAX_SETTINGS_DOCUMENT_BYTES:
         return {}

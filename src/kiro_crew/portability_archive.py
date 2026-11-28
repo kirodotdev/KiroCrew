@@ -359,11 +359,17 @@ _IMPORT_DISK_RESERVE = 1024**3
 
 
 def _skipped_on_import(parts: tuple[str, ...]) -> bool:
-    """True for a member the import skips: `_in_rebuildable_dir` below the top directory.
+    """True for a member the import skips: anything in a top-level ``__MACOSX/`` folder,
+    and `_in_rebuildable_dir` below the top directory.
 
-    *parts* is the member name split on ``/``, the archive's top directory first.
+    *parts* is the member name split on ``/``, the archive's top directory first. macOS
+    Finder's Compress adds ``__MACOSX/`` beside the folder it zips, holding each file's
+    extended attributes as an AppleDouble ``._<name>`` file. It is never backup content,
+    since an export's own top directory is ``kirocrew-export-<time>``. The size check,
+    the manifest lookup and the extraction all ask this, so they agree on which members
+    an archive holds.
     """
-    return _in_rebuildable_dir(parts[1:])
+    return parts[:1] == ("__MACOSX",) or _in_rebuildable_dir(parts[1:])
 
 
 def _gb(nbytes: int) -> str:
@@ -397,8 +403,8 @@ def import_size_problem(infos: list[zipfile.ZipInfo], archive_bytes: int) -> str
     """Why an archive is too big to import here, in words a user can act on, or None.
 
     *infos* is the archive's member list and *archive_bytes* the archive file's real
-    size on disk. Members in rebuildable folders are not counted, since the import skips
-    them. Declared sizes can be trusted as upper bounds: ``zipfile`` stops a member at
+    size on disk. Members the import skips (`_skipped_on_import`) are not counted.
+    Declared sizes can be trusted as upper bounds: ``zipfile`` stops a member at
     its declared size and fails on a mismatch.
     """
     kept = [i for i in infos if not _skipped_on_import(PurePosixPath(i.filename).parts)]
