@@ -27,7 +27,16 @@ SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+([+-]|$)")
 # named "system" would produce channels "system.<id>", shadowing the bus's
 # reserved system channels (e.g. "system.approval"). Rejected at manifest
 # validation AND defense-in-depth at the push endpoint.
-RESERVED_APP_NAMES = frozenset({"system"})
+#
+# The local owner's own token subjects (``local-app`` / ``local-startup``) are
+# reserved too. An app token's subject is the app's name, and when no owner id
+# is configured the owner check admits those two subjects alone, so an app
+# carrying one of them would hold the owner's subject. The app-token mints
+# refuse them as well, for an app that reached disk before this reservation.
+# The two names mirror ``shared_crew.owner.LOCAL_BOOTSTRAP_SUBJECTS`` rather than
+# importing it, so this module stays out of the MCP servers' import budget;
+# ``test_local_owner_subject_app_names`` pins the two together.
+RESERVED_APP_NAMES = frozenset({"system", "local-app", "local-startup"})
 
 # Dashboard route segments under ``/apps/`` that resolve to a STATIC page
 # instead of the ``/apps/:name`` installed-app catch-all. An app carrying one
@@ -141,6 +150,8 @@ def app_name_error(name: str) -> str | None:
             f"app name is {len(name)} characters long; the limit is "
             f"{APP_NAME_MAX_LENGTH}, because the name is used in file names"
         )
+    if name in ("local-app", "local-startup"):
+        return f"app name {name!r} is reserved (it is the local owner's sign-in identity)"
     if name in RESERVED_APP_NAMES:
         return (
             f"app name {name!r} is reserved (would shadow the "

@@ -563,7 +563,7 @@ class TestNonRegistryPaths:
             "dispatch",
             lambda *_a, **_k: pytest.fail("local install emitted a receipt"),
         )
-        assert manager.install_app(self._source(tmp_path, "local-app")).ok
+        assert manager.install_app(self._source(tmp_path, "local-dir-app")).ok
 
     def test_self_registration_emits_nothing(self, app_home, monkeypatch):
         monkeypatch.setattr(
