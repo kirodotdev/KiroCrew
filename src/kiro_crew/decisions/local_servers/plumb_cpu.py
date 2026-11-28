@@ -12,6 +12,7 @@ bfloat16, except as float32 on a CPU without native bf16 that has the memory.
 import argparse
 import io
 import os
+import socket
 import socketserver
 import sys
 import threading
@@ -94,18 +95,40 @@ def _one_at_a_time(handler: type, wait_secs: float) -> type:
     """Subclass *handler* so it runs one decision request at a time.
 
     jevk5's handler serves each connection on its own thread and waits on its
-    model lock with no limit, so requests queue behind a long inference and each
-    is still computed to the end after its client has given up. The body is read
+    model lock with no limit, so requests queue behind a long inference, and it
+    computes each to the end after its client has given up. The body is read
     first, within ``BODY_WAIT_SECS``; a decision that then cannot start within
     *wait_secs* is answered 503 at once, and the gate records it as a provider
     error and the caller falls back as it does for any refused decision. Other
-    routes are not gated.
+    routes are not gated. ``stop_if_client_gone``, registered on each model
+    layer, stops the decision in progress before its next layer once its
+    client has closed the connection, so the gate is free for the next one.
     """
     gate = threading.Lock()
+    # The connection of the decision the gate admitted, while it runs.
+    running: list[socket.socket] = []
 
     class OneAtATime(handler):  # type: ignore[misc,valid-type]
         # Applied to the connection's socket before any request line is read.
         timeout = BODY_WAIT_SECS
+
+        @staticmethod
+        def stop_if_client_gone(_layer: object, _inputs: object) -> None:
+            # The whole body was read before the decision started, so a client
+            # still waiting for its answer sends nothing more: end of stream
+            # means it left. A reset raises ConnectionResetError on its own.
+            if not running:
+                return
+            conn = running[0]
+            wait = conn.gettimeout()
+            conn.settimeout(0)
+            try:
+                if conn.recv(1, socket.MSG_PEEK) == b"":
+                    raise ConnectionAbortedError("the client closed the connection")
+            except BlockingIOError:
+                pass
+            finally:
+                conn.settimeout(wait)
 
         def do_POST(self) -> None:
             if self.path.rstrip("/") != DECIDE_PATH:
@@ -119,9 +142,14 @@ def _one_at_a_time(handler: type, wait_secs: float) -> type:
             if not gate.acquire(timeout=wait_secs):
                 self._reply(503, b'{"error": "busy: another decision is running"}')
                 return
+            running.append(self.connection)
             try:
                 super().do_POST()
+            except ConnectionError:
+                # Nobody is left to read an answer, so none is sent.
+                pass
             finally:
+                running.clear()
                 gate.release()
 
         def _read_body(self) -> bytes | None:
@@ -277,6 +305,11 @@ def _load_model(weights: str):
 
 model = _load_model(args.weights)
 Handler = _one_at_a_time(make_handler(model, "plumb-4b"), QUEUE_WAIT_SECS)
+# jevk5 has no step of its own to stop a forward pass at, but the pinned
+# transformers model calls each decoder layer as a module, so torch runs this
+# check before every layer (on mps, which queues kernels ahead, once per pass).
+for layer in model.model.model.layers:
+    layer.register_forward_pre_hook(Handler.stop_if_client_gone)  # type: ignore[attr-defined]
 
 
 class AttestedHandler(Handler):  # type: ignore[misc,valid-type]

@@ -17,6 +17,7 @@ import asyncio
 import http.client
 import io
 import json
+import select
 import socket
 import socketserver
 import threading
@@ -123,6 +124,10 @@ class _Inference:
         self.calls = 0
         self.entered = threading.Event()
         self.release = threading.Event()
+        # The pre-hook the launcher puts on each model layer, and what it stopped.
+        self.layer_hook: Any = None
+        self.finished = False
+        self.ended = threading.Event()
 
 
 def _jevk5_shaped_handler(inference: _Inference) -> type:
@@ -153,9 +158,18 @@ def _jevk5_shaped_handler(inference: _Inference) -> type:
             try:
                 if body.get("hold"):
                     assert inference.release.wait(_BOUND_SECS), "decision was never released"
+                if body.get("layers"):
+                    # Two model layers, each after its pre-hook; the first one
+                    # computes until the client's end of the connection changes.
+                    inference.layer_hook(None, ())
+                    inference.entered.set()
+                    select.select([self.connection], [], [], _BOUND_SECS)
+                    inference.layer_hook(None, ())
+                    inference.finished = True
             finally:
                 with inference.lock:
                     inference.now -= 1
+                inference.ended.set()
             self._send(200, {"answers": {}})
 
         def log_message(self, *args: object) -> None:
@@ -217,6 +231,7 @@ def _plumb_gate(
     watched = _WatchedLock()
     namespace = {
         "io": io,
+        "socket": socket,
         "time": clock,
         "threading": SimpleNamespace(Lock=lambda: watched),
         "DECIDE_PATH": _DECIDE,
@@ -326,8 +341,28 @@ def test_plumb_gate_is_released_when_a_decision_fails() -> None:
         assert server.request("POST", _DECIDE, {})[0] == 200
 
 
+def test_plumb_stops_a_decision_whose_client_left_and_frees_the_gate() -> None:
+    inference = _Inference()
+    handler, _ = _plumb_gate(_jevk5_shaped_handler(inference), _BOUND_SECS)
+    inference.layer_hook = handler.stop_if_client_gone
+    with _Server(handler) as server:
+        body = json.dumps({"layers": True}).encode()
+        client = _partial_post(server.port, len(body), body)
+        assert inference.entered.wait(_BOUND_SECS)
+        # The caller gives up while its decision is computing.
+        client.close()
+        assert inference.ended.wait(_BOUND_SECS)
+
+        status, _ = server.request("POST", _DECIDE, {})
+
+    # Stopped at a layer instead of computed to the end, and the gate was free.
+    assert not inference.finished
+    assert status == 200 and inference.calls == 2
+
+
 def _partial_post(port: int, length: int = 100, start: bytes = b'{"state": ') -> socket.socket:
-    # Headers promise a body that never fully arrives; the connection stays open.
+    # Headers promise *length* bytes of body and only *start* is sent (all of it
+    # when it is that long); the connection stays open.
     sock = socket.create_connection(("127.0.0.1", port), timeout=_BOUND_SECS)
     sock.sendall(f"POST {_DECIDE} HTTP/1.0\r\nContent-Length: {length}\r\n\r\n".encode() + start)
     return sock
@@ -442,6 +477,9 @@ def test_plumb_launcher_serves_through_the_gate() -> None:
     handler = _statement_index(tree, "Handler = _one_at_a_time(make_handler(")
     assert "QUEUE_WAIT_SECS" in ast.unparse(tree.body[handler])
     assert handler < _statement_index(tree, "class AttestedHandler(Handler)")
+    hook = _statement_index(tree, "layer.register_forward_pre_hook(Handler.stop_if_client_gone)")
+    assert "model.model.model.layers" in ast.unparse(tree.body[hook])
+    assert handler < hook < _statement_index(tree, ".serve_forever()")
 
 
 # --- Laya: one decision at a time as ASGI ----------------------------------
