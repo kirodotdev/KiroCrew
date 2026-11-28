@@ -375,6 +375,11 @@ class TestPlatformGuard:
         assert "container" in message
         assert "launcher shim" in message
         assert "host shell" in message
+        # The usual caller is an agent's sandboxed shell: name the tool path.
+        assert rt.AGENT_POD_TOOLS_HINT in message
+        assert "pod_up" in message and "Dev Fleet" in message
+        # Only tools the adoption-pinned Dev Fleet release declares are named.
+        assert "pod_api" not in message and "pod_provision" not in message
 
     def test_stale_explicit_bus_address_is_operational_error(
         self, monkeypatch: pytest.MonkeyPatch

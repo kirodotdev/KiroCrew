@@ -175,6 +175,93 @@
         "maxResultChars": 60000,
         "timeoutSeconds": 45,
         "result": "text"
+      },
+      {
+        "name": "pod_api",
+        "description": "Send ONE authenticated HTTP request to a running pod's own API and get back its status and body -- the tool form of `kirocrew pod api`. The gateway mints the pod token, spends it on this one request over the pod's private socket, and scrubs it from the reply, so you never hold a token and there is no 5-minute window to race. Use it to drive a pod you started with pod_up: read its state (GET /api/health, GET /api/kas-login), change its config (PATCH /api/config/kirocrew), or exercise the endpoint under test. `path` is an /api path, with an optional query; a full URL's host is ignored, the request always goes to this pod. GET and HEAD go through as they are; any other method is refused unless `allow_write` is true. Every call is recorded in the Security Event Log. The pod runs the worktree's code as you, outside the agent sandbox, so a write here acts with your rights on this machine. The reply body is cut at 50,000 characters. Requires the Dev Fleet app to be enabled.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "worktree": {
+              "type": "string",
+              "description": "The worktree whose pod to call, as pod_ls names it",
+              "maxLength": 200
+            },
+            "method": {
+              "type": "string",
+              "description": "The HTTP method",
+              "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]
+            },
+            "path": {
+              "type": "string",
+              "description": "The /api path to call, e.g. '/api/kas-login' or '/api/config/kirocrew'. Never put a token in it",
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "string",
+              "description": "Optional request body, sent as application/json, e.g. '{\"provider\": \"builder_id\"}'",
+              "maxLength": 65536
+            },
+            "allow_write": {
+              "type": "boolean",
+              "description": "Must be true to send anything but GET or HEAD"
+            }
+          },
+          "required": [
+            "worktree",
+            "method",
+            "path"
+          ]
+        },
+        "maxResultChars": 60000,
+        "timeoutSeconds": 60,
+        "result": "text"
+      },
+      {
+        "name": "pod_provision_start",
+        "description": "Start provisioning a worktree so pod_up can boot it: build its .venv and its SPA dist, the same run as the Dev Fleet page's Provision button. Returns at once with a run_id; the build itself takes minutes, so follow it with pod_provision_status and call pod_up once it reports done. A run already in flight for this worktree is refused and its run_id named. The build runs the worktree's own pip and npm steps inside a strict sandbox. Requires the Dev Fleet app to be enabled.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "worktree": {
+              "type": "string",
+              "description": "The worktree to provision, as pod_ls and the Dev Fleet page name it",
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "worktree"
+          ]
+        },
+        "maxResultChars": 60000,
+        "timeoutSeconds": 60,
+        "result": "text"
+      },
+      {
+        "name": "pod_provision_status",
+        "description": "Whether a provision run started with pod_provision_start is still running, how it ended (exit code 0 is success), and its last 40 lines of output. Only a run this gateway started for that worktree answers.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "worktree": {
+              "type": "string",
+              "description": "The worktree the run provisions",
+              "maxLength": 200
+            },
+            "run_id": {
+              "type": "string",
+              "description": "The run_id pod_provision_start returned",
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "worktree",
+            "run_id"
+          ]
+        },
+        "maxResultChars": 60000,
+        "timeoutSeconds": 30,
+        "result": "text"
       }
     ]
   },
