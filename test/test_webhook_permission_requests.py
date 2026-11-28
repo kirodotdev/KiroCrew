@@ -482,7 +482,8 @@ def test_an_unauditable_auto_approve_steers_the_audit_cause(monkeypatch):
 
 
 @pytest.mark.parametrize("edition", ["lts", "oss"])
-def test_an_org_ask_on_a_kas_web_call_is_refused_by_a_webhook_turn(monkeypatch, edition):
+@pytest.mark.parametrize("tool_id", ["web_fetch", "disclose_context"])
+def test_an_org_ask_on_a_kas_web_call_is_refused_by_a_webhook_turn(monkeypatch, edition, tool_id):
     """``web_ask_rule``: nobody is attached to a webhook turn, so in LTS a hook
     auto-approve does not answer KAS's ask on an organisation's web rule."""
     from types import SimpleNamespace
@@ -494,7 +495,7 @@ def test_an_org_ask_on_a_kas_web_call_is_refused_by_a_webhook_turn(monkeypatch, 
         title="Fetching https://example.com",
         tool_kind="fetch",
         is_shell=False,
-        harness_tool_id="web_fetch",
+        harness_tool_id=tool_id,
         kas_builtin_ids=True,
         kas_managed_ask=True,
     )

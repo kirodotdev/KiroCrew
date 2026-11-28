@@ -759,14 +759,16 @@ def test_the_answer_scan_flags_the_wire_ports_own_answers():
 
 
 class _WebAskProvider(_Provider):
-    """A KAS web fetch the organisation's ``ask`` rule holds (``web_ask_rule``)."""
+    """A KAS call the organisation's ``ask`` rule holds (``web_ask_rule``)."""
+
+    tool_id = "web_fetch"
 
     async def stream(self, message: str):
         yield LLMEvent(
             kind=EVENT_PERMISSION_REQUEST,
             title="WorkspaceSearch",
             request_id=self._request_id,
-            harness_tool_id="web_fetch",
+            harness_tool_id=self.tool_id,
             kas_builtin_ids=True,
             kas_managed_ask=True,
         )
@@ -775,7 +777,16 @@ class _WebAskProvider(_Provider):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("edition", ["lts", "oss"])
-async def test_an_org_ask_on_a_kas_web_call_steers_the_surface_cause(monkeypatch, edition):
+@pytest.mark.parametrize(
+    "tool_id, phrase",
+    [
+        ("web_fetch", "policy asks before web fetch"),
+        ("disclose_context", "policy asks before this tool runs"),
+    ],
+)
+async def test_an_org_ask_on_a_kas_web_call_steers_the_surface_cause(
+    monkeypatch, edition, tool_id, phrase
+):
     """``web_ask_rule``: an eval run has nobody to ask, so in LTS it refuses KAS's ask
     on an organisation's web rule even for a call it would approve as safe."""
     from types import SimpleNamespace
@@ -784,8 +795,9 @@ async def test_an_org_ask_on_a_kas_web_call_steers_the_surface_cause(monkeypatch
 
     monkeypatch.setattr(web_ask_rule, "edition", SimpleNamespace(is_lts=lambda: edition == "lts"))
     provider = _WebAskProvider()
+    provider.tool_id = tool_id
     await _run_eval_turn(provider, monkeypatch, gate_reason=None)
     if edition == "lts":
-        _assert_steered_then_rejected(provider, _SURFACE_CLAUSE, "policy asks before web fetch")
+        _assert_steered_then_rejected(provider, _SURFACE_CLAUSE, phrase)
     else:
         assert provider.calls == ["approve"]

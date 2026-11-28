@@ -87,8 +87,9 @@ async def test_every_auto_rung_asks_for_a_held_call_and_approves_the_rest(monkey
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rung", ["hook", "spawn", "auto", "trust", "yolo"])
 @pytest.mark.parametrize("edition", ["lts", "oss"])
+@pytest.mark.parametrize("tool_id", ["web_fetch", "disclose_context"])
 async def test_an_org_ask_on_a_kas_web_call_reaches_the_prompt_on_every_auto_rung(
-    monkeypatch, rung, edition
+    monkeypatch, rung, edition, tool_id
 ):
     """``web_ask_rule``: in LTS no auto rung answers KAS's ask on an organisation's web
     rule; an ``oss`` build approves it on that rung as before."""
@@ -106,7 +107,7 @@ async def test_an_org_ask_on_a_kas_web_call_reaches_the_prompt_on_every_auto_run
         kind=EVENT_PERMISSION_REQUEST,
         title="Fetching https://example.com",
         request_id="r1",
-        harness_tool_id="web_fetch",
+        harness_tool_id=tool_id,
         kas_builtin_ids=True,
         kas_managed_ask=True,
     )

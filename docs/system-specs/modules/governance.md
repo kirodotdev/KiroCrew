@@ -616,7 +616,10 @@ in an oss build). One fetch is the Kiro control plane's
   scoped grant, trust sweep or `tool_permission` grant answers it, on the dashboard,
   Slack, messaging, channel, headless, cron and task-decomposition paths alike; a
   surface with nobody to ask refuses it. A KAS request with no tool id under such a
-  policy is treated the same way. A rule on a meta-capability
+  policy is treated the same way. KAS's consent block names no capability, so it
+  holds any KAS request: one for another tool (a skill load's `disclose_context`, a
+  power or context tool) that carries it reaches the card the same way; the
+  `unattended_web_tools` record covers the two web terms only. A rule on a meta-capability
   (`all`, `builtin`, `filesystem`) reaches the managed capabilities beneath it in
   `acp/kas_permissions.py` `META_CAPABILITY_EXPANSION`; a deny on `all` reaches
   every managed capability, the stricter reading. An

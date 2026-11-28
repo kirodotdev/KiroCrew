@@ -784,7 +784,7 @@ _EVENT_PERMISSION_REQUEST_KIND = "permission_request"
 _WEBHOOK_DENY_NOTICE: dict[str, tuple[str, str]] = {
     "web_ask_rule": (
         DENY_CAUSE_SURFACE_POLICY,
-        "the organization's policy asks a person before this web call, and a webhook "
+        "the organization's policy asks a person before this call, and a webhook "
         "turn has no person to ask",
     ),
     "no_hook_store": (
