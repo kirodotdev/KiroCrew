@@ -269,6 +269,78 @@ def test_an_over_budget_core_still_refuses_with_the_source_named(env, core):
     assert named in str(raised.value)
 
 
+def _context_settings(env, data: dict) -> tuple[str, bool]:
+    """The ``#context-settings`` document *data* produces, and whether it is core."""
+    spec = env.project / ".kiro" / "agents" / "writer-template.json"
+    spec.write_text(json.dumps(data), encoding="utf-8")
+    core: set[str] = set()
+    documents = dict(
+        _mec.documents_for_member(
+            "writer-template", str(env.project), context_settings=True, core_sources_out=core
+        )
+    )
+    source = f"{spec}#context-settings"
+    return documents[source], source in core
+
+
+def test_a_long_resources_list_does_not_fill_the_core_with_its_paths(env):
+    """A spec listing hundreds of ``skill://`` paths starts; the paths are not essential.
+
+    Skills reach the agent through the skill index and ``file://`` guides are
+    documents of their own, so the context-settings document counts the
+    declarations by scheme instead of carrying every path into the core.
+    """
+    spec = env.project / ".kiro" / "agents" / "writer-template.json"
+    data = json.loads(spec.read_text(encoding="utf-8"))
+    data["prompt"] = "You are a careful writer. " * 1000
+    data["resources"] = [
+        f"skill://{env.project}/.kiro/skills/vendor/pkg-{n}/skills/skill-{n:03d}/SKILL.md"
+        for n in range(195)
+    ] + ["file://declared-guide.md"]
+    settings, is_core = _context_settings(env, data)
+    assert is_core
+    assert len(settings) < 500
+    assert "SKILL.md" not in settings
+    assert '"resources": {"file": 1, "skill": 195}' in settings
+    message = _member_message(env)
+    assert "You are a careful writer." in message
+    assert "Declared guide: examples must be reproducible." in message
+    assert len(_envelope(message)) <= ESSENTIAL_MAX_CHARS
+
+
+def test_context_settings_keep_the_scalar_fields_and_count_the_resources(env):
+    data = {
+        "name": "writer-template",
+        "description": "A careful writer",
+        "model": "auto",
+        "includeCrewContext": False,
+        "prompt": "Bound Soul.",
+        "resources": [
+            "file://declared-guide.md",
+            "file://guides/*.md",
+            "skill://.kiro/skills/x/SKILL.md",
+            {"knowledgeBase": "kb"},
+            "not-a-uri",
+            "://no-scheme",
+            f"{'s' * ESSENTIAL_MAX_CHARS}://a-scheme-as-long-as-the-envelope",
+        ],
+    }
+    settings, _ = _context_settings(env, data)
+    header, body = settings.split("\n", 1)
+    assert header == "Template context settings (descriptive, not authorization):"
+    assert json.loads(body) == {
+        "description": "A careful writer",
+        "includeCrewContext": False,
+        "model": "auto",
+        "name": "writer-template",
+        "resources": {"file": 2, "object": 1, "other": 3, "skill": 1},
+    }
+    data["resources"] = []
+    assert '"resources": {}' in _context_settings(env, data)[0]
+    del data["resources"]
+    assert "resources" not in _context_settings(env, data)[0]
+
+
 def test_a_refused_declared_source_still_refuses_when_the_envelope_is_over_budget(env):
     """Budget fitting never turns a source the reader refuses into an omission."""
     (env.project / "AGENTS.md").write_text("x" * (ESSENTIAL_MAX_CHARS + 1), encoding="utf-8")
