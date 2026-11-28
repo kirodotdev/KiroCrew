@@ -47,6 +47,7 @@ from kiro_crew.acp.runtime_models import (
     _substitute_model_from_advisory,
 )
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
+from kiro_crew.acp.structured_error_data import frame_is_unknown_session
 from kiro_crew.acp.transport_errors import AcpError, AcpProcessDied, AcpTimeoutError
 from kiro_crew.acp.transport_framing import (
     RequestWriteResult,
@@ -1114,7 +1115,9 @@ async def _wait_for_response(
                     )
                     if _hint:
                         _err_text = f"{_err_text}. {_hint}"
-                raise AcpError(_err_text, code=_jsonrpc_error_code(msg.error))
+                _err = AcpError(_err_text, code=_jsonrpc_error_code(msg.error))
+                _err.session_unknown = frame_is_unknown_session(msg.error)
+                raise _err
             return msg.result or {}
         # Notification (has method, no id) — buffer for drain.
         if msg.method and msg.id is None:

@@ -37,6 +37,7 @@ import pytest
 from kiro_crew.acp.client import AcpError, AcpPromptBusy
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.types import JsonRpcMessage
+from kiro_crew.llm_helpers import acp_error_is_session_not_found
 
 # The exact frame from the reported transcript, minus the request id value.
 _MODEL_UNAVAILABLE = {
@@ -1033,3 +1034,33 @@ class TestCloudCredentialErrorNamesAFreshProcess:
         with pytest.raises(AcpError) as ei:
             _raise_acp_error("the transport died")
         assert ei.value.credential_reload is False
+
+
+# claude-agent-acp 0.107.0's answer for a session it does not hold: the ACP SDK's
+# ``RequestError.sessionNotFound`` (its ``dist/v1/acp-agent.js`` prompt handler).
+_UNKNOWN_SESSION = {
+    "code": -32002,
+    "message": "Resource not found",
+    "data": {"sessionId": "sess-1"},
+}
+# 0.94.0's answer to a ``session/load`` of an id it cannot find: the SDK's generic
+# ``RequestError.resourceNotFound``, the same code with a ``uri``.
+_RESOURCE_NOT_FOUND = {"code": -32002, "message": "Resource not found", "data": {"uri": "sess-1"}}
+
+
+class TestUnknownSessionFrameIsALostSession:
+    """The SDK's unknown-session frame takes the lost-session recovery.
+
+    Its prose is "Resource not found", so the "session not found" text match never
+    sees it; the tag is read from the frame's code and ``data.sessionId``.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_unknown_session_frame_is_a_lost_session(self, driver):
+        assert acp_error_is_session_not_found(await driver(_UNKNOWN_SESSION)) is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_resource_not_found_for_a_uri_is_not(self, driver):
+        assert acp_error_is_session_not_found(await driver(_RESOURCE_NOT_FOUND)) is False

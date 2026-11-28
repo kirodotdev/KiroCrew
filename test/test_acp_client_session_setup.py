@@ -13,6 +13,7 @@ import kiro_crew.acp.client as acp_client
 from kiro_crew.acp.client import _DRAIN_DURATION, _DRAIN_IDLE_EXIT, AcpClient, AcpError
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 # ── Coverage push: session lifecycle ──
 
@@ -240,6 +241,22 @@ class TestWaitForResponse:
 
         with pytest.raises(AcpError, match="JSON-RPC error"):
             await client._wait_for_response(5, timeout=5.0)
+
+    @pytest.mark.asyncio
+    async def test_unknown_session_error_is_a_lost_session(self, tmp_path):
+        """A request answered with the ACP SDK's unknown-session frame (claude-agent-acp
+        0.107.0, e.g. a ``session/set_mode`` after the session closed) takes the
+        lost-session recovery that a "Session not found" text takes."""
+        from kiro_crew.acp.types import JsonRpcMessage
+        from kiro_crew.llm_helpers import acp_error_is_session_not_found
+
+        error = {"code": -32002, "message": "Resource not found", "data": {"sessionId": "s1"}}
+        client = AcpClient(work_dir=tmp_path)
+        client._read_message = AsyncMock(return_value=JsonRpcMessage(id=5, error=error))
+
+        with pytest.raises(AcpError) as ei:
+            await client._wait_for_response(5, timeout=FALLBACK_TIMEOUT_SECS)
+        assert acp_error_is_session_not_found(ei.value) is True
 
     @pytest.mark.asyncio
     async def test_notification_buffered(self, tmp_path):

@@ -137,7 +137,10 @@ recovers a lost session; if the fresh process fails too, the give-up line shows
 the provider's own remedy. See the Lost backend session entry in
 [error handling](../common/error-handling.md). The trigger is the provider's
 `errorKind`, not a harness check, so any backend that emits that kind is
-recycled the same way.
+recycled the same way. Likewise a session the adapter does not hold is
+answered on newer releases (verified on 0.107.0) with the ACP SDK's `-32002`
+`Resource not found` and a `data.sessionId`, not "Session not found" text;
+Crew reads that frame structurally and takes the same lost-session recovery.
 
 ### Overloaded answers
 

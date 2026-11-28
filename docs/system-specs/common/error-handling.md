@@ -269,7 +269,13 @@ Notable terminal (non-retryable) classes:
   with a reconnect notice, armed as `ReplayFamily.SESSION_NOT_FOUND`. A Stop that
   already resolved suppresses it; the drain and consume seams veto it on a later
   Stop, a queued follow-up or steer, or a rebind (with a cancel notice), refunding
-  the one-shot. A second loss on the same turn ends with the give-up text. The
+  the one-shot. A second loss on the same turn ends with the give-up text. A
+  lost session reaches the predicate two ways: a backend's "Session not found"
+  text, or the ACP SDK's unknown-session frame (`code -32002`, `Resource not
+  found`, with a `data.sessionId`) that newer claude-agent-acp releases send
+  (verified on 0.107.0). `_raise_acp_error` and the dedicated client's request
+  path read that frame structurally and tag the `AcpError` `session_unknown`;
+  the SDK's generic `resourceNotFound` (`data.uri`) is not tagged. The
   predicate matches a second raw answer with the same fresh-process remedy: a
   frame whose `data` names `errorKind: cloud_credential_error` —
   `_raise_acp_error` reads it structurally, tags the `AcpError`

@@ -6454,8 +6454,9 @@ instead of waiting forever. The reply carries `data: OVERSIZE_REPLY_DATA`
 never reads the raw frame; the byte counts stay in the reader's log line. A backend
 can send the same marker, so that message still goes through the credential and
 exfiltration-URL redaction every formatted error does. `_error_kind_from_frame` (the
-structured `errorKind` reader) lives in the same module, which keeps `transport_errors.py`
-under the file-line cap. Without the `AcpFrameTooLarge` fast-fail the caller would instead time out much
+structured `errorKind` reader) and `frame_is_unknown_session` (the ACP SDK's
+unknown-session answer, read for the `session_unknown` tag) live in the same module,
+which keeps `transport_errors.py` under the file-line cap. Without the `AcpFrameTooLarge` fast-fail the caller would instead time out much
 later under an unrelated name (a `session/new` timeout reads as slow MCP
 servers). A frame whose head names no
 pending request keeps the timeout path, and the warning still lists the ids in

@@ -254,7 +254,9 @@ def acp_error_is_session_not_found(exc: BaseException) -> bool:
 
     Two raw answers share that remedy:
 
-    - "session not found": the live backend dropped the session. The process
+    - "session not found", or the ACP SDK's unknown-session frame
+      (``AcpError.session_unknown``, from ``code -32002`` with a
+      ``data.sessionId``): the live backend dropped the session. The process
       still answers, so dead-provider eviction never fires and every later
       prompt draws the same answer. The transcript is usually intact, so the
       remedy is a fresh process that re-loads the SAME id, not a retry here.
@@ -269,7 +271,7 @@ def acp_error_is_session_not_found(exc: BaseException) -> bool:
     """
     if not isinstance(exc, AcpError):
         return False
-    if "session not found" in str(exc).lower():
+    if "session not found" in str(exc).lower() or getattr(exc, "session_unknown", False) is True:
         return True
     return acp_error_needs_fresh_credentials(exc)
 
