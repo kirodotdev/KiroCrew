@@ -20871,6 +20871,8 @@
         "simplified_tool_call_names": "Nomes simplificados de chamadas de ferramenta",
         "tool_calls_start_expanded": "Mostrar chamadas de ferramentas expandidas",
         "tool_calls_start_expanded_desc": "Abre as linhas de chamadas de ferramentas com a entrada e a saída visíveis, em vez de recolhidas. As linhas que você abre ou fecha manualmente mantêm sua escolha.",
+        "tool_label_shimmer": "Brilho nos rótulos de ferramentas em execução",
+        "tool_label_shimmer_desc": "Desliza um brilho colorido sobre o rótulo de uma chamada de ferramenta enquanto ela roda. Desligado, o rótulo fica parado; o indicador giratório continua mostrando que está rodando.",
         "reasoning_starts_expanded": "Mostrar o raciocínio expandido",
         "reasoning_starts_expanded_desc": "Abre as linhas de raciocínio com o texto visível, em vez de recolhidas. As linhas que você abre ou fecha manualmente mantêm sua escolha.",
         "single_line": "Linha única",

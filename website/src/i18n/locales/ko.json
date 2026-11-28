@@ -19785,6 +19785,8 @@
         "simplified_tool_call_names": "간소화된 도구 호출 이름",
         "tool_calls_start_expanded": "도구 호출을 펼친 상태로 시작",
         "tool_calls_start_expanded_desc": "도구 호출 행을 접지 않고 입력과 출력이 보이는 상태로 엽니다. 직접 펼치거나 접은 행은 그 선택을 유지합니다.",
+        "tool_label_shimmer": "실행 중인 도구 라벨 반짝임",
+        "tool_label_shimmer_desc": "도구 호출이 실행되는 동안 라벨 위로 색 반짝임을 흘립니다. 끄면 라벨은 그대로 있고, 실행 중인지는 회전 표시로 계속 알 수 있습니다.",
         "reasoning_starts_expanded": "사고 과정을 펼친 상태로 시작",
         "reasoning_starts_expanded_desc": "사고 과정 행을 접지 않고 내용이 보이는 상태로 엽니다. 직접 펼치거나 접은 행은 그 선택을 유지합니다.",
         "single_line": "한 줄",

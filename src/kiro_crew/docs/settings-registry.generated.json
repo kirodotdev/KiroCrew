@@ -1107,6 +1107,13 @@
       "configKey": "session.max_per_creator"
     },
     {
+      "id": "chat.shimmer-running-tool-labels",
+      "label": "Shimmer running tool labels",
+      "tab": "chat",
+      "route": "/settings/chat/transcript?highlight=chat.shimmer-running-tool-labels",
+      "hint": "Sweep a color highlight across the label of a tool call while it runs. When off, the label stays still; the spinner still shows it is running."
+    },
+    {
       "id": "chat.show-all-bots-in-my-sessions",
       "label": "Show all bots in my Sessions",
       "tab": "chat",
