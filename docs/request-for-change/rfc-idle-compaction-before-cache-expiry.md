@@ -1,23 +1,27 @@
 ---
 title: Idle compaction before prompt-cache expiry, an opt-in session setting
-status: partial
+status: implemented
 author: Pearcekieser, with Kiro
 created: 2026-10-19
-last-audited: 2026-11-19
-audited-at: fc89562d69
+last-audited: 2026-11-24
+audited-at: a5b76048e0
 doc-pr: 22149
-implementation-prs: [24384]
+implementation-prs: [24384, 30246]
 tracking-issues: [22148]
 supersedes: []
 superseded-by: []
 ---
 # RFC: Idle compaction before prompt-cache expiry, an opt-in session setting
 
-- Status: partial. Phase 1 (backend and config key) is on main from
+- Status: implemented. Phase 1 (backend and config key) is on main from
   [#24384](https://github.com/kirodotdev/KiroCrew/pull/24384): `session.idle_compaction`
   is read in `config/loader_builders.py` and the per-backend delay is
   `idle_compaction_delay_secs` in `agent_sdk/backends_turns.py`. Phase 2, the
-  Settings UI control, is not built: `website/src/` has no `idle_compaction` hit.
+  Settings control, shipped in
+  [#30246](https://github.com/kirodotdev/KiroCrew/pull/30246): the switch and
+  minimum field in Settings > Chat > Advanced (`pages/settings/ChatPanel.tsx`,
+  `pages/settings/useIdleCompactionFields.ts`) save through the two
+  `session.idle_compaction*` rows of `_EDITABLE_CONFIG`.
 - Author: Pearcekieser, with Kiro
 - Created: 2026-10-19
 - Measured at: `cea787cbd5`

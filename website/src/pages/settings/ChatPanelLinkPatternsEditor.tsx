@@ -45,10 +45,14 @@ function invalidRegex(pattern: string): boolean {
  * typed, and the errors-use-error-notice rule forbids dressing validation
  * hints as errors (`role="alert"`, danger styling, agent hand-off).
  * `role="status"` announces politely, matching the AboutPanel status idiom.
+ *
+ * `tone="neutral"` is for a notice about a save that worked, such as a value the
+ * server clamped and stored: warn colour there would read as a failure.
  */
-export function FieldHint({ message }: { message: string }) {
+export function FieldHint({ message, tone = 'warn' }: { message: string; tone?: 'warn' | 'neutral' }) {
   if (!message) return null
-  return <div className="text-[12px] text-warn mt-0.5" role="status">{message}</div>
+  const color = tone === 'neutral' ? 'text-muted' : 'text-warn'
+  return <div className={`text-[12px] ${color} mt-0.5`} role="status">{message}</div>
 }
 
 export interface LinkPatternsDraft {
