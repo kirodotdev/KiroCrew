@@ -96,6 +96,8 @@ def repos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     path = tmp_path / "gate_map.json"
     path.write_text(json.dumps({"gates": [OK_GATE], "ci_only": []}), encoding="utf-8")
     monkeypatch.setattr(gate, "MAP_PATH", str(path))
+    # What is measured here is the script's git reads. The gate passes without starting a child.
+    monkeypatch.setattr(gate, "run_gate", lambda _gate, _base_sha, _top: ("pass", ""))
     return _make_repo(tmp_path, "one", "x = 1\n"), _make_repo(tmp_path, "two", "x = 2\n")
 
 
