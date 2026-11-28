@@ -10,6 +10,10 @@ This module is the runtime's seam to the one where Crew owns the credential:
   read of the vault, no refresh and no network, that never raises -- a vault that
   cannot be read is reported as "no identity", which keeps the spawn on the
   cli-owned path a signed-out operator already has.
+- :func:`api_key_sign_in_applies_off_loop` is the bundle route's one exception to
+  Crew owning the credential: with ``agent.kas_api_key_sign_in`` on, an empty vault
+  and ``KIRO_API_KEY`` set, that spawn is planned cli-owned and the engine signs in
+  with the key itself.
 - :func:`answer_get_access_token` renders the response for the engine's
   ``_kiro/auth/getAccessToken`` request from
   :class:`kiro_crew.auth.provider.KasAuthProvider` (resolve + refresh under the
@@ -38,6 +42,7 @@ import asyncio
 import hashlib
 import logging
 import time
+from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +87,14 @@ async def vault_holds_identity_off_loop() -> bool:
     from kiro_crew.auth.bridge import vault_holds_identity
 
     return await asyncio.to_thread(vault_holds_identity)
+
+
+async def api_key_sign_in_applies_off_loop(environ: Mapping[str, str]) -> bool:
+    """:func:`kiro_crew.auth.bridge.api_key_sign_in_applies` on a worker thread."""
+    # Deferred: see the module docstring (boot-path and cryptography gates).
+    from kiro_crew.auth.bridge import api_key_sign_in_applies
+
+    return await asyncio.to_thread(api_key_sign_in_applies, environ)
 
 
 async def answer_get_access_token() -> dict:

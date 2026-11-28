@@ -35,8 +35,9 @@ laid down under Crew's data home, where Crew controls the layout. The harness
 then spawns ``node --experimental-wasm-modules <acp-server.js> --transport=stdio
 --auth=acp-callback --cloud-config-endpoint=<bff>`` itself. Crew supplies the
 validated BFF endpoint for the sign-in stage. There is no ``--auth-method`` on this route:
-the engine's ``_kiro/auth/getAccessToken`` always reaches Crew, and Crew's
-vault is the only credential (:func:`build_kas_bundle_argv`).
+the engine's ``_kiro/auth/getAccessToken`` reaches Crew, and Crew's vault is
+the only credential (:func:`build_kas_bundle_argv`) unless the operator's
+``agent.kas_api_key_sign_in`` has the engine sign in with ``KIRO_API_KEY``.
 
 Frame parity between the two routes is measured, not assumed:
 all forward methods Crew sends (``initialize``, ``session/new`` carrying
@@ -174,8 +175,10 @@ def build_kas_bundle_argv(
 ) -> list[str]:
     """argv for a KAS stdio session served by Crew's own installed bundle.
 
-    Crew is ALWAYS the auth owner on this route -- there is no kiro-cli to hand
-    the credential to -- so the plan built from this argv carries
+    Crew is the auth owner on this route -- there is no kiro-cli to hand the
+    credential to; only the opt-in ``agent.kas_api_key_sign_in`` has the engine
+    sign in with its own key (:mod:`kiro_crew.acp.kas_host_auth`). Without it the
+    plan built from this argv carries
     ``host_auth=True`` unconditionally, and a vault with no identity surfaces as
     the engine's own "not signed in" prompt failure (the same vocabulary the
     runtime already maps to a sign-in prompt), never as a silent fallback to a

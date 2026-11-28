@@ -62,7 +62,11 @@ from kiro_crew.acp.kas_agents import KasAgentTranslationError
 from kiro_crew.acp.kas_agents_session_hoist import without_subagent_refused_servers
 from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_endpoints import CLOUD_CONFIG_ENDPOINT_ENV
-from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
+from kiro_crew.acp.kas_host_auth import (
+    answer_get_access_token,
+    api_key_sign_in_applies_off_loop,
+    vault_holds_identity_off_loop,
+)
 from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
 from kiro_crew.acp.kas_member_goal_tools import with_member_goal_tools
 from kiro_crew.acp.kas_native_batch import name_left_out, native_batch
@@ -804,10 +808,12 @@ class KasHarness(MembershipHarness):
 
         **Bundle** (``agent.kas_bundle`` true, or the relay cannot run): Crew's
         own installed engine and Node runtime, spawned directly. Crew is the auth
-        owner unconditionally -- there is no kiro-cli whose store could answer
-        instead -- so the plan carries ``host_auth=True`` whatever the vault
-        holds; an empty vault is the engine's own sign-in failure at prompt time,
-        which the runtime maps to the Kiro sign-in prompt. A missing engine is
+        owner -- there is no kiro-cli whose store could answer instead -- so the
+        plan carries ``host_auth=True`` whatever the vault holds; an empty vault is
+        the engine's own sign-in failure at prompt time, which the runtime maps to
+        the Kiro sign-in prompt. The one exception is ``agent.kas_api_key_sign_in``
+        with an empty vault and ``KIRO_API_KEY`` set: that plan is cli-owned and the
+        engine signs in with the key itself. A missing engine is
         installed here, in the gateway, one install at a time
         (:mod:`kiro_crew.acp.kas_engine_install`); a failed install is a refusal
         naming the cause and the retry command, and a host that cannot run the
@@ -1093,8 +1099,12 @@ class KasHarness(MembershipHarness):
                     _PROBED_BUNDLE_NODES.add(key)
             except kas_bundle_mod.KasBundleError as exc:
                 raise AcpRuntimeError(f"{route.describe()}. {exc}") from exc
+        # agent.kas_api_key_sign_in with an empty vault: the engine signs in with
+        # KIRO_API_KEY itself, so the plan is cli-owned and the launch hands it the key.
+        key_signs_in = await api_key_sign_in_applies_off_loop(ctx.environ)
         logger.info(
-            "KAS auth owner=crew — spawning Crew's own engine bundle %s (node %s, agent=%s)",
+            "KAS auth owner=%s — spawning Crew's own engine bundle %s (node %s, agent=%s)",
+            "KIRO_API_KEY" if key_signs_in else "crew",
             bundle.version,
             bundle.node_version or "?",
             ctx.agent or "<none>",
@@ -1120,7 +1130,8 @@ class KasHarness(MembershipHarness):
             spawn_label=KAS_BUNDLE_SPAWN_LABEL,
             stderr_label=KAS_BUNDLE_SPAWN_LABEL,
             # Machine mode: the engine reads its token file and asks Crew for none.
-            host_auth=machine is None,
+            # Neither does an engine signing in with KIRO_API_KEY.
+            host_auth=machine is None and not key_signs_in,
             engine_bundle=True,
             machine_auth=machine,
         )
@@ -1146,6 +1157,7 @@ class KasHarness(MembershipHarness):
         start without some sign-in, and the v3 engine sends the key as its own
         ``api_key`` token type. So the key is handed over exactly as the kiro
         harness hands it: inherited, or re-read from the data home's ``.env``.
+        So is Crew's own engine bundle under ``agent.kas_api_key_sign_in``.
 
         The KAS engine reads the same Tool Search never-defer variable on either
         route. On Crew's own engine bundle, :func:`defer_mandatory_mcps_env`
