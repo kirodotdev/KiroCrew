@@ -701,6 +701,9 @@ async def test_kas_readiness_delays_prompt_until_active_managed_tools(
         wire.tags("kirocrew-core", "kirocrew-dashboard")
         handle = await await_until(start, what="the session start")
         assert wire.sent.empty()
+        # The start counted its frames by the queue's length; only once it has
+        # returned may the reader drop a superseded frame (session_frame_queue).
+        assert handle._queue.parked is True
 
         async def collect():
             return [event async for event in handle.prompt("ready")]
@@ -709,9 +712,11 @@ async def test_kas_readiness_delays_prompt_until_active_managed_tools(
         try:
             request = await wire.take(wire.sent)
             assert request["method"] == "session/prompt"
+            assert handle._queue.parked is False, "a running turn's queue must not drop frames"
             _feed(wire.reader, {"id": request["id"], "result": {"stopReason": "end_turn"}})
             await await_until(turn, what="the turn finishing")
             assert wire.sent.empty()
+            assert handle._queue.parked is True
         finally:
             if not turn.done():
                 turn.cancel()
