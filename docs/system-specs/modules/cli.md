@@ -3110,7 +3110,11 @@ Without `--when-idle`, `restart` behaves as below.
      claiming the listener is a gateway, names the live `gateway.lock` holder
      when the lock names one, and calls it the desktop app when it runs from
      the `backend-dist` bundle (`_died_replacement_message`). Exit code and
-     audit record are the same in both cases. One still running at the
+     audit record are the same in both cases. On Windows a replacement that
+     exits with status 0 is not reported this way: a boot-time update apply
+     re-execs, and Windows `os.execv` ends the waited process with 0 while a
+     successor starts, so the wait keeps probing the port until the deadline
+     (`_poll_until_serving`). One still running at the
      deadline prints `Replacement gateway (pid N) did not become ready within
      Ns. It is still running but not serving port P.` and exits 1. When the
      last probe before the deadline got a 200 that `_replacement_is_serving`
