@@ -516,12 +516,36 @@ def test_every_lane_tees_its_measured_pytest_and_checks_that_log():
     for name, step in STEPS.items():
         commands = _commands(step["run"])
         for line in _measured_pytest(commands):
-            tee = re.search(r' 2>&1 \| tee "(\$\w+)"$', line)
+            tee = re.search(r' 2>&1 \| tee "(\$\w+)"(?: \|\| (\w+)=\$\?)?$', line)
             assert tee, f"{name}: measured pytest output is not kept: {line[-80:]}"
             check = f'python {SCRIPT} check{_flag(_core(step))} "{tee.group(1)}"'
             after = commands[commands.index(line) + 1 :]
             assert check in after, f"{name}: no check of {tee.group(1)} after the run"
-        assert not re.search(r"tee\b[^\n]*(\|\||;)", step["run"]), "nothing may mask the pipeline"
+            if tee.group(2):
+                # A status the step keeps to judge must end the step when it is not judged.
+                ended = after.index(f'exit "${tee.group(2)}"')
+                assert ended < after.index(check), f"{name}: the check runs before the status ends"
+        kept = r"tee \"\$\w+\" \|\| \w+=\$\?"
+        unmasked = re.sub(kept, "tee", step["run"])
+        assert not re.search(r"tee\b[^\n]*(\|\||;)", unmasked), "nothing may mask the pipeline"
+
+
+def test_a_measuring_step_deselects_the_tests_red_on_main_as_its_siblings_do():
+    """A test red on main is deselected in every pytest run of a job that deselects it in one."""
+    plugin = "-p scripts.ci_main_red_skip"
+    checked = 0
+    for job_id, job in LANES.items():
+        loading = [s for s in job["steps"] if plugin in str(s.get("run", ""))]
+        plans = {s.get("env", {}).get("CI_MAIN_RED_SKIP") for s in loading}
+        if not loading:
+            continue
+        assert len(plans) == 1 and None not in plans, (job_id, plans)
+        for step in _measuring_steps(job):
+            checked += 1
+            assert step in loading, f"{job_id}: {step['name']} runs pytest without the plugin"
+            for line in _measured_pytest(_commands(step["run"])):
+                assert plugin in line or "PROGRESS[@]" in line, line[:120]
+    assert checked >= 2, "the shards' job loads the plugin in each of its measuring steps"
 
 
 def test_every_lane_shell_stops_on_a_failed_pipeline():
@@ -670,6 +694,7 @@ def _run_lane(
     status: int = 0,
     repo: Path = ROOT,
     switch: str = "",
+    main_red: str = "",
 ):
     bash = shutil.which("bash")
     assert bash, "the lane steps are bash scripts"
@@ -681,6 +706,7 @@ def _run_lane(
         "RUNNER_OS": "Linux",
         "GITHUB_EVENT_NAME": event,
         SWITCH: switch,
+        "CI_MAIN_RED_SKIP": main_red,
         "REAL_PYTHON": sys.executable,
         "REPO_ROOT": str(repo),
         "PYTEST_OUT": out,
@@ -805,6 +831,26 @@ def test_a_step_ends_with_pytest_exit_status_through_the_tee(name, status, tmp_p
     result, _ = _run_lane(STEPS[name], tmp_path, event, CLEAN, status)
     assert result.returncode == status, result.stdout + result.stderr
     assert "coverage core check" not in result.stdout, "the step stops at the failed pytest"
+
+
+PLAN = '{"issue": 900, "nodeids": ["test/test_a.py::test_b"]}'
+
+
+@lane_bodies
+@pytest.mark.parametrize("status", [0, 1, 2, 3, 4, 5])
+@pytest.mark.parametrize("main_red", ["", PLAN])
+def test_the_c_tracer_step_passes_on_no_test_selected_only_under_a_main_red_plan(
+    status, main_red, tmp_path
+):
+    """The plan deselects every marked test: nothing to run. No plan: the marker matched nothing."""
+    (step,) = [s for s in STEPS.values() if _selects_the_marker(s)]
+    event = sorted(coverage_core.SWITCH_EVENTS)[0]
+    result, seen = _run_lane(step, tmp_path, event, CLEAN, status, main_red=main_red)
+    assert len(seen) == 1, "pytest ran once"
+    assert "-p scripts.ci_main_red_skip" in _arguments(tmp_path)[0]
+    passes = status == 0 or (status == 5 and bool(main_red))
+    assert result.returncode == (0 if passes else status), result.stdout + result.stderr
+    assert ("coverage core check passed" in result.stdout) is passes
 
 
 @lane_bodies

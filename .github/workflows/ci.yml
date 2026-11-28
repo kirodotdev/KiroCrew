@@ -2099,6 +2099,9 @@ jobs:
         shell: /usr/local/bin/ci-shell {0}
         env:
           PYTHONPATH: ${{ github.workspace }}
+          # Node ids red on main, deselected here as in the step that runs the
+          # shard: a marked test that is red on main must not fail this one.
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
           # The kill switch for the sysmon core: `off` makes this run measure as a push does
           # (scripts/ci/coverage_core.py). Unset reaches the script as an empty string.
           CI_COVERAGE_SYSMON: ${{ vars.CI_COVERAGE_SYSMON }}
@@ -2113,11 +2116,21 @@ jobs:
           CORE_EXPORTS="$(python scripts/ci/coverage_core.py exports --core ctrace)"
           eval "$CORE_EXPORTS"
           COVERAGE_LOG="$RUNNER_TEMP/pytest-coverage-recursion-limit.log"
-          python -m pytest -q -n0 --timeout=120 -m "at_recursion_limit and not ipv6_required and not real_venv" \
+          rc=0
+          python -m pytest -p scripts.ci_main_red_skip -q -n0 --timeout=120 -m "at_recursion_limit and not ipv6_required and not real_venv" \
             --cov=kiro_crew --cov=sage_lib \
             --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
             --cov=src/kiro_crew/apps/builtins/code_review_sage/tests \
-            --cov-report= --cov-append ${FILES[@]+"${FILES[@]}"} 2>&1 | tee "$COVERAGE_LOG"
+            --cov-report= --cov-append ${FILES[@]+"${FILES[@]}"} 2>&1 | tee "$COVERAGE_LOG" || rc=$?
+          # 5 = pytest selected no test. With a main-red skip plan that is the
+          # plan deselecting every marked test, as it does in the shards, and
+          # the step passes. With no plan the marker matched nothing, which is
+          # a fault. Every other status is pytest's own and ends the step.
+          if [ "$rc" = 5 ] && [ -n "$CI_MAIN_RED_SKIP" ]; then
+            echo "Every at_recursion_limit test is deselected as red on main; none ran here."
+          elif [ "$rc" != 0 ]; then
+            exit "$rc"
+          fi
           python scripts/ci/coverage_core.py check --core ctrace "$COVERAGE_LOG"
 
       - name: Stage shard coverage data
