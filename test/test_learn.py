@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import gc
 import json
 import os
@@ -193,6 +194,46 @@ class TestUnreadableRows:
         stored = [json.loads(line)["rule"] for line in path.read_bytes().splitlines()]
         assert stored == kept
 
+    @pytest.mark.parametrize(
+        ("extra_row", "extra_rules"),
+        [
+            pytest.param(b"", [], id="all-utf8"),
+            # Not UTF-8, so the file is read line by line.
+            pytest.param(
+                b'{"ts": "t", "rule": "na\xefve", "category": "tool"}\r\n',
+                ["naïve"],
+                id="and-a-cp1252-row",
+            ),
+        ],
+    )
+    def test_a_utf8_byte_order_mark_does_not_cost_the_first_lesson(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        extra_row: bytes,
+        extra_rules: list[str],
+    ) -> None:
+        """A file saved "UTF-8 with BOM" keeps row 1 through a load, a save and the migration."""
+        from kiro_crew.vector_memory_runtime import migration
+
+        monkeypatch.setattr("locale.getpreferredencoding", lambda do_setlocale=True: "cp1252")
+        caplog.set_level("WARNING", logger="kiro_crew.learn")
+        path = tmp_path / "lessons.jsonl"
+        path.write_bytes(codecs.BOM_UTF8 + f"{_RULE_A}\r\n{_RULE_B}\r\n".encode() + extra_row)
+        rules = ["Run the linter first", "Write tests first"]
+
+        migrated = [
+            row if row is migration.SKIP else row[0] for row in migration.legacy_lessons(path)
+        ]
+        assert migrated == rules + [migration.SKIP] * len(extra_rules)
+        store = LessonStore(base_dir=tmp_path)
+        assert [le.rule for le in store.load_all()] == rules + extra_rules
+        assert store.save(_make_lesson("Pin tool versions")) == "inserted"
+        stored = [json.loads(line)["rule"] for line in path.read_bytes().splitlines()]
+        assert stored == [*rules, *extra_rules, "Pin tool versions"]
+        assert "Skipped" not in caplog.text
+
     @pytest.mark.parametrize("rule", ["5", "null", '["a"]'])
     def test_a_row_whose_rule_is_not_text_does_not_block_writes(
         self, tmp_path: Path, rule: str
@@ -315,22 +356,22 @@ class TestCacheAcrossInstances:
         reader = LessonStore(base_dir=tmp_path)
         writer.save_or_enrich(_make_lesson("Use tabs", negative="NOT spaces"))
         tick = writer.path.stat()
-        real_read_text = Path.read_text
+        real_read_bytes = Path.read_bytes
         landed: list[bool] = []
 
-        def read_then_rewrite(path: Path, *args: object, **kwargs: object) -> str:
-            text = real_read_text(path, *args, **kwargs)
+        def read_then_rewrite(path: Path) -> bytes:
+            data = real_read_bytes(path)
             if path == reader.path and not landed:
                 landed.append(True)
                 writer.save_or_enrich(_make_lesson("Use tabs", negative="NOT braces"))
                 assert writer.path.stat().st_size == tick.st_size
                 _pin_mtime(writer.path, tick)
-            return text
+            return data
 
         with monkeypatch.context() as m:
-            m.setattr(Path, "read_text", read_then_rewrite)
+            m.setattr(Path, "read_bytes", read_then_rewrite)
             assert "NOT spaces" in reader.get_context()
-        assert landed, "load_all no longer reads through Path.read_text; move the hook"
+        assert landed, "load_all no longer reads through Path.read_bytes; move the hook"
 
         context = reader.get_context()
         assert "NOT braces" in context and "NOT spaces" not in context

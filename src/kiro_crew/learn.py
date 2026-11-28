@@ -8,6 +8,7 @@ Storage: ``<config_dir>/lessons.jsonl`` (append-only JSONL).
 
 from __future__ import annotations
 
+import codecs
 import json
 import logging
 import stat
@@ -193,16 +194,20 @@ def _lesson_lines(path: Path) -> list[str | None]:
     the store writes are ASCII, so they read the same either way. Only when the
     whole-file decode fails is the file split into lines, each tried as UTF-8 and
     then with the platform's default codec, so a row saved in that code page
-    still reads and one bad byte costs its own line instead of every lesson.
+    still reads and one bad byte costs its own line instead of every lesson. A
+    leading UTF-8 byte-order mark (a Windows editor's "UTF-8 with BOM") is not
+    content and is dropped first: left on, it makes row 1 unreadable, and the next
+    save deletes that lesson.
     """
+    data = path.read_bytes().removeprefix(codecs.BOM_UTF8)
     try:
-        return list(path.read_text(encoding="utf-8").splitlines())
+        return list(data.decode("utf-8").splitlines())
     except UnicodeDecodeError:
         import locale  # in-function: only reached for a file that is not all UTF-8
 
         encodings = ("utf-8", locale.getpreferredencoding(False))
     lines: list[str | None] = []
-    for raw in path.read_bytes().splitlines():
+    for raw in data.splitlines():
         for encoding in encodings:
             try:
                 lines.append(raw.decode(encoding))

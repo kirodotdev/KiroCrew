@@ -15,6 +15,7 @@ matches either lineage.
 from __future__ import annotations
 
 import argparse
+import codecs
 import json
 import sqlite3
 from contextlib import closing
@@ -516,6 +517,16 @@ class TestLessonsTierIsScanned:
 
         assert finding["store"] == WORK
         assert finding["key"] == "lessons.jsonl:5"
+
+    def test_a_row_behind_a_utf8_byte_order_mark_is_screened(self, default_only_home) -> None:
+        """``LessonStore`` loads row 1 of a file saved "UTF-8 with BOM", so it is audited."""
+        path = _write_lessons(DEFAULT_MEMORY_STORE, _lesson_row(INJECTIONS[DEFAULT_MEMORY_STORE]))
+        path.write_bytes(codecs.BOM_UTF8 + path.read_bytes())
+
+        (finding,) = security.scan_memory()
+
+        assert finding["key"] == "lessons.jsonl:1"
+        assert finding["value"] == INJECTIONS[DEFAULT_MEMORY_STORE]
 
     def test_a_store_with_no_lessons_file_is_not_a_finding(self, declared_home) -> None:
         """Absence is the ordinary state of a fresh store, not a read failure."""
