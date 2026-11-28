@@ -102,6 +102,17 @@ export type Other = {
 
 export type CostRow = {
   name: string
+  /** Present on folder rows only: folder names are not unique, the id is. */
+  folder_id?: string
+  /**
+   * Unfiled folder row only: how much of it comes from sessions the backend
+   * does not track one by one (past its per-session limit, or with an ID too
+   * long to keep), counted there but not sorted by folder. Credits and turns
+   * travel together and are absent when there are none; either can be 0 (a
+   * token-only provider bills turns, no credits).
+   */
+  unsorted_credits?: number
+  unsorted_turns?: number
   credits: number
   turns: number
   per_turn: number
@@ -197,6 +208,11 @@ export type Cost = {
   by_category: CostRow[]
   /** Spend by what a turn was for; absent from an older gateway, which means no Purpose choice. */
   by_purpose?: CostRow[]
+  /**
+   * Spend by the sidebar folder each session is filed in now. `name` is the
+   * folder path; the row with an empty `folder_id` is Unfiled.
+   */
+  by_folder?: CostRow[]
   context_bands: CostBand[]
   /** Absent from an older gateway, which means no recommendations. */
   advice?: SpendAdvice[]

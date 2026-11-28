@@ -300,6 +300,54 @@ def slot_transcript_key(slot_key: str) -> str:
     return _history_key_for(slot_key)
 
 
+def usage_transcript_keys(key: str) -> tuple[str, ...]:
+    """The transcripts a usage-row session key's conversation may be stored under.
+
+    In the order to try them: the first that EXISTS is the answer, even when its
+    metadata leaves the question open. Usage rows are keyed by whatever the
+    writer had in hand, which is not
+    always a slot name (see ``persist_token_record_async``'s call sites), so a
+    new usage-key writer updates the rules here:
+
+    * a cron execution key, ``cron:<job>``: the job's one transcript, the key
+      its tab is linked to (``cron_inject``);
+    * a per-run key, ``cron:<job>:<run|agent>``: its own transcript, then
+      ``cron:<job>``. A ``new_chat_per_run`` run opens a tab of its own, linked
+      to its own key, so its transcript is the tab's. Every other run is shown
+      in the job's tab and may leave a transcript under its key too (a stateless
+      run's, tagged ``cron_run: ephemeral``, or an agent's), so a consumer
+      counts a per-run transcript only when it is tagged ``cron_run: tab``;
+    * a slot named ``cron-<rest>``: its own transcript first, then
+      ``cron:<rest>`` (the job's tab, ``cron-<job>``), then
+      ``cron:<job>:<run>`` (a run's own tab, ``cron-<job>-<run>``, see
+      :func:`cron_tab_name`). A real cron tab has no transcript of its own (it
+      writes the linked key), but a slot name is client-supplied (``POST
+      /api/chat/slots``, an OpenAI-compat id), so a dashboard tab can carry the
+      name without being a cron tab, and must not read an unrelated job's;
+    * any other key with a ``:`` is already a session key (``dashboard:``,
+      ``slack:``, ``taskrunner:``, ``hook:``, ``wf:`` ...) and names its own
+      transcript;
+    * anything else is a slot name, resolved by :func:`slot_transcript_key`.
+
+    A slot name does not always name its transcript: a closed task-review tab
+    (``task-review-<token>``) writes the task-runner key it was linked to, and a
+    dashboard tab may carry a channel-shaped name. Usage rows from a dashboard
+    turn record the transcript they wrote as ``transcript``; a consumer that has
+    that key tries it before these rules.
+    """
+    if key.startswith("cron:"):
+        job_key = "cron:" + key.removeprefix("cron:").split(":", 1)[0]
+        return (job_key,) if key == job_key else (key, job_key)
+    if key.startswith("cron-"):
+        rest = key.removeprefix("cron-")
+        job, sep, run = rest.rpartition("-")
+        run_key = (f"cron:{job}:{run}",) if sep and job and run else ()
+        return (slot_transcript_key(key), "cron:" + rest, *run_key)
+    if ":" in key:
+        return (key,)
+    return (slot_transcript_key(key),)
+
+
 def slot_history_key(slot: _ChatSlot) -> str:
     """The TRANSCRIPT key for *slot* — the file its conversation is stored in.
 

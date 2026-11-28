@@ -43,6 +43,7 @@ from kiro_crew import sel as _sel_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.chat_utils import slot_transcript_key
+from kiro_crew.dashboard.handlers.telemetry_folder_spend import _with_folder_spend_per_view
 from kiro_crew.dashboard.handlers.usage import (
     SPEND_WINDOW_DAYS,
     TimeWindow,
@@ -1556,6 +1557,7 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
         cost = await _with_conversation_titles(request, cost)
         if isinstance(cost.get("usd"), dict):
             cost = {**cost, "usd": await _with_conversation_titles(request, cost["usd"])}
+        cost = await _with_folder_spend_per_view(request, cost)
     # Built while every chain that gave an outcome is held: a tightened one is dropped.
     return await respond_with_session_outcomes(
         request,
