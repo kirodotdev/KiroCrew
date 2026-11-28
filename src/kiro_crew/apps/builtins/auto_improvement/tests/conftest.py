@@ -139,8 +139,8 @@ def _public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
     assertions and letting the refusal assertions pass for the WRONG reason (the
     resolver-error path instead of the allowlist/identity path they exist to pin).
     Tests that request this fixture are about URL/identity validation, not address
-    screening, so resolution is stubbed — the same shape as the ``public_dns``
-    fixture in ``test/test_meetings_providers.py``. The address decision itself
+    screening, so resolution is stubbed — the same shape as the Meetings app's
+    ``public_dns`` calendar fixture. The address decision itself
     keeps its own live coverage elsewhere; the production fail-closed behaviour is
     deliberately untouched (it is correct for a real DNS failure — the defect was a
     unit test exercising the real resolver).

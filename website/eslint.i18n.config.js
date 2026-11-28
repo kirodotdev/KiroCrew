@@ -188,35 +188,8 @@ export default [
       'src/apps/*/companionPrompt.ts',
       'src/prompts/**',
       'src/apps/*/prompts.ts',
-      // The Meetings sketch-frame srcdoc builder. Same rationale as the prompt
-      // modules above, one step further from the user: every literal in it is
-      // handed to a PARSER, never to a person — CSP directives, a DOCTYPE, the
-      // frame's own CSS, and a fixed JS bootstrap. Translating any of them would
-      // not change a word anyone reads, it would break the policy or the diagram.
-      // The file carries no user-visible copy at all (its only strings shown to
-      // anyone are the i18nT keys in AgentPanel.tsx, which stays fully gated).
-      //
-      // Deliberately ONE exact path rather than a `*Srcdoc.ts` glob or a
-      // CSP-shaped content regex. A content regex was measured and rejected: a
-      // `^(default|script|img|…)-src\b` exclusion retroactively drops
-      // lib/mcpAppSrcdoc.ts 16 -> 8 and lib/widgetSrcdoc.ts 21 -> 17, and a
-      // ratchet that silently hands back other files' debt is worse than the
-      // false positive it fixes. A path this narrow cannot exempt a future file
-      // that does hold copy.
-      'src/apps/meetings/lib/sketchSrcdoc.ts',
-      // The Meetings "export all outputs" bundle builder (#32982). Same
-      // parser-only category as `sketchSrcdoc.ts` directly above and listed the
-      // same way, by exact path: every literal in it is HTML/CSS handed to a
-      // parser — a DOCTYPE, `<section>`/`<pre>`/`<iframe>` markup, the bundle's
-      // own CSS. It imports no `i18nT`/`useTranslation` and renders no text node;
-      // its ONE user-facing string, the "no output" marker, is passed in already
-      // translated from the gated call site in `ExportMenuItems.tsx`, so the
-      // module itself holds no copy. Stated as this file's false-negative class:
-      // any user-visible copy ever added here will not be reported — keep it
-      // parser-facing and resolve copy at the call site.
-      'src/apps/meetings/lib/meetingBundle.ts',
-      // The widget and MCP-app srcdoc builders — the same category as
-      // `sketchSrcdoc.ts` directly above, and listed by the same exact-path rule
+      // The widget and MCP-app srcdoc builders. Same rationale as the prompt
+      // modules above, one step further from the user, and listed by exact path
       // rather than a shared `*Srcdoc.ts` glob. Every literal in both is handed to
       // a PARSER: CSP directives, a DOCTYPE, `<meta>`/`<style>`/`<script>` markup,
       // the frame's own reset CSS, and two fixed JS bootstraps (the height reporter
@@ -228,11 +201,10 @@ export default [
       // builders. The consumers that DO show copy (`WidgetFrame.tsx`, the MCP app
       // host) stay fully gated.
       //
-      // Two exact paths, not a content regex. The `^(default|script|img|…)-src\b`
-      // exclusion that the `sketchSrcdoc.ts` note above records as tried-and-rejected
-      // is exactly what would cover these, and it leaked into unrelated files; a
-      // measured `^rgba?\(` variant leaked into `apps/issue-radar/lib/format.ts`.
-      // A path this narrow cannot leak.
+      // Two exact paths, not a content regex. A `^(default|script|img|…)-src\b`
+      // exclusion would cover these, and was measured and rejected because it
+      // leaked into unrelated files; a measured `^rgba?\(` variant leaked into
+      // `apps/issue-radar/lib/format.ts`. A path this narrow cannot leak.
       //
       // Stated as a false-negative class, per this file's convention: any
       // user-visible copy ever added to these two paths will not be reported —
@@ -278,9 +250,9 @@ export default [
       'src/apps/design-critique/styles.ts',
       'src/apps/file-explorer/styles.ts',
       'src/apps/md-notebook/styles.ts',
-      // The PPTX Maker board-preview builder — the same category as
-      // `sketchSrcdoc.ts` directly above, and listed by the same exact-path rule
-      // rather than a shared glob. Every literal in it is handed to a PARSER: the
+      // The PPTX Maker board-preview builder — the same category as the srcdoc
+      // builders above, and listed by the same exact-path rule rather than a
+      // shared glob. Every literal in it is handed to a PARSER: the
       // preview iframe's egress-denying CSP directives, the `<style>` reset that
       // neutralizes the engine's own page zoom, and two `class="slide"` match
       // patterns. Translating any of them would silently WEAKEN the policy or

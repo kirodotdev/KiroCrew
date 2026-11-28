@@ -323,30 +323,6 @@
         "setup_searched_region": "No drive found in {{region}}. Only this region was searched, so a drive in another region of this account will not show here."
       }
     },
-    "meetings": {
-      "transcript": {
-        "empty": "No transcript yet",
-        "emptyHintLive": "Final speech will appear here as the meeting continues.",
-        "emptyHintPaused": "Paused — speech will appear here after you resume.",
-        "emptyHintRecorded": "No transcript was recorded for this meeting.",
-        "full": "Transcript is full. New speech and broadcasts are no longer being recorded or sent to agents.",
-        "jumpToLatest": "Jump to latest",
-        "live": "Live",
-        "regionLabel": "Meeting transcript",
-        "title": "Transcript",
-        "typed": "Typed"
-      },
-      "meeting": {
-        "endingReview": "Ending — preparing review…",
-        "pausing": "Pausing…",
-        "resuming": "Resuming…"
-      },
-      "broadcastBar": {
-        "pausedPlaceholder": "Agents paused — resume to send",
-        "pausingPlaceholder": "Pausing — sending is unavailable",
-        "resumingPlaceholder": "Resuming — sending will be available shortly"
-      }
-    },
     "autoResearch": {
       "grillTree": {
         "collapse": "Collapse",

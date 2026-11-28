@@ -198,6 +198,50 @@ class TestTheToolGateRefusesAgentWrites:
         for leaf in ("apps/meetings/data/notes/m/note.md", "apps/spec-builder/data/trust/x"):
             assert security.is_sensitive_write_path(f"~/{prefix}/{leaf}")
 
+    @pytest.mark.parametrize("prefix", _PREFIXES)
+    def test_a_frozen_notes_row_fences_writes_and_keeps_reads_open(self, prefix):
+        """Meetings' ``notes`` declaration, which its pin row's ``deletedCopy`` carries.
+
+        WRITE-only: the dashboard serves a pasted note image through the READ floor, so
+        a read fence on the tree would refuse every image. The tree the agents write
+        next to it stays writable.
+        """
+        data = f"~/{prefix}/apps/meetings/data"
+        for leaf in ("notes/m1/note.md", "notes/m1/images/ab.png"):
+            assert security.is_sensitive_write_path(f"{data}/{leaf}")
+            assert not security.is_sensitive_path(f"{data}/{leaf}")
+        assert not security.is_sensitive_write_path(f"{data}/meetings/m1/x.md")
+
+    def test_the_core_edits_row_refuses_an_app_agents_read_and_edit(self, tmp_path, monkeypatch):
+        """The owner's edits under Meetings' data are a core row, kept for adopted hosts.
+
+        The file-tool fence names the path and the sandbox masks the leaf, so the hook
+        gate refuses an app agent's read and its edit as a security denial.
+        """
+        from kiro_crew.hooks import TOOL_DENY, HookManager, HooksConfig
+
+        relative_edit = "apps/meetings/data/edits/m1/note-taker.md"
+        for prefix in _PREFIXES:
+            assert security.is_sensitive_path(f"~/{prefix}/{relative_edit}")
+        assert "apps/meetings/data/edits" in sandbox._CREW_HIDDEN_LEAVES
+
+        # Checked before the data home moves: the row is anchored to the default
+        # spellings above, then re-anchored to an explicit KIROCREW_HOME below.
+        crew_home = tmp_path / "crew-home"
+        monkeypatch.setenv("KIROCREW_HOME", str(crew_home))
+        manager = HookManager(HooksConfig())
+        for tool_kind in ("read", "edit"):
+            decision = manager.on_tool_call(
+                "Access editable meeting minutes",
+                session_key="meetings:m1",
+                agent="meetings-note-taker",
+                app="meetings",
+                tool_kind=tool_kind,
+                raw_params={"path": str(crew_home.joinpath(*relative_edit.split("/")))},
+            )
+            assert decision.action == TOOL_DENY
+            assert decision.security_deny is True
+
 
 class TestAnUnreadableDeclarationFencesItsAppsData:
     """A declaration the gate cannot read cleanly refuses writes under its app's data."""

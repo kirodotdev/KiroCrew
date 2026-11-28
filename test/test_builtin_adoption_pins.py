@@ -294,6 +294,20 @@ _SHIPPED_PINS = [
         "archiveSha256": "5082d2fcab5db742973aad3e8c5ecf27db8c69ac74a8e75f50048601a3246ab6",
         "minAppSdkLevel": 14,
         "legacyNav": {"route": "/meetings", "icon": "CalendarClock"},
+        # ``adoption_pin.py freeze meetings``: the copy at the parent of the commit
+        # that deleted it, its ``agentReadOnlyDirs`` included (§ 33 row 9).
+        "deletedCopy": {
+            "permissions": {
+                "api": ["/api/apps/meetings", "/api/apps/meetings/*", "/api/ws/stt"],
+                "network": True,
+                "storage": True,
+                "agentTurns": True,
+            },
+            "grants": {
+                "api": ["/api/apps/meetings", "/api/apps/meetings/*", "/api/ws/stt"],
+            },
+            "agentReadOnlyDirs": ["notes"],
+        },
     },
     {
         "name": "project-scaffolder",

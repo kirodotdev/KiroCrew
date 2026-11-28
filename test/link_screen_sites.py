@@ -111,7 +111,6 @@ DECLARED_SITES = frozenset(
         ("apps/builtins/dev_fleet/sync_runner.py", "gone"),
         ("apps/builtins/issue_radar/backend/crew_store_unit_order.py", "_write_unit_order"),
         ("apps/builtins/md_notebook/server.py", "api_note_save"),
-        ("apps/builtins/meetings/backend/routes/audio_import.py", "_snapshot_recording"),
         ("apps/manager_adopt.py", "_sweep_dead_leftovers"),
         ("apps/manager_adopt.py", "recover_interrupted_adoption"),
         ("apps/manager_builtins.py", "migrated_builtin_cleanup_applies"),

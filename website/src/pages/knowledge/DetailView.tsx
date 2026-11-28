@@ -93,8 +93,8 @@ function TagEditor({ itemId, currentTags }: { itemId: string; currentTags: strin
   // The Edit button that opens the field. Closing the field unmounts whatever
   // had focus in it (the input, or its Save or Cancel button), and a browser
   // then drops focus to document.body, so every close hands focus back here
-  // once the button has remounted (the pattern in MeetingTitle). The field has
-  // no blur handler, so there is no pointer-blur path to exclude.
+  // once the button has remounted. The field has no blur handler, so there is no
+  // pointer-blur path to exclude.
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const close = () => {
     // Commit the close now: a save closes from its PATCH callback, outside any

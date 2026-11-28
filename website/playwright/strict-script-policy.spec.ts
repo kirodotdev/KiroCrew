@@ -23,9 +23,9 @@ import { fileURLToPath } from 'node:url'
  *
  * Each entry of {@link EXPECTED} is one surface that still breaks. A change that moves
  * a surface off the inherited policy deletes its entry; a new violation fails here.
- * The surfaces that draw a model-written document (a widget, an MCP App, a meeting
- * sketch) get it the way the gateway would hand it over: a frame added to the
- * dashboard socket, or a stubbed app API. Script hosts those documents name are
+ * The surfaces that draw a model-written document (a widget, an MCP App) get it the
+ * way the gateway would hand it over: a frame added to the dashboard socket, or a
+ * stubbed app API. Script hosts those documents name are
  * answered by {@link stubScriptHosts}, so nothing leaves the machine.
  */
 
@@ -241,8 +241,6 @@ const EXPECTED: Record<string, string[]> = {
   'Mochi widget pop-out': ['srcdoc script-src-elem https://cdn.jsdelivr.net', 'srcdoc script-src-elem inline'],
   // McpAppFrame.tsx: the bridge guard, the app's own module and the host its metadata names.
   'MCP App': ['srcdoc script-src-elem https://esm.sh', 'srcdoc script-src-elem inline'],
-  // Meetings AgentPanel.tsx: the sketch frame's Mermaid bootstrap. The runtime is same-origin.
-  'Meetings sketch': ['srcdoc script-src-elem inline'],
 }
 
 // The service worker answers the shell from its cache, around this spec's routes.
@@ -425,57 +423,6 @@ test('an MCP App runs under the strict script policy', async ({ page }) => {
     .toHaveText('Probe app ran', { timeout: 15_000 })
   const found = await settleAll([page, ...framesAt(page, 'about:srcdoc')], seen)
   expect(summarize(found), JSON.stringify(found, null, 2)).toEqual(EXPECTED['MCP App'])
-})
-
-test('the Meetings sketch frame runs under the strict script policy', async ({ page }) => {
-  const seen = await probe(page.context())
-  const agent = { id: 'sketch-artist', name: 'Sketch Artist', widget_type: 'html', enabled_by_default: true, builtin: true }
-  const meta = (id: string) => ({
-    event_id: id, title: 'Probe meeting', status: 'ended', attachments: [], outputs: {},
-    muted_agents: [], agents_enabled: [agent.id],
-  })
-  // The sketch agent's output: markup and a diagram the frame's own Mermaid bootstrap draws.
-  const sketch = '<div id="probe-sketch">Probe sketch</div><pre class="mermaid">graph TD; A-->B</pre>'
-  await page.route('**/api/apps/meetings/**', (route) => {
-    const path = new URL(route.request().url()).pathname.replace('/api/apps/meetings', '')
-    const meeting = /^\/meetings\/([^/]+)(\/[a-z]+)?$/.exec(path)
-    const id = meeting ? decodeURIComponent(meeting[1]) : ''
-    const json = ((): unknown => {
-      if (path === '/config') {
-        return {
-          config: {
-            meeting_agents: [agent], stt_provider: '', task_provider: '', calendar: { provider: '', source: '' },
-            presets: {}, default_preset: '', poll_interval_active: 60, poll_interval_idle: 60, translation_language: '',
-          },
-          task_providers: [], calendar_providers: [], stt_providers: [], translation_languages: [],
-        }
-      }
-      if (path === '/agents') return { agents: [agent], task_extractor_id: '' }
-      if (path === '/calendar') return { events: [] }
-      if (path === '/meetings') return { meetings: [] }
-      if (path === '/dictionary') return { terms: [] }
-      if (path === '/status') return { active_meeting: null, muted_agents: [], agents: {}, agents_paused: false, expired: false }
-      if (!meeting) return {}
-      switch (meeting[2]) {
-        case undefined: return { meta: meta(id), live: null }
-        case '/init': return { meeting_id: id, meta: meta(id) }
-        case '/outputs': return { outputs: { [agent.id]: sketch }, edits: {}, tasks: [] }
-        case '/transcript': return { segments: [], next_cursor: 0 }
-        case '/note': return { content: '', updated_at: '', path: '' }
-        case '/translations': return { language: '', language_label: '', lines: [], next_n: 0, pending: 0, dropped: 0 }
-        default: return {}
-      }
-    })()
-    return route.fulfill({ json })
-  })
-  await page.goto('/meetings')
-  await page.getByRole('button', { name: 'New meeting' }).click()
-  const frame = page.frameLocator('[data-agent-panel="sketch-artist"] iframe')
-  await expect(frame.locator('#probe-sketch')).toBeVisible({ timeout: 15_000 })
-  // The diagram is drawn only if the frame's bootstrap ran.
-  await expect(frame.locator('.mermaid svg')).toBeVisible({ timeout: 15_000 })
-  const found = await settleAll([page, ...framesAt(page, 'about:srcdoc')], seen)
-  expect(summarize(found), JSON.stringify(found, null, 2)).toEqual(EXPECTED['Meetings sketch'])
 })
 
 async function hoverProbeLink(page: Page) {

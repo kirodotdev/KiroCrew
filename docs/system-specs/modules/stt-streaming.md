@@ -33,10 +33,10 @@ The batch endpoint's response contract: a decode that heard nothing
 (`transcribe_audio` returns `""`) is `200 {"text": ""}`; a failed decode
 (`transcribe_audio` returns `None`) or an unexpected error is `500` with
 `code: "stt_transcription_failed"` (`handlers/core_stt_access.py:_CODE_STT_FAILED`). The
-meetings audio import folds both into one failure: any falsy transcript, including
-`""` and a segmented over-cap import where a segment failed or was silent, is a
-`502` with `code: "transcription_failed"`
-(`apps/builtins/meetings/backend/routes/audio_import.py`).
+Meetings app's audio import, which calls `transcribe_audio` from its own repository,
+folds both into one failure: any falsy transcript, including `""` and a segmented over-cap
+import where a segment failed or was silent, is a `502` with
+`code: "transcription_failed"`.
 
 Compressed files are decoded by a minimal audio-only FFmpeg executable
 (`scripts/build-ffmpeg.sh`, published once per bump by

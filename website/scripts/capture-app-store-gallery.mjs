@@ -48,7 +48,6 @@ const APPS = [
   ['file-explorer', 'file_explorer', 'file-explorer', '/file-explorer'],
   ['issue-radar', 'issue_radar', 'issue-radar', '/issue-radar'],
   ['md-notebook', 'md_notebook', 'md-notebook', '/md-notebook'],
-  ['meetings', 'meetings', 'meetings', '/meetings'],
   ['mochi', 'mochi', 'mochi', '/mochi', 'shot-1-gallery.png'],
   ['ops-mission-control', 'ops_mission_control', 'ops-mission-control', '/ops-mission-control'],
   ['papyrus', 'papyrus', 'papyrus', '/papyrus'],
@@ -107,8 +106,6 @@ const FIXTURES = {
     settings: { autoSync: false, autoSyncMins: 10, lastSync: null },
   },
   '/apps/md-notebook/api/vaults': { vaults: [], hasPat: false, hasGhAuth: false },
-  '/api/apps/meetings/sessions': { sessions: [], active: null },
-  '/api/apps/meetings/settings': { calendar_connected: false, task_provider: '' },
   '/api/apps/ops-mission-control/state': {
     incidents: [], counts: {}, providers: [], rotation: null,
     ledger: { total: 0, promoted: 0, demoted: 0 },

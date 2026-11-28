@@ -415,8 +415,8 @@ Third-party and builtin apps that add their own pages, crons and MCP tools.
 | App rail run state | The state of an app's own scheduled jobs on its rail icon — running, failed, or succeeded within the last 90s. Derived from the app's crons rather than pushed: the host already owns the in-flight marker, `last_status`, and the `created_by` owner stamp, so an app declares nothing new and cannot set its own mark. A user-paused job contributes nothing, which is the opt-out that works with the app's page closed; a one-shot its own run parked is not a user pause (`parked_after_run` on the wire) and still counts | Mark on the row of an enabled installed app that OWNS a cron job — whether declared in `contributes.crons` or created at run time through `ctx.cron.add_job()`; no route of its own. Covers builtin and AppHost-routed apps alike: the row carries the app's resolved `name`, so a builtin's bare nav id is not parsed back | `appRunState.ts`, `shell/nav/railBadges.ts` (reads the crons), `shell/nav/navRow.tsx` (`RunStateIndicator` in `NavBadge`) | `src/kiro_crew/dashboard/handlers/cron.py` (`api_crons` serializes the owning `app`, `user_paused` and `parked_after_run`); `src/kiro_crew/apps/cron_sdk.py` (`owner_tag` / `app_owner_name`) | `GET /api/crons` |
 
 `apps/builtinRegistry.ts` is the path→component table for builtin surfaces
-(19 entries: Worlds, Auto Improvement, Auto Research, AWS Control,
-File Explorer, Code Review Sage, Workflows, Dev Fleet, Issue Radar, Meetings,
+(18 entries: Worlds, Auto Improvement, Auto Research, AWS Control,
+File Explorer, Code Review Sage, Workflows, Dev Fleet, Issue Radar,
 Papyrus, PPTX Maker, Ops Mission Control, Design Critique, Crew Companion,
 MD Notebook, Mochi, Spec Builder, Design Tweak). Task Runner and Channels are core pages, routed in `App.tsx`.
 Adding a builtin surface means an entry there plus `ui.pages` in the manifest —

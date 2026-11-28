@@ -623,8 +623,7 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         # (hyphenated, e.g. `code-review-sage`) while `BUILTIN_NAMES` and the
         # package dirs use underscores, so the membership test and the import both
         # need the normalized form — without it this hook is unreachable for every
-        # multi-word builtin, which is all of them but `meetings`, `mochi` and
-        # `papyrus`.
+        # multi-word builtin, which is all of them but `mochi` and `papyrus`.
         module_name = name.replace("-", "_")
         from kiro_crew.apps.builtin_adoption import builtin_package_released
 

@@ -8517,30 +8517,25 @@ screens field by field gets the same bytes. `record_dropped(surface, ...)` calls
 `<ctx.name>`; a surface outside `[a-z0-9][a-z0-9_]{0,63}` is recorded as
 `<app>_unnamed`, and the session key label is capped at 256 characters.
 
-**The built-in on the seam.** A built-in has no context (its routes are registered
-on the Application directly), so Meetings constructs the same classes with its own
-name: `domain/session.dispatch_to_agent` is one `AgentTurnSDK.run`,
-`translate.run_oneshot_translation` is one `run_oneshot(label="translate")`, and
-`build_meeting_context` screens, neutralizes, audits and fences through one
-module-level `UntrustedTextSDK`. Keys (`meetings-<agent>-<meeting>`,
-`meetings-translate-<hex>`), the audit surfaces (`meetings_calendar_<field>`), the
-fenced bytes, the cancellation and release order and the admission class are
-unchanged; its agents answer its `capabilities.spawn` row like any app's. Its
-manifest declares `agentTurns`, so an installed copy gets the same
-seam from `ctx.turns`. The session manager it hands the SDK is still the one its
-routes read off `request.app["state"]`.
+**The adopted app on the seam.** Meetings, which ships no wheel copy and runs from
+its own repository (§ 33), reads `ctx.turns` and `ctx.untrusted`: each meeting agent's
+batch is one `run`, live translation one `run_oneshot(label="translate")`, and the
+calendar context is screened, neutralized, audited and fenced through `ctx.untrusted`.
+Keys (`meetings-<agent>-<meeting>`, `meetings-translate-<hex>`), the audit surfaces
+(`meetings_calendar_<field>`) and the admission class are the seam's; its agents answer
+its `capabilities.spawn` row like any app's. Its manifest declares `agentTurns`, and its
+pin row's `deletedCopy` carries the same grant for a host that never adopted.
 
 **Not here.** Dashboard chat-slot turns (`_run_chat`, the slot queue, restore and
-archive) are the app-owned chat slot seam (§41), not a background turn. Protected subdirectories (Meetings' `edits/` and `notes/`, Spec
-Builder's decision record under `trust/`) stay core rows: a manifest-declared HIDDEN
-leaf under the app's own data directory is the credential-mask seam, and a
-write-only fence an app declares for itself is not yet an approved seam.
+archive) are the app-owned chat slot seam (§41), not a background turn. Protected subdirectories stay core rows where no
+seam covers them: Meetings' `edits/` is a HIDDEN core leaf and file-tool fence, because a
+manifest-declared HIDDEN leaf under the app's own data directory is the credential-mask
+seam and the adopted Meetings does not declare one. Its `notes/` and Spec Builder's
+decision record under `trust/` are `agentReadOnlyDirs` declarations (§ 39).
 
 Writers: `apps/agent_turn_sdk.py`, `apps/untrusted_text_sdk.py`, `apps/context.py`,
 `apps/manifest_sections.py`, `apps/hooks_integration.py`, `apps/lifecycle.py`,
-`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
-`apps/builtins/meetings/app.json`, `apps/builtins/meetings/backend/domain/session.py`,
-`apps/builtins/meetings/backend/domain/translate.py`. Tests:
+`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`. Tests:
 `test/test_app_agent_turn_sdk.py`, `test/test_app_agent_turn_approval.py`,
 `test/test_app_untrusted_text_sdk.py`.
 
@@ -9009,7 +9004,7 @@ restart after a staged fetch swaps it in place, keeping `data/`, `.app_secret`, 
 approved grants and `enabled`. D12 compares no version. Dropping the row as well makes
 a still-pending record an orphan. Pinned by `test/test_builtin_adoption_no_wheel_copy.py`,
 which deletes the fixture app's wheel package and keeps its row. Personal Shopper was
-the first app shipped this way, and Create Folders From Project the second. The accepted cost is availability on a host that never adopted:
+the first app shipped this way, Create Folders From Project the second and Meetings the third. The accepted cost is availability on a host that never adopted:
 the app is missing from the first boot of that release until STAGE fetches the
 pinned commit and the next restart applies it, and a host that cannot fetch keeps
 the record and its data but stays without the app until it can.
@@ -9054,8 +9049,8 @@ both paths and compares their grants, `test_a_pin_that_declares_more_than_the_fr
 `test_a_shipped_row_carries_a_deleted_copy_exactly_when_its_wheel_copy_is_gone`,
 `test_a_grant_family_registered_later_is_frozen_with_no_change`,
 `test_a_frozen_copy_stands_for_the_record_registering_that_copy_writes` and the
-`freeze` and `verify` tests). Personal Shopper's and Create Folders From Project's rows
-each carry the copy frozen from the parent of the commit that deleted it.
+`freeze` and `verify` tests). Personal Shopper's, Create Folders From Project's and
+Meetings' rows each carry the copy frozen from the parent of the commit that deleted it.
 
 **The row freezes the limit inputs too.** Rows 1 to 4 and 9 of the table below are
 limits whose input only the wheel copy supplied, so with the copy deleted each failed
@@ -9073,7 +9068,9 @@ when its file's text names the key (`credential_masks.pin_table_may_freeze`, whi
 reads it raw first, and answers at once once the loader is in the process), so a table
 that froze nothing of that kind costs a listing no module
 (`test/test_mcp_listing_import_budget.py`); the first row that does freeze one loads
-`builtin_adoption_pins` there.
+`builtin_adoption_pins` there. Meetings' row freezes `agentReadOnlyDirs` alone, which
+neither reader asks for (the mask leg reads `credentialMasks`, and the sandbox and the
+tool gate read the read-only leg per spawn and per call), so it loads nothing there.
 
 | Frozen key | Read from the copy by | Read from the row by |
 |---|---|---|
@@ -10582,9 +10579,10 @@ declared directory it does not create, so the tool gate is its only fence there 
 the data is back.
 Tracked in #33612, with `credentialMasks`' move-aside spelling.
 
-**Built-ins.** Meetings declares `notes` (its per-meeting user notes, `meetings.md`),
-which gives `apps/meetings/data/notes` the tool-gate fence of a
-`_WRITE_PROTECTED_HOME_PATHS` row plus the OS seal; core carries no row for it. Spec Builder
+**Built-ins.** Meetings declares `notes` (its per-meeting user notes). Its wheel copy
+is deleted, so the declaration comes from its pin row's `deletedCopy` (§ 33, row 9), which
+gives `apps/meetings/data/notes` the tool-gate fence of a `_WRITE_PROTECTED_HOME_PATHS` row
+plus the OS seal; core carries no row for it. Spec Builder
 declares `trust` and keeps its decision record at
 `apps/spec-builder/data/trust/spec-builder-decisions.json`. The legacy location is the data home's
 `trust/` (the SEL trust root), whose read+write row stays for the SEL key. The backend
@@ -10607,7 +10605,7 @@ Writers: `apps/agent_readonly_dirs.py`, `apps/credential_masks.py`, `apps/manife
 name in the expiry log), `sandbox_aliases.py`, `sandbox_argv.py`,
 `sandbox_tiers.py`, `sandbox.py` (facade), `apps/backend.py`, `apps/manager_records.py`,
 `apps/manager_install.py`, `apps/manager_uninstall.py`, `scripts/adoption_pin.py`,
-`apps/builtins/meetings/app.json`, `apps/builtins/spec_builder/app.json`,
+`apps/adoption-pins.json` (Meetings' frozen row), `apps/builtins/spec_builder/app.json`,
 `apps/builtins/spec_builder/backend/decisions.py`. Tests:
 `test/test_app_agent_readonly_dirs.py` (including a real Linux namespace spawn that
 gets `EROFS` writing a declared directory and keeps writing its sibling),
@@ -10993,6 +10991,16 @@ names the loopback ports that tree listens on. The SDK starts no long-lived chil
 picture a person pasted into any chat, so a path to it is a path outside the app's own
 data. An app that keeps work files there moves them to `ctx.data_dir`; reading a file
 the person handed to the app is a call that resolves that one upload, not a directory.
+
+**One accepted gap.** Meetings ships no wheel copy while its pinned tree still looks up
+two private names, both for its recording import: `sandbox.prime_voice_runtime_sandbox_paths`
+(the agent-denied staging root) and the batch functions of `transcribe`. The maintainer
+accepted these lookups on 2026-11-28 as the one exception to the rule that a gap blocks
+deleting the copy. Each fails closed: the import answers 503 `transcription_unavailable`
+and the app's health names the cause, while live transcription over `/api/ws/stt` names
+neither. `test/test_core_meetings_decoupling.py` resolves each name the way the app does
+and binds the arguments it passes, so a rename or a changed call shape fails in core
+first.
 
 Writers: `apps/backend_sdk/__init__.py`, `apps/backend_sdk/paths.py`,
 `apps/backend_sdk/files.py`, `apps/backend_sdk/redaction.py`,

@@ -323,13 +323,12 @@ class TestPlumbing:
         assert built.call_args.kwargs["governance_scope"] == ("dashboard:chat-1", "tunnel")
 
     @pytest.mark.asyncio
-    async def test_a_meeting_agent_session_runs_under_the_app_its_gate_judges(self):
+    async def test_an_app_agent_session_runs_under_the_app_its_gate_judges(self):
         # The provider's owning_app is the app its projection is judged for, so an
         # app runner that hands the gate its own app names that app at allocation.
-        # The meeting dispatch is one AgentTurnSDK.run turn, the door every app's
-        # agent turns pass through.
+        # AgentTurnSDK.run is the door every app's agent turns pass through.
         from kiro_crew import llm_helpers
-        from kiro_crew.apps.builtins.meetings.backend.domain import session as meeting
+        from kiro_crew.apps.agent_turn_sdk import AgentTurnSDK
 
         judged: dict = {}
 
@@ -342,11 +341,11 @@ class TestPlumbing:
             get_agent=MagicMock(return_value="a1"),
             release=MagicMock(),
         )
+        hooks = MagicMock()
+        turns = AgentTurnSDK("meetings", lambda: sessions, lambda: hooks)
         with patch.object(llm_helpers, "stream_and_collect", stream):
-            await meeting.dispatch_to_agent(
-                sessions, "meetings-a1-m1", "a line", "a1", hooks=MagicMock()
-            )
-        assert judged["app"]
+            await turns.run("meetings-a1-m1", "a line", agent="a1", cancel_ack_secs=5.0)
+        assert judged["app"] == "meetings"
         assert sessions.get_or_create.await_args.kwargs.get("owning_app") == judged["app"]
 
     @pytest.mark.asyncio

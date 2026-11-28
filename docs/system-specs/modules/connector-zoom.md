@@ -66,7 +66,7 @@ are `identity`, `paging`, `processing`, and `errors` (redaction lives with
 
 ## The Meetings app is not this connector
 
-Kiro Crew's built-in [Meetings app](meetings.md) transcribes a meeting through
+The Meetings app (installed from its own repository) transcribes a meeting through
 Kiro Crew's **own** streaming speech-to-text and fans the transcript out to a
 small crew of background agents that produce a local, model-generated summary.
 Zoom's **AI Companion meeting summary** is a distinct, vendor-side product:

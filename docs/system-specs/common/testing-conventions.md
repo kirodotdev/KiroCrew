@@ -2696,8 +2696,8 @@ found these further classes. Each one passed on the host that wrote it.
   them. Assert the code's own open/close pairing: spy (wrap, never stub) the primitive the
   code uses (`os.open`, `tempfile.mkstemp`, `open_write_nofollow`, `os.close`) and assert
   every descriptor it opened was closed — or, for ordering, that the pinned fd's FIRST
-  `os.close` happened before `rmtree` was entered. `test/test_bench_download_fd.py`,
-  `test/test_session_image_repair.py` and `test/test_meetings_audio_import.py` are the shapes.
+  `os.close` happened before `rmtree` was entered. `test/test_bench_download_fd.py` and
+  `test/test_session_image_repair.py` are the shapes.
 - **A module-global task set gathered across loops, second half.** Round one pruned tasks
   whose loop was CLOSED; a task from another still-live loop slipped through and
   `asyncio.gather` raised `attached to a different loop` once in five runs. Drain only what

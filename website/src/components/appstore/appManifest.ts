@@ -248,22 +248,6 @@ export const APP_MANIFEST_KEY: Record<string, ManifestKeys> = {
     useCases: ['apps.mdNotebook.manifest.use_case_1'],
     configuration: ['apps.mdNotebook.manifest.configuration_1'],
   },
-  'meetings': {
-    displayName: 'apps.meetings.manifest.display_name',
-    description: 'apps.meetings.manifest.description',
-    pageLabel: 'apps.meetings.manifest.page_label',
-    highlights: [
-      'apps.meetings.manifest.highlight_1',
-      'apps.meetings.manifest.highlight_2',
-      'apps.meetings.manifest.highlight_3',
-      'apps.meetings.manifest.highlight_4',
-      'apps.meetings.manifest.highlight_5',
-      'apps.meetings.manifest.highlight_6',
-      'apps.meetings.manifest.highlight_7',
-    ],
-    useCases: ['apps.meetings.manifest.use_case_1'],
-    configuration: ['apps.meetings.manifest.configuration_1'],
-  },
   'mochi': {
     displayName: 'apps.mochi.manifest.display_name',
     description: 'apps.mochi.manifest.description',

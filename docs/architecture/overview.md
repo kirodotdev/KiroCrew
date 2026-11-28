@@ -725,7 +725,6 @@ detail; this table is only an index.
 | Self-learning, cron, and dashboard API | `src/kiro_crew/learn.py`, `cron.py`, `cron_service/`, `dashboard/` | [learn-cron-dashboard.md](../system-specs/modules/learn-cron-dashboard.md) |
 | MCP Apps (interactive `ui://` rendering) | `src/kiro_crew/mcp_gateway/` | [mcp-apps.md](../system-specs/modules/mcp-apps.md) |
 | Markdown Notebook app | `src/kiro_crew/apps/builtins/md_notebook/` | [md-notebook.md](../system-specs/modules/md-notebook.md) |
-| Meetings app | `src/kiro_crew/apps/builtins/meetings/` | [meetings.md](../system-specs/modules/meetings.md) |
 | Memory, skills, and hooks | `src/kiro_crew/memory.py`, `skills.py`, `hooks.py` | [memory-skills-hooks.md](../system-specs/modules/memory-skills-hooks.md) |
 | Messaging transport abstraction | `src/kiro_crew/messaging/` | [messaging.md](../system-specs/modules/messaging.md) |
 | Metrics telemetry (default off) | `src/kiro_crew/metrics/` | [metrics.md](../system-specs/modules/metrics.md) |

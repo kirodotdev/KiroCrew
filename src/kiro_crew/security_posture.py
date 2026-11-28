@@ -1433,22 +1433,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/issue_radar/backend/http_routes/ai.py",
         "apps/builtins/issue_radar/backend/http_routes/recommendations.py",
         "apps/builtins/issue_radar/backend/http_routes/tagging.py",
-        "apps/builtins/meetings/backend/domain/session.py",
-        # Live translation redacts the MODEL's answer before writing it to the
-        # meeting's translations.json. The source line was already redacted at
-        # dispatch, so this covers only what a model reintroduced, and the
-        # user-visible surface is the app's own translations route.
-        "apps/builtins/meetings/backend/domain/translate.py",
-        "apps/builtins/meetings/backend/providers/calendar.py",
-        "apps/builtins/meetings/backend/providers/tasks.py",
-        # `_common.dispatch_line` is the transcript-ingress boundary every producer
-        # (speech, the broadcast bar, an audio import) redacts through — inbound
-        # scrubbing before the line reaches disk and the agents, same
-        # classification as its siblings below.
-        "apps/builtins/meetings/backend/routes/_common.py",
-        "apps/builtins/meetings/backend/routes/agents.py",
-        "apps/builtins/meetings/backend/routes/meeting_lifecycle.py",
-        "apps/builtins/meetings/backend/routes/tasks.py",
         "apps/builtins/papyrus/backend/routes.py",
         "apps/builtins/pptx_maker/backend/decks.py",
         "apps/builtins/pptx_maker/backend/routes.py",

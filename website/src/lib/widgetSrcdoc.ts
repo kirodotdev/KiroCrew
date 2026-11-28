@@ -1253,10 +1253,9 @@ function buildThemeCss(vars: Record<string, string>, mode: 'dark' | 'light'): st
  *
  * NOT a requirement of adopting untrusted HTML — the opposite. Adopting via
  * createContextualFragment leaves scripts inert, and calling this is an explicit
- * decision to make them live. The Meetings sketch frame used to call it and
- * deliberately does NOT any more: model script in that frame was a BLOCKING
- * DNS-prefetch exfiltration channel, and it strips scripts instead (see
- * apps/meetings/lib/sketchSrcdoc.ts). Do not "restore" that call. */
+ * decision to make them live. A frame that draws model markup without needing its
+ * script strips the scripts instead, as the Meetings app's sketch frame does: model
+ * script there is a BLOCKING DNS-prefetch exfiltration channel. */
 /**
  * The live values of `THEME_VAR_NAMES`, read off the document root.
  *

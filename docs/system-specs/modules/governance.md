@@ -1581,7 +1581,7 @@ app, which counts no `app` bind, so the projection answers for the gate only whe
 `owning_app` is the app the gate judges the session's calls under: a caller that hands its
 gate an app names the same app at allocation. A dashboard app slot passes it as `app_name`; a
 subagent spawn and an in-process app runner that hands its gate its own app (an app's
-`AgentTurnSDK.run`, which the meetings `dispatch_to_agent` is, and the auto-improvement
+`AgentTurnSDK.run`, which every app's agent turn through `ctx.turns` is, and the auto-improvement
 `MemberSessionRunner`) pass it as `owning_app`.
 Any other session on that process (a subagent on its parent's runtime, a session a pooled
 process starts after its claim) and every session of a runtime no provider built (the

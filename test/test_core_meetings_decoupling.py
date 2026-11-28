@@ -1,14 +1,16 @@
 """GATE: Kiro Crew core does not depend on the Meetings (``meetings``) app's code.
 
-Meetings is to leave this repository whole. That is only possible while nothing
-outside ``src/kiro_crew/apps/builtins/`` imports it or names it. What the app needs
-from the core it imports from the core (speech-to-text, the untrusted-calendar
-fence, the redaction and sandbox helpers); the core needs nothing from the app. The
-app's pins of core behaviour (the startup sweep's store row and the transcript's
-owner-only mode, the import suffixes' forced demuxers, live translation's start
-priority) run in the app's own ``tests/``.
+Meetings ships no wheel copy: it runs from its own repository at the commit its
+adoption pin names, so nothing in core may import it or name it. What the app needs
+from the core it asks through the App Kit seams, the public backend SDK, and two
+private names its recording import still looks up (the voice-runtime staging root
+and speech-to-text); the core needs nothing from the app. The app's pins of core
+behaviour (the startup sweep's store row and the transcript's owner-only mode, the
+import suffixes' forced demuxers, live translation's start priority) run in the
+app's own ``tests/``. The adoption pin row is data, not a core module, and is not
+read here.
 
-Two properties are pinned:
+Three properties are pinned:
 
 1. **No core module or script imports the app.** Every module under
    ``src/kiro_crew`` outside ``apps/builtins/``, and every script under
@@ -23,9 +25,15 @@ Two properties are pinned:
    carries the core strings that say "meetings" about something else. Each row is
    in ``KNOWN_NAME_REFERENCES`` with the reason it stays; a new one fails here, and
    so does a listed one that is gone.
+3. **The private names the adopted tree still looks up resolve.** The pinned
+   Meetings reaches two private core names by string, both for its recording
+   import (``ADOPTED_TREE_PRIVATE_LOOKUPS``). A rename or a changed call shape there
+   would make that import answer 503 ``transcription_unavailable`` on every adopted
+   host with nothing in core going red, so each name is resolved here exactly as the
+   app resolves it and its signature is bound to the arguments the app passes.
 
 The scans are the shared ones in ``test/core_app_independence.py``. The dashboard
-half is ``website/src/apps/meetings/meetingsBoundary.test.ts``.
+page left with the wheel copy, so no dashboard half is left to pin.
 
 If this goes red because core reached for the app, add a generic, app-keyed seam
 the app fills instead. Do not add an exemption.
@@ -34,6 +42,8 @@ the app fills instead. Do not add an exemption.
 from __future__ import annotations
 
 import ast
+import importlib
+import inspect
 from pathlib import Path
 
 import core_app_independence as independence
@@ -52,34 +62,16 @@ APP_NAMES = ("meetings",)
 #: names.
 KNOWN_NAME_REFERENCES: frozenset[tuple[str, str]] = frozenset(
     {
-        # The app's chat skill ships in ``builtin_skills/meetings/`` like every other
-        # packaged skill, so the closed skill-id list names it; ``test_feature_usage``
-        # pins that list equal to the tree.
-        ("metrics/feature_usage.py", "meetings"),
         # The data-home security floors name the app's stores by path: the startup
         # sweep's owner-only store, and the HIDDEN sandbox leaf and file-tool fence of
         # the owner's edits. These are the core's governance of the data home, which
         # an app may not write for itself, and moving them behind a seam would change
-        # the sandbox scope. The owner's notes are fenced by the app's own
-        # ``agentReadOnlyDirs`` declaration instead.
+        # the sandbox scope. They protect an adopted host's data, which keeps its
+        # path. The owner's notes are fenced by the app's own ``agentReadOnlyDirs``
+        # declaration instead, frozen in its pin row's ``deletedCopy``.
         ("owner_only_files.py", "apps/meetings/data"),
         ("sandbox_leaves.py", "apps/meetings/data/edits"),
         ("security/paths_lists.py", "apps/meetings/data/edits"),
-        # The security-posture tables classify named files of the package, built-in
-        # apps included: the core's audit of the app's code, not a reach into it.
-        *(
-            ("security_posture.py", f"apps/builtins/meetings/backend/{module}")
-            for module in (
-                "domain/session.py",
-                "domain/translate.py",
-                "providers/calendar.py",
-                "providers/tasks.py",
-                "routes/_common.py",
-                "routes/agents.py",
-                "routes/meeting_lifecycle.py",
-                "routes/tasks.py",
-            )
-        ),
         # Not the app: the Zoom connector's operation ids name Zoom's own
         # ``meetings`` API resource.
         *(
@@ -95,6 +87,45 @@ KNOWN_NAME_REFERENCES: frozenset[tuple[str, str]] = frozenset(
         ),
     }
 )
+
+
+#: (module, name, args, kwargs): every private name the pinned Meetings tree looks up
+#: by string (``backend/_host.py`` in KiroCrewCaptain/kirocrew-app-meetings), with the
+#: arguments its recording import passes (``backend/routes/audio_import.py``). The
+#: maintainer accepted these two lookups as the one exception to app-kit-platform.md
+#: § 40 when the wheel copy was deleted: the staging root and batch speech-to-text
+#: have no public name yet. Live transcription over ``/api/ws/stt`` names none. A row
+#: goes when the app repository moves the name onto a public seam.
+ADOPTED_TREE_PRIVATE_LOOKUPS: tuple[tuple[str, str, tuple, dict], ...] = (
+    ("kiro_crew.sandbox", "prime_voice_runtime_sandbox_paths", (), {}),
+    ("kiro_crew.transcribe", "is_available", ("cfg",), {}),
+    ("kiro_crew.transcribe", "load_stt_config", (), {}),
+    ("kiro_crew.transcribe", "transcribe_audio", ("rec.wav", "cfg"), {}),
+    ("kiro_crew.transcribe", "audio_exceeds_secs", ("rec.wav", 60), {"timeout_secs": 30}),
+    ("kiro_crew.transcribe", "batch_duration_cap_secs", ("cfg",), {}),
+    ("kiro_crew.transcribe", "provider_splits_oversized", ("cfg",), {}),
+    (
+        "kiro_crew.transcribe",
+        "transcribe_oversized_in_segments",
+        ("rec.wav", 60, "segments", "cfg"),
+        {},
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("module", "name", "args", "kwargs"),
+    ADOPTED_TREE_PRIVATE_LOOKUPS,
+    ids=[f"{module}.{name}" for module, name, _a, _k in ADOPTED_TREE_PRIVATE_LOOKUPS],
+)
+def test_the_private_names_the_adopted_tree_looks_up_still_resolve(module, name, args, kwargs):
+    """Resolved as the app's ``_host._host_attr`` does: import, then ``getattr``."""
+    found = getattr(importlib.import_module(module), name, None)
+    assert callable(found), (
+        f"{module}.{name} moved: the adopted Meetings app's recording import now answers "
+        "503 transcription_unavailable. Move the app repository with it, or keep the name."
+    )
+    inspect.signature(found).bind(*args, **kwargs)
 
 
 @pytest.fixture(scope="module")
