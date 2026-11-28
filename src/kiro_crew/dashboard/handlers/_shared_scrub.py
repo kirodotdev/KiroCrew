@@ -13,52 +13,27 @@ from __future__ import annotations
 import json
 from typing import overload
 
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.terminal_safe import normalize_for_scanning, strip_control_characters
+from kiro_crew.external_text import scrub_untrusted_text
+from kiro_crew.security import (  # noqa: F401 -- re-exported by the _shared facade
+    redact_credentials,
+    redact_exfiltration_urls,
+)
+from kiro_crew.terminal_safe import (  # noqa: F401 -- re-exported by the _shared facade
+    normalize_for_scanning,
+    strip_control_characters,
+)
 
 
 def _scrub_text(val: str) -> str:
     """Redact ``val``, dropping control characters but keeping the content around them.
 
-    Invisible characters split a token, and both redactors decide by matching a pattern,
-    so a token split by one matches nothing and the field egresses carrying it. They do
-    not all deserve the same treatment on the way out, though, and that is the whole of
-    this function's shape.
-
-    A CONTROL character other than tab, newline and carriage return is terminal-escape
-    material rather than text a user wrote, so it always leaves: it drives a terminal that
-    renders the field verbatim, and no consumer is worse off without it. Those three are
-    content and stay, which is why a token split by one of them is still split afterwards.
-    Removing a control character can JOIN a token back together, which is why the redactors
-    run again afterwards rather than trusting the first verdict.
-
-    A FORMAT character is usually content. A soft hyphen inside a word, a joiner holding an
-    emoji together, a mark ordering a Latin digit before Arabic -- deleting those rewrites
-    what the user stored, on a path that runs for every row of every listing, and the
-    caller that compares this function's output with its input to decide whether a
-    document is editable then refuses every write to it. So a copy with the format
-    characters removed is scanned as EVIDENCE, and handed back only when it reveals a
-    credential the output still hides: that field holds a credential, so its exact bytes
-    are the thing that must not egress, and its own format characters go with them.
-
-    Scanning the text as stored first is not redundant with scanning that copy. Removing
-    an invisible character can destroy a boundary a pattern requires, so a token the
-    stored text matches can stop matching once the copy is joined up.
+    The pass order lives in :func:`kiro_crew.external_text.scrub_untrusted_text`, which
+    the ``kirocrew skills`` terminal output also runs. The dashboard's surface-specific
+    step is its default: single C0/C1 control characters go, tab, newline and carriage
+    return stay. Format characters are usually content, so they leave only with a field
+    that holds a credential they were hiding.
     """
-    out, _ = redact_exfiltration_urls(val)
-    out, _ = redact_credentials(out)
-    stripped = strip_control_characters(out)
-    if stripped != out:
-        out, _ = redact_exfiltration_urls(stripped)
-        out, _ = redact_credentials(out)
-    normalised = normalize_for_scanning(out)
-    if normalised == out:
-        return out
-    scanned, _ = redact_exfiltration_urls(normalised)
-    scanned, _ = redact_credentials(scanned)
-    if scanned == normalised:
-        return out
-    return scanned
+    return scrub_untrusted_text(val)
 
 
 #: Deepest JSON nesting this scrub walks. A stored memory payload is a handful of levels

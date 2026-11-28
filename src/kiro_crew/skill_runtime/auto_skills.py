@@ -966,15 +966,15 @@ def pending_candidate_is_staged(loader: SkillsLoader, slug: str) -> bool:
     caller that renders both as "approved or dismissed elsewhere" tells the user
     their candidate is gone while it sits in the list. This separates them.
 
-    Deliberately a by-name probe, and deliberately not a security check: the pinned
-    read is the authority on whether anything may be READ, and this runs only after
-    that read already refused. Losing the race changes which refusal message a user
-    sees and can never turn a refusal into a read, which is why a second traversal
-    would be cost without a property.
+    It uses the same link-free shape check as pending enumeration. That preserves
+    the message distinction without following a candidate directory or ``SKILL.md``
+    link by name before the descriptor-pinned reader makes the security decision.
     """
+    from kiro_crew.skills_candidate_tree import _pending_candidate_shape
+
     if not loader._is_pending_slug_safe(slug):
         return False
-    return (loader._pending_root() / slug / "SKILL.md").exists()
+    return _pending_candidate_shape(loader._pending_root() / slug) is not None
 
 
 def dismiss_pending_skill(
@@ -993,8 +993,12 @@ def dismiss_pending_skill(
 
     if not loader._is_pending_slug_safe(slug):
         return False
+    from kiro_crew.skills_candidate_tree import _pending_candidate_shape
+
     pdir = loader._pending_root() / slug
-    if not pdir.is_dir():
+    # ``is_dir`` follows a link, so a dangling one would read as "no such candidate"
+    # and stay listed. The shape check asks the entry itself.
+    if _pending_candidate_shape(pdir) != "link" and not pdir.is_dir():
         return False
     if content_sha256 is None:
         _remove_dismissed(pdir, slug)
@@ -1004,7 +1008,7 @@ def dismiss_pending_skill(
     with loader._auto_slug_claim_lock() as locked:
         if not locked:
             raise sk.PendingDismissRefused("lock_unavailable")
-        if not pdir.is_dir():
+        if _pending_candidate_shape(pdir) != "link" and not pdir.is_dir():
             return False
         read = loader._read_candidate_pinned(pdir)
         if read is None or _candidate_digest(*read) != content_sha256:
@@ -1015,11 +1019,15 @@ def dismiss_pending_skill(
 
 def _remove_dismissed(pdir: Path, slug: str) -> None:
     from kiro_crew import skills as sk  # circular import: the facade imports this module
+    from kiro_crew.skills_candidate_tree import _remove_pending_link
 
     # Captured BEFORE the removal so a same-slug replacement staged after
     # this instant keeps its notification (see approve_pending_skill_checked).
     consumed_at = datetime.now(tz=timezone.utc).isoformat()
-    shutil.rmtree(pdir)
+    # A candidate that is itself a link loses the link only: ``rmtree`` refuses a
+    # link, and nothing here may follow it to its target.
+    if not _remove_pending_link(pdir):
+        shutil.rmtree(pdir)
     logger.info("Dismissed pending skill: %s", slug)
     sk._emit_pending_consumed({"slug": slug, "outcome": "dismissed", "consumed_at": consumed_at})
 
@@ -1063,7 +1071,9 @@ def prune_pending(loader: SkillsLoader, ttl_days: int, *, now: float | None = No
     for entry in loader.list_pending_skills():
         pdir = root / entry["slug"]
         try:
-            ts = pdir.stat().st_mtime
+            # ``lstat``, not ``stat``: ``stat`` follows a link, so a dangling one would
+            # raise here and never be pruned, and a live one would age by its target.
+            ts = pdir.lstat().st_mtime
         except OSError:
             continue
         if ts <= cutoff and loader.dismiss_pending_skill(entry["slug"]):

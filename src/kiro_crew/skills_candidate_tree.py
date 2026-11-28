@@ -14,7 +14,7 @@ import stat
 from pathlib import Path
 
 from kiro_crew import pinned_fs
-from kiro_crew.platform_compat import PinnedDirectory, is_link_or_junction
+from kiro_crew.platform_compat import PinnedDirectory, is_link_or_junction, unlink_link_or_junction
 from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES
 
 #: The facade's logger, so a filter or a capture on ``kiro_crew.skills`` sees these records.
@@ -31,6 +31,76 @@ _PENDING_SCRIPT_MAX_ENTRIES = 64
 # the two walks must agree: a tree the verdict already declines to judge must not
 # be one the detail read still descends.
 _PENDING_SCRIPT_MAX_DEPTH = 8
+
+
+def _is_link_stat(st: os.stat_result) -> bool:
+    """A POSIX symlink, or any Windows reparse point (symlink, junction, UNC link)."""
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    attrs = getattr(st, "st_file_attributes", 0)
+    return bool(attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
+def _pending_candidate_shape(child: Path) -> str | None:
+    """Classify a pending entry without following any link: ``"plain"``, ``"link"`` or ``None``.
+
+    A candidate directory the agent turned into a symlink or reparse point (a
+    UNC target would make Windows authenticate to that host) is ``"link"``:
+    still listed, so the dashboard can show its failing verdict and dismiss it,
+    but nothing is opened through it. A real directory is ``"plain"`` when an
+    entry named ``SKILL.md`` exists in it, whatever its type; the verdict
+    reports a linked or non-regular one.
+
+    The ``SKILL.md`` probe never re-resolves ``child`` by name: the directory
+    could be swapped for a link between the two checks. It is opened once with
+    ``O_NOFOLLOW``, its identity is matched against the first ``lstat``, and the
+    probe runs relative to that descriptor. A platform without descriptor-relative
+    stat (Windows) skips the probe: a real directory is ``"plain"`` and the
+    pinned verdict reports a missing ``SKILL.md``, because any by-name probe there
+    would traverse whatever reparse point sits at ``child``.
+    """
+    try:
+        dir_st = os.lstat(child)
+    except OSError:
+        return None
+    if _is_link_stat(dir_st):
+        return "link"
+    if not stat.S_ISDIR(dir_st.st_mode):
+        return None
+    if not pinned_fs.supports_pinned_tree_walk():
+        return "plain"
+    try:
+        fd = os.open(child, pinned_fs.dir_flags())
+    except OSError:
+        # ELOOP/ENOTDIR: the name became a link or a non-directory after the lstat.
+        return "link"
+    try:
+        held = os.fstat(fd)
+        if (held.st_dev, held.st_ino) != (dir_st.st_dev, dir_st.st_ino):
+            return "link"
+        return "plain" if pinned_fs.stat_at(fd, "SKILL.md") is not None else None
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def _remove_pending_link(pdir: Path) -> bool:
+    """Remove *pdir* when it is itself a symlink or junction, never following it.
+
+    Returns False, touching nothing, when *pdir* is missing or is not a link, so the
+    caller removes a real directory its own way. The link is read with ``lstat`` and
+    removed with ``unlink`` (``rmdir`` for a Windows junction): neither opens the
+    target, which may be dangling, outside the queue, or a directory the agent chose.
+    """
+    try:
+        st = os.lstat(pdir)
+    except OSError:
+        return False
+    if not _is_link_stat(st):
+        return False
+    unlink_link_or_junction(pdir)
+    return True
 
 
 def _candidate_has_symlink(pdir: Path) -> bool:
