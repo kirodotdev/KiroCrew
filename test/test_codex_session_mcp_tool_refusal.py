@@ -296,7 +296,7 @@ class TestSpecDisabledToolRefusal:
         body = inspect.getsource(client_mod.AcpClient.send_message_stream)
         # The predicate is true on every session with a deny set (and on a harness
         # whose identity channel is judged -- see _judges_permission_requests).
-        assert "if self._judges_permission_requests:" in body
+        assert "if self._judges_permission_requests" in body
         assert "self._extract_tool_event(msg)" in body
         # ...and on a session that judges nothing, the stats-only tracker every other
         # backend had.

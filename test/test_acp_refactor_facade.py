@@ -1838,6 +1838,7 @@ _SHARED_BINDINGS_PATCHED: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew.acp.client", "logger"),
         ("kiro_crew.acp.client", "redact_exfiltration_urls"),
         ("kiro_crew.acp.client", "scrub_agent_subprocess_env"),
+        ("kiro_crew.acp.client", "time"),
         ("kiro_crew.acp.client", "wrap_argv"),
         ("kiro_crew.acp.client", "wrap_argv_async"),
         ("kiro_crew.acp.runtime", "_RESPONSE_WRITE_BOUND_SECS"),

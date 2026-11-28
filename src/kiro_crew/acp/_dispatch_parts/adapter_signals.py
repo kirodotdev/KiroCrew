@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import re
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -23,6 +25,7 @@ from kiro_crew.acp.types import (
     EVENT_TEXT_CHUNK,
     UPDATE_TOOL_CALL,
     UPDATE_TOOL_CALL_UPDATE,
+    UPDATE_USAGE,
     AcpEvent,
 )
 
@@ -185,6 +188,207 @@ def unattributed_terminal_error(texts: list[str]) -> dict[str, Any] | None:
         return None
     distinct = list(dict.fromkeys(_service_error_detail(t.strip()) for t in texts))
     return {"code": -32603, "message": "Internal error", "data": "; ".join(distinct)}
+
+
+_ANTIGRAVITY_ERROR_MAX_LEN = 1024
+_ANTIGRAVITY_MCP_INIT_ERROR_RE = re.compile(
+    r"^The MCP server '(?P<server>[A-Za-z0-9_.@/ :+-]{1,128})' failed to initialize: "
+    r"(?P<detail>[^\r\n]{1,512}) "
+    r"Fix the MCP server, or remove it from your configuration and start a new session, "
+    r"to continue\.?\Z",
+    re.ASCII,
+)
+_ANTIGRAVITY_INVALID_API_KEY_RE = re.compile(
+    r"^API key not valid\. Please pass a valid API key\.?\Z",
+    re.ASCII,
+)
+_ANTIGRAVITY_RESULT_USAGE_KEYS = (
+    "inputTokens",
+    "outputTokens",
+    "cachedReadTokens",
+    "cachedWriteTokens",
+    "thoughtTokens",
+    "totalTokens",
+)
+
+
+def _parse_antigravity_unattributed_error(text: str) -> tuple[str, str] | None:
+    """Return ``(kind, server_name)`` when *text* matches an Antigravity turn failure."""
+    stripped = text.strip()
+    if not stripped or len(stripped) > _ANTIGRAVITY_ERROR_MAX_LEN:
+        return None
+    if _ANTIGRAVITY_INVALID_API_KEY_RE.match(stripped):
+        return ("invalid_api_key", "")
+    mcp_match = _ANTIGRAVITY_MCP_INIT_ERROR_RE.match(stripped)
+    if mcp_match is not None:
+        return ("mcp_init", mcp_match.group("server"))
+    return None
+
+
+def is_antigravity_unattributed_terminal_error(text: str) -> bool:
+    """Return True when *text* matches a known Antigravity ACP turn failure.
+
+    Antigravity reports failed MCP server startup and invalid API key errors as a
+    single ``agent_message_chunk`` followed by ``stopReason: "end_turn"`` with no
+    JSON-RPC error frame.
+    """
+    return _parse_antigravity_unattributed_error(text) is not None
+
+
+def antigravity_unattributed_error_exception(text: str) -> Any:
+    """Return a non-transient AcpError with fixed text for an Antigravity failure."""
+    from kiro_crew.acp.transport_errors import AcpError
+
+    parsed = _parse_antigravity_unattributed_error(text)
+    if parsed is not None:
+        kind, server = parsed
+        if kind == "mcp_init":
+            # The server name stays out of the error text: the dependency classifier
+            # reads ``str(exc)`` before ``transient``, so a name such as ``rate-limit``
+            # would turn this permanent failure into a provider retry. It is logged.
+            logger.warning("Google Antigravity ACP failed to start MCP server %r", server)
+            return AcpError(
+                "Google Antigravity ACP failed to start one of this session's MCP servers "
+                "(the gateway log names it). Fix the MCP server or remove it from your "
+                "configuration, then start a new session.",
+                transient=False,
+                user_worded=True,
+            )
+        if kind == "invalid_api_key":
+            return AcpError(
+                "API key not valid: Google Antigravity ACP rejected the API key. Set a "
+                "valid GEMINI_API_KEY in the gateway's launch environment, or change "
+                "auth.type in $GEMINI_HOME/antigravity-acp/settings.json, then start a "
+                "new session.",
+                transient=False,
+                user_worded=True,
+            )
+    return AcpError(
+        "Google Antigravity ACP failed before returning a response. Start a new session.",
+        transient=False,
+        user_worded=True,
+    )
+
+
+def _is_positive_token_count(value: Any) -> bool:
+    """Whether an agent-supplied token count is a real number above zero.
+
+    Never raises, as ``_dispatch._token_count`` never does: an int is compared
+    directly, because ``math.isfinite`` raises ``OverflowError`` on one beyond
+    float range, and only a float (which can be NaN or infinite) is checked.
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value > 0
+    return isinstance(value, float) and math.isfinite(value) and value > 0
+
+
+def _usage_update_has_positive_tokens(msg: Any) -> bool:
+    params = getattr(msg, "params", None)
+    update = params.get("update") if isinstance(params, dict) else None
+    if not isinstance(update, dict) or update.get("sessionUpdate") != UPDATE_USAGE:
+        return False
+    used = update.get("used")
+    if used is None:
+        nested = update.get("usage")
+        if isinstance(nested, dict):
+            used = nested.get("used")
+    return _is_positive_token_count(used)
+
+
+def _result_has_positive_usage(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    usage = result.get("usage")
+    if isinstance(usage, dict):
+        for value in usage.values():
+            if _is_positive_token_count(value):
+                return True
+    for key in _ANTIGRAVITY_RESULT_USAGE_KEYS:
+        if _is_positive_token_count(result.get(key)):
+            return True
+    return False
+
+
+@dataclass
+class AntigravityTurnErrorMonitor:
+    """Hold a candidate Antigravity turn-failure chunk until turn completion shows its cause."""
+
+    enabled: bool
+    held: AcpEvent | None = None
+    suppressed: bool = False
+
+    def take_held(self) -> AcpEvent | None:
+        """Return and clear any held candidate chunk."""
+        held = self.held
+        self.held = None
+        return held
+
+    def note_activity(self) -> AcpEvent | None:
+        """Mark real model activity or non-error notifications and release held text."""
+        self.suppressed = True
+        return self.take_held()
+
+    def note_update_frame(self, msg: Any) -> AcpEvent | None:
+        """Release held text and stop error detection on positive usage or tool updates."""
+        if _usage_update_has_positive_tokens(msg):
+            return self.note_activity()
+        params = getattr(msg, "params", None)
+        update = params.get("update") if isinstance(params, dict) else None
+        if isinstance(update, dict) and update.get("sessionUpdate") in (
+            UPDATE_TOOL_CALL,
+            UPDATE_TOOL_CALL_UPDATE,
+        ):
+            return self.note_activity()
+        return None
+
+    def observe_text(
+        self,
+        *,
+        chunk: str,
+        is_thinking: bool,
+        notice_chunk: bool,
+        text_chunks_seen: int,
+        message_id: str,
+        harness_notice: Any = None,
+    ) -> tuple[bool, AcpEvent | None]:
+        """Inspect one chunk and return ``(held_now, flushed_event)``."""
+        if not chunk:
+            return False, None
+        if is_thinking or notice_chunk or self.held is not None:
+            return False, self.note_activity()
+        if (
+            self.enabled
+            and not self.suppressed
+            and text_chunks_seen == 0
+            and not message_id
+            and is_antigravity_unattributed_terminal_error(chunk)
+        ):
+            self.held = AcpEvent(
+                kind=EVENT_TEXT_CHUNK,
+                text=chunk,
+                control_notice=False,
+                message_id="",
+                harness_notice=harness_notice,
+            )
+            return True, None
+        self.suppressed = True
+        return False, None
+
+    def finish_complete(self, *, reason: str, result: Any) -> tuple[Any | None, AcpEvent | None]:
+        """Return ``(error_to_raise, flushed_event)`` when a prompt turn completes."""
+        if (
+            self.held is not None
+            and self.enabled
+            and not self.suppressed
+            and reason == "end_turn"
+            and not _result_has_positive_usage(result)
+        ):
+            held = self.take_held()
+            assert held is not None
+            return antigravity_unattributed_error_exception(held.text or ""), None
+        return None, self.take_held()
 
 
 #: How many launch labels one session's record keeps for the recycle notice. A

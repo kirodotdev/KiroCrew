@@ -135,11 +135,8 @@ def test_antigravity_mirror_and_auth_are_declared() -> None:
     assert declaration.adapter_own_leaves == declaration.credential_leaves
     assert ".gemini/antigravity-acp/settings.json" not in declaration.credential_leaves
     assert "oauth-personal" in declaration.sign_in_remedy
-    # The backend card renders this sentence in every install state, so it names the pin.
-    assert (
-        f"verifies Google Antigravity ACP {ANTIGRAVITY_VERIFIED_VERSION} only"
-        in declaration.sign_in_remedy
-    )
+    # The backend card renders this sentence in every install state, so it names the floor.
+    assert "1.4.4 or newer" in declaration.sign_in_remedy
 
 
 def test_antigravity_fires_the_observer_spec_hook_events_only() -> None:
@@ -261,8 +258,8 @@ def test_antigravity_install_probe_names_the_missing_helper(
     assert state.installed == backend_install.MISSING
     assert state.missing_components == ("localharness_external",)
     assert "1.4.4" in (state.install_command or "")
-    assert "verifies Google Antigravity ACP 1.4.4 only" in (state.install_command or "")
-    assert "refuses other versions" in (state.install_command or "")
+    assert ANTIGRAVITY_VERIFIED_VERSION in (state.install_command or "")
+    assert "1.4.4 or newer" in (state.install_command or "")
 
 
 def test_antigravity_probe_does_not_replace_the_spawn_cache(
@@ -408,23 +405,24 @@ async def test_antigravity_stops_on_a_forbidden_mode(mode: str) -> None:
 
 def test_antigravity_refuses_an_unverified_runtime_version() -> None:
     _refuse_unverified_antigravity_version(_client())
-    with pytest.raises(AcpToolGateUnroutable, match="not the version") as refused:
-        _refuse_unverified_antigravity_version(_client("1.4.5"))
+    _refuse_unverified_antigravity_version(_client("1.4.4"))
+    _refuse_unverified_antigravity_version(_client("1.4.5"))
+    with pytest.raises(AcpToolGateUnroutable, match="minimum version") as refused:
+        _refuse_unverified_antigravity_version(_client("1.4.3"))
     message = str(refused.value)
     assert ANTIGRAVITY_VERIFIED_VERSION in message
     assert "https://dl.google.com/agy-extensions/releases/" in message
     assert "agentclientprotocol.com/registry" not in message
-    assert "Kiro Crew verifies Google Antigravity ACP 1.4.4 only" in message
-    assert "refuses other versions" in message
+    assert "1.4.4 or newer" in message
 
 
 @pytest.mark.asyncio
 async def test_antigravity_pin_is_enforced_where_the_mode_is_armed() -> None:
-    client = _client("1.4.5")
+    client = _client("1.4.3")
     client._acp_config_options = [_mode_option()]
     client.set_config_option = AsyncMock(return_value={})
 
-    with pytest.raises(AcpToolGateUnroutable, match="not the version"):
+    with pytest.raises(AcpToolGateUnroutable, match="minimum version"):
         await client._apply_session_permission_routing()
 
     client.set_config_option.assert_not_awaited()
@@ -435,7 +433,7 @@ def test_antigravity_protocol_and_model_options_are_exact() -> None:
 
     assert ANTIGRAVITY_PROTOCOL_VERSION == 1
     assert PROTOCOL_VERSION_ANTIGRAVITY == 1
-    assert ANTIGRAVITY_VERIFIED_VERSION == "1.4.4"
+    assert ANTIGRAVITY_VERIFIED_VERSION == "1.5.0"
     assert effort_config_option_id(ACP_BACKEND_ANTIGRAVITY) == "thinking_level"
 
 

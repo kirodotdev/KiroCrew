@@ -17,7 +17,7 @@ Instance fields read: ``_active_tool_calls``, ``_agent``, ``_audit_source``, ``_
 ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``,
 ``_observed_tool_calls``, ``_permission_mode``, ``_sel_settled_tool_calls``,
 ``_session_id``, ``_session_key``, ``_tool_call_harness_tool_name``,
-``_tool_call_unclassified``, ``last_prompt_stats``.
+``_tool_call_kind``, ``_tool_call_unclassified``, ``last_prompt_stats``.
 """
 
 from __future__ import annotations
@@ -597,6 +597,11 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
         # kind) can inherit it via the toolCallId cache below.
         is_shell = identity.is_shell
         if tool_call_id:
+            # Same ``__new__`` compatibility shape as ``_tool_call_unclassified`` below.
+            raw_kind = update.get("kind")
+            _kinds = getattr(self, "_tool_call_kind", None)
+            if _kinds is not None and isinstance(raw_kind, str) and raw_kind:
+                _kinds[tool_call_id] = raw_kind
             if identity.kind_resolved:
                 self._tool_call_is_shell[tool_call_id] = is_shell
             # An MCP identity is a classification too -- it says "served by a
@@ -1021,6 +1026,10 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
     # title so the label rule sees the real classification rather than a
     # missing kind.
     _identity = classify_tool_call(update)
+    _kinds = getattr(self, "_tool_call_kind", None)
+    if _kinds is not None and isinstance(kind, str) and kind:
+        if tool_use_id not in _kinds or kind not in ("read", "search"):
+            _kinds[tool_use_id] = kind
     if _identity.kind_resolved:
         self._tool_call_is_shell[tool_use_id] = _identity.is_shell
     is_shell = self._tool_call_is_shell.get(tool_use_id, False)

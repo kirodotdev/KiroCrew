@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -36,10 +35,12 @@ from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnCont
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_ANTIGRAVITY
 from kiro_crew.env import describe_search_path
+from kiro_crew.soffice_discovery import which_within
 
 __all__ = [
     "ANTIGRAVITY_ACP_BIN_ENV",
     "ANTIGRAVITY_HARNESS_PATH_ENV",
+    "ANTIGRAVITY_MIN_VERSION",
     "ANTIGRAVITY_PROTOCOL_VERSION",
     "ANTIGRAVITY_VERIFIED_VERSION",
     "AntigravityLaunch",
@@ -51,9 +52,12 @@ __all__ = [
     "resolve_antigravity_runtime",
 ]
 
-# The ACP protocol and release verified against Google's published runtime.
+# The ACP protocol, hard floor, and newest release verified against Google's published runtime.
 ANTIGRAVITY_PROTOCOL_VERSION = 1
-ANTIGRAVITY_VERIFIED_VERSION = "1.4.4"
+ANTIGRAVITY_MIN_VERSION = (1, 4, 4)
+ANTIGRAVITY_VERIFIED_VERSION = "1.5.0"
+ANTIGRAVITY_TESTED_VERSION = ANTIGRAVITY_VERIFIED_VERSION
+ANTIGRAVITY_TESTED_RANGE = (ANTIGRAVITY_MIN_VERSION, (2, 0, 0))
 
 # The two published archive members. Windows adds ``.exe`` to both
 # (``agy_acp_server.exe`` and ``localharness_external.exe``).
@@ -71,12 +75,13 @@ ANTIGRAVITY_ACP_BIN_ENV = "ANTIGRAVITY_ACP_BIN"
 ANTIGRAVITY_HARNESS_PATH_ENV = "ANTIGRAVITY_HARNESS_PATH"
 
 ANTIGRAVITY_INSTALL_HINT = (
-    f"Kiro Crew verifies Google Antigravity ACP {ANTIGRAVITY_VERIFIED_VERSION} only and "
-    "refuses other versions until they are verified, so install that one: download "
+    "Kiro Crew needs Google Antigravity ACP 1.4.4 or newer "
+    f"(verified through {ANTIGRAVITY_VERIFIED_VERSION}). Download "
     f"agy-acp-server-{ANTIGRAVITY_VERIFIED_VERSION}-PLATFORM.zip from "
-    "https://dl.google.com/agy-extensions/releases/OS/ (OS is macos, linux or windows; "
-    "PLATFORM is darwin-arm64, darwin-x86_64, linux-x86_64, linux-arm64, windows-x86_64 "
-    "or windows-arm64), or set ANTIGRAVITY_ACP_BIN to its agy_acp_server executable."
+    "https://dl.google.com/agy-extensions/releases/OS/ where OS is macos, linux, or "
+    "windows and PLATFORM is darwin-arm64, darwin-x86_64, linux-x86_64, linux-arm64, "
+    "windows-x86_64, or windows-arm64, or set ANTIGRAVITY_ACP_BIN to its "
+    "agy_acp_server executable."
 )
 
 
@@ -106,31 +111,57 @@ def _normalize_executable(path: str | None) -> str | None:
     return os.path.realpath(path) if platform_compat.IS_WINDOWS else os.path.abspath(path)
 
 
+def _find_in_search_path(binary_name: str, search_path: str) -> str | None:
+    """Find *binary_name* inside the absolute directories of *search_path*."""
+    for raw_entry in search_path.split(os.pathsep):
+        directory = raw_entry.strip()
+        if not directory or not os.path.isabs(directory):
+            continue
+        found = _normalize_executable(which_within(binary_name, directory))
+        if found:
+            return found
+    return None
+
+
+def _windows_localappdata_server_candidate(env: Mapping[str, str]) -> str | None:
+    """Return the Windows fallback path for the main binary if LOCALAPPDATA is valid."""
+    if not platform_compat.IS_WINDOWS:
+        return None
+    local_app_data = (env.get("LOCALAPPDATA") or "").strip()
+    if not local_app_data or not os.path.isabs(local_app_data):
+        return None
+    return os.path.join(local_app_data, "agy", "bin", ANTIGRAVITY_ACP_BIN)
+
+
 def _find_main_executable(env: Mapping[str, str], search_path: str) -> str | None:
-    override = env.get(ANTIGRAVITY_ACP_BIN_ENV, "")
+    override = (env.get(ANTIGRAVITY_ACP_BIN_ENV) or "").strip()
     if override:
         return _normalize_executable(os.path.expanduser(override))
 
-    # Keep this ladder consistent with the other self-served harnesses, while
-    # requiring the sibling helper below before either executable is reported.
+    # Keep this order consistent with the other self-served harnesses, while
+    # verifying that the sibling helper sits in the same directory below.
     from kiro_crew.acp.client import _mise_which
 
-    mise_resolved = _mise_which(ANTIGRAVITY_ACP_BIN)
+    mise_resolved = _normalize_executable(_mise_which(ANTIGRAVITY_ACP_BIN))
     if mise_resolved:
-        return _normalize_executable(mise_resolved)
-    return _normalize_executable(shutil.which(ANTIGRAVITY_ACP_BIN, path=search_path))
+        return mise_resolved
+    which_resolved = _find_in_search_path(ANTIGRAVITY_ACP_BIN, search_path)
+    if which_resolved:
+        return which_resolved
+    candidate = _windows_localappdata_server_candidate(env)
+    if candidate:
+        return _normalize_executable(candidate)
+    return None
 
 
 def _find_helper(env: Mapping[str, str], server: str | None, search_path: str) -> str | None:
-    explicit = env.get(ANTIGRAVITY_HARNESS_PATH_ENV, "")
+    explicit = (env.get(ANTIGRAVITY_HARNESS_PATH_ENV) or "").strip()
     if explicit:
         return _normalize_executable(os.path.expanduser(explicit))
 
     if server:
-        sibling = _normalize_executable(str(Path(server).with_name(ANTIGRAVITY_HARNESS_BIN)))
-        if sibling:
-            return sibling
-    return _normalize_executable(shutil.which(ANTIGRAVITY_HARNESS_BIN, path=search_path))
+        return _normalize_executable(str(Path(server).with_name(ANTIGRAVITY_HARNESS_BIN)))
+    return _find_in_search_path(ANTIGRAVITY_HARNESS_BIN, search_path)
 
 
 def _resolve_antigravity_runtime() -> AntigravityResolution:
@@ -198,6 +229,9 @@ def antigravity_not_found_message(resolution: AntigravityResolution) -> str:
     if not resolution.helper:
         missing.append(ANTIGRAVITY_HARNESS_BIN)
     searched = describe_search_path(resolution.search_path)
+    if platform_compat.IS_WINDOWS:
+        fallback_path = os.path.join("%LOCALAPPDATA%", "agy", "bin", ANTIGRAVITY_ACP_BIN)
+        searched = f"{searched}, {fallback_path}"
     return (
         f"Google Antigravity ACP is not fully installed: missing {', '.join(missing)} "
         f"({searched}). The main executable and its localharness_external helper are "

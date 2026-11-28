@@ -42,6 +42,7 @@ from kiro_crew.acp._dispatch import (
     _loggable_request_id,
     asks_allow_always,
     build_permission_event,
+    classify_tool_call,
     foreign_server_refused,
     gate_envelope,
 )
@@ -1242,6 +1243,22 @@ async def _unasked_call_is_expected(client: AcpClient, update: dict, tool_call_i
     """
     if getattr(client, "_tool_call_mcp_server", {}).get(tool_call_id):
         return False
+    if getattr(client, "_tool_call_identity_unreadable", {}).get(tool_call_id):
+        return False
+    if client.backend == ACP_BACKEND_ANTIGRAVITY:
+        if "_meta" in update:
+            update_identity = classify_tool_call(update)
+            if update_identity.identity_unreadable or update_identity.mcp_server_name:
+                return False
+        raw_kind = update.get("kind")
+        update_kind = raw_kind if isinstance(raw_kind, str) and raw_kind else ""
+        cached_kind = getattr(client, "_tool_call_kind", {}).get(tool_call_id, "")
+        if update_kind and update_kind not in ("read", "search"):
+            return False
+        if cached_kind and cached_kind not in ("read", "search"):
+            return False
+        if not (update_kind or cached_kind):
+            return False
     name = getattr(client, "_tool_call_harness_tool_name", {}).get(tool_call_id, "")
     if name == "actor" and client.backend == ACP_BACKEND_MIMOCODE:
         return mimocode_actor_asks_nothing(_completed_call_input(client, update, tool_call_id))

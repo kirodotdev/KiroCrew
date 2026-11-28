@@ -16,15 +16,16 @@ Instance fields written: ``_active_run_id``, ``_active_tool_calls``,
 ``_sent_images_staged``, ``_skill_reads``, ``_stale_eligible``, ``_steers_awaiting_echo``,
 ``_tool_call_diff_path``, ``_tool_call_harness_tool_name``,
 ``_tool_call_identity_unreadable``, ``_tool_call_input_redacted``, ``_tool_call_inputs``,
-``_tool_call_is_shell``, ``_tool_call_mcp_server``, ``_tool_call_params``,
-``_tool_call_tool_name``, ``_tool_call_unclassified``, ``_tool_dispatched``, ``_turn_done``,
-``last_prompt_stats``.
+``_tool_call_is_shell``, ``_tool_call_kind``, ``_tool_call_mcp_server``,
+``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_call_unclassified``,
+``_tool_dispatched``, ``_turn_done``, ``last_prompt_stats``.
 
 Instance fields read: ``_agent_accepts_image``, ``_batch_window``, ``_buffer``,
 ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``, ``_engine_fallback``,
 ``_last_activity``, ``_liveness_oracle``, ``_permission_gate_events``, ``_pid``,
 ``_process``, ``_registered_session``, ``_sel_settled_tool_calls``, ``_sent_images``, ``_session_id``,
-``_session_key``, ``_steer_turn``, ``_turn_clock``, ``_turn_lock``.
+``_session_key``, ``_steer_turn``, ``_turn_clock``, ``_turn_lock``,
+``_unasked_shell_tripwire``.
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ from kiro_crew.acp import (
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
     MAX_ACTIVE_TOOL_CALLS,
+    AntigravityTurnErrorMonitor,
     _loggable_request_id,
     error_is_refusal_terminal,
     parse_message_id,
@@ -83,6 +85,7 @@ from kiro_crew.acp.transport_errors import (
     registration_rate_limited_error,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_MIMOCODE,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
@@ -833,6 +836,7 @@ async def send_message_stream(
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
     self._reset_native_child_turn()
     self._engine_fallback.begin_prompt(self)
+    _clear_turn_tool_caches(self)
     # Credits held between turns (see ``_track_metadata``): billed here, once.
     self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)
     self._between_turn_credits = 0.0
@@ -845,6 +849,7 @@ async def send_message_stream(
     # caller blocks = the freeze). aclosing() runs aclose() deterministically
     # on block exit, firing the finally and releasing the lock immediately.
     _pi_model_error: str | None = None  # as in _dispatch_events
+    _ag_monitor = AntigravityTurnErrorMonitor(enabled=(self.backend == ACP_BACKEND_ANTIGRAVITY))
     async with aclosing(self._prompt_loop(req_id, timeout)) as _loop:
         async for action, msg in _loop:
             if action == "complete":
@@ -853,8 +858,14 @@ async def send_message_stream(
                 if isinstance(result, dict):
                     reason = result.get("stopReason", "") or ""
                 self._track_prompt_usage(result)
+                _ag_err, _ag_flushed = _ag_monitor.finish_complete(reason=reason, result=result)
+                if _ag_flushed is not None:
+                    self.last_prompt_stats.text_chunks += 1
+                    yield _ag_flushed.text or ""
                 if _pi_model_error is not None and reason == STOP_REASON_END_TURN:
                     pi_steer_turn.raise_model_error(self, _pi_model_error)
+                if _ag_err is not None:
+                    raise _ag_err
                 # Close out an automatic claude compaction. The returned
                 # event is discarded — this API yields str — but the context
                 # counts it drops are what the meter reads next turn.
@@ -865,6 +876,9 @@ async def send_message_stream(
                 self._turn_done.set()
                 return
             if action == "error":
+                if (_ag_flushed := _ag_monitor.take_held()) is not None:
+                    self.last_prompt_stats.text_chunks += 1
+                    yield _ag_flushed.text or ""
                 if error_is_refusal_terminal(msg.error, self.last_prompt_stats.refusal):
                     # The refusal's own -32603 terminal (see
                     # _dispatch_events). This API yields str, so the fold
@@ -875,6 +889,10 @@ async def send_message_stream(
                     self._turn_done.set()
                     return
                 _raise_acp_error(msg.error, self._advertised_model_ids(), backend=self.backend)
+            if action not in ("update", "metadata", "compaction"):
+                if (_ag_flushed := _ag_monitor.note_activity()) is not None:
+                    self.last_prompt_stats.text_chunks += 1
+                    yield _ag_flushed.text or ""
             if action == "permission":
                 await self._handle_permission(msg)
             elif action == "elicitation":
@@ -888,6 +906,9 @@ async def send_message_stream(
                 if self._native_child_events(msg)[1]:
                     continue
                 self._track_usage_update(msg)
+                if (_ag_flushed := _ag_monitor.note_update_frame(msg)) is not None:
+                    self.last_prompt_stats.text_chunks += 1
+                    yield _ag_flushed.text or ""
                 self._note_background_launch(msg)
                 # Apply the codex compaction state change; this API yields
                 # str so the event has nowhere to go, but the context counts
@@ -901,47 +922,52 @@ async def send_message_stream(
                     _pi_model_error = _pi_failure
                     continue
                 chunk, is_thinking, _ = harness_notices.text_chunk(self, msg)
-                if chunk and not is_thinking:
-                    # A claude compaction notice is a control frame wearing
-                    # assistant text. This API yields str, so the event has
-                    # nowhere to go — but the state change still applies and
-                    # the chunk is still forwarded. Recognizing a notice is a
-                    # guess about bare prose, so dropping it here would let
-                    # one wrong guess erase a real answer with nothing left
-                    # to recover it from.
-                    self._harness_compaction_event(chunk)
-                    self.last_prompt_stats.text_chunks += 1
-                    yield chunk
-                    if _is_tool_interrupted_marker(chunk):
-                        self._emit_tool_interrupted_sel("send_message_stream")
-                        # send_message_stream yields only text chunks (str),
-                        # not AcpEvent objects. Tool-result events are a
-                        # different shape and cannot be yielded here; callers
-                        # of this API do not consume them. Unlike
-                        # _dispatch_events (which yields AcpEvent and must
-                        # drain tool results before EVENT_COMPLETE), we just
-                        # return — no further text will arrive from kiro-cli.
-                        return
-                # On a session with a spec deny set, the full extractor rather
-                # than the stats-only tracker: this loop answers permission
-                # requests through _handle_permission, and the refusal there
-                # identifies a call ONLY from the provenance the extractor caches
-                # (raw params by toolCallId) -- stats alone would leave every
-                # request unidentified, and the auto-approve site then refuses
-                # them all rather than run a switched-off tool. The same extractor
-                # writes the classification cache the identity-drift refusals read,
-                # so a harness in ACP_BACKENDS_META_IDENTITY runs it too. On a
-                # session that judges nothing, the tracker's byte-identical
-                # behaviour on every other backend is kept.
-                if self._judges_permission_requests:
+                if chunk:
+                    _notice_chunk = bool(
+                        not is_thinking and self._harness_compaction_event(chunk) is not None
+                    )
+                    _held_now, _ag_flushed = _ag_monitor.observe_text(
+                        chunk=chunk,
+                        is_thinking=is_thinking,
+                        notice_chunk=_notice_chunk,
+                        text_chunks_seen=self.last_prompt_stats.text_chunks,
+                        message_id=parse_message_id((msg.params or {}).get("update")),
+                    )
+                    if _ag_flushed is not None:
+                        self.last_prompt_stats.text_chunks += 1
+                        yield _ag_flushed.text or ""
+                    if _held_now:
+                        continue
+                    if not is_thinking:
+                        self.last_prompt_stats.text_chunks += 1
+                        yield chunk
+                        if _is_tool_interrupted_marker(chunk):
+                            self._emit_tool_interrupted_sel("send_message_stream")
+                            # send_message_stream yields only text chunks (str),
+                            # not AcpEvent objects. Tool-result events are a
+                            # different shape and cannot be yielded here; callers
+                            # of this API do not consume them. Unlike
+                            # _dispatch_events (which yields AcpEvent and must
+                            # drain tool results before EVENT_COMPLETE), we just
+                            # return — no further text will arrive from kiro-cli.
+                            return
+                if self._judges_permission_requests or self._unasked_shell_tripwire:
                     self._extract_tool_event(msg)
+                    if self._unasked_shell_tripwire:
+                        self._extract_tool_call_refinement(msg)
                 else:
                     self._track_tool_call(msg)
             elif action == "metadata":
                 self._track_metadata(msg)
             elif action == "compaction":
-                self._handle_compaction_status(msg)
+                if not self._handle_compaction_status(msg):
+                    if (_ag_flushed := _ag_monitor.note_activity()) is not None:
+                        self.last_prompt_stats.text_chunks += 1
+                        yield _ag_flushed.text or ""
 
+    if (_ag_flushed := _ag_monitor.take_held()) is not None:
+        self.last_prompt_stats.text_chunks += 1
+        yield _ag_flushed.text or ""
     # Loop ended without "complete" — timeout or process death.
     self._last_stop_reason = ""
     self._turn_done.set()
@@ -1044,6 +1070,47 @@ async def stream_unsolicited(
             self._turn_done.set()
 
 
+def _clear_turn_tool_caches(client: AcpClient) -> None:
+    """Reset per-turn tool provenance caches before reading prompt updates."""
+    for attr in (
+        "_tool_call_inputs",
+        "_tool_call_input_redacted",
+        "_tool_call_is_shell",
+        "_tool_call_kind",
+        "_tool_call_unclassified",
+        "_tool_call_mcp_server",
+        "_tool_call_tool_name",
+        "_tool_call_harness_tool_name",
+        "_tool_call_identity_unreadable",
+        "_tool_call_params",
+        "_tool_call_diff_path",
+        "_observed_tool_calls",
+        "_permission_options",
+        "_copilot_unmatched_titles",
+    ):
+        mapping = getattr(client, attr, None)
+        if mapping is not None:
+            mapping.clear()
+    for attr in ("_copilot_ambiguous_mcp_calls", "_sel_settled_tool_calls"):
+        items = getattr(client, attr, None)
+        if items is not None:
+            items.clear()
+    skill_reads = getattr(client, "_skill_reads", None)
+    if skill_reads is not None:
+        skill_reads.clear()
+    gate_events = getattr(client, "_permission_gate_events", None)
+    if gate_events is not None:
+        gate_events.clear()
+
+
+def _release_held_antigravity_chunk(client: AcpClient, held: AcpEvent) -> AcpEvent:
+    """Update turn text counters and return a held Antigravity chunk."""
+    client.last_prompt_stats.text_chunks += 1
+    client._stale_eligible = not client._active_tool_calls.possibly_open
+    client._prompt_or_tool_seen = True
+    return held
+
+
 async def _dispatch_events(
     self: AcpClient,
     req_id: int,
@@ -1062,6 +1129,7 @@ async def _dispatch_events(
     self._tool_call_inputs.clear()
     self._tool_call_input_redacted.clear()
     self._tool_call_is_shell.clear()
+    self._tool_call_kind.clear()
     self._tool_call_unclassified.clear()
     self._skill_reads.clear()
     self._tool_call_mcp_server.clear()
@@ -1072,11 +1140,8 @@ async def _dispatch_events(
     self._tool_call_diff_path.clear()
     getattr(self, "_copilot_ambiguous_mcp_calls", set()).clear()
     getattr(self, "_copilot_unmatched_titles", {}).clear()
-    # Reset the per-turn observed-tool-call bookkeeping (see __init__).
     self._observed_tool_calls.clear()
     getattr(self, "_sel_settled_tool_calls", set()).clear()
-    # Clear stale permission options so an aborted/cancelled request from
-    # a prior turn cannot leak into this one (memory + correctness).
     self._permission_options.clear()
     getattr(self, "_permission_gate_events", {}).clear()
     # An elicitation the last turn left unanswered is cancelled on the wire,
@@ -1114,6 +1179,9 @@ async def _dispatch_events(
     # pi's report of a failed model call (``pi_steer_turn.model_error``); pi-acp
     # still ends that turn ``end_turn``, which then fails with it.
     _pi_model_error: str | None = None
+    _ag_monitor = AntigravityTurnErrorMonitor(
+        enabled=(self.backend == ACP_BACKEND_ANTIGRAVITY and not extract_agent_from_result)
+    )
     _prompt_events = self._prompt_loop(req_id, timeout)
     async for action, msg in _prompt_events:
         # What Claude Code's background work sent before this frame, drawn above it by the
@@ -1146,9 +1214,17 @@ async def _dispatch_events(
             if isinstance(result, dict):
                 reason = result.get("stopReason", "") or ""
             self._track_prompt_usage(result)
+            _ag_err, _ag_flushed = _ag_monitor.finish_complete(reason=reason, result=result)
+            if _ag_flushed is not None:
+                for tr_event in await self._read_new_tool_results():
+                    yield tr_event
+                yield _release_held_antigravity_chunk(self, _ag_flushed)
             if _pi_model_error is not None and reason == STOP_REASON_END_TURN:
                 await _prompt_events.aclose()
                 pi_steer_turn.raise_model_error(self, _pi_model_error)
+            if _ag_err is not None:
+                await _prompt_events.aclose()
+                raise _ag_err
             if extract_agent_from_result and isinstance(result, dict):
                 # commands/execute returns output in result fields,
                 # not via session/update chunks — yield as text.
@@ -1200,6 +1276,10 @@ async def _dispatch_events(
             )
             return
         if action == "error":
+            if (_ag_flushed := _ag_monitor.take_held()) is not None:
+                for tr_event in await self._read_new_tool_results():
+                    yield tr_event
+                yield _release_held_antigravity_chunk(self, _ag_flushed)
             if error_is_refusal_terminal(msg.error, self.last_prompt_stats.refusal):
                 # See AcpSessionHandle: a content-filter refusal can
                 # terminate as a bare -32603. The reason is already on the
@@ -1227,6 +1307,9 @@ async def _dispatch_events(
             # it at once (a fallback switch), not at deferred generator finalization.
             await _prompt_events.aclose()
             _raise_acp_error(msg.error, self._advertised_model_ids(), backend=self.backend)
+        if action not in ("update", "metadata", "compaction"):
+            if (_ag_flushed := _ag_monitor.note_activity()) is not None:
+                yield _release_held_antigravity_chunk(self, _ag_flushed)
         if action == "permission":
             permission_event = self._build_permission_event(msg)
             if permission_event is None:
@@ -1279,11 +1362,15 @@ async def _dispatch_events(
             # frame continues below after its activity prefix, while its
             # lifecycle, text and side frames are never this turn's own.
             _child_events, _child_consumed = self._native_child_events(msg)
+            if _child_events and (_ag_flushed := _ag_monitor.note_activity()) is not None:
+                yield _release_held_antigravity_chunk(self, _ag_flushed)
             for _child_event in self._redact_native_child_events(_child_events):
                 yield _child_event
             if _child_consumed:
                 continue
             self._track_usage_update(msg)
+            if (_ag_flushed := _ag_monitor.note_update_frame(msg)) is not None:
+                yield _release_held_antigravity_chunk(self, _ag_flushed)
             self._note_background_launch(msg)
             if (_pi_failure := pi_steer_turn.model_error(self, msg)) is not None:
                 _pi_model_error = _pi_failure
@@ -1292,11 +1379,15 @@ async def _dispatch_events(
             # frame, never text of the turn (``acp.pi_steer_turn``).
             _pi_echo = pi_steer_turn.echo_event(self, msg)
             if _pi_echo is not False:
+                if (_ag_flushed := _ag_monitor.note_activity()) is not None:
+                    yield _release_held_antigravity_chunk(self, _ag_flushed)
                 if isinstance(_pi_echo, AcpEvent):
                     yield _pi_echo
                 continue
             _steer_echo = self._steer_echo_event(msg)
             if _steer_echo is not None:
+                if (_ag_flushed := _ag_monitor.note_activity()) is not None:
+                    yield _release_held_antigravity_chunk(self, _ag_flushed)
                 yield _steer_echo
             # codex reports compaction as a marked tool_call pair rather than
             # as text, so it is read off the FRAME here instead of off a
@@ -1304,28 +1395,39 @@ async def _dispatch_events(
             # still a tool call this turn made.
             _codex_compaction = self._codex_compaction_event(msg)
             if _codex_compaction is not None:
+                if (_ag_flushed := _ag_monitor.note_activity()) is not None:
+                    yield _release_held_antigravity_chunk(self, _ag_flushed)
                 yield _codex_compaction
             _plan_todo = plan_checklist.todo_event(self, msg)
             if _plan_todo is not None:
+                if (_ag_flushed := _ag_monitor.note_activity()) is not None:
+                    yield _release_held_antigravity_chunk(self, _ag_flushed)
                 yield _plan_todo
             _mode_notice = harness_notices.mode_notice_event(self, msg)
             if _mode_notice is not None:
+                if (_ag_flushed := _ag_monitor.note_activity()) is not None:
+                    yield _release_held_antigravity_chunk(self, _ag_flushed)
                 yield _mode_notice
             chunk, is_thinking, _notice = harness_notices.text_chunk(self, msg)
-            _notice_chunk = False
-            if chunk and not is_thinking:
-                # The claude backend reports compaction as plain assistant
-                # text. Emit the compaction status event every consumer
-                # already handles, then fall through and yield the chunk too:
-                # the event is a side effect, not a replacement for the text.
-                # The chunk carries ``control_notice`` so a consumer can show
-                # it without counting it as the turn's answer — the ACP layer
-                # owns the classification, and nothing downstream re-parses.
-                _compaction_event = self._harness_compaction_event(chunk)
+            if chunk:
+                _compaction_event = None if is_thinking else self._harness_compaction_event(chunk)
+                _notice_chunk = _compaction_event is not None
+                _held_now, _ag_flushed = _ag_monitor.observe_text(
+                    chunk=chunk,
+                    is_thinking=is_thinking,
+                    notice_chunk=_notice_chunk,
+                    text_chunks_seen=self.last_prompt_stats.text_chunks,
+                    message_id=parse_message_id((msg.params or {}).get("update")),
+                    harness_notice=_notice,
+                )
+                if _held_now:
+                    continue
+                if _ag_flushed is not None:
+                    for tr_event in await self._read_new_tool_results():
+                        yield tr_event
+                    yield _release_held_antigravity_chunk(self, _ag_flushed)
                 if _compaction_event is not None:
                     yield _compaction_event
-                    _notice_chunk = True
-            if chunk:
                 # Before yielding text, check for tool results from JSONL
                 for tr_event in await self._read_new_tool_results():
                     yield tr_event
@@ -1357,6 +1459,8 @@ async def _dispatch_events(
                     return
             tool_event = self._extract_tool_event(msg)
             if tool_event:
+                if (_ag_flushed := _ag_monitor.note_activity()) is not None:
+                    yield _release_held_antigravity_chunk(self, _ag_flushed)
                 self._stale_eligible = False
                 self._prompt_or_tool_seen = True
                 # Arm the tool-stall watchdog: if no further data arrives
@@ -1396,6 +1500,8 @@ async def _dispatch_events(
             await self._tripwire_permission_state(msg)
             tool_result_event = self._extract_tool_call_update(msg)
             if tool_result_event:
+                if (_ag_flushed := _ag_monitor.note_activity()) is not None:
+                    yield _release_held_antigravity_chunk(self, _ag_flushed)
                 if tool_result_event.tool_status in TERMINAL_TOOL_STATUSES:
                     self._active_tool_calls.discard(tool_result_event.tool_call_id or "")
                     self._tool_dispatched = self._active_tool_calls.possibly_open
@@ -1420,6 +1526,8 @@ async def _dispatch_events(
             # patched in place — see `_on_tool_call_update` in dashboard/chat_turn/tool_rows.py.
             tool_refine_event = self._extract_tool_call_refinement(msg)
             if tool_refine_event:
+                if (_ag_flushed := _ag_monitor.note_activity()) is not None:
+                    yield _release_held_antigravity_chunk(self, _ag_flushed)
                 await self._skill_reads.note(tool_refine_event)
                 yield tool_refine_event
         elif action == "metadata":
@@ -1428,6 +1536,8 @@ async def _dispatch_events(
             if self._handle_compaction_status(msg):
                 # The late status of an abandoned idle compaction, not this turn's.
                 continue
+            if (_ag_flushed := _ag_monitor.note_activity()) is not None:
+                yield _release_held_antigravity_chunk(self, _ag_flushed)
             params = msg.params or {}
             status = params.get("status", {})
             status_type = status.get("type", "") if isinstance(status, dict) else str(status)
@@ -1596,6 +1706,8 @@ async def _dispatch_events(
                 )
 
     if not got_complete:
+        if (_ag_flushed := _ag_monitor.take_held()) is not None:
+            yield _release_held_antigravity_chunk(self, _ag_flushed)
         self._last_stop_reason = ""
         self._turn_done.set()
         if self._compaction_failed_turn:
@@ -1735,115 +1847,116 @@ async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) ->
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
     self._reset_native_child_turn()
     self._engine_fallback.begin_prompt(self)
+    _clear_turn_tool_caches(self)
     # Credits held between turns (see ``_track_metadata``): billed here, once.
     self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)
     self._between_turn_credits = 0.0
 
     _pi_model_error: str | None = None  # as in _dispatch_events
-    async for action, msg in self._prompt_loop(req_id, timeout):
-        if action == "complete":
-            reason = ""
-            result = msg.result or {}
-            if isinstance(result, dict):
-                reason = result.get("stopReason", "") or ""
-            self._track_prompt_usage(result)
-            if _pi_model_error is not None and reason == STOP_REASON_END_TURN:
-                pi_steer_turn.raise_model_error(self, _pi_model_error)
-            # See send_message_stream: settle for the context counts, drop
-            # the event this API cannot yield.
-            self._settle_harness_compaction(reason)
-            self._settle_codex_compaction(reason)
-            # Fold a metadata refusal onto the terminal, as the streaming
-            # paths do, so a caller reading ``last_stop_reason`` sees the
-            # refusal and does not retry a deterministic decline.
-            reason, _ = self.last_prompt_stats.terminal_refusal(reason)
-            self._last_stop_reason = reason
-            self._turn_done.set()
-            return "".join(output)
-        if action == "error":
-            if error_is_refusal_terminal(msg.error, self.last_prompt_stats.refusal):
-                # A content-filter refusal terminating as a bare -32603 (see
-                # _dispatch_events). This API returns the turn's text, so
-                # return what streamed (the canned explanation) under the
-                # refusal stop reason rather than raising: an AcpError here
-                # would discard the reason, feed the retry ladder a
-                # deterministic decline, and retire a healthy worker.
-                reason, _ = self.last_prompt_stats.terminal_refusal("")
+    _ag_monitor = AntigravityTurnErrorMonitor(enabled=(self.backend == ACP_BACKEND_ANTIGRAVITY))
+
+    def _flush_ag(flushed: AcpEvent | None) -> None:
+        if flushed is not None:
+            output.append(flushed.text or "")
+            self.last_prompt_stats.text_chunks += 1
+
+    async with aclosing(self._prompt_loop(req_id, timeout)) as _loop:
+        async for action, msg in _loop:
+            if action == "complete":
+                reason = ""
+                result = msg.result or {}
+                if isinstance(result, dict):
+                    reason = result.get("stopReason", "") or ""
+                self._track_prompt_usage(result)
+                _ag_err, _ag_flushed = _ag_monitor.finish_complete(reason=reason, result=result)
+                _flush_ag(_ag_flushed)
+                if _pi_model_error is not None and reason == STOP_REASON_END_TURN:
+                    pi_steer_turn.raise_model_error(self, _pi_model_error)
+                if _ag_err is not None:
+                    raise _ag_err
+                self._settle_harness_compaction(reason)
+                self._settle_codex_compaction(reason)
+                reason, _ = self.last_prompt_stats.terminal_refusal(reason)
                 self._last_stop_reason = reason
                 self._turn_done.set()
                 return "".join(output)
-            _raise_acp_error(msg.error, self._advertised_model_ids(), backend=self.backend)
-        if action == "permission":
-            await self._handle_permission(msg)
-        elif action == "elicitation":
-            # No consumer on this API to put the ask to: declined.
-            await self._decline_elicitation(msg)
-        elif action == "server_request_unknown":
-            await self._reject_unknown_server_request(msg)
-        elif action == "model_fallback":
-            # As the streaming path does, minus the event this API cannot return:
-            # a V2 refusal hop must unfold its refusal before the terminal folds.
-            _fb_upd = (msg.params or {}).get("update")
-            if isinstance(_fb_upd, dict):
-                self._engine_fallback.apply(self, normalize_kiro_v2(_fb_upd))
-        elif action == "update":
-            # See send_message_stream: a native child's own frames are not the answer.
-            if self._native_child_events(msg)[1]:
-                continue
-            self._track_usage_update(msg)
-            self._note_background_launch(msg)
-            # See send_message_stream: settle the codex compaction for the
-            # context counts, drop the event this API cannot return.
-            self._codex_compaction_event(msg)
-            if (_pi_failure := pi_steer_turn.model_error(self, msg)) is not None:
-                _pi_model_error = _pi_failure
-                continue
-            chunk, is_thinking, _ = harness_notices.text_chunk(self, msg)
-            if chunk and not is_thinking:
-                # Apply the claude compaction state change, then KEEP the
-                # chunk. This path returns one string callers treat as the
-                # agent's answer, and a caller that wants the notice out of
-                # that string subtracts it with
-                # strip_claude_compaction_notices; dropping it here would
-                # silently truncate a real answer on a misclassification.
-                self._harness_compaction_event(chunk)
-                output.append(chunk)
-                self.last_prompt_stats.text_chunks += 1
-                if _is_tool_interrupted_marker(chunk):
-                    self._emit_tool_interrupted_sel("_read_prompt_response")
-                    return "".join(output)  # see _dispatch_events for rationale
-            self._track_tool_call(msg)
-            # Mirror _dispatch_events for the send_message (worker-pool)
-            # dispatch path: send_message drives tools through here, not
-            # through the stream _dispatch_events, so without this
-            # app/worker-pool subagents never reached hook/SEL parity. All
-            # gating stays inside the _maybe_* methods (self._audit_source),
-            # so main-chat send_message callers (audit_source=None) are no-op.
-            tool_event = self._extract_tool_event(msg)
-            if tool_event:
-                # Record every observed tool_call so PostToolUse can recover
-                # tool_name from _observed_tool_calls (see _maybe_fire_post_tool_hooks).
-                if tool_event.tool_call_id:
-                    self._observed_tool_calls[tool_event.tool_call_id] = (
-                        tool_event.title or "unknown",
-                        tool_event.tool_kind or "",
+            if action == "error":
+                _flush_ag(_ag_monitor.take_held())
+                if error_is_refusal_terminal(msg.error, self.last_prompt_stats.refusal):
+                    reason, _ = self.last_prompt_stats.terminal_refusal("")
+                    self._last_stop_reason = reason
+                    self._turn_done.set()
+                    return "".join(output)
+                _raise_acp_error(msg.error, self._advertised_model_ids(), backend=self.backend)
+            if action not in ("update", "metadata", "compaction"):
+                _flush_ag(_ag_monitor.note_activity())
+            if action == "permission":
+                await self._handle_permission(msg)
+            elif action == "elicitation":
+                await self._decline_elicitation(msg)
+            elif action == "server_request_unknown":
+                await self._reject_unknown_server_request(msg)
+            elif action == "model_fallback":
+                _fb_upd = (msg.params or {}).get("update")
+                if isinstance(_fb_upd, dict):
+                    self._engine_fallback.apply(self, normalize_kiro_v2(_fb_upd))
+            elif action == "update":
+                if self._native_child_events(msg)[1]:
+                    continue
+                self._track_usage_update(msg)
+                _flush_ag(_ag_monitor.note_update_frame(msg))
+                self._note_background_launch(msg)
+                self._codex_compaction_event(msg)
+                if (_pi_failure := pi_steer_turn.model_error(self, msg)) is not None:
+                    _pi_model_error = _pi_failure
+                    continue
+                chunk, is_thinking, _ = harness_notices.text_chunk(self, msg)
+                if chunk:
+                    _notice_chunk = bool(
+                        not is_thinking and self._harness_compaction_event(chunk) is not None
                     )
-                await self._maybe_audit_tool_call(tool_event)
-                await self._skill_reads.note(tool_event)
-                await self._maybe_fire_pre_tool_hooks(tool_event)
-            await self._tripwire_pi_gate(msg)
-            await self._tripwire_permission_state(msg)
-            tool_result_event = self._extract_tool_call_update(msg)
-            if tool_result_event:
-                self._skill_reads.credit(tool_result_event)
-                await self._maybe_fire_post_tool_hooks(tool_result_event)
-                await self._maybe_audit_unasked_tool_call(tool_result_event)
-                self._tripwire_spec_disabled_tool(tool_result_event)
-        elif action == "metadata":
-            self._track_metadata(msg)
-        elif action == "compaction":
-            self._handle_compaction_status(msg)
+                    _held_now, _ag_flushed = _ag_monitor.observe_text(
+                        chunk=chunk,
+                        is_thinking=is_thinking,
+                        notice_chunk=_notice_chunk,
+                        text_chunks_seen=self.last_prompt_stats.text_chunks,
+                        message_id=parse_message_id((msg.params or {}).get("update")),
+                    )
+                    _flush_ag(_ag_flushed)
+                    if _held_now:
+                        continue
+                    if not is_thinking:
+                        output.append(chunk)
+                        self.last_prompt_stats.text_chunks += 1
+                        if _is_tool_interrupted_marker(chunk):
+                            self._emit_tool_interrupted_sel("_read_prompt_response")
+                            return "".join(output)  # see _dispatch_events for rationale
+                self._track_tool_call(msg)
+                tool_event = self._extract_tool_event(msg)
+                if tool_event:
+                    if tool_event.tool_call_id:
+                        self._observed_tool_calls[tool_event.tool_call_id] = (
+                            tool_event.title or "unknown",
+                            tool_event.tool_kind or "",
+                        )
+                    await self._maybe_audit_tool_call(tool_event)
+                    await self._skill_reads.note(tool_event)
+                    await self._maybe_fire_pre_tool_hooks(tool_event)
+                await self._tripwire_pi_gate(msg)
+                await self._tripwire_permission_state(msg)
+                tool_result_event = self._extract_tool_call_update(msg)
+                if tool_result_event:
+                    self._skill_reads.credit(tool_result_event)
+                    await self._maybe_fire_post_tool_hooks(tool_result_event)
+                    await self._maybe_audit_unasked_tool_call(tool_result_event)
+                    self._tripwire_spec_disabled_tool(tool_result_event)
+            elif action == "metadata":
+                self._track_metadata(msg)
+            elif action == "compaction":
+                if not self._handle_compaction_status(msg):
+                    _flush_ag(_ag_monitor.note_activity())
 
+    _flush_ag(_ag_monitor.take_held())
     self._last_stop_reason = ""
     self._turn_done.set()
     raise AcpTimeoutError(partial_output="".join(output))

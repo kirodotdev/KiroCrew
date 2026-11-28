@@ -432,12 +432,16 @@ def test_the_dispatch_path_flags_the_notice_chunk_it_forwards() -> None:
     assert re.search(
         r"yield AcpEvent\(\s*kind=kind,\s*text=chunk,\s*control_notice=_notice_chunk\b", src
     ), "the forwarded chunk must carry the notice flag"
+    # The flag is set from the same compaction read that emits the event, before the
+    # chunk can be held (the Antigravity turn-error monitor needs it at that point).
     assert re.search(
-        r"if _compaction_event is not None:\s*\n"
-        r"\s*yield _compaction_event\s*\n"
-        r"\s*_notice_chunk = True",
+        r"_compaction_event = None if is_thinking else self\._harness_compaction_event\(chunk\)"
+        r"\s*\n\s*_notice_chunk = _compaction_event is not None",
         src,
-    ), "the notice chunk must be marked where the compaction event is emitted"
+    ), "the notice chunk must be marked from the compaction read that emits the event"
+    assert re.search(
+        r"if _compaction_event is not None:\s*\n\s*yield _compaction_event\b", src
+    ), "the compaction event must still be emitted before the chunk"
 
 
 def _runner_source() -> str:

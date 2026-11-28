@@ -234,11 +234,13 @@ CLAUDE_ACP_STEERING_MIN_VERSION = (0, 65, 0)
 CLAUDE_ACP_FORK_POINT_MIN_VERSION = (0, 71, 0)
 
 
-def _adapter_version_at_least(agent_version: str, floor: tuple[int, int, int]) -> bool:
-    """Whether the adapter-reported *agent_version* is at or above *floor*."""
-    # Bounded digit runs: the version is adapter-reported, and ``int()`` refuses a
-    # run past the interpreter's digit limit with ``ValueError``.
-    match = re.match(r"(\d{1,9})\.(\d{1,9})\.(\d{1,9})(?!\d)", agent_version or "")
+def _adapter_version_at_least(agent_version: object, floor: tuple[int, int, int]) -> bool:
+    """Return True when *agent_version* is at or above *floor*."""
+    if not isinstance(agent_version, str):
+        return False
+    cleaned = agent_version.strip()
+    # Bound digit counts because ``int()`` refuses runs past the interpreter limit.
+    match = re.match(r"(\d{1,9})\.(\d{1,9})\.(\d{1,9})(?!\d)", cleaned, re.ASCII)
     if not match:
         return False
     found = tuple(int(part) for part in match.groups())
