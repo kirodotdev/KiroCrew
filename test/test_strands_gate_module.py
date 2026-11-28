@@ -890,6 +890,59 @@ def test_an_exported_instance_refuses_a_launch_override_it_cannot_apply(gated, o
         gated.gate._serve_exported_instance(gated(), "s", dict(overrides))
 
 
+# ── the CLI's session reaches create_agent ──
+#
+# The Strands CLI 0.6.0 worker serves the module's ``agent`` itself unless that
+# agent's create_harness options carry a session; then it calls ``create_agent``
+# with ``session={"id", "dir"}``.
+
+
+def _recording_harness(monkeypatch: pytest.MonkeyPatch, agent_cls: type) -> list[dict]:
+    calls: list[dict] = []
+
+    def create_harness(*_a: Any, **options: Any) -> Any:
+        calls.append(options)
+        return agent_cls()
+
+    monkeypatch.setattr(sys.modules["strands_harness"], "create_harness", create_harness)
+    return calls
+
+
+def test_the_import_time_agent_carries_a_session_so_the_cli_calls_create_agent(gated, monkeypatch) -> None:
+    calls = _recording_harness(monkeypatch, gated)
+    gate = _load_gate()
+    assert calls[-1]["session"] == {"dir": gate.STATE_DIR}
+
+
+def test_the_cli_session_is_stored_under_crews_state_dir(gated, monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(gated.gate, "STATE_DIR", str(tmp_path / "state"))
+    calls = _recording_harness(monkeypatch, gated)
+    gated.gate.create_agent(session={"id": "s-1", "dir": str(tmp_path / "cwd")}, model="m")
+    assert calls == [
+        {
+            "builtin_tools": gated.gate.DEFAULT_BUILTIN_TOOLS,
+            "background_tasks": False,
+            "memory": False,
+            "skills": False,
+            "session": {"id": "s-1", "dir": str(tmp_path / "state")},
+            "model": "m",
+        }
+    ]
+
+
+def test_a_project_factory_gets_the_session_under_crews_state_dir(gated, monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(gated.gate, "STATE_DIR", str(tmp_path / "state"))
+    seen: list[dict] = []
+
+    def create_agent(**overrides: Any) -> Any:
+        seen.append(overrides)
+        return gated()
+
+    monkeypatch.setattr(gated.gate, "_user_module", types.SimpleNamespace(create_agent=create_agent))
+    gated.gate.create_agent(session={"id": "s-1", "dir": str(tmp_path / "cwd")})
+    assert seen == [{"session": {"id": "s-1", "dir": str(tmp_path / "state")}}]
+
+
 # ── bedrock-mantle runs on the Bedrock API key and AWS_REGION ──
 #
 # Stand-ins for the strands-agents pieces a mantle request goes through, reduced to

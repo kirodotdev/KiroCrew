@@ -192,7 +192,7 @@ COPILOT_VERIFIED_VERSION = "1.0.100"
 #: from it only in its version. The install hint pins it; another release is named
 #: at the handshake (``acp.harness.strands``). Re-measure against a fresh capture
 #: before raising it to a release whose code differs.
-STRANDS_VERIFIED_VERSION = "0.2.4"
+STRANDS_VERIFIED_VERSION = "0.6.0"
 #: The Python packages the Strands CLI's project worker imports, at the versions the
 #: gate was measured on. Installed into the project environment Crew runs Strands in.
 #: strands-harness loads each provider's SDK only through its own extra, so the
@@ -205,7 +205,7 @@ STRANDS_PYTHON_REQUIREMENT = "strands-harness[anthropic,gemini,litellm,ollama,op
 #: loads the gate.
 STRANDS_PYTHON_CRT_REQUIREMENT = "botocore[crt]"
 #: The CLI's own ``engines.node`` floor.
-STRANDS_NODE_FLOOR = (22, 0, 0)
+STRANDS_NODE_FLOOR = (22, 12, 0)
 
 #: Harness id -> the fixed facts of LAUNCHING it, for the harnesses whose own binary
 #: serves ACP.
