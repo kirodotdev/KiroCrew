@@ -927,10 +927,6 @@ class TestLivenessSweep:
         assert path.is_dir()
         assert f"it has no owner record, but live pid {os.getpid()} still uses it" in caplog.text
 
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="Windows has no change time, so a far-future date stands there",
-    )
     def test_a_far_future_mtime_is_not_a_write_but_clock_skew_is(self, scratch_root: Path) -> None:
         # A write stamps the current clock, so a file utime() dated years ahead
         # (a test fixture's) must not keep a dead tree until that date; a few
