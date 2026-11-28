@@ -2121,6 +2121,11 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   loaded companion's extra credential/cookie regexes apply to the audit trail.
 - **Atomic writes** — `_write_text()` writes to a `.tmp` sibling and renames,
   so a crash mid-write cannot corrupt `current.html` or `meta.json`.
+  The by-name (Windows) branch renames through `atomic_write.replace_with_retry`,
+  so a scanner or reader briefly holding the destination is waited out; a
+  `PermissionError` that outlasts the retry is raised as `ArtifactFileHeldError`
+  (an `ArtifactError` that is still a `PermissionError`, so `get`'s token
+  fallback on `OSError` keeps serving the artifact) and the staging file is removed. The pinned POSIX `dir_fd` branch renames once.
   Cleanup of a leftover legacy staging file is best-effort: an `OSError` is logged
   at debug level and does not fail a save whose replacement already published.
 - **Tolerant load** — `ArtifactStore._read_meta_file()` hands the parsed file to
