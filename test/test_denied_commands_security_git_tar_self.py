@@ -1892,3 +1892,31 @@ class TestSandboxEscapeGitTarSelf:
     )
     def test_a_transport_sharing_a_line_with_a_heredoc_stays_refused(self, cmd, rule):
         assert _denied_by(cmd) == rule, cmd
+
+    # Arithmetic in the path of a tar or scp-like git remote is part of a file name,
+    # as in an scp file operand, so a remote host stays allowed.  A self host,
+    # arithmetic in the host part, and the same shape inside a carried ssh command
+    # (an ``-R`` forward spec, not a remote) still refuse.
+    @pytest.mark.parametrize(
+        ("cmd", "rule"),
+        [
+            ("tar -cf backup.example.com:backup-$((1+1)).tar dir", None),
+            ("git clone git@github.com:org/repo-$((1+1)).git", None),
+            ("tar -cf localhost:backup-$((1+1)).tar dir", _RULE),
+            ("git clone localhost:repo-$((1+1)).git", _RULE),
+            ("tar -cf 127.0.0.$((0+1)):backup.tar dir", _RULE),
+            ("git clone user@[::$((0+1))]:x", _RULE),
+            ("GIT_SSH_COMMAND='ssh -R 2222:127.0.0.$((0+1)):22' git fetch origin", _SSH_RULE),
+        ],
+        ids=[
+            "tar-remote-path-allowed",
+            "git-remote-path-allowed",
+            "tar-self-host",
+            "git-self-host",
+            "tar-arithmetic-in-host",
+            "git-arithmetic-in-bracketed-host",
+            "carried-ssh-forward-to-self",
+        ],
+    )
+    def test_arithmetic_in_a_remote_path_names_no_host(self, cmd, rule):
+        assert _denied_by(cmd) == rule, cmd
