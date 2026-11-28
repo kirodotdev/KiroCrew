@@ -323,6 +323,12 @@ from kiro_crew.dashboard.handlers.memory_edit import (  # noqa: E402, F401
     api_memory_records,
     api_memory_records_refresh,
 )
+from kiro_crew.dashboard.handlers.memory_graph_layout_api import (  # noqa: E402, F401
+    api_memory_graph_nodes,
+    api_memory_graph_overview,
+    api_memory_graph_search,
+    api_memory_graph_select,
+)
 from kiro_crew.dashboard.handlers.memory_member import (  # noqa: E402, F401
     api_memory_recall,
     api_memory_seed,

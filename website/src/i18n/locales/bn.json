@@ -18127,23 +18127,19 @@
         "tools_count_other": "{{n}}টি টুল"
       },
       "memoryGraphTab": {
-        "all_count": "সব ({{count}})",
-        "gpu_rendered_visualization_of_all_kirocrew_memor": "সব {{productName}} মেমরির GPU-রেন্ডার করা ভিজ্যুয়ালাইজেশন। নোডগুলি ধরন অনুযায়ী রঙ করা। লেবেল দেখতে জুম করো, নোড দেখতে ক্লিক করো, ফোকাস করতে ফিল্টার ব্যবহার করো।",
-        "group_history_count": "ইতিহাস ({{count}})",
-        "group_lessons_count": "শিক্ষা ({{count}})",
-        "group_preferences_count": "পছন্দসমূহ ({{count}})",
-        "group_projects_count": "প্রজেক্ট ({{count}})",
-        "group_semantic_count": "সিমান্টিক ({{count}})",
         "loading_graph_data": "গ্রাফ ডেটা লোড হচ্ছে…",
         "memory_graph": "মেমরি গ্রাফ",
         "no_memory_data_to_visualize_add_preferences_proj": "দেখানোর মতো কোনো মেমরি ডেটা নেই। প্রথমে পছন্দ, প্রজেক্ট বা শিক্ষা যোগ করুন।",
-        "partial_notice": "এখানে তোমার মেমরির শুধু একটি অংশ দেখানো হয়েছে, তাই অনুসন্ধান কেবল এই নোডগুলো খুঁজে পায়।",
         "refresh": "রিফ্রেশ",
         "search_memory_nodes": "মেমরি নোড অনুসন্ধান",
         "search_nodes": "নোড অনুসন্ধান…",
         "load_failed": "মেমরি গ্রাফ লোড করা যায়নি",
         "load_failed_unknown": "কোনো কারণ ছাড়াই পড়া ব্যর্থ হয়েছে।",
-        "retry": "আবার চেষ্টা করো"
+        "retry": "আবার চেষ্টা করো",
+        "canvas_unavailable": "এই ব্রাউজার গ্রাফটি আঁকতে পারে না। খোঁজা আর স্মৃতি ট্যাব এখনও কাজ করে।",
+        "fit_view": "পুরোটা দেখাও",
+        "keyboard_hint": "তীর কী দিয়ে মেমোরিগুলোর মধ্যে যাও, Enter দিয়ে একটি খোলো।",
+        "hold_space_to_pan": "সরাতে Space চেপে রাখো।"
       },
       "memoryTab": {
         "actions": "অ্যাকশন",
@@ -24660,6 +24656,7 @@
     "scope_all_repos": "সব রিপো",
     "search_filters": "ফিল্টার খুঁজুন",
     "scroll_more": "আরও দেখতে স্ক্রোল করো",
+    "graph_changed": "এই বাক্সটি আঁকার পর গ্রাফ বদলে গেছে। বাক্সটি আবার আঁকো।",
     "graph_selected": "{{formatted}}টি বেছে নেওয়া",
     "show_in_memories": "মেমোরিতে দেখো",
     "filters_width": "ফিল্টারের প্রস্থ",

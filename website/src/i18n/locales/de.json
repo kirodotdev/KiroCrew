@@ -18127,23 +18127,19 @@
         "tools_count_other": "{{n}} Werkzeuge"
       },
       "memoryGraphTab": {
-        "all_count": "Alle ({{count}})",
-        "gpu_rendered_visualization_of_all_kirocrew_memor": "GPU-gerenderte Visualisierung der gesamten {{productName}}-Erinnerung. Knoten sind nach Typ farblich kodiert. Zoome hinein, um Beschriftungen anzuzeigen, klicke einen Knoten an, um ihn zu prüfen, und nutze Filter, um den Fokus zu setzen.",
-        "group_history_count": "Verlauf ({{count}})",
-        "group_lessons_count": "Lektionen ({{count}})",
-        "group_preferences_count": "Präferenzen ({{count}})",
-        "group_projects_count": "Projekte ({{count}})",
-        "group_semantic_count": "Semantisch ({{count}})",
         "loading_graph_data": "Graphdaten werden geladen…",
         "memory_graph": "Erinnerungsgraph",
         "no_memory_data_to_visualize_add_preferences_proj": "Keine Erinnerungsdaten zur Visualisierung. Fügen Sie zuerst Präferenzen, Projekte oder Lektionen hinzu.",
-        "partial_notice": "Hier ist nur ein Teil deiner Erinnerungen dargestellt, daher findet die Suche nur diese Knoten.",
         "refresh": "Aktualisieren",
         "search_memory_nodes": "Erinnerungsknoten suchen",
         "search_nodes": "Knoten suchen…",
         "load_failed": "Erinnerungsgraph konnte nicht geladen werden",
         "load_failed_unknown": "Das Lesen ist ohne Angabe eines Grundes fehlgeschlagen.",
-        "retry": "Erneut versuchen"
+        "retry": "Erneut versuchen",
+        "canvas_unavailable": "Dieser Browser kann den Graph nicht zeichnen. Die Suche und der Tab „Erinnerungen“ funktionieren weiter.",
+        "fit_view": "Ganz anzeigen",
+        "keyboard_hint": "Mit den Pfeiltasten wechselst du zwischen Erinnerungen, mit Enter öffnest du eine.",
+        "hold_space_to_pan": "Leertaste halten zum Verschieben"
       },
       "memoryTab": {
         "actions": "Aktionen",
@@ -24660,6 +24656,7 @@
     "scope_all_repos": "Alle Repos",
     "search_filters": "Filter durchsuchen",
     "scroll_more": "Scrollen für mehr",
+    "graph_changed": "Der Graph hat sich seit dem Zeichnen dieses Rahmens geändert. Zeichne ihn erneut.",
     "graph_selected": "{{formatted}} ausgewählt",
     "show_in_memories": "In Erinnerungen anzeigen",
     "filters_width": "Breite der Filter",

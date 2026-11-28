@@ -518,6 +518,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # guard protects is served by `dashboard/handlers/memory_edit.py`, the
         # registered sink for the records surface.
         "memory_edit.py",
+        # Redacts cluster labels and node names while it BUILDS the graph layout
+        # file, so the stored layout never holds unredacted text. It emits
+        # nothing: the layout is served by `dashboard/handlers/memory_graph_layout_api.py`,
+        # listed with the dashboard handlers below.
+        "memory_graph_layout.py",
         # Same shape: applies a redactor the CALLER injects, to scan the form a
         # platform will actually render (markup collapsed, ANSI stripped). It owns
         # no output of its own -- the registered sinks are the modules that call
@@ -1012,6 +1017,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/memory.py",
         "dashboard/handlers/memory_embeddings.py",
         "dashboard/handlers/memory_graph.py",
+        "dashboard/handlers/memory_graph_layout_api.py",
         "dashboard/handlers/optimizer.py",
         "dashboard/handlers/prompts_authoring.py",
         "dashboard/handlers/prompts_reading.py",

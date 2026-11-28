@@ -23,6 +23,13 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Embedding child: this interpreter, -P, a fixed module; requests travel
         # on its pipes as data, never as argv. No agent input reaches the spawn.
         "embeddings_child.py::spawn",
+        # Memory graph layout build: this interpreter, -P, the fixed module
+        # `kiro_crew.memory_graph_layout build`, and two paths the gateway derives
+        # itself -- the resolved store database (`StoreGraph.db_path`) and a
+        # pid-named file beside its layout (`memory_graph_service._start_build`).
+        # stdin/stdout/stderr are DEVNULL; no agent or model text reaches argv,
+        # env or cwd.
+        "memory_graph_layout.py::spawn_rebuild",
         # `kirocrew eval run --suite tasks` (rfc-builtin-eval.md §3-§5). Every argv
         # below is built by the runner from fixed strings, the suite's case files
         # and paths the runner created; none comes from the agent or the model.

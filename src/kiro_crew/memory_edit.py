@@ -18,6 +18,7 @@ import threading
 import time
 import unicodedata
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from kiro_crew import memory_decay, memory_record_facets, memory_record_meaning, memory_schema
@@ -83,6 +84,9 @@ _FILTER_KEYS = {
     "since",
     "until",
     "date_field",
+    "box",
+    "box_layout",
+    "box_kinds",
 }
 
 
@@ -113,6 +117,29 @@ def _query(raw: Any) -> dict:
     if filters:
         result["filters"] = filters
     return result
+
+
+def _with_box(store: Any, filters: dict) -> dict:
+    """*filters* with a memory graph ``box`` resolved against *store*'s layout."""
+    if "box" not in filters:
+        return filters
+    from kiro_crew.memory_graph_service import graph_for
+
+    graph = graph_for(Path(store._db_path))
+    # Adoption and box resolution must use the same build.
+    with graph._lock:
+        if filters.get("box_layout") != graph.sidecar.revision():
+            raise MemoryEditError(
+                "The graph changed since this box was drawn. Draw it again.",
+                "stale_memory_box",
+                409,
+            )
+        return memory_record_facets.resolve_box(
+            filters,
+            lambda box, kinds: graph.sidecar.ids_in_box(
+                (box[0], box[1], box[2], box[3]), kinds or None
+            ),
+        )
 
 
 def _identity(item: Any, *, revision: bool = False) -> tuple[str, str]:
@@ -279,7 +306,7 @@ def _rows(
     else:
         sql = f"SELECT b.*, '' AS derived_from{search_meta} FROM ({sql}) b{search_join} ORDER BY b.kind,b.id"
     cursor = _scan(store, sql, sem_ids + epi_ids, packable=identities is None)
-    filters: dict = query.get("filters") or {}
+    filters: dict = _with_box(store, query.get("filters") or {})
     matched = -1
     try:
         for row in cursor:
@@ -535,9 +562,15 @@ _FACET_CACHE_SIZE = 32
 
 
 def _cached_facets(everything: list[dict], filters: dict, kind: str, bands: int = 0) -> dict:
-    """Facet counts over *everything*, reused while the list and its strength
-    *bands* (``memory_decay.refresh``'s digest) are unchanged."""
-    key = (id(everything), kind, json.dumps(filters, sort_keys=True), bands)
+    """Facet counts over *everything*, reused while the list, its strength *bands*
+    (``memory_decay.refresh``'s digest) and the ids a box resolved to are unchanged."""
+    shown = {k: v for k, v in filters.items() if k != memory_record_facets.BOX_IDS}
+    # A rebuilt layout can move rows across the same box with no store write.
+    boxed = filters.get(memory_record_facets.BOX_IDS)
+    box_digest = (
+        hashlib.sha256("\0".join(sorted(boxed)).encode()).hexdigest() if boxed is not None else ""
+    )
+    key = (id(everything), kind, json.dumps(shown, sort_keys=True), bands, box_digest)
     with _CACHE_LOCK:
         hit = _FACET_CACHE.get(key)
         if hit is not None and hit[0] is everything:
@@ -606,6 +639,46 @@ def _cached_summaries(store: Any, base: dict) -> list[dict]:
     return everything
 
 
+def matching_ids(store: Any, query: dict, *, meaning: bool = False) -> list[str]:
+    """The id of every record the list shows for *query*, across all its pages.
+
+    The memory graph's search: the same words, meaning cut-off and filters as
+    :func:`list_records`, so the graph highlights exactly what the list would
+    list. An id here is the graph's id for a record (an experience's id, a
+    fact's or lesson's key).
+    """
+    query = _query(query)
+    if not query["q"]:
+        raise MemoryEditError("Search needs search words.")
+    vector = None
+    if meaning:
+        try:
+            vector = memory_record_meaning.embed_query(store, query["q"])
+        except memory_record_meaning.MeaningUnavailable:
+            raise MemoryEditError(
+                "Search by meaning needs the embedding model, which is not ready. Search by words instead.",
+                code="meaning_unavailable",
+                status=409,
+            ) from None
+    filters = _with_box(store, query.get("filters", {}))
+    with store._db_lock, _read_snapshot(store):
+        everything = _cached_summaries(store, {"q": "" if meaning else query["q"], "kind": "all"})
+        scores = memory_record_meaning.score_rows(store, vector) if vector is not None else None
+        out = []
+        for summary in everything:
+            if scores is not None and (
+                memory_record_meaning.summary_score(scores, summary)
+                < memory_record_meaning.MEANING_CUTOFF
+            ):
+                continue
+            if (query["kind"] == "all" or summary["kind"] == query["kind"]) and (
+                memory_record_facets.matches(summary, filters)
+            ):
+                if isinstance(summary["id"], str) and summary["id"]:
+                    out.append(summary["id"])
+    return out
+
+
 def list_records(
     store: Any,
     query: dict,
@@ -661,7 +734,7 @@ def list_records(
                     entries.append(row)
                 total += 1
         return {"entries": entries, "total": total, "has_more": total > offset + limit}
-    filters = query.get("filters", {})
+    filters = _with_box(store, query.get("filters", {}))
     with store._db_lock, _read_snapshot(store):
         # One light pass over every search match, then only the page is assembled.
         # Both passes read one snapshot, so a position names the same row in each.
