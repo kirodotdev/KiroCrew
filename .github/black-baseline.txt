@@ -624,7 +624,6 @@ test/test_steering_api.py
 test/test_stop_kill_cancel.py
 test/test_streaming_meta_redaction.py
 test/test_stt_config_atomic.py
-test/test_stuck_turn_watchdog.py
 test/test_subagent_cost.py
 test/test_subagent_stall.py
 test/test_subquestion_queue.py

@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew import platform_compat
+from kiro_crew.acp import session_handle_dispatch
 from kiro_crew.acp.liveness import (
     EVIDENCE_PLATFORM_LIMITED,
     INTERACTIVE_CONFIRM,
@@ -48,6 +49,7 @@ from kiro_crew.acp.types import (
     WAIT_REASON_INPUT,
     JsonRpcMessage,
 )
+from kiro_crew.testing.clock import ManualClock
 
 # ── The classifier table ─────────────────────────────────────────────────────
 
@@ -426,23 +428,38 @@ def test_tool_result_clears_the_classification():
 
 
 class _SilentQueue:
-    def __init__(self, tick: float = 0.02) -> None:
+    """Always empty. With a ``clock`` installed on the dispatch module, each poll
+    advances it by ``tick`` instead of sleeping, so the turn's ceiling counts
+    polls rather than the runner's wall time."""
+
+    def __init__(self, tick: float = 0.02, clock: ManualClock | None = None) -> None:
         self._tick = tick
+        self._clock = clock
 
     async def get(self):
-        await asyncio.sleep(self._tick)
+        if self._clock is None:
+            await asyncio.sleep(self._tick)
+        else:
+            self._clock.advance(self._tick)
+            await asyncio.sleep(0)
         raise asyncio.TimeoutError
 
     def qsize(self) -> int:
         return 0
 
 
-def _stalling(wd: WatchdogSettings, command: str, verdict: str, evidence: str) -> AcpSessionHandle:
+def _stalling(
+    wd: WatchdogSettings,
+    command: str,
+    verdict: str,
+    evidence: str,
+    clock: ManualClock | None = None,
+) -> AcpSessionHandle:
     handle = _handle(watchdog=wd)
     handle._turn_done.clear()
     handle._stale_eligible = False
     handle._handle_update(_tool_call_msg(command))  # real dispatch path → classification
-    handle._queue = _SilentQueue()  # type: ignore[assignment]
+    handle._queue = _SilentQueue(clock=clock)  # type: ignore[assignment]
     handle._oracle.check_tool = lambda pid, tool: (verdict, evidence)  # type: ignore[method-assign]
     return handle
 
@@ -564,17 +581,20 @@ async def test_pager_risk_does_not_narrow_the_platform_limited_window():
 
 
 @pytest.mark.asyncio
-async def test_wait_policy_holds_the_turn_open_and_emits_the_status_once():
+async def test_wait_policy_holds_the_turn_open_and_emits_the_status_once(
+    manual_clock: ManualClock, monkeypatch: pytest.MonkeyPatch
+):
     """``interactive_command_policy="wait"``: the status is yielded once, the
     call is NOT cancelled, nothing is answered, and the turn's own ceiling is
     the bound."""
+    manual_clock.install(monkeypatch, session_handle_dispatch)
     wd = WatchdogSettings(
         tool_stall_suspect_secs=999.0,
         stale_window_secs=999.0,
         interactive_command_policy=INTERACTIVE_POLICY_WAIT,
         **_FAST,
     )
-    handle = _stalling(wd, "ssh build-host uptime", VERDICT_STUCK_INPUT, _STUCK)
+    handle = _stalling(wd, "ssh build-host uptime", VERDICT_STUCK_INPUT, _STUCK, clock=manual_clock)
     handle.cancel = AsyncMock()  # type: ignore[method-assign]
 
     collected = await _drain(handle, timeout=0.4)
