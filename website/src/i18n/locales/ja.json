@@ -6115,6 +6115,14 @@
       "this_app_is_disabled": "このアプリは無効です",
       "this_app_provides_agents_and_skills_but_no_visua": "このアプリはエージェントとスキルを提供しますが、ビジュアルインターフェースはありません。チャットからそのエージェントを使用します。"
     },
+    "keptAppPages": {
+      "open_named": "{{name}} を開く",
+      "region_label": "バックグラウンドで実行中のアプリ",
+      "running": "{{name}} はまだ実行中です",
+      "status_check_failed": "{{name}} がまだ有効かどうかを確認できませんでした。実行は続きます。{{error}}",
+      "stop_hint": "停止すると {{name}} が閉じ、実行中の処理も終了します。",
+      "stop_named": "{{name}} を停止"
+    },
     "appPopoutTitleBar": {
       "return": "戻る",
       "return_to_main_window_and_close_this_popout": "メインウィンドウに戻ってこのポップアウトを閉じる"

@@ -6332,6 +6332,14 @@
       "this_app_is_disabled": "यह ऐप अक्षम है",
       "this_app_provides_agents_and_skills_but_no_visua": "यह ऐप एजेंट और स्किल देता है, लेकिन कोई विज़ुअल इंटरफ़ेस नहीं।\n            इसके एजेंट चैट से उपयोग करें।"
     },
+    "keptAppPages": {
+      "open_named": "{{name}} खोलो",
+      "region_label": "बैकग्राउंड में चल रहे ऐप",
+      "running": "{{name}} अभी भी चल रहा है",
+      "status_check_failed": "पक्का नहीं हो सका कि {{name}} अभी भी चालू है; यह चलता रहेगा। {{error}}",
+      "stop_hint": "रोकने से {{name}} बंद हो जाएगा और वह जो कर रहा है, वह खत्म हो जाएगा।",
+      "stop_named": "{{name}} रोको"
+    },
     "appPopoutTitleBar": {
       "return": "वापस जाओ",
       "return_to_main_window_and_close_this_popout": "मुख्य विंडो में वापस जाओ और यह पॉपआउट बंद करो"

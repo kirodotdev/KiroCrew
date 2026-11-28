@@ -6508,6 +6508,14 @@
       "this_app_is_disabled": "Cette application est désactivée",
       "this_app_provides_agents_and_skills_but_no_visua": "Cette application fournit des agents et des compétences, mais aucune interface visuelle.\n            Utilisez ses agents depuis le chat."
     },
+    "keptAppPages": {
+      "open_named": "Ouvrir {{name}}",
+      "region_label": "Apps en arrière-plan",
+      "running": "{{name}} fonctionne toujours",
+      "status_check_failed": "Impossible de confirmer que {{name}} est toujours activée ; elle continue de fonctionner. {{error}}",
+      "stop_hint": "Arrêter ferme {{name}} et interrompt ce qu’elle est en train de faire.",
+      "stop_named": "Arrêter {{name}}"
+    },
     "appPopoutTitleBar": {
       "return": "Retour",
       "return_to_main_window_and_close_this_popout": "Revenir à la fenêtre principale et fermer cette fenêtre détachée"

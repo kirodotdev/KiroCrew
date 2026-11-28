@@ -4418,6 +4418,14 @@
       "this_app_is_disabled": "This app is disabled",
       "this_app_provides_agents_and_skills_but_no_visua": "This app provides agents and skills but no visual interface.\n            Use its agents from chat."
     },
+    "keptAppPages": {
+      "open_named": "Open {{name}}",
+      "region_label": "Apps running in the background",
+      "running": "{{name}} is still running",
+      "status_check_failed": "Couldn't confirm {{name}} is still on; it keeps running. {{error}}",
+      "stop_hint": "Stop closes {{name}} and ends what it is doing.",
+      "stop_named": "Stop {{name}}"
+    },
     "appPopoutTitleBar": {
       "return": "Return",
       "return_to_main_window_and_close_this_popout": "Return to main window and close this popout"

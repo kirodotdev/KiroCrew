@@ -7,9 +7,14 @@
  * legacy route (BuiltinAppRoute, from the installed-apps list). AppHost derives
  * the SDK identity's origin from `app.origin`, so a registry copy never runs with
  * the `builtin` origin the compiled page at that route publishes.
+ *
+ * Inside the shell the page itself is rendered by `KeptAppPagesLayer`, so the app
+ * can keep running, hidden, after the person leaves (`useKeepAlive`); this route
+ * only lends it a place on screen. AppHost's guard states render here as before.
  */
 import AppHost from './AppHost'
 import type { AppHostProps } from './AppHost'
+import { KeptAppSlot, useKeptAppPages } from './KeptAppPages'
 import { useAppViewMetrics } from '../lib/appViewTelemetry'
 
 export default function InstalledAppSurface({
@@ -24,6 +29,10 @@ export default function InstalledAppSurface({
   // One `opened` per mount and one foreground span per visible stretch; the
   // not-installed state has no app to count.
   useAppViewMetrics(app?.name ?? null)
+  const keptPages = useKeptAppPages()
+  if (keptPages && app && app.enabled !== false && !app.unavailable && app.manifest?.ui?.entry) {
+    return <KeptAppSlot store={keptPages} app={app} />
+  }
   // AppHost guards a null `app` itself (its "not installed" state); its prop type
   // is non-null, so the nullable value is cast through. Routed pages act under the
   // dashboard-page identity the core API client uses, not whichever chat happens

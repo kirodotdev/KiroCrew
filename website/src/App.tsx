@@ -32,6 +32,7 @@ import { CREW_POPOUT_ROUTE } from './lib/crewPopout'
 import AppPopoutFrame, { AppPopoutHardExit } from './pages/AppPopoutFrame'
 
 import ErrorBoundary from './components/ErrorBoundary'
+import { KeptAppPagesProvider } from './components/KeptAppPages'
 import AskAgentButton from './components/AskAgentButton'
 import { Lightbox } from './components/MarkdownRenderer'
 const SessionsPage = lazy(() => import('./pages/SessionsPage'))
@@ -1040,7 +1041,11 @@ export default function App() {
           <Suspense fallback={null}><LinkOpenLayer /></Suspense>
           {/* The shell's own nav read owns the shared app list here. */}
           <Suspense fallback={null}><SelectionActionLayer readApps={false} /></Suspense>
+          {/* Routed app pages render through this layer, so an app that is busy
+              (useKeepAlive) keeps running, hidden, on every other page. */}
+          <KeptAppPagesProvider>
           <MainRoutes />
+          </KeptAppPagesProvider>
           </GuideProvider>
           </MobileRosterBarContext.Provider>
           </MobileNavRailContext.Provider>
