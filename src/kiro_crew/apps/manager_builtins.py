@@ -771,8 +771,9 @@ def register_builtin_apps() -> int:
             # Adopted from its own repository, or uninstalled after that: no
             # directory, record, snapshot or secret. A pinned name on a host that
             # never had it is not released, so it registers here as today and adopts
-            # later. A user app shadowing the name is not released, and gets the
-            # stand-down warning below.
+            # later. A user app shadowing the name is released too, but it keeps its
+            # own record and directory, so it falls to the user-install stand-down
+            # below rather than this cleanup branch.
             logger.debug("Built-in %r is released to its repository; not registering", name)
             continue
         if existing is None and name in _adoption_pin_names() and _update_in_progress(name):
