@@ -1706,6 +1706,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         LOCAL_AUTH_METADATA_PATH,
         LOCAL_AUTH_REVOKE_PATH,
         LOCAL_AUTH_TOKEN_PATH,
+        POD_HOST_SIGN_IN_PATHS,
         RELAY_VIEWER_TOKEN_PATH,
         SPA_FALLBACK_EXCLUDED_PREFIXES,
         TEAMS_WEBHOOK_PATH,

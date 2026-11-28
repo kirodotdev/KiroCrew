@@ -1495,6 +1495,14 @@
       "hint": "A small, fast model makes quick calls for Kiro Crew, such as which of your skills fits your message. Pick the model below. If it is slow or does not answer, the built-in rule decides instead, so your reply is never held up."
     },
     {
+      "id": "developer.dev-fleet-test-machines-use-your-kiro-account-sign-in",
+      "label": "Dev Fleet test machines use your Kiro account sign-in",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.dev-fleet-test-machines-use-your-kiro-account-sign-in",
+      "description": "Test machines started by the Dev Fleet app borrow access from your Kiro account sign-in that renews about hourly while they run, never the sign-in itself; their chats use your plan's quota. Off: each machine signs in on its own.",
+      "hint": "Only machines on Kiro Crew's own engine borrow it; one with its own sign-in keeps using it. A company sign-in is never lent."
+    },
+    {
       "id": "developer.earlier-conversation-one-decision-may-carry-in-characters",
       "label": "Earlier conversation one decision may carry, in characters",
       "tab": "developer",

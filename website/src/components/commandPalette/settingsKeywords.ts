@@ -275,6 +275,7 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'developer.chat-on-a-crew': ['remote crew chat', 'chat on another machine', 'connected crew'],
   'developer.connected-computers': ['my laptop folder', 'work on my computer', 'local folder from server', 'remote computer'],
   'developer.decisions': ['decision model', 'jev', 'auto decisions'],
+  'developer.dev-fleet-test-machines-use-your-kiro-account-sign-in': ['dev fleet pod login', 'dev fleet sign in', 'pod kiro account', 'kiro account for pods', 'pod login', 'pod sign in', 'test pod sign in', 'pod uses host login', 'pod kas login', 'borrow my sign in'],
   'developer.earlier-conversation-one-decision-may-carry-in-characters': ['decision context size', 'jev context characters', 'how much conversation jev sees'],
   'developer.explore': ['explore menu', 'try features', 'experimental features', 'explore in top bar'],
   'developer.folder-conductor': ['folder parent chat', 'conductor at top of folder', 'folder lead chat'],

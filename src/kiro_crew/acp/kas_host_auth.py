@@ -16,7 +16,9 @@ This module is the runtime's seam to the one where Crew owns the credential:
   cross-process lock, refresh token withheld). Failures are mapped to a
   token-free category string the runtime can both log and return. On a
   workload-identity host it answers from the Crew's JWT-SVID
-  (:mod:`kiro_crew.workload_identity`) and the vault is never read.
+  (:mod:`kiro_crew.workload_identity`) and the vault is never read. For a bundle
+  engine in a pod whose own vault is empty, it asks the pod's host
+  (:mod:`kiro_crew.pod_host_sign_in`); a relay engine never does.
 
 Both are thin over :mod:`kiro_crew.auth.bridge`, the auth module's own KAS seam;
 this module exists so the ACP runtime has one import for "Crew-owned auth" and so
@@ -84,7 +86,11 @@ async def vault_holds_identity_off_loop() -> bool:
     return await asyncio.to_thread(vault_holds_identity)
 
 
-async def answer_get_access_token() -> dict:
+class HostNotSignedIn(HostAuthCallbackError):
+    """The vault that was asked holds nothing: only a sign-in fixes it."""
+
+
+async def answer_get_access_token(*, bundle: bool = False) -> dict:
     """Build the ``_kiro/auth/getAccessToken`` response from Crew's vault.
 
     Returns the covenant shape (``accessToken``, ``expiresAt``, optional
@@ -95,6 +101,11 @@ async def answer_get_access_token() -> dict:
 
     On a workload-identity host (:mod:`kiro_crew.workload_identity`) the answer is
     the Crew's JWT-SVID, and the vault is not read.
+
+    *bundle* says the asking engine runs on the bundle route. Only then, in a pod
+    given the host's socket (:mod:`kiro_crew.pod_host_sign_in`) whose own vault
+    holds nothing, the host's Crew sign-in answers. A relay engine never asks the
+    host, preview or not.
     """
     from kiro_crew import workload_identity
 
@@ -105,6 +116,27 @@ async def answer_get_access_token() -> dict:
             # The message names the cause, never the token.
             logger.warning("KAS auth callback: workload identity: %s", exc)
             raise HostAuthCallbackError("workload identity unavailable") from exc
+    from kiro_crew import pod_host_sign_in
+
+    try:
+        return await answer_from_vault()
+    except HostNotSignedIn:
+        if not (bundle and pod_host_sign_in.active()):
+            raise
+    try:
+        return await asyncio.to_thread(pod_host_sign_in.fetch_answer)
+    except pod_host_sign_in.HostSignInError as exc:
+        logger.warning("KAS auth callback: host sign-in: %s", exc)
+        raise HostAuthCallbackError(str(exc)) from exc
+
+
+async def answer_from_vault() -> dict:
+    """:func:`answer_get_access_token` from this data home's vault alone.
+
+    No workload identity, no environment API key and no host: what the vault
+    holds, refreshed under its lock, or :class:`HostNotSignedIn` when it holds
+    nothing. The host answers a pod with this.
+    """
     # Deferred: see the module docstring (boot-path and cryptography gates).
     from kiro_crew.auth.bridge import default_token_store, handle_get_access_token
     from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
@@ -137,7 +169,7 @@ async def answer_get_access_token() -> dict:
         raise AssertionError("unreachable: the last try raises or returns")
     except NotAuthenticated as exc:
         # The engine renders this string in its sign-in prompt; keep it short.
-        raise HostAuthCallbackError("not signed in to Kiro Crew") from exc
+        raise HostNotSignedIn("not signed in to Kiro Crew") from exc
     except TokenStoreError as exc:
         # Detail (a path, never a secret) stays in the local log; the engine gets
         # only the category.
@@ -150,7 +182,7 @@ async def answer_get_access_token() -> dict:
         raise HostAuthCallbackError("refresh failed") from exc
 
 
-async def sign_in_refused(served_digest: str | None) -> bool:
+async def sign_in_refused(served_digest: str | None, *, bundle: bool = False) -> bool:
     """Whether Crew's sign-in is refused, renewing a token the engine may hold.
 
     Asked when a KAS host on the Crew-owned route fail-closed its governance
@@ -169,12 +201,27 @@ async def sign_in_refused(served_digest: str | None) -> bool:
     already past its margin. A network failure, or any other error, is False:
     that start keeps its retryable error. So is a workload-identity host: no
     person sign-in can fix it, and the vault is never renewed there.
+
+    *bundle* as in :func:`answer_get_access_token`: a bundle engine in a pod that
+    borrows the host's sign-in asks the host, which answers with
+    :func:`vault_sign_in_refused` on its own vault.
     """
     from kiro_crew import workload_identity
 
     if workload_identity.active():
         return False
+    return await vault_sign_in_refused(served_digest, bundle=bundle)
+
+
+async def vault_sign_in_refused(served_digest: str | None, *, bundle: bool = False) -> bool:
+    """:func:`sign_in_refused` for this data home's vault, never a workload identity.
+
+    With nothing stored, a bundle engine in a pod given the host's socket asks the
+    host (:func:`kiro_crew.pod_host_sign_in.ask_refused`) instead of answering
+    "sign in"; the host calls this with *bundle* left False.
+    """
     # Deferred: see the module docstring (boot-path and cryptography gates).
+    from kiro_crew import pod_host_sign_in
     from kiro_crew.auth.bridge import default_token_store
     from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
     from kiro_crew.auth.refresh import RefreshBlocked, RefreshRejected
@@ -183,6 +230,8 @@ async def sign_in_refused(served_digest: str | None) -> bool:
     try:
         stored = await asyncio.to_thread(store.resolve)
         if stored is None:
+            if bundle and pod_host_sign_in.active():
+                return await asyncio.to_thread(pod_host_sign_in.ask_refused, served_digest)
             return True
         served = served_digest is not None and token_digest(stored.access_token) == served_digest
         provider = KasAuthProvider(store, allow_env_api_key=False)

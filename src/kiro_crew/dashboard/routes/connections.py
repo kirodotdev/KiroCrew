@@ -30,6 +30,10 @@ from kiro_crew.dashboard.handlers.auth_refresh import (
     api_auth_refresh,
 )
 from kiro_crew.dashboard.handlers.mobile_connect import api_mobile_connect_methods
+from kiro_crew.dashboard.handlers.pod_host_sign_in import (
+    api_pod_host_sign_in_refused,
+    api_pod_host_sign_in_token,
+)
 from kiro_crew.dashboard.handlers.relay_viewer import (
     api_relay_viewer_browser_open,
     api_relay_viewer_crews,
@@ -228,3 +232,8 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/relay-viewer/token", api_relay_viewer_token)
     # A browser tab's open: the gateway keeps the grant and relays the Crew.
     app.router.add_post("/api/relay-viewer/browser-open", api_relay_viewer_browser_open)
+    # A pod's own gateway borrows this host's Crew sign-in (off by default): token
+    # auth lets these through only while the preview is on, and the handler admits
+    # only the named pod's gateway process on this gateway's unix socket.
+    app.router.add_post("/api/pods/host-sign-in/token", api_pod_host_sign_in_token)
+    app.router.add_post("/api/pods/host-sign-in/refused", api_pod_host_sign_in_refused)

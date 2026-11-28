@@ -80,6 +80,9 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     # Has server behavior: kiro_crew.acp.kas_engine_subagents.kas_subagents_preview_on
     # mounts the engine's sub-agent tool on a KAS chat's default agent.
     "kas_subagents",
+    # Has server behavior: kiro_crew.pod_host_sign_in lends a pod's bundled KAS
+    # engine this host's Crew sign-in (access tokens only) while it is on.
+    "pod_host_sign_in",
     "remote_crew_chat",
     "session_environments",
     "session_harness",

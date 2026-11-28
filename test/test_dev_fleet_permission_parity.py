@@ -37,7 +37,11 @@ GATEWAY_ROUTES = [
     "/api/apps/dev-fleet/pod-token",
     "/api/apps/dev-fleet/create-release-worktree",
 ]
-HOST = GATEWAY_ROUTES + ["=/api/apps"]
+#: The pod host sign-in routes (``kiro_crew/pod_host_sign_in.py``): the page never
+#: calls them; the entry is the owner's grant the host checks before it lends a pod
+#: its sign-in (``core_route_grant``), so it is declared, not in ``PAGE_CALLS``.
+POD_HOST_SIGN_IN = ["/api/pods/host-sign-in/*"]
+HOST = GATEWAY_ROUTES + POD_HOST_SIGN_IN + ["=/api/apps"]
 #: Every host path the page calls (``website/src/apps/dev-fleet``).
 PAGE_CALLS = GATEWAY_ROUTES + ["/api/apps"]
 #: Neighbours of those paths no declaration names.

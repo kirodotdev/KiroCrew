@@ -238,6 +238,16 @@ export const PREVIEW_CHAT_RUNTIME_SHARING = `${PREVIEW_FLAG_PREFIX}chat-runtime-
 export const PREVIEW_KAS_SUBAGENTS = `${PREVIEW_FLAG_PREFIX}kas-subagents`
 
 /**
+ * Test pods use this computer's sign-in: a test pod's bundled KAS engine gets short-lived
+ * access tokens from this host's own Kiro Crew sign-in, so the pod needs no
+ * sign-in of its own. Server-only: the host gateway reads
+ * `dashboard.feature_previews.pod_host_sign_in` on each request
+ * (`kiro_crew/pod_host_sign_in.py`), so nothing in the dashboard reads this key.
+ * Default OFF, and OFF is a pod that signs in by itself as before.
+ */
+export const PREVIEW_POD_HOST_SIGN_IN = `${PREVIEW_FLAG_PREFIX}pod-host-sign-in`
+
+/**
  * Worker grill: a conductor may offer to let two or three workers grill a costly
  * choice before it picks a path, answer a pick with a `[GRILL: {...}]` card line,
  * and dispatch one moderator worker that runs the fast talk
@@ -316,6 +326,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_BRIDGE_APPROVALS,
   PREVIEW_CHAT_RUNTIME_SHARING,
   PREVIEW_KAS_SUBAGENTS,
+  PREVIEW_POD_HOST_SIGN_IN,
   PREVIEW_WORKER_GRILL,
   PREVIEW_APP_BROWSER_SDK,
   PREVIEW_VISUAL_REFRESH,

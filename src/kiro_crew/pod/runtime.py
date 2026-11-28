@@ -1538,6 +1538,11 @@ def build_pod_env(
 
     drop_inherited_scratch_env(env)
     _share_host_kas_engines(env)
+    # The host's dashboard socket, only while its pod_host_sign_in preview is on:
+    # the pod's bundled KAS engine borrows the host's Crew sign-in through it.
+    from kiro_crew import pod_host_sign_in
+
+    pod_host_sign_in.apply_to_pod_env(env, cfg.live_port)
     if skip_model_download:
         # Set AFTER the scrub loop so no present-or-future scrub pattern can strip
         # the guarantee back out.

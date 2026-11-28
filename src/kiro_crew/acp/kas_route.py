@@ -217,11 +217,23 @@ def kiro_cli_signed_out(*, environ: Mapping[str, str], home: Path) -> bool:
 
 
 def _crew_holds_usable_sign_in() -> bool:
-    """Whether Kiro Crew's own sign-in can serve a spawn. Raises on an unreadable vault.
+    """Whether Kiro Crew's own sign-in can serve a bundle spawn. Raises on an unreadable vault.
 
     A workload-identity host (:mod:`kiro_crew.workload_identity`) answers True
-    without reading the vault: its JWT-SVID is the Crew's sign-in.
+    without reading the vault: its JWT-SVID is the Crew's sign-in. So does a pod
+    given its host's socket (:mod:`kiro_crew.pod_host_sign_in`): its bundle engine
+    borrows the host's Crew sign-in. A relay never does, so a relay decision asks
+    :func:`_crew_vault_holds_usable_sign_in` instead.
     """
+    from kiro_crew import pod_host_sign_in
+
+    if pod_host_sign_in.active():
+        return True
+    return _crew_vault_holds_usable_sign_in()
+
+
+def _crew_vault_holds_usable_sign_in() -> bool:
+    """:func:`_crew_holds_usable_sign_in` without a pod host's: the vault or a workload."""
     from kiro_crew import workload_identity
 
     if workload_identity.active():
@@ -658,7 +670,10 @@ def crew_sign_in_starts_spawn(
 
         kiro_bin = _resolve_kiro_bin(environ=environ, home=home)
         if kiro_bin and crew_entry_skips_launcher(kiro_bin, environ):
-            return True
+            # A relay spawn: a pod host's sign-in never serves one.
+            return _crew_vault_holds_usable_sign_in() or (
+                resolve_kas_route(environ=environ, home=home).bundle
+            )
         return resolve_kas_route(environ=environ, home=home).bundle
     except Exception:  # noqa: BLE001 - no usable Crew sign-in keeps kiro-cli's in play
         return False

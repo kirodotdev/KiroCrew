@@ -78,6 +78,13 @@ MAX_TITLE_GENERATIONS_PER_WINDOW = 1
 #: the App SDK's Bot hooks leave preview.
 APP_BOT_WAKE = "app_bot_wake"
 MAX_APP_BOT_WAKES_PER_WINDOW = 20
+#: A pod asking the host for a lent access token or saying one was refused
+#: (``handlers/pod_host_sign_in.py``), keyed by the kernel-attested peer pid. A
+#: healthy pod engine asks about once per token lifetime (about an hour), so this
+#: only bounds a peer that loops. A proposal, not a measured value.
+POD_HOST_SIGN_IN_TOKEN = "pod_host_sign_in_token"
+POD_HOST_SIGN_IN_REFUSED = "pod_host_sign_in_refused"
+MAX_POD_HOST_SIGN_IN_PER_WINDOW = 30
 
 _BUDGETS = {
     SESSION_CREATE: MAX_SESSION_CREATES_PER_WINDOW,
@@ -86,6 +93,8 @@ _BUDGETS = {
     TAG_COLUMN_CREATE: MAX_TAG_COLUMN_CREATES_PER_WINDOW,
     GENERATE_TITLE: MAX_TITLE_GENERATIONS_PER_WINDOW,
     APP_BOT_WAKE: MAX_APP_BOT_WAKES_PER_WINDOW,
+    POD_HOST_SIGN_IN_TOKEN: MAX_POD_HOST_SIGN_IN_PER_WINDOW,
+    POD_HOST_SIGN_IN_REFUSED: MAX_POD_HOST_SIGN_IN_PER_WINDOW,
 }
 
 

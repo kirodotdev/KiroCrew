@@ -13,7 +13,7 @@ import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
 import { useSharedCrewCapabilities } from '../../hooks/sharedCrew/useSharedCrew'
-import { PREVIEW_APP_BROWSER_SDK, PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BOT_CHAT_APP_TOOLS, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CONNECTED_COMPUTERS, PREVIEW_CREW_CLIENT, PREVIEW_CREW_OAUTH, PREVIEW_CREW_REPLY_STATUS, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_KAS_SUBAGENTS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_VISUAL_REFRESH, PREVIEW_WEBHOOKS, PREVIEW_WIDGETS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_APP_BROWSER_SDK, PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BOT_CHAT_APP_TOOLS, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CONNECTED_COMPUTERS, PREVIEW_CREW_CLIENT, PREVIEW_CREW_OAUTH, PREVIEW_CREW_REPLY_STATUS, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_KAS_SUBAGENTS, PREVIEW_POD_HOST_SIGN_IN, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_VISUAL_REFRESH, PREVIEW_WEBHOOKS, PREVIEW_WIDGETS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { DecisionsCard } from './DecisionsCard'
 import { RemoteDispatchCard } from './RemoteDispatchCard'
@@ -136,6 +136,7 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_BRIDGE_APPROVALS: return i18nT('pages.developer.featurePreviewsTab.bridge_approvals')
     case PREVIEW_CHAT_RUNTIME_SHARING: return i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing')
     case PREVIEW_KAS_SUBAGENTS: return i18nT('pages.developer.featurePreviewsTab.kas_subagents')
+    case PREVIEW_POD_HOST_SIGN_IN: return i18nT('pages.developer.featurePreviewsTab.pod_host_sign_in')
     case PREVIEW_WORKER_GRILL: return i18nT('pages.developer.featurePreviewsTab.worker_grill')
     case PREVIEW_CREW_REPLY_STATUS: return i18nT('pages.developer.featurePreviewsTab.crew_reply_status')
     case PREVIEW_CREW_CLIENT: return i18nT('pages.developer.featurePreviewsTab.crew_client')
@@ -201,6 +202,7 @@ export function FeaturePreviewsSection() {
   const bridgeApprovals = usePreviewFlag(PREVIEW_BRIDGE_APPROVALS)
   const chatRuntimeSharing = usePreviewFlag(PREVIEW_CHAT_RUNTIME_SHARING)
   const kasSubagents = usePreviewFlag(PREVIEW_KAS_SUBAGENTS)
+  const podHostSignIn = usePreviewFlag(PREVIEW_POD_HOST_SIGN_IN)
   const workerGrill = usePreviewFlag(PREVIEW_WORKER_GRILL)
   const crewReplyStatus = usePreviewFlag(PREVIEW_CREW_REPLY_STATUS)
   const crewClient = usePreviewFlag(PREVIEW_CREW_CLIENT)
@@ -689,6 +691,20 @@ export function FeaturePreviewsSection() {
             hint={i18nT('pages.developer.featurePreviewsTab.crew_oauth_desc')}
             checked={crewOauth}
             onChange={v => setPreviewFlag(PREVIEW_CREW_OAUTH, v)}
+          />
+        )}
+        {/* Dev Fleet test machines use your Kiro account sign-in (`pod_host_sign_in`): a gateway
+            switch read on each request from a pod (`kiro_crew/pod_host_sign_in.py`).
+            Here beside the other sign-in preview, not under Engines, because what
+            the reader decides is whose sign-in a pod uses. A title, one line and
+            the switch: NO ingress button, since core links to no specific app. */}
+        {!previewsOff && (
+          <SettingsToggle
+            label={i18nT('pages.developer.featurePreviewsTab.pod_host_sign_in')}
+            description={i18nT('pages.developer.featurePreviewsTab.pod_host_sign_in_desc_summary')}
+            hint={i18nT('pages.developer.featurePreviewsTab.pod_host_sign_in_desc')}
+            checked={podHostSignIn}
+            onChange={v => setPreviewFlag(PREVIEW_POD_HOST_SIGN_IN, v)}
           />
         )}
       </PreviewGroup>

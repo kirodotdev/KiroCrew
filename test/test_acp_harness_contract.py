@@ -854,7 +854,7 @@ def test_kas_host_answered_methods_track_the_membership_set(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_kas_answers_the_token_callback_from_the_vault(monkeypatch):
-    async def _answer():
+    async def _answer(*, bundle=False):
         return {"expiresAt": "pinned"}
 
     monkeypatch.setattr(kas_mod, "answer_get_access_token", _answer)
