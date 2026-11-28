@@ -209,6 +209,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         disable_auto_merge,
         enable_auto_merge,
         list_pr_workflow_runs,
+        list_recent_workflow_runs,
         merge_pull_request,
         rerun_workflow_run,
         set_pr_state,

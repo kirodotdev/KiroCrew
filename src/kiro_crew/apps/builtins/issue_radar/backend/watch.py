@@ -12,11 +12,11 @@ A single asyncio background loop, started from ``register_routes(app)`` via
   2. **crew sweep** (:func:`crew_runtime.sweep_repo`) — every repo with a live crew
      has its crews' open work items compared against the six unblock signals, and
      the owning crew is woken when one moves;
-  3. **CI-failure alerts** (:func:`ci_watch.poll_ci_failures`) — the GitHub repos
-     that opted in (per-repo setting ``notify_on_own_pr_ci_failure``) have the
-     Actions runs on the signed-in user's own open PRs read, and a failed run
-     raises a notification on the app's ``ci-failure`` channel. No repo opted in
-     means no call at all.
+  3. **CI-failure alerts** (:func:`ci_watch.poll_ci_failures`) — the GitHub and
+     GitLab repos that opted in (per-repo setting ``notify_on_own_pr_ci_failure``)
+     have the CI runs on the signed-in user's own open PRs/MRs read, and a failed
+     run raises a notification on the app's ``ci-failure`` channel. No repo opted
+     in means no call at all.
 
 THIS IS THE ONLY ALWAYS-ON LOOP IN THE APP, which is why the crew sweep lives here
 rather than in the route layer. Everything else — including ``routes.py``'s
