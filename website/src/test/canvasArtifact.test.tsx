@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { ApiError } from '../api/apiError'
 import type { Artifact } from '../types'
+import { copyToClipboard } from '../utils/clipboard'
 import { emptyCanvas, parseCanvas, serializeCanvas, type Canvas } from '../components/canvas/canvasModel'
 import { canvasDocument, discardCanvas, flushCanvas } from '../components/canvas/canvasPending'
 import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../components/NavigationLeaveGuard'
@@ -18,6 +19,10 @@ const artifact = vi.fn()
 const createArtifact = vi.fn()
 const setArtifactFolder = vi.fn()
 const deleteArtifact = vi.fn()
+vi.mock('../utils/clipboard', async importOriginal => ({
+  ...await importOriginal<typeof import('../utils/clipboard')>(),
+  copyToClipboard: vi.fn().mockResolvedValue(true),
+}))
 vi.mock('../api/client', () => ({
   api: {
     updateArtifact: (...a: unknown[]) => updateArtifact(...a),
@@ -125,11 +130,45 @@ describe('a canvas artifact', () => {
     updateArtifact.mockResolvedValueOnce({ content_token: 'tMine' })
     await act(async () => { fireEvent.click(screen.getByText('Keep my version')); await vi.advanceTimersByTimeAsync(0) })
     expect(updateArtifact).toHaveBeenCalledTimes(2)
-    const body = updateArtifact.mock.calls[1][1] as { content: string; expected_token: string }
+    const body = updateArtifact.mock.calls[1][1] as { content: string; expected_token: string; placeholders_token?: string }
     expect(body.expected_token).toBe('tLive')
+    expect(body.placeholders_token).toBeUndefined()
     const mine = parseCanvas(body.content)
     expect(mine.ok && mine.canvas.shapes).toHaveLength(2)
     expect(screen.queryByText('This canvas changed somewhere else')).toBeNull()
+  })
+
+  it('a masked canvas changed elsewhere offers Copy my text and Reload, never Keep my version', async () => {
+    updateArtifact.mockRejectedValueOnce(new ApiError(409, 'stale', JSON.stringify({ current_token: 'tX' })))
+    const masked = { ...withShapes(1), shapes: withShapes(1).shapes.map(s => ({ ...s, text: 'token [REDACTED: credential]' })) }
+    render(wrap(<CanvasArtifactBody artifact={art(serializeCanvas(masked), { content_redacted: true })} isCurrent />))
+    addSticky()
+    await act(async () => { await vi.advanceTimersByTimeAsync(800) })
+    expect(screen.getByText('This canvas changed somewhere else')).toBeTruthy()
+    expect(screen.getByText(/keeping your version isn't possible here/)).toBeTruthy()
+    expect(screen.queryByText('Keep my version')).toBeNull()
+    expect(screen.getByText('Reload the canvas')).toBeTruthy()
+
+    // The page's unsaved text goes to the clipboard: the sticky it added is empty, so the
+    // edited set falls back to the text the page holds.
+    await act(async () => { fireEvent.click(screen.getByText('Copy my text')); await vi.advanceTimersByTimeAsync(0) })
+    expect(copyToClipboard).toHaveBeenCalledWith('token [REDACTED: credential]')
+    expect(screen.getByText('Copied')).toBeTruthy()
+    expect(updateArtifact).toHaveBeenCalledTimes(1)
+  })
+
+  it('a refused masked merge says what happened and offers a reload, not a retry that fails again', async () => {
+    updateArtifact.mockRejectedValueOnce(new ApiError(400, 'raw server text', JSON.stringify({ code: 'masked_merge_stale' })))
+    render(wrap(<CanvasArtifactBody artifact={art(serializeCanvas(emptyCanvas()))} isCurrent />))
+    addSticky()
+    await act(async () => { await vi.advanceTimersByTimeAsync(800) })
+    expect(screen.getByText(/Another device or tab changed this canvas, and some of it is shown as \[REDACTED: credential\]/)).toBeTruthy()
+    expect(screen.queryByText('raw server text')).toBeNull()
+    expect(screen.queryByText('Try saving again')).toBeNull()
+
+    artifact.mockResolvedValueOnce({ ...art(serializeCanvas(withShapes(3))), content_token: 'tLive' })
+    await act(async () => { fireEvent.click(screen.getByText('Reload the canvas')); await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.queryByText('The canvas could not be saved')).toBeNull()
   })
 
   it('serializes Keep mine then Reload until the overwrite PATCH settles', async () => {
@@ -206,17 +245,52 @@ describe('a canvas artifact', () => {
     expect(updateArtifact).not.toHaveBeenCalled()
   })
 
-  it('a canvas whose shown text was masked opens read-only, so its placeholders are never saved over the real text', async () => {
-    render(wrap(<CanvasArtifactBody artifact={art(serializeCanvas(withShapes(2)), { content_redacted: true })} isCurrent />))
-    expect(screen.queryByTestId('canvas-dock')).toBeNull()
-    expect(screen.getByTestId('canvas-readonly-note').textContent).toBe('Hidden text: read only')
-    act(() => { fireEvent.keyDown(screen.getByTestId('canvas-editor'), { key: 'a', metaKey: true }) })
-    act(() => { fireEvent.keyDown(screen.getByTestId('canvas-editor'), { key: 'Backspace' }) })
-    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
-    expect(updateArtifact).not.toHaveBeenCalled()
+  it('a canvas whose shown text was masked stays editable, and its save carries the placeholders on the read\'s token', async () => {
+    const masked = { ...withShapes(1), shapes: withShapes(1).shapes.map(s => ({ ...s, text: 'token [REDACTED: credential]' })) }
+    updateArtifact.mockResolvedValueOnce({ content_token: 't2' })
+    render(wrap(<CanvasArtifactBody artifact={art(serializeCanvas(masked), { content_redacted: true })} isCurrent />))
+    expect(screen.getByTestId('canvas-dock')).toBeTruthy()
+    expect(screen.queryByTestId('canvas-readonly-note')).toBeNull()
+    expect(screen.getByTestId('canvas-masked-note')).toHaveTextContent('Hidden credentials show as [REDACTED: credential]. Typing around one keeps it, and deleting it removes it.')
+    addSticky()
+    await act(async () => { await vi.advanceTimersByTimeAsync(800) })
+    expect(updateArtifact).toHaveBeenCalledTimes(1)
+    const sent = updateArtifact.mock.calls[0][1] as { content: string; expected_token: string; placeholders_token?: string }
+    expect(sent.expected_token).toBe('t1')
+    expect(sent.placeholders_token).toBe('t1')
+    const doc = parseCanvas(sent.content)
+    expect(doc.ok && doc.canvas.shapes.map(s => s.text)).toEqual(['token [REDACTED: credential]', ''])
   })
 
-  it('a pending eyedropper cannot save after masked content and a new token arrive', async () => {
+  it('a page that showed no placeholder sends no marker, even after a save masked what it typed', async () => {
+    const typed = { ...withShapes(1), shapes: withShapes(1).shapes.map(s => ({ ...s, text: 'typed text' })) }
+    updateArtifact.mockImplementationOnce(async (_slug: string, body: { content: string }) => {
+      const read = parseCanvas(body.content)
+      if (!read.ok) throw new Error('not a canvas')
+      const content = serializeCanvas({ ...read.canvas, shapes: read.canvas.shapes.map(s => (s.text ? { ...s, text: '[REDACTED: credential]' } : s)) })
+      return { content, content_token: 't2', content_redacted: true }
+    })
+    render(wrap(<CanvasArtifactBody artifact={art(serializeCanvas(typed))} isCurrent />))
+    expect(screen.queryByTestId('canvas-masked-note')).toBeNull()
+    addSticky()
+    await act(async () => { await vi.advanceTimersByTimeAsync(800) })
+    const first = updateArtifact.mock.calls[0][1] as { content: string; placeholders_token?: string }
+    expect(first.placeholders_token).toBeUndefined()
+    // The page keeps the text it typed, not the reply's placeholder.
+    expect(canvasDocument('board')).toBe(first.content)
+    expect(screen.queryByTestId('canvas-masked-note')).toBeNull()
+    updateArtifact.mockResolvedValueOnce({ content_token: 't3' })
+    addSticky()
+    await act(async () => { await vi.advanceTimersByTimeAsync(800) })
+    expect(updateArtifact).toHaveBeenCalledTimes(2)
+    const second = updateArtifact.mock.calls[1][1] as { content: string; expected_token: string; placeholders_token?: string }
+    expect(second.expected_token).toBe('t2')
+    expect(second.placeholders_token).toBeUndefined()
+    const doc = parseCanvas(second.content)
+    expect(doc.ok && doc.canvas.shapes.map(s => s.text)).toEqual(['typed text', '', ''])
+  })
+
+  it('a pending eyedropper cannot save after a read-only read arrives', async () => {
     let resolveDropper!: (value: { sRGBHex: string }) => void
     const result = new Promise<{ sRGBHex: string }>(resolve => { resolveDropper = resolve })
     const open = vi.fn(() => result)
@@ -231,9 +305,9 @@ describe('a canvas artifact', () => {
       expect(open).toHaveBeenCalledTimes(1)
       expect(updateArtifact).not.toHaveBeenCalled()
 
-      const masked = { ...initial, shapes: initial.shapes.map(s => ({ ...s, text: '[REDACTED]' })) }
-      rerender(wrap(<CanvasArtifactBody artifact={art(serializeCanvas(masked), { content_token: 'tMasked', content_redacted: true })} isCurrent />))
-      expect(screen.getByTestId('canvas-readonly-note').textContent).toBe('Hidden text: read only')
+      const masked = { ...initial, shapes: initial.shapes.map(s => ({ ...s, text: 'On disk' })) }
+      rerender(wrap(<CanvasArtifactBody artifact={art(serializeCanvas(masked), { content_token: undefined, source_path: '/work/board.canvas' })} isCurrent />))
+      expect(screen.getByTestId('canvas-readonly-note').textContent).toBe('Linked file: read only')
       expect(screen.queryByTestId('custom-color')).toBeNull()
       await act(async () => { resolveDropper({ sRGBHex: '#123456' }); await result })
       await act(async () => { await flushCanvas('board') })
@@ -280,16 +354,17 @@ describe('a canvas artifact', () => {
       expect(doc.ok && doc.canvas.shapes.map(s => s.text)).toEqual([url, 'Note', 'Note'])
     })
 
-    it('masked text under a token this page did not save still opens read-only', async () => {
+    it('masked text under a token this page did not save shows the masked read and stays editable on that token', async () => {
       const { rerender, saved } = await savedOnT2()
       rerender(wrap(<CanvasArtifactBody artifact={art(masked(saved), { content_token: 't3', content_redacted: true })} isCurrent />))
-      expect(screen.queryByTestId('canvas-dock')).toBeNull()
-      expect(screen.getByTestId('canvas-readonly-note').textContent).toBe('Hidden text: read only')
+      expect(screen.getByTestId('canvas-dock')).toBeTruthy()
+      expect(screen.queryByTestId('canvas-readonly-note')).toBeNull()
       expect(canvasDocument('board')).toBe(masked(saved))
-      act(() => { fireEvent.keyDown(screen.getByTestId('canvas-editor'), { key: 'a', metaKey: true }) })
-      act(() => { fireEvent.keyDown(screen.getByTestId('canvas-editor'), { key: 'Backspace' }) })
-      await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
-      expect(updateArtifact).toHaveBeenCalledTimes(1)
+      updateArtifact.mockResolvedValueOnce({ content_token: 't4' })
+      addSticky()
+      await act(async () => { await vi.advanceTimersByTimeAsync(800) })
+      expect(updateArtifact).toHaveBeenCalledTimes(2)
+      expect((updateArtifact.mock.calls[1][1] as { expected_token: string }).expected_token).toBe('t3')
     })
 
     it('a second save while the page still reads its first save\'s masked copy keeps the canvas editable, on the newest token', async () => {
@@ -321,15 +396,16 @@ describe('a canvas artifact', () => {
     })
   })
 
-  it('reloading into masked text turns the canvas read-only at once, before the page catches up', async () => {
+  it('reloading into masked text shows the masked read at once and stays editable', async () => {
     updateArtifact.mockRejectedValueOnce(new ApiError(409, 'stale', '{}'))
     render(wrap(<CanvasArtifactBody artifact={art(serializeCanvas(emptyCanvas()))} isCurrent />))
     addSticky()
     await act(async () => { await vi.advanceTimersByTimeAsync(800) })
     artifact.mockResolvedValueOnce({ ...art(serializeCanvas(withShapes(3))), content_token: 'tLive', content_redacted: true })
     await act(async () => { fireEvent.click(screen.getByText('Reload the canvas')); await vi.advanceTimersByTimeAsync(0) })
-    expect(screen.queryByTestId('canvas-dock')).toBeNull()
-    expect(screen.getByTestId('canvas-readonly-note').textContent).toBe('Hidden text: read only')
+    expect(screen.getAllByTestId('canvas-shape')).toHaveLength(3)
+    expect(screen.getByTestId('canvas-dock')).toBeTruthy()
+    expect(screen.queryByTestId('canvas-readonly-note')).toBeNull()
   })
 
   it('a past version pans and zooms but has no tools and never saves', async () => {

@@ -2025,27 +2025,80 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
 - **Read-only where a save could do harm.** A past version opens pan-and-zoom
   only, and so does a current canvas with no `content_token` (one mirroring a
   file through `source_path`), since a save could not be checked against what
-  changed on disk. A canvas whose shown content was masked (the detail read
-  redacts credentials and suspicious URLs, and then sets `content_redacted`) is
-  read-only too, since an autosave writes the whole document and would put the
-  placeholders over the text they hide. The exception is a masked read whose
-  `content_token` is one this page's own saves made current or replaced (each
-  save adds the token it returned and the token it was based on): the masking
-  covers only bytes the page itself wrote, so the page keeps showing the bytes
-  its last save wrote, keeps its undo history and stays editable. Such a read
-  never sets the page's save token back, so a refetch still on an earlier own
-  token cannot turn the next save into a conflict. A fresh load, a read under
-  any other token (another tab, an agent), Reload (which forgets those tokens)
-  and a past version open read-only as above. The edit callback refuses new changes
-  while read-only, and an eyedropper result is ignored after its picker unmounts.
-  An adopted foreign live token updates the shown read's redaction status even
-  when its bytes are unchanged; own/base-token echoes and untokened reads cannot
-  clear a masked Reload's read-only state.
+  changed on disk. The edit callback refuses new changes while read-only, and an
+  eyedropper result is ignored after its picker unmounts.
   Edits already waiting before a version switch can still be flushed.
   A document the reader cannot parse is not opened at all, so
   the editor never saves an empty canvas over content it could not read. A
   chat's artifact side panel draws a canvas read-only too
   (`CanvasPanelView.tsx`); editing happens on the detail page.
+- **Masked text stays the owner's.** A canvas whose shown content was masked (the
+  detail read redacts credential values, and then sets `content_redacted`) stays
+  editable. Its autosave sends the placeholders back, and `PATCH` puts each value
+  back under the placeholder the save still carries
+  (`dashboard/artifact_masked_merge.py`, `restore_masked_values`).
+
+  **Only the editor's save built from a masked read is merged or refused; every
+  other save is written exactly as sent, as it was before the merge.** The
+  marker is `placeholders_token`: the token of the masked read the page's
+  placeholders came from. Only the editor sends it, and only while its page
+  shows text from a masked read (`content_redacted` on the read it opened,
+  reloaded or adopted from another writer). A page that opened a canvas hiding
+  nothing never sends it, so literal `[REDACTED: credential]` text (a new sticky
+  holding it, a copy of one) is written as sent, including after a credential
+  typed in that session was saved. A save from outside the editor (an app token's,
+  an agent's) carries no marker and is written as sent, placeholders and all. The
+  marker was chosen over a caller check or a new route because it is what the
+  merge needs anyway (it names the one read whose placeholders can be paired),
+  adds no field, and cannot be present on a save that main's editor builds.
+  The merge also needs, each pinned by a route test
+  (`TestMergeScope`): a dashboard save (never an agent's), of a stored `canvas`
+  (not a `json` record), that sets no `kind`, whose `expected_token` is the stored
+  token, over a stored canvas that hides a value (with nothing hidden there is
+  nothing to put back, so placeholder text is plain text).
+
+  The page keeps the text it typed: a save's reply is masked, but the page never
+  takes it over its own copy. A credential typed into the canvas therefore stays
+  as typed on that page, and copying that sticky, moving the credential or editing
+  between two credentials goes out as the page holds it, with no placeholder to
+  merge. Only placeholders from the masked read are paired. When
+  `placeholders_token` differs from `expected_token` (a "Keep mine" after a 409
+  saves the old draft against the live token) the route answers 400 and writes
+  nothing, because the old placeholders would pair with the newer version's
+  values. The page therefore never offers that save on a masked canvas: its 409
+  notice offers "Copy my text" (the text of the shapes the owner edited) and
+  "Reload the canvas" in place of "Keep my version", which an unmasked canvas
+  keeps. Both masked-merge refusals carry a `code`
+  (`masked_merge_stale` for this one, `masked_merge_refused` for an edit the merge
+  cannot pair); the page shows its own message for each and offers "Reload the
+  canvas" instead of a retry that would be refused again. Identical placeholders carry no identity, so a value goes
+  back only where the pairing is certain: a text (a shape's field, by node `id`)
+  that still carries placeholders must carry as many as it held, with the text
+  between each two of them unchanged; only the text before the first and after
+  the last may change. After a save stored a credential typed next to a
+  placeholder, the stored text masks to one placeholder more than the page's copy
+  holds (the page keeps the credential it typed), so such a text is paired through
+  the filter: its masked form must match the stored text's, each placeholder the
+  page still holds takes its stored value and each credential the page holds
+  stays as typed, and must equal the value already stored in its slot: a typed
+  credential that was reordered, or typed after the last save, is refused rather
+  than allowed to take another value's place (the page reloads). A text that
+  becomes exactly another hidden text's masked form (a paste or swap between two
+  hidden shapes) is refused too: the placeholders carry no identity. A text with no
+  placeholder left deletes its values. Anything
+  else is refused, never guessed: one of several removed, a placeholder moved,
+  copied or pasted into another shape, an edit between two placeholders, or an
+  undo that brings back text whose deletion an earlier save already stored. Plain
+  placeholder text the store already held stays as it is. The merged document must
+  redact to exactly what the save redacts to, or the route answers 400 and writes
+  nothing, so no restored value
+  can reach a reader the filter masks it for. Every read stays masked, the
+  save's reply included. A masked
+  read whose `content_token` is one this page's own saves made current or replaced
+  (each save adds the token it returned and the token it was based on) shows the
+  bytes its last save wrote, keeps its undo history, and never sets the page's save
+  token back, so a refetch still on an earlier own token cannot turn the next save
+  into a conflict.
 - **Not picked by hand.** Like `dashboard`, the kind is in `ALLOWED_KINDS` but
   not in `USER_SELECTABLE_KINDS`: prose flipped to `canvas` is a document the
   editor cannot read. The store does not validate the document's shape on write;
