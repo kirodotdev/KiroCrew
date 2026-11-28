@@ -55,6 +55,7 @@ const RemoteGitPanel = lazyRetry(() => import('./RemoteGitPanel'), {
 })
 import SessionSummaryTab from './SessionSummaryTab'
 import ThinkingBlock from './ThinkingBlock'
+import { followsAfterScroll, tailPosition, type TailPosition } from './tailFollow'
 import { i18nT } from '../../i18n/t'
 import { isNeverStarted, neverStartedKind, queuedWaitText } from './subagentQueuedReason'
 import GitReposPanel from '../../components/GitReposPanel'
@@ -213,6 +214,8 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   const bodyRef = useRef<HTMLDivElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
   const autoScroll = useRef(true)
+  // Position as of the last scroll event or pin (see followsAfterScroll).
+  const lastPos = useRef<TailPosition | null>(null)
   const isPending = a.status === 'pending'
   const isDone = a.status === 'done' || a.status === 'error' || a.status === 'stopped'
   // Native cards have no SubagentManager record to lazy-load from disk; their
@@ -326,13 +329,17 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
 
   useEffect(() => {
     const el = bodyRef.current
-    if (el && autoScroll.current) el.scrollTop = el.scrollHeight
+    if (el && autoScroll.current) {
+      el.scrollTop = el.scrollHeight
+      lastPos.current = tailPosition(el)
+    }
   }, [a.streaming, a.lastTool])
 
   const onScroll = useCallback(() => {
     const el = bodyRef.current
     if (!el) return
-    autoScroll.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 20
+    autoScroll.current = followsAfterScroll(el, lastPos.current, autoScroll.current)
+    lastPos.current = tailPosition(el)
   }, [])
 
   const onCancel = useCallback((e: React.MouseEvent) => {

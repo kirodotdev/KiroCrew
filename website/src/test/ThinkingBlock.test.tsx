@@ -7,7 +7,7 @@
  * the preview settles back off once chunks stop.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, createEvent } from '@testing-library/react'
 import ThinkingBlock from '../pages/chat/ThinkingBlock'
 import { ROW_PILL_BUTTON_CLASS, ROW_PILL_WRAPPER_CLASS, ROW_RAIL_CLASS } from '../pages/chat/rowPill'
 
@@ -407,6 +407,130 @@ describe('ThinkingBlock expanded follow-tail', () => {
     readerScrollsTo(height - VIEWPORT_H)   // legitimately AT the end
     height = CONTENT_H + CHUNK_H           // the append lands before liveness flips
 
+    rerender(<ThinkingBlock content="first second" />)
+
+    expect(writes).toContain(height)
+  })
+
+  it('stops following a live trace after an upward scroll smaller than the slack', () => {
+    // The jitter this pins: a touchpad scrolls a few px per event, so a reader
+    // scrolling up from the end stayed inside the slack, still counted as at
+    // the end, and every chunk pinned them back down against their scroll.
+    const { rerender } = render(<ThinkingBlock content="first" />)
+    rerender(<ThinkingBlock content="first second" />)
+    expand()
+    expect(writes).toContain(CONTENT_H)
+
+    readerScrollsTo(BOTTOM - 5)
+    rerender(<ThinkingBlock content="first second third" />)
+
+    expect(writes).toEqual([])
+  })
+
+  it('stays released across a pause between reasoning bursts', () => {
+    // Liveness falls between bursts; that edge must not re-arm a reader who
+    // scrolled up inside the slack, or the next burst pins them back down.
+    vi.useFakeTimers()
+    try {
+      const { rerender } = render(<ThinkingBlock content="first" />)
+      rerender(<ThinkingBlock content="first second" />)
+      expand()
+      readerScrollsTo(BOTTOM - 5)
+      writes = []
+
+      act(() => { vi.advanceTimersByTime(1500) })
+      rerender(<ThinkingBlock content="first second third" />)
+
+      expect(writes).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops following on an upward wheel before its scroll event lands', () => {
+    const { rerender } = render(<ThinkingBlock content="first" />)
+    rerender(<ThinkingBlock content="first second" />)
+    expand()
+    expect(writes).toContain(CONTENT_H)
+    writes = []
+
+    fireEvent.wheel(body(), { deltaY: -4 })
+    rerender(<ThinkingBlock content="first second third" />)
+
+    expect(writes).toEqual([])
+  })
+
+  it('keeps following through a pinch-zoom wheel', () => {
+    // A trackpad pinch arrives as a ctrl wheel that scrolls nothing.
+    const { rerender } = render(<ThinkingBlock content="first" />)
+    rerender(<ThinkingBlock content="first second" />)
+    expand()
+    writes = []
+
+    // jsdom's WheelEvent drops the ctrlKey init, so set it on the event itself.
+    const pinch = createEvent.wheel(body(), { deltaY: -4 })
+    Object.defineProperty(pinch, 'ctrlKey', { value: true })
+    fireEvent(body(), pinch)
+    rerender(<ThinkingBlock content="first second third" />)
+
+    expect(writes).toContain(CONTENT_H)
+  })
+
+  it('stays released when the pin\'s queued scroll event lands after an upward wheel', () => {
+    // The pin's own scroll event reaches the listener after the wheel already
+    // released; a pane that did not move must not re-arm on it.
+    const { rerender } = render(<ThinkingBlock content="first" />)
+    rerender(<ThinkingBlock content="first second" />)
+    expand()
+    expect(writes).toContain(CONTENT_H)
+    writes = []
+
+    fireEvent.wheel(body(), { deltaY: -4 })
+    fireEvent.scroll(body())
+    rerender(<ThinkingBlock content="first second third" />)
+
+    expect(writes).toEqual([])
+  })
+
+  it('stops following after upward steps of a fraction of a pixel', () => {
+    // A precision touchpad reports sub-pixel steps; each one is still the
+    // reader leaving the end, so no step size may slip under the latch.
+    const { rerender } = render(<ThinkingBlock content="first" />)
+    expand()
+    readerScrollsTo(BOTTOM)
+
+    readerScrollsTo(BOTTOM - 0.25)
+    readerScrollsTo(BOTTOM - 0.5)
+    rerender(<ThinkingBlock content="first second" />)
+
+    expect(writes).toEqual([])
+  })
+
+  it('keeps following when an overscroll past the end settles back', () => {
+    // Safari's elastic bounce reports a top past the maximum, then settles to
+    // it: that drop is not the reader moving up.
+    const { rerender } = render(<ThinkingBlock content="first" />)
+    expand()
+    readerScrollsTo(BOTTOM)
+
+    readerScrollsTo(BOTTOM + 10)
+    readerScrollsTo(BOTTOM)
+    rerender(<ThinkingBlock content="first second" />)
+
+    expect(writes).toContain(CONTENT_H)
+  })
+
+  it('keeps following when a shorter box clamps the reader flush to the end', () => {
+    // The box shrinking drops the maximum under a followed reader; the scroll
+    // event that lands them flush at the new end is the engine's, not theirs.
+    let height = CONTENT_H
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => height)
+    const { rerender } = render(<ThinkingBlock content="first" />)
+    expand()
+    readerScrollsTo(height - VIEWPORT_H)
+
+    height = CONTENT_H - 100
+    readerScrollsTo(height - VIEWPORT_H)
     rerender(<ThinkingBlock content="first second" />)
 
     expect(writes).toContain(height)
