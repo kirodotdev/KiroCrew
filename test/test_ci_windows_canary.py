@@ -217,6 +217,7 @@ def test_shard_selection_and_checks_stay_intact(jobs):
     ).strip()
     assert command == (
         "-p scripts.ci_pytest_progress -p scripts.ci_file_shards -p scripts.ci_main_red_skip "
+        "-p scripts.ci_shard_retry "
         '--ci-progress-dir "$RUNNER_TEMP/pytest-progress" '
         '-q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" '
         '--file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} '
