@@ -14,12 +14,14 @@ reaches every name here, and a patch through it reaches this module too
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import hmac
 import json
 import logging
 import os
 import re
+import sys
 import tempfile
 import threading
 from contextlib import contextmanager
@@ -223,8 +225,85 @@ def _read_script_body(file_path: str) -> bytes:
     return body
 
 
+class GrantEpochsMasked(PermissionError):
+    """This process sees the agent sandbox's stand-in for ``.vault``, not the vault.
+
+    A ``PermissionError`` carrying ``EPERM`` and the vault path, so a caller that
+    already turns a macOS Seatbelt refusal of ``.vault`` into one line does the same
+    for this one.
+    """
+
+
+#: Where this process's mount namespace lists its mounts; absent off Linux.
+_MOUNTINFO_PATH = "/proc/self/mountinfo"
+
+
+def _vault_is_masked(vault: Path) -> bool:
+    """Whether *vault* is the sandbox's empty stand-in rather than the real vault.
+
+    The sandbox hides ``.vault`` from everything it runs. On macOS the OS refuses
+    the path, which already fails closed. On Linux the launcher binds an empty
+    writable directory over it, so a read finds no epochs and a write lands in a
+    copy that vanishes with the sandbox. That bind is the signal: this
+    namespace's mountinfo lists a mount on the vault path whose source the
+    launcher named (``sandbox_mount_sweep._MOUNT_SOURCE_PREFIX``), and an agent
+    can neither unmount it nor rename it. The sandbox marker is not asked: an
+    agent can unset it, and a test run inside a sandbox sets it over a data home
+    the sandbox never masked. Nor is the device number: the launcher may stage
+    the stand-in on the data home's own filesystem, and a vault an operator
+    mounted elsewhere is not a stand-in.
+    """
+    # Deferred: an import at module scope here is a name the cron_script facade serves.
+    from kiro_crew.sandbox_launcher_program import _unescape_mount_point
+    from kiro_crew.sandbox_mount_sweep import _MOUNT_SOURCE_PREFIX
+
+    try:
+        with open(_MOUNTINFO_PATH, "rb") as fh:
+            mountinfo = fh.read()
+    except OSError:
+        # macOS and Windows have no mount list, and there the OS refuses a masked
+        # vault outright, so the vault's own access decides. On Linux the sandbox
+        # binds a stand-in instead, and a confined process that cannot read its
+        # mount list cannot prove its vault is real, so it is treated as the stand-in.
+        if not sys.platform.startswith("linux"):
+            return False
+        from kiro_crew.sandbox_unavailable import agent_confinement_evidence
+
+        return agent_confinement_evidence() is not None
+    target = os.fsencode(os.path.realpath(vault))
+    # The launcher names every stand-in and stage ``kirocrew_sb_<pid>_<suffix>``,
+    # pid an ASCII positive decimal with no leading zero; a component that only
+    # shares the prefix is an operator's own directory.
+    launcher_component = re.compile(
+        re.escape(os.fsencode(_MOUNT_SOURCE_PREFIX)) + rb"[1-9][0-9]*_."
+    )
+    masked = False
+    for line in mountinfo.splitlines():
+        fields = line.split()
+        if len(fields) < 5 or _unescape_mount_point(fields[4]) != target:
+            continue
+        # A later line stacks on an earlier one at the same point, and only the top
+        # mount is what a lookup of the path reaches.
+        root = _unescape_mount_point(fields[3])
+        masked = any(launcher_component.match(part) for part in root.split(b"/"))
+    return masked
+
+
 def _grant_epochs_path() -> Path:
-    return config_dir() / ".vault" / ".grant_epochs.json"
+    """The grant-epoch file; raises :class:`GrantEpochsMasked` inside the agent sandbox.
+
+    Every epoch read and write goes through here, so none of them works on the
+    sandbox's stand-in: a removal that bumped an epoch there would delete the job
+    while its saved grant stayed replayable.
+    """
+    vault = config_dir() / ".vault"
+    if _vault_is_masked(vault):
+        raise GrantEpochsMasked(
+            errno.EPERM,
+            "hidden from the agent sandbox, so grant epochs are out of reach",
+            str(vault),
+        )
+    return vault / ".grant_epochs.json"
 
 
 def _read_grant_epochs(path: Path) -> dict[str, Any]:

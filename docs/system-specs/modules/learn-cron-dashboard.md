@@ -1691,7 +1691,16 @@ fire time:
   409 `grant_conflict` — never re-committing the value the concurrent bump
   minted. A **failed bump aborts the job delete** (owner paths propagate
   the error; background ticks requeue and retry), so a delete can
-  never leave a still-live grant record behind. When the held delete is a
+  never leave a still-live grant record behind. Inside the agent sandbox
+  every epoch read and write refuses (`GrantEpochsMasked`): on Linux the
+  sandbox mounts an empty writable stand-in over `.vault`, which a bump
+  would write to and lose, so the epoch path first checks this namespace's
+  mountinfo for the launcher's own mount on `.vault`; a confined Linux
+  process with no mount list to read is refused too (macOS has no stand-in:
+  Seatbelt refuses the vault itself). A removal from a sandboxed
+  `kirocrew cron remove` is therefore refused on every OS; the agent's
+  `cron_remove` tool reaches the gateway, which bumps the real epoch.
+  When the held delete is a
   completed `delete_after_run` one-shot, the run path also **parks it**
   (persisted `user_paused`) and queues it for the deferred drain: the job
   has already run and the delete is what normally stops it, so a held
