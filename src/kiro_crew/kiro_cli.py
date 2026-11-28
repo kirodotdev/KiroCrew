@@ -706,6 +706,7 @@ def chat_agent_engines_at(binary: str) -> tuple[str, ...] | None:
         return None
     if key in _chat_engines_cache:
         return _chat_engines_cache[key]
+    started = time.monotonic()
     result = _sandboxed_probe(binary, ["chat", "--help"], _CHAT_HELP_PROBE_TIMEOUT_SECS)
     if result is not None and result.sandbox_failure is not None:
         # Not cached: a sandbox that could not be built says nothing about the binary.
@@ -716,7 +717,27 @@ def chat_agent_engines_at(binary: str) -> tuple[str, ...] | None:
     if result is not None and _probe_ran(result) and result.ok:
         engines = chat_agent_engines(result.output)
     _chat_engines_cache[key] = engines
+    if engines is None:
+        # Once per binary identity: the next call for this key answers from the cache.
+        # No path, argv or output in the line, only the reason and the seconds.
+        _logger.info(
+            "chat --help probe gave no engine list; reason=%s elapsed_s=%.1f budget_s=%.0f; "
+            "cached until the binary changes",
+            _chat_probe_failure_reason(result),
+            time.monotonic() - started,
+            _CHAT_HELP_PROBE_TIMEOUT_SECS,
+        )
     return engines
+
+
+def _chat_probe_failure_reason(result: ProcessResult | None) -> str:
+    """``timeout``, ``nonzero_exit`` or ``no_output`` for a probe that gave no engine list."""
+    if result is not None and result.timed_out:
+        return "timeout"
+    if result is not None and result.returncode not in (None, 0):
+        return "nonzero_exit"
+    # Not spawned, or ended without the child's whole answer.
+    return "no_output"
 
 
 #: The engine the Kiro CLI harness drives. Passed explicitly because kiro-cli's

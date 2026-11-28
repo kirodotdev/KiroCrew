@@ -1481,7 +1481,9 @@ async def _run_admitted(
     if held is None:
         admission = _loop_admission(loop, admission_key, workers)
         if timeout is None:
-            await admission.acquire()
+            from kiro_crew.embed_admission_wait import acquire_unbounded  # lazy: MCP listing budget
+
+            await acquire_unbounded(admission, workers)
         else:
             try:
                 await asyncio.wait_for(admission.acquire(), timeout=timeout)
@@ -1490,8 +1492,7 @@ async def _run_admitted(
         # An unreserved call releases the per-loop semaphore it just acquired.
         release = admission.release
     else:
-        # A pre-reserved slot already holds the semaphore; its release runs once
-        # through the slot's guard, handed to the build future below.
+        # A pre-reserved slot holds the semaphore; its guarded release goes to the build future.
         release = held.release
     try:
         future = executor_of().submit(context.run, call)
