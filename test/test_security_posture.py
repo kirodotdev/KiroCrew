@@ -1191,6 +1191,10 @@ class TestRedactionSinkRegistry:
             # The shared dashboard memory helper recursively runs the exfil
             # scanner followed by the credential scanner for every text value.
             "_redact_memory_field(",
+            # memory_graph_activity.py imports the graph routes' cached id redactor
+            # (dashboard/handlers/memory_graph_layout_api.py `_redacted`) under this
+            # name; it runs _redact_memory_field, so exfil then credential, per id.
+            "redact_graph_id(",
             # redact_mcp_error scrubs the exact configured header values first
             # (mcp_discovery_server_info.py), then runs redact_exfiltration_urls THEN
             # redact_credentials -- strictly more than either

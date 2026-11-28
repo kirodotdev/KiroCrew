@@ -24658,6 +24658,7 @@
     "scroll_more": "और देखने के लिए स्क्रॉल करो",
     "graph_changed": "यह बॉक्स बनाने के बाद ग्राफ़ बदल गया है। बॉक्स फिर से बनाओ।",
     "graph_selected": "{{formatted}} चुने गए",
+    "graph_found": "{{formatted}} मिले",
     "show_in_memories": "मेमोरी में देखो",
     "filters_width": "फ़िल्टर की चौड़ाई",
     "select": "चुनो",

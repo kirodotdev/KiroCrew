@@ -24058,6 +24058,7 @@
     "scroll_more": "滚动查看更多",
     "graph_changed": "画框后图谱已发生变化，请重新画框。",
     "graph_selected": "已选 {{formatted}} 条",
+    "graph_found": "找到 {{formatted}} 条",
     "show_in_memories": "在记忆中查看",
     "filters_width": "筛选栏宽度",
     "select": "选择",

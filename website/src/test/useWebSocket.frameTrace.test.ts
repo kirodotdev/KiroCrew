@@ -328,6 +328,7 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
   ]],
   ['session_summary', [], [{ type: 'session_summary', data: { key: ACTIVE } }, { type: 'session_summary', data: {} }]],
   ['pins_changed', [], [{ type: 'pins_changed', data: { slot_key: ACTIVE } }, { type: 'pins_changed', data: {} }]],
+  ['memory_activity', [], [{ type: 'memory_activity', data: { store: '', kind: 'recall', ids: ['user.a'], ts: 1 } }]],
   ['crew_steer_unrecorded', [], [{ type: 'crew_steer_unrecorded', data: { slot: ACTIVE, reason: 'not_recorded' } }, { type: 'crew_steer_unrecorded', data: {} }]],
   ['artifact_update', [], [{ type: 'artifact_update', data: { slug: 'doc' } }]],
   ['artifact_update deleted', [], [{ type: 'artifact_update', data: { slug: 'doc', deleted: true } }, { type: 'artifact_update', data: {} }]],
@@ -1108,6 +1109,9 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   ],
   "pins_changed": [
     'query invalidateQueries ["chat-pins","slot-a"]',
+  ],
+  "memory_activity": [
+    'event mc:memory-activity {"store":"","kind":"recall","ids":["user.a"],"ts":1}',
   ],
   // Sets the worker composer's own note (`crewSteerNotice`), not a Redux or
   // query effect; the notice is checked in its own spec below.
