@@ -606,8 +606,8 @@ in an oss build). One fetch is the Kiro control plane's
   checks every skill a package holds (see "Extensions" below), but a named deny on
   `skill` inside an allowed glob (no one-mode form), or any named deny on `subagent`
   (an agent install id is a package), turns that kind's install off; plugin sync stays off. A row may
-  land in more than one key (`Managed.also`). Not read yet: `embedding_model_use`
-  (D13). `web_fetch` and `web_search` are KAS's to enforce; only an `ask` on either,
+  land in more than one key (`Managed.also`).
+  `web_fetch` and `web_search` are KAS's to enforce; only an `ask` on either,
   named directly or through `all` / `builtin`, is read, into the open ruleset
   `unattended_web_tools` as a deny of that term (`web_ask_ruleset`). `kiro_crew.web_ask_rule`
   reads it, with KAS's own consent block on the request (`matchedRule.effect: ask`,
