@@ -15,8 +15,8 @@
  * classifying `platform: 'win32'` as a Windows shell fails this test.
  * (App.linuxElectron.test.tsx is the same pattern for the Linux shell.)
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, screen, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act, cleanup, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstancesViewport from '../components/InstancesViewport'
 import { setWarm } from '../store/instancesSlice'
@@ -145,7 +145,7 @@ describe('InstancesViewport under a Windows frameless shell', () => {
 
       // A zoom step: the main process rewrites the inline property on <html>.
       post.mockClear()
-      act(() => {
+      await act(async () => {
         root.style.setProperty('--mc-win-caption-reserve', '203px')
       })
       await waitFor(() =>
@@ -155,6 +155,7 @@ describe('InstancesViewport under a Windows frameless shell', () => {
         ),
       )
     } finally {
+      cleanup()
       root.style.removeProperty('--mc-win-caption-reserve')
     }
   })
@@ -189,5 +190,84 @@ describe('InstancesViewport under a Windows frameless shell', () => {
     // :root default — not a .win-electron one) and never drifts from the
     // zoom-aware header reserve.
     expect(bar.getAttribute('style') || '').toContain('padding-right: var(--mc-win-caption-reserve)')
+  })
+})
+
+// Below 100% zoom the fixed-DIP caption buttons are wider in CSS px, and the
+// main process pushes that width as --mc-win-drag-reserve. A strip clipped at a
+// static 138 would reach over Minimize and drag the window instead.
+describe('InstancesViewport drag strips under a Windows frameless shell', () => {
+  const realInnerWidth = window.innerWidth
+  const root = document.documentElement
+  beforeEach(() => {
+    Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 1400 })
+  })
+  afterEach(() => {
+    // Unmount first, so dropping the reserve re-renders nothing outside act().
+    cleanup()
+    Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: realInnerWidth })
+    root.style.removeProperty('--mc-win-drag-reserve')
+  })
+
+  const errorStore = () => {
+    vi.mocked(api.listInstances).mockResolvedValue({
+      instances: [
+        {
+          id: 'cd-1',
+          name: 'Cloud One',
+          ssh_host: 'cd-1-alias',
+          remote_port: 7777,
+          local_port: 0,
+          ttl: '20h',
+          remote_bin: '',
+          was_connected: true,
+          status: { instance_id: 'cd-1', state: 'error', error: 'ssh unreachable', remote_port: 7777 },
+        },
+      ],
+      warm_set_cap: 5,
+    } as never)
+    return createTestStore({ instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {} } })
+  }
+
+  it('keeps the 138 fallback on the overlay strip while no reserve is pushed', async () => {
+    renderWithProviders(<InstancesViewport />, { store: errorStore() })
+    await screen.findByRole('button', { name: /Retry/i })
+    const strip = screen.getByTestId('overlay-drag-strip')
+    expect(parseFloat(strip.style.width)).toBe(1400 - 138)
+  })
+
+  it('clips the overlay strip at the pushed reserve and follows a zoom step', async () => {
+    root.style.setProperty('--mc-win-drag-reserve', '173px')
+    renderWithProviders(<InstancesViewport />, { store: errorStore() })
+    await screen.findByRole('button', { name: /Retry/i })
+    const strip = screen.getByTestId('overlay-drag-strip')
+    expect(parseFloat(strip.style.width)).toBe(1400 - 173)
+
+    await act(async () => { root.style.setProperty('--mc-win-drag-reserve', '203px') })
+    await waitFor(() => expect(parseFloat(screen.getByTestId('overlay-drag-strip').style.width)).toBe(1400 - 203))
+  })
+
+  it('clips the pane gap strips at the pushed reserve', async () => {
+    root.style.setProperty('--mc-win-drag-reserve', '173px')
+    const store = createTestStore({
+      instances: {
+        warm: { 'cd-1': { port: 7778, token: 'tok' } },
+        activeId: 'cd-1',
+        mru: ['cd-1'],
+        unread: {},
+        ready: { 'cd-1': true },
+      },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    await waitFor(() => expect(document.querySelector('iframe')).toBeTruthy())
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent('message', {
+        data: { type: 'mc-drag-gaps', v: 1, gaps: [{ x: 1000, w: 400 }] },
+        origin: 'http://127.0.0.1:7778',
+      }))
+    })
+    await waitFor(() => expect(document.querySelectorAll('.host-drag-strip').length).toBe(1))
+    const strip = document.querySelector('.host-drag-strip') as HTMLElement
+    expect(parseFloat(strip.style.left) + parseFloat(strip.style.width)).toBe(1400 - 173)
   })
 })
