@@ -103,6 +103,10 @@ function probeLog(outcome) {
     outcome === "mochi enabled — opening pet" || outcome.startsWith("mochi not among ");
   const stateChanged = knownState && outcome !== lastMochiProbeState;
   if (knownState) lastMochiProbeState = outcome;
+  // A known state that has not changed was already logged when it became
+  // current; suppress it indefinitely so a steady state cannot re-log once the
+  // repeat window lapses. The TTL re-log is for error outcomes only.
+  if (knownState && !stateChanged) return;
   if (!stateChanged && recentMochiProbes.has(outcome)) return;
   recentMochiProbes.set(outcome, now);
   glog("Mochi pet probe: " + outcome);
