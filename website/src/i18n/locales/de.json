@@ -15133,6 +15133,7 @@
       "delivery_unconfirmed_pending": "Zustellung noch nicht bestätigt.",
       "delivery_unconfirmed_resend_manually": "Zustellung noch nicht bestätigt. Wenn innerhalb einer Minute keine Antwort eintrifft und die Nachricht oben noch als ausstehend markiert ist, kopiere sie und sende sie erneut. Ist die erste Sendung doch angekommen, erhält der Agent sie zweimal.",
       "could_not_read_file_reason": "{{path}} konnte nicht gelesen werden ({{reason}})",
+      "could_not_read_unc_path": "{{path}} konnte nicht gelesen werden: {{productName}} öffnet keine Netzwerkpfade außerhalb seiner eigenen Ordner. Führe {{productName}} für ein WSL-Projekt innerhalb von WSL aus und öffne das Dashboard in deinem Windows-Browser.",
       "screenshot_failed_reason": "Screenshot fehlgeschlagen: {{reason}}",
       "snip_refused_in_embedded_pane": "Bildschirmausschnitte sind in diesem Tab nicht verfügbar. Erstelle selbst einen Screenshot und hänge ihn an.",
       "source_hosts_failed_reason": "Selbst gehostete GitLab- und Jira-Links lassen sich vorerst nicht in Änderungen öffnen: {{reason}}",

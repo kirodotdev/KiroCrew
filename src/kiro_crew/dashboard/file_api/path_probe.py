@@ -24,7 +24,21 @@ if TYPE_CHECKING:
         _sel,
         _stall_prefix,
         executors,
+        is_unc_shape,
+        platform_compat,
+        unc_probe_allowed,
     )
+
+
+def _unc_path_refused(raw: str) -> bool:
+    """Whether the validator refuses *raw* because it is an untrusted UNC path.
+
+    Names the cause of an ``invalid`` verdict so an endpoint can answer it with its
+    own ``unc_path_refused`` code: the same Windows-only, purely lexical test
+    ``validate_file_path`` applies, so it touches no share. ``\\\\wsl.localhost``
+    and ``\\\\wsl$`` are refused like any other host.
+    """
+    return platform_compat.IS_WINDOWS and is_unc_shape(raw) and not unc_probe_allowed(raw)
 
 
 def _validate_dashboard_path(raw: str) -> str | None:

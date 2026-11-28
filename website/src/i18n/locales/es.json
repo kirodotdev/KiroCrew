@@ -15499,6 +15499,7 @@
       "delivery_unconfirmed_pending": "Entrega aún sin confirmar.",
       "delivery_unconfirmed_resend_manually": "Entrega aún sin confirmar. Si no llega ninguna respuesta en un minuto y el mensaje de arriba sigue pendiente, cópialo y envíalo de nuevo. Si el primer envío sí llegó, el agente lo recibirá dos veces.",
       "could_not_read_file_reason": "No se pudo leer {{path}} ({{reason}})",
+      "could_not_read_unc_path": "No se pudo leer {{path}}: {{productName}} no abre rutas de red fuera de sus propias carpetas. Para un proyecto de WSL, ejecuta {{productName}} dentro de WSL y abre su panel desde el navegador de Windows.",
       "screenshot_failed_reason": "Error en la captura de pantalla: {{reason}}",
       "snip_refused_in_embedded_pane": "El recorte de pantalla no está disponible en esta pestaña. Haz tú mismo una captura de pantalla y adjúntala.",
       "source_hosts_failed_reason": "Por ahora no se pueden abrir en Cambios los enlaces de GitLab y Jira autoalojados: {{reason}}",

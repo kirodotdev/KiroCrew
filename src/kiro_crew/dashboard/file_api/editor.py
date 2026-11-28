@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         _READ_PATH_EXTRA_MAGIC,
         _STREAM_HOLDBACK_JWT_MAX,
         _STREAM_HOLDBACK_MAX,
+        _UNC_PATH_REFUSED_ERROR,
         SNIFF_BYTES,
         _file_write_blocking,
         _open_checked,
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
         _resolve_project_relative,
         _run_path_probe,
         _sel,
+        _unc_path_refused,
         bounded_read,
         git_command_env,
         is_sensitive_path,
@@ -139,6 +141,10 @@ async def api_file_read(request: web.Request) -> web.Response:
             outcome="denied",
             resources=raw_path,
         )
+        if _unc_path_refused(raw_path):
+            return web.json_response(
+                {"error": _UNC_PATH_REFUSED_ERROR, "code": "unc_path_refused"}, status=400
+            )
         return web.json_response({"error": "invalid or forbidden path"}, status=400)
     if outcome.kind in ("dir", "missing"):
         # Both a directory and a missing path are 404 for a READ — there is no

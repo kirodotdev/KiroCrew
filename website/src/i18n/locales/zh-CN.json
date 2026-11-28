@@ -14767,6 +14767,7 @@
       "delivery_unconfirmed_pending": "送达尚未确认。",
       "delivery_unconfirmed_resend_manually": "尚未确认送达。如果一分钟内没有收到回复，且上方消息仍显示等待中，请复制该消息并再次发送。如果第一次发送其实已送达，代理会收到两次。",
       "could_not_read_file_reason": "无法读取 {{path}}（{{reason}}）",
+      "could_not_read_unc_path": "无法读取 {{path}}：{{productName}} 不会打开其自身文件夹以外的网络路径。对于 WSL 项目，请在 WSL 中运行 {{productName}}，并从 Windows 浏览器打开其仪表板。",
       "screenshot_failed_reason": "截图失败：{{reason}}",
       "snip_refused_in_embedded_pane": "此标签页中无法使用屏幕截取。自行截图并附加即可。",
       "source_hosts_failed_reason": "自托管 GitLab 和 Jira 链接暂时无法在变更中打开：{{reason}}",

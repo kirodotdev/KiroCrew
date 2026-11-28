@@ -15,6 +15,7 @@ if TYPE_CHECKING:
         _MAX_UPLOAD_BYTES,
         _OFFICE_PREVIEW_CAP,
         _OFFICE_PREVIEWABLE_EXT,
+        _UNC_PATH_REFUSED_ERROR,
         FILE_READ_SCHEMA,
         ValidationError,
         _open_checked_file,
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
         _resolve_project_relative,
         _run_path_probe,
         _sel,
+        _unc_path_refused,
         extract_blocks,
         extract_slides,
         extract_text,
@@ -386,6 +388,10 @@ async def api_file_office_preview(request: web.Request) -> web.Response:
         code, res = result.code, result.path
         if code == "invalid_path":
             _log("denied", res)
+            if _unc_path_refused(res):
+                return web.json_response(
+                    {"error": _UNC_PATH_REFUSED_ERROR, "code": "unc_path_refused"}, status=400
+                )
             return web.json_response(
                 {"error": "invalid or forbidden path", "code": "forbidden_path"},
                 status=400,

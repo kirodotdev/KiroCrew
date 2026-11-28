@@ -221,6 +221,7 @@ from kiro_crew.dashboard.file_api.path_probe import (  # noqa: F401
     _probe_request_path,
     _run_path_probe,
     _tracked_path_probe,
+    _unc_path_refused,
     _validate_dashboard_path,
 )
 from kiro_crew.dashboard.file_api.pinned_io import (  # noqa: F401
@@ -384,6 +385,7 @@ from kiro_crew.hooks import (  # noqa: F401
     is_unc_shape,
     safe_read_file_bytes,
     safe_read_prefix,
+    unc_probe_allowed,
 )
 from kiro_crew.image_refs import PATH_MARKS  # noqa: F401 - owner: uploads
 from kiro_crew.memory_stores import MEMORY_DB_FILE  # noqa: F401 - owner: pinned_io
@@ -897,6 +899,13 @@ _READ_PATH_EXTRA_MAGIC: tuple[tuple[bytes, str], ...] = (
 #: program holds the file without sharing it for reading (a Windows sharing or
 #: lock violation), and the same request succeeds once that program closes it.
 _FILE_BUSY_ERROR = "the file is open in another program; close it there and retry"
+#: The ``error`` a file read answers with its 400 ``unc_path_refused``: opening a
+#: network path makes Windows connect to that host, so only shares under the
+#: gateway's own folders are opened (see ``hooks.unc_probe_allowed``).
+_UNC_PATH_REFUSED_ERROR = (
+    "network (UNC) paths outside Kiro Crew's own folders are not opened; for a WSL "
+    "project, run Kiro Crew inside WSL and open its dashboard from the Windows browser"
+)
 
 
 #: Canonical upload extension per sniffed raster type: the suffix a mislabelled

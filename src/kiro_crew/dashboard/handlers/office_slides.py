@@ -1238,6 +1238,14 @@ def _refuse_open(denied: _files._OpenDenied, raw_path: str) -> _Refusal:
     answer identical inputs identically.
     """
     code, res = denied.code, denied.path
+    if code == "invalid_path" and _files._unc_path_refused(res):
+        return _Refusal(
+            web.json_response(
+                {"error": _files._UNC_PATH_REFUSED_ERROR, "code": "unc_path_refused"}, status=400
+            ),
+            "denied",
+            res,
+        )
     if code == "invalid_path":
         return _Refusal(
             web.json_response(

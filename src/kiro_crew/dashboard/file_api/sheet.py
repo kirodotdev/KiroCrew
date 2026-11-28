@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         _SHEET_MAX_ROWS,
         _SHEET_MAX_SHEETS,
         _SHEET_MAX_TEXT_CHARS,
+        _UNC_PATH_REFUSED_ERROR,
         ZipInventoryRejected,
         _open_checked_file,
         _OpenDenied,
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
         _probe_busy_response,
         _run_path_probe,
         _sel,
+        _unc_path_refused,
         bounded_read,
         logger,
         redact,
@@ -349,6 +351,10 @@ async def api_file_sheet(request: web.Request) -> web.Response:
         code, res = result.code, result.path
         if code == "invalid_path":
             _log("denied", res)
+            if _unc_path_refused(res):
+                return web.json_response(
+                    {"error": _UNC_PATH_REFUSED_ERROR, "code": "unc_path_refused"}, status=400
+                )
             return web.json_response(
                 {"error": "invalid or forbidden path", "code": "invalid_path"}, status=400
             )

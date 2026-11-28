@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         _STREAM_CHUNK_BYTES,
         _STREAM_MAX_BYTES,
         _STREAM_TEXT_PROBE_BYTES,
+        _UNC_PATH_REFUSED_ERROR,
         FILE_READ_SCHEMA,
         ValidationError,
         _is_live_memory_store_file,
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
         _run_path_probe,
         _sel,
         _sniff_media_type,
+        _unc_path_refused,
         binary_content_is_flagged,
         logger,
         platform_compat,
@@ -608,6 +610,10 @@ async def api_file_stream(request: web.Request) -> web.StreamResponse:
         # One literal response per refusal class: the error-response contract
         # requires the {"error", "code"} body and the status to be statically
         # checkable at each call site.
+        if code == "invalid_path" and _unc_path_refused(res):
+            return web.json_response(
+                {"error": _UNC_PATH_REFUSED_ERROR, "code": "unc_path_refused"}, status=400
+            )
         if code == "invalid_path":
             return web.json_response(
                 {"error": "invalid or forbidden path", "code": "invalid_path"}, status=400
