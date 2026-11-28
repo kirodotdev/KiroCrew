@@ -136,10 +136,10 @@ def test_pr_merged_passes_owner_name_or_host_owner_name_verbatim(monkeypatch, go
     """``gh --repo`` takes ``HOST/OWNER/REPO``; without the host it asks github.com,
     so a GitHub Enterprise pull request is only reachable with it."""
     mod = _load()
-    seen = _wire(mod, monkeypatch, [_Proc(0, "MERGED\n")])
+    seen = _wire(mod, monkeypatch, [_Proc(0, _view("MERGED"))])
     verdict, evidence = mod._evaluate({"accept": {"kind": "pr_merged", "pr": 42, "repo": good}})
     assert verdict == "pass", evidence
-    assert seen == [["gh", "pr", "view", "42", "--repo", good, "--json", "state", "-q", ".state"]]
+    assert seen == [["gh", "pr", "view", "42", "--repo", good, "--json", "state,headRefOid,mergeCommit"]]
 
 
 @pytest.mark.parametrize(
@@ -159,10 +159,15 @@ def test_pr_checks_rejects_a_given_repo_outside_the_pattern(monkeypatch, bad):
 def test_pr_checks_and_its_draft_probe_pass_a_host_repo_verbatim(monkeypatch):
     mod = _load()
     repo = "ghe.example.com/owner/name"
-    seen = _wire(mod, monkeypatch, [_Proc(mod._GH_PENDING_EXIT, "pending"), _Proc(0, "false\n")])
+    seen = _wire(
+        mod,
+        monkeypatch,
+        [_Proc(0, "abc1234\n"), _Proc(mod._GH_PENDING_EXIT, "pending"), _Proc(0, "false\n")],
+    )
     verdict, _ = mod._evaluate({"accept": {"kind": "pr_checks", "pr": 42, "repo": repo}})
     assert verdict == "pending"
     assert seen == [
+        ["gh", "pr", "view", "42", "--repo", repo, "--json", "headRefOid", "-q", ".headRefOid"],
         ["gh", "pr", "checks", "42", "--repo", repo],
         ["gh", "pr", "view", "42", "--repo", repo, "--json", "isDraft", "-q", ".isDraft"],
     ]
