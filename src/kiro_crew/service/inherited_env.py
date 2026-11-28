@@ -238,7 +238,7 @@ def _configured_launcher_dirs(dotenv: Path, account: str, home: str) -> "list[st
     values: object = None
     for name in ("config.json", "config.local.json"):
         try:
-            raw = json.loads((dotenv.parent / name).read_text(encoding="utf-8"))
+            raw = json.loads(loader.read_config_text(dotenv.parent / name))
         except (OSError, ValueError):
             continue
         mcp = raw.get("mcp") if isinstance(raw, dict) else None
