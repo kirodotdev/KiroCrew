@@ -2,13 +2,14 @@
 
 The Linux backend shards, the IPv6 lane and the kernel lock owner lane each write
 a coverage data file, and Coverage Combine merges all of them. On a pull-request
-or merge-queue run they measure with coverage.py's ``sysmon`` core, which costs
-far less than the C tracer. On CPython 3.12 that core records executed lines and
+run they measure with coverage.py's ``sysmon`` core, which costs far less than
+the C tracer. On CPython 3.12 that core records executed lines and
 no branch arcs, so the same lanes turn branch measurement off through
 ``KC_COV_BRANCH`` (read by ``[coverage:run] branch`` in ``setup.cfg``). Coverage
 Gate reads the line rate and the per-file line verdict, which line data carries
-in full. A push to ``main`` or a release branch sets neither variable and
-records branch arcs with the C tracer.
+in full. A merge-queue run and a push to ``main`` or a release branch set
+neither variable and record branch arcs with the C tracer: the merge queue is
+the last check before ``main`` and measures what ``main`` measures.
 
 The repository variable ``CI_COVERAGE_SYSMON`` turns the switch off: set to
 ``off`` (Settings, Secrets and variables, Actions, Variables), every event
@@ -96,7 +97,7 @@ CORE_ENV: Mapping[str, Mapping[str, str]] = {
 MARKER = "at_recursion_limit"
 
 #: The events whose runs switch. Every other event measures branch arcs.
-SWITCH_EVENTS = frozenset({"pull_request", "merge_group"})
+SWITCH_EVENTS = frozenset({"pull_request"})
 
 #: The repository variable that turns the switch off, and the one value that does.
 SWITCH_VARIABLE = "CI_COVERAGE_SYSMON"

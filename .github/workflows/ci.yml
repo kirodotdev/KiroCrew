@@ -2011,9 +2011,9 @@ jobs:
             exit 0
           fi
           # The coverage core for this run's event (scripts/ci/coverage_core.py):
-          # a pull-request or merge-queue run measures with coverage.py's sysmon
-          # core and records lines only, which is all Coverage Gate reads; a push
-          # keeps the C tracer and branch arcs. The script prints the export line
+          # a pull-request run measures with coverage.py's sysmon core and records
+          # lines only, which is all Coverage Gate reads; a merge-queue run and a
+          # push keep the C tracer and branch arcs. The script prints the export line
           # or nothing, so neither variable is ever set to an empty value, and
           # the two other lanes that feed Coverage Combine make the same call:
           # line data and branch data do not combine. The check after pytest

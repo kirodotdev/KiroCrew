@@ -187,6 +187,7 @@ def test_the_workflow_has_events_on_both_sides_of_the_switch():
     switching = [event for event in TRIGGERS if coverage_core.switches(event)]
     assert switching and len(switching) < len(TRIGGERS), TRIGGERS
     assert not coverage_core.switches("push"), "a push to main records branch arcs"
+    assert not coverage_core.switches("merge_group"), "the merge queue measures what main measures"
     assert coverage_core.SWITCH_EVENTS <= set(TRIGGERS), "an event the workflow never runs on"
 
 
