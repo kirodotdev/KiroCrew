@@ -2,16 +2,13 @@
   {
     "agent_capabilities": {
       "loadSession": true,
-      "mcpCapabilities": {
-        "http": true,
-        "sse": true
-      },
+      "mcpCapabilities": {},
       "promptCapabilities": {
         "embeddedContext": true,
         "image": true
       }
     },
-    "agent_version": "0.0.1",
+    "agent_version": "0.6.0",
     "frame": "response",
     "id": 1,
     "protocol_version": 1
@@ -87,13 +84,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "The count"
+        "text": "Now"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "The count",
+      "text": "Now",
       "thinking": false
     }
   },
@@ -102,13 +99,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " of"
+        "text": " I'll"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " of",
+      "text": " I'll",
       "thinking": false
     }
   },
@@ -117,13 +114,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " 'a' in 'banana"
+        "text": " create the file with"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " 'a' in 'banana",
+      "text": " create the file with",
       "thinking": false
     }
   },
@@ -132,88 +129,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "' is **"
+        "text": " the count:"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "' is **",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": "3**"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "3**",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": ". Now I"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": ". Now I",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": "'ll use `"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "'ll use `",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": "file_editor` to create the file"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "file_editor` to create the file",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": " with that count."
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": " with that count.",
+      "text": " the count:",
       "thinking": false
     }
   },
@@ -284,13 +206,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "The `"
+        "text": "Ret"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "The `",
+      "text": "Ret",
       "thinking": false
     }
   },
@@ -299,13 +221,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "file_editor` call"
+        "text": "rying the"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "file_editor` call",
+      "text": "rying the",
       "thinking": false
     }
   },
@@ -314,58 +236,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " was denied —"
+        "text": " file_editor call as"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " was denied —",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": " ret"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": " ret",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": "rying it"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "rying it",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": " exactly once as"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": " exactly once as",
+      "text": " file_editor call as",
       "thinking": false
     }
   },
@@ -389,13 +266,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "ed."
+        "text": "ed:"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "ed.",
+      "text": "ed:",
       "thinking": false
     }
   },
@@ -411,7 +288,7 @@
         },
         "title": "file_editor",
         "tool_call_id": "tooluse_strands03",
-        "tool_input": "{\n  \"command\": \"create\",\n  \"path\": \"/work/strands-probe/user-proj.txt\",\n  \"file_text\": \"3\"\n}",
+        "tool_input": "{\n  \"command\": \"create\",\n  \"file_text\": \"3\",\n  \"path\": \"/work/strands-probe/user-proj.txt\"\n}",
         "tool_kind": "edit",
         "wire_title": "file_editor"
       }

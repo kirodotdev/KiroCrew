@@ -48,7 +48,7 @@ _JSONRPC_INTERNAL_ERROR = -32603
 
 #: Per member, the ``data.details`` texts that mean the session's backend is gone. An
 #: entry ending in ``(`` is matched as the leading part, the rest whole. Strands CLI
-#: 0.2.3 (``tui/project/python.js``): the cancel that did not stop within 3s, the close
+#: 0.6.0 (``project/python.js``): the cancel that did not stop within 3s, the close
 #: of a disposed backend, a worker that exited, a worker that wrote an unreadable line.
 #: Each one sets the backend's sticky failure, which every later prompt on the id
 #: answers again.

@@ -188,8 +188,8 @@ COPILOT_VERIFIED_VERSION = "1.0.100"
 #: Python-project ACP server forwards a Strands interrupt as
 #: ``session/request_permission`` and refuses a non-empty ``session/new``
 #: ``mcpServers`` array, and its worker reads the project and session overrides the
-#: gate module depends on. Measured on 0.2.3; the published 0.2.4 package differs
-#: from it only in its version. The install hint pins it; another release is named
+#: gate module depends on (``session={"id", "dir"}`` passed to ``create_agent``).
+#: Measured on 0.6.0. The install hint pins it; another release is named
 #: at the handshake (``acp.harness.strands``). Re-measure against a fresh capture
 #: before raising it to a release whose code differs.
 STRANDS_VERIFIED_VERSION = "0.6.0"

@@ -680,7 +680,7 @@ ACP_BACKENDS_MCP_WIRE_REINJECT = frozenset({ACP_BACKEND_KAS})
 # process. A SECOND process launched with a changed ``--mcp-config`` and sent
 # ``session/load`` of the same id (empty array) replays the saved conversation,
 # answers ``{}``, and its next turn sees the new set with the earlier turns kept.
-# Captured live on Strands CLI 0.2.3:
+# Captured live on Strands CLI 0.6.0:
 # ``test/fixtures/acp_frames/strands/mcp-relaunch-add-live.jsonl`` (a server
 # added: its tool is offered and completes) and ``mcp-relaunch-remove-live.jsonl``
 # (a server withdrawn: its tool is absent from the offer). Crew performs the relaunch

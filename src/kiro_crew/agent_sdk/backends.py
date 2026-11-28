@@ -518,10 +518,9 @@ ACP_BACKEND_COPILOT = "copilot"
 # Strands interrupt, so Crew loads the project through its own gate module, which
 # raises one for every tool call -- see :data:`Routing.VERIFIED_GATE_EXTENSION`.
 #
-# VERIFIED RANGE: @strands-agents/cli 0.2.4. The captures
-# (``test/fixtures/acp_frames/strands/``) were taken on 0.2.3 over strands-harness 0.3.3 /
-# strands-agents 1.63.0; the published 0.2.4 package differs from it only in its version.
-# strands-harness 0.6.0 / strands-agents 1.67.0 pass the real-adapter probe (no model turn).
+# VERIFIED RANGE: @strands-agents/cli 0.6.0 over strands-harness 0.6.0 /
+# strands-agents 1.67.0, the release the captures (``test/fixtures/acp_frames/strands/``)
+# were taken on.
 ACP_BACKEND_STRANDS = "strands"
 # MiMo Code: Xiaomi's fork of OpenCode, a single binary that serves ACP itself
 # (``mimo acp``). It keeps OpenCode's permission rule algebra and its

@@ -711,7 +711,7 @@ Any other composition, unknown owner, or shadow makes each DeepSeek side turn
 `REJECT_ALL` (`deepseek_read_only_issue`, refused in `llm_helpers`). strands
 has no pre-approval store in project mode: Crew's gate module makes every Strands
 `Agent` ask once per tool call, and its envelope names the tool's owner, read off
-the tool object Strands resolved. Captured live on Strands CLI 0.2.3 through a real
+the tool object Strands resolved. Captured live on Strands CLI 0.6.0 through a real
 `side_read_only` session under `READ_ONLY` (`acp_frames/strands/side-read-only-live.jsonl`):
 the built-in `read` ran, `shell` running `ls` and `write` were refused.
 A side session (`side_read_only`) launches with no MCP server. Only the

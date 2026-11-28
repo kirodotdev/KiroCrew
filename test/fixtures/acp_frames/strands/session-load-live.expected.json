@@ -2,16 +2,13 @@
   {
     "agent_capabilities": {
       "loadSession": true,
-      "mcpCapabilities": {
-        "http": true,
-        "sse": true
-      },
+      "mcpCapabilities": {},
       "promptCapabilities": {
         "embeddedContext": true,
         "image": true
       }
     },
-    "agent_version": "0.0.1",
+    "agent_version": "0.6.0",
     "frame": "response",
     "id": 1,
     "protocol_version": 1
@@ -28,13 +25,13 @@
       {
         "kind": "text_chunk",
         "message_id": "strands-message-02",
-        "text": "I'll call the probe tool."
+        "text": "I'll call the probe codeword tool for you."
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "I'll call the probe tool.",
+      "text": "I'll call the probe codeword tool for you.",
       "thinking": false
     }
   },
@@ -73,13 +70,13 @@
       {
         "kind": "text_chunk",
         "message_id": "strands-message-03",
-        "text": "The first call was denied. Per your instruction, retrying exactly once."
+        "text": "The call was denied. Let me retry it exactly once as instructed."
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "The first call was denied. Per your instruction, retrying exactly once.",
+      "text": "The call was denied. Let me retry it exactly once as instructed.",
       "thinking": false
     }
   },
@@ -119,13 +116,13 @@
       {
         "kind": "text_chunk",
         "message_id": "strands-message-04",
-        "text": "The codeword is **tangerine-42**.\n\nThe first call was denied (\"Kiro Crew did not approve 'mcp__probe__codeword'\"); the single retry you authorized succeeded."
+        "text": "The codeword is: **tangerine-42**"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "The codeword is **tangerine-42**.\n\nThe first call was denied (\"Kiro Crew did not approve 'mcp__probe__codeword'\"); the single retry you authorized succeeded.",
+      "text": "The codeword is: **tangerine-42**",
       "thinking": false
     }
   },
@@ -138,13 +135,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "t"
+        "text": "tan"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "t",
+      "text": "tan",
       "thinking": false
     }
   },
@@ -153,19 +150,36 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "angerine-42"
+        "text": "gerine-42"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "angerine-42",
+      "text": "gerine-42",
       "thinking": false
     }
   },
   {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      2567,
+      200000
+    ],
+    "usage_cost": null
+  },
+  {
     "frame": "response",
     "id": 3,
+    "prompt_tokens": [
+      62,
+      126,
+      2174,
+      205
+    ],
     "stop_reason": "end_turn"
   }
 ]

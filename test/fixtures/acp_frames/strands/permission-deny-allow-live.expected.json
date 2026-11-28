@@ -2,16 +2,13 @@
   {
     "agent_capabilities": {
       "loadSession": true,
-      "mcpCapabilities": {
-        "http": true,
-        "sse": true
-      },
+      "mcpCapabilities": {},
       "promptCapabilities": {
         "embeddedContext": true,
         "image": true
       }
     },
-    "agent_version": "0.0.1",
+    "agent_version": "0.6.0",
     "frame": "response",
     "id": 1,
     "protocol_version": 1
@@ -20,51 +17,6 @@
     "frame": "response",
     "id": 2,
     "session_id": "strands-synthetic-a"
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": "I"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "I",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": "'ll run that exact command"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "'ll run that exact command",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": "."
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": ".",
-      "thinking": false
-    }
   },
   {
     "action": "update",
@@ -161,13 +113,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " was denied. Retrying"
+        "text": " was denied, so I'll"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " was denied. Retrying",
+      "text": " was denied, so I'll",
       "thinking": false
     }
   },
@@ -176,13 +128,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " ex"
+        "text": " retry exactly"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " ex",
+      "text": " retry exactly",
       "thinking": false
     }
   },
@@ -191,13 +143,43 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "actly once as instructed."
+        "text": " once as"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "actly once as instructed.",
+      "text": " once as",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " instruct"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " instruct",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "ed:"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ed:",
       "thinking": false
     }
   },
@@ -283,13 +265,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " command "
+        "text": " first"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " command ",
+      "text": " first",
       "thinking": false
     }
   },
@@ -298,13 +280,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "ran on"
+        "text": " call was denied, but the retry"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "ran on",
+      "text": " call was denied, but the retry",
       "thinking": false
     }
   },
@@ -313,13 +295,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " the ret"
+        "text": " succeeded"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " the ret",
+      "text": " succeeded",
       "thinking": false
     }
   },
@@ -328,13 +310,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "ry: it"
+        "text": ". The command"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "ry: it",
+      "text": ". The command",
       "thinking": false
     }
   },
@@ -343,13 +325,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " printed `done`"
+        "text": " executed"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " printed `done`",
+      "text": " executed",
       "thinking": false
     }
   },
@@ -358,13 +340,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " with"
+        "text": " successfully,"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " with",
+      "text": " successfully,",
       "thinking": false
     }
   },
@@ -373,13 +355,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " exit code 0, and the"
+        "text": " output"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " exit code 0, and the",
+      "text": " output",
       "thinking": false
     }
   },
@@ -388,13 +370,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " count of `"
+        "text": "ting \"done\" and creating"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " count of `",
+      "text": "ting \"done\" and creating",
       "thinking": false
     }
   },
@@ -403,13 +385,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "OPENAI_API_"
+        "text": " probe"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "OPENAI_API_",
+      "text": " probe",
       "thinking": false
     }
   },
@@ -418,13 +400,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "KEY` matches in"
+        "text": "3.txt with"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "KEY` matches in",
+      "text": "3.txt with",
       "thinking": false
     }
   },
@@ -448,13 +430,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " environment was written to `probe"
+        "text": " count"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " environment was written to `probe",
+      "text": " count",
       "thinking": false
     }
   },
@@ -463,13 +445,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "3.txt` (the count"
+        "text": " of"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "3.txt` (the count",
+      "text": " of",
       "thinking": false
     }
   },
@@ -478,13 +460,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " itself went"
+        "text": " OPENAI_API_KEY environment"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " itself went",
+      "text": " OPENAI_API_KEY environment",
       "thinking": false
     }
   },
@@ -493,13 +475,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " to the"
+        "text": " variables."
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " to the",
+      "text": " variables.",
       "thinking": false
     }
   },
@@ -508,13 +490,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " file, not st"
+        "text": " finished"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " file, not st",
+      "text": " finished",
       "thinking": false
     }
   },
@@ -523,49 +505,36 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "dout, so I did not see"
+        "text": "."
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "dout, so I did not see",
+      "text": ".",
       "thinking": false
     }
   },
   {
     "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": " its"
-      }
-    ],
+    "events": [],
     "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": " its",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": " value).\n\nfinished"
-      }
+    "session_update": "usage_update",
+    "usage": [
+      2526,
+      200000
     ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": " value).\n\nfinished",
-      "thinking": false
-    }
+    "usage_cost": null
   },
   {
     "frame": "response",
     "id": 3,
+    "prompt_tokens": [
+      74,
+      293,
+      4513,
+      2475
+    ],
     "stop_reason": "end_turn"
   }
 ]

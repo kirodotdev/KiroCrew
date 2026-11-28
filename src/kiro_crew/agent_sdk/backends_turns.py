@@ -870,7 +870,7 @@ ACP_BACKENDS_LOCAL_CLEAR = frozenset(
 #   session/load, authenticate, session/prompt and session/cancel, and nothing
 #   else. It sends no ``available_commands_update`` and its prompt handler parses
 #   no slash at all, so every command (``/clear``, ``/help``, ``/context``) reaches
-#   the model as text (Strands CLI 0.2.3, ``tui/project/acp.js``).
+#   the model as text (Strands CLI 0.6.0, ``cli/acp-python.js``).
 #
 # kiro is not a member: it runs its commands over ``_kiro.dev/commands/execute``.
 # claude is not a member: its harness owns its own command set. codex, opencode,

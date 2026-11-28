@@ -265,9 +265,9 @@ class TestEveryKnownBackendIsClassified:
 
     #: Known backends deliberately outside all three compaction sets, each with why.
     #:
-    #: ``strands``: the Strands CLI's project mode sends no compaction status and no
-    #: ``usage_update`` (``test/fixtures/acp_frames/strands/``), so neither Crew's
-    #: ``/compact`` nor a recycle at a measured fill can be driven, and whether the
+    #: ``strands``: the Strands CLI's project mode sends no compaction status
+    #: (``test/fixtures/acp_frames/strands/``), so Crew's ``/compact`` cannot be
+    #: driven and the usage 0.6.0 reports is not read for a recycle, and whether the
     #: context is bounded is the PROJECT's choice (strands-harness's
     #: ``context_manager`` defaults to ``"auto"``, an operator's project may pass
     #: ``"off"``). Claiming harness-managed would be true for the bundled project

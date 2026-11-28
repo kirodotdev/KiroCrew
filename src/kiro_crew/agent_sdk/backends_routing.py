@@ -97,7 +97,7 @@ from kiro_crew.agent_sdk.backends import (
 #   unknown, shadowed, MCP and command tools fail closed.
 # * strands: no pre-approval store in project mode. Crew's gate module
 #   (``agent_sdk/gate_extensions/strands``) raises one interrupt per tool call,
-#   naming the tool's owner. Captured on Strands CLI 0.2.3
+#   naming the tool's owner. Captured on Strands CLI 0.6.0
 #   (``test/fixtures/acp_frames/strands/side-read-only-live.jsonl``): the built-in
 #   ``read`` of an absolute path ran; ``shell`` running ``ls`` and ``write`` were
 #   refused and left no file. No MCP server is mounted, only that built-in ``read``
