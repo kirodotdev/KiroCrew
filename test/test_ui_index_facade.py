@@ -11,9 +11,10 @@ it into every module holding the name.
 ``test/test_facade_mirror_guards.py`` holds every mirror facade to the shared contract.
 These tests pin what is particular to this one: every name the test trees patch through
 it reaches every module holding it; the owners are exactly the ``ui_index_*.py``
-siblings, each importing only the owners before it; the packaged index paths still
-resolve beside the package; the family logs through one logger named for the facade;
-and the exception classes an owner defines still report the facade's module.
+siblings, each importing only the owners before it; no module outside the family imports
+an owner; the packaged index paths still resolve beside the package; the family logs
+through one logger named for the facade; and the exception classes an owner defines still
+report the facade's module.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from pathlib import Path
 from types import ModuleType
 
 import facade_mirror_scan
+import owner_import_scan
 import pytest
 import source_corpus
 
@@ -150,6 +152,24 @@ def test_the_owners_load_lowest_layer_first() -> None:
         if later:
             late[owner] = later
     assert late == {}
+
+
+def test_only_the_family_imports_an_owner() -> None:
+    """A module outside the family that imported an owner would hold bindings the
+    facade's mirror never indexes, so a patch through the facade would miss it."""
+    owners = frozenset(_index().owners)
+    family = {
+        f"{name.removeprefix('kiro_crew.').replace('.', '/')}.py" for name in (FACADE, *owners)
+    }
+    sources = source_corpus.iter_candidate_sources(
+        require_any=tuple(name.rpartition(".")[2] for name in owners)
+    )
+    importers = owner_import_scan.owner_importers(
+        sources, source_corpus.src_root(), lambda name: name in owners
+    )
+    # An owner importing a lower owner proves the scan reads real imports.
+    assert "ui_index_load.py" in importers
+    assert importers - family == set()
 
 
 def test_the_facade_keeps_the_default_read_path_and_forwards_no_table() -> None:

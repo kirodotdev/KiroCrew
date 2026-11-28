@@ -16,6 +16,7 @@ recorder that asks the same question the real writers ask at write time.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -430,7 +431,7 @@ class TestTheBaselineSeed:
 
         src = inspect.getsource(agent_mod.rebuild_agent_config)
         record = src.index("answer_generation = _answer_generation_after_profile_poll()")
-        assert record < src.index("_load_existing_config(path")
+        assert record < src.index("_load_existing_config(")
         assert src.index("declined = _decline_shared_agent_home()") < record
         # Published, and checked against the live answer, only once the rebuild completed:
         # after the sibling pass, which re-raises a dashboard-author install error.
@@ -467,3 +468,51 @@ class TestTheBaselineSeed:
 
         src = Path(service_boot.__file__).read_text(encoding="utf-8")
         assert "await asyncio.to_thread(prime_ceiling_projection)" in src
+
+
+class TestAReloadToTheSameAnswerIsNotAMove:
+    """The fingerprint misses on changes that decide nothing; none of them is a move.
+
+    On a fresh data home the profiles directory does not exist at boot. The first
+    sandboxed spawn creates it empty (``sandbox_precreate``, so the read-only seal has
+    a mount target), and the watch's next tick then reloaded the store to the same
+    empty answer, bumped the generation, and rebuilt the agent config over the files
+    the sandbox pins.
+    """
+
+    def test_the_profiles_dir_appearing_empty_rebuilds_nothing(self, profiles_dir, rebuilds):
+        profiles_dir.rmdir()
+        _boot()
+        before = gp.governance_answer_generation()
+
+        profiles_dir.mkdir()  # what the first sandboxed spawn's pre-create does
+        agent_mod.reproject_for_profile_change()
+
+        assert gp.governance_answer_generation() == before
+        assert rebuilds == []
+
+    def test_a_touch_with_the_same_bytes_rebuilds_nothing(self, profiles_dir, rebuilds):
+        _save_profile_governing_the_ref(profiles_dir)
+        gp.poll_profiles_fresh()
+        agent_mod.prime_ceiling_projection()
+        before = gp.governance_answer_generation()
+
+        path = profiles_dir / "narrow.json"
+        st = path.stat()
+        # Set, not slept for: one second on from the write is a fingerprint miss.
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+        agent_mod.reproject_for_profile_change()
+
+        assert gp.governance_answer_generation() == before
+        assert rebuilds == []
+
+    def test_a_real_save_after_the_dir_appeared_is_still_a_move(self, profiles_dir, rebuilds):
+        profiles_dir.rmdir()
+        _boot()
+        profiles_dir.mkdir()
+        agent_mod.reproject_for_profile_change()
+
+        _save_profile_governing_the_ref(profiles_dir)
+        agent_mod.reproject_for_profile_change()
+
+        assert rebuilds == [False]

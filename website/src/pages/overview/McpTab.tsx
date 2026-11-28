@@ -1,7 +1,7 @@
-import { useState, useMemo, useRef, useEffect, type ReactNode } from 'react'
+import { useState, useMemo, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download, Braces, Lock, ToggleLeft, ToggleRight } from 'lucide-react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { AnimatePresence } from 'framer-motion'
 import { Trans } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, configuredAcpBackend, mcpServerDeny, type AcpBackendConfig } from '../../api/acpBackend'
@@ -32,7 +32,7 @@ import { connectionProviderForServer, providerOwningRow, vendorPendingProviderFo
 import { settingsPath } from '../../components/settingsPath'
 import { connectionsOAuthClientEntryId } from '../../components/commandPalette/settingsManual'
 import McpRowSignIn, { type McpSignInTarget } from './McpRowSignIn'
-import McpToolAlwaysAllow, { McpToolGrantsNote } from './McpToolAlwaysAllow'
+import McpToolsPanel from './McpToolsPanel'
 import { useConnectionsUiEnabled } from '../../hooks/useConnectionsUi'
 
 import { i18nT } from '../../i18n/t'
@@ -102,6 +102,12 @@ function pruneStagedScopes(servers: McpServer[], prev: Record<string, PendingCha
     if (s?.builtin === true && (p.uninstall || p.scopes?.kirocrew === false)) {
       const { kirocrew: _off, ...scopes } = p.scopes ?? {}
       p = { scopes }
+      dropped = true
+    }
+    // An app's server cannot be uninstalled from here either: the rebuild writes
+    // it back from the app's manifest, so a restored draft's uninstall is dropped.
+    if (s?.app && p.uninstall) {
+      p = { scopes: p.scopes ?? {} }
       dropped = true
     }
     if (s && (p.uninstall || hasPendingScopeChange(s, p))) next[name] = p
@@ -174,13 +180,15 @@ function disabledInConfigVariant(s: McpServer): 'muted' | 'err' | null {
  * This table has no control that writes the shared config (that switch is a
  * separate decision, and the line says it is planned), so the honest
  * affordance for "edit this file" is the path itself, one click away from a
- * terminal or editor. Rendered through `Trans`, so `children` is the path text
- * the catalog string wraps in `<file>...</file>`. The chip owns only its
+ * terminal or editor. Rendered through `Trans` as the catalog's `<file/>`
+ * slot; it shows `path` itself, never children, so `Trans` never parses the
+ * path. A slot child would also remount the chip on every render (react-i18next
+ * wraps a self-closing slot's children in a fresh component). The chip owns only its
  * "Copied" flash; a refusal is handed to `onFailed`, because the notice for it
  * belongs UNDER the sentence (see `DisabledWhereLine`), not mid-sentence where
  * the chip sits.
  */
-function CopyPathChip({ path, onFailed, children }: { path: string; onFailed: (report: ErrorReport | null) => void; children?: ReactNode }) {
+function CopyPathChip({ path, onFailed }: { path: string; onFailed: (report: ErrorReport | null) => void }) {
   const [copied, setCopied] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => () => clearTimeout(timer.current), [])
@@ -223,7 +231,7 @@ function CopyPathChip({ path, onFailed, children }: { path: string; onFailed: (r
       data-testid="mcp-disabled-in-config-path"
       data-copied={copied ? 'true' : undefined}
     >
-      {children ?? path}
+      {path}
     </button>
   )
 }
@@ -241,7 +249,9 @@ function DisabledWhereLine({ whereKey, file, reason, text }: { whereKey: string;
   return (
     <div className="text-muted text-[12px]" data-testid="mcp-disabled-in-config-where" data-disabled-reason={reason ?? undefined}>
       {file
-        ? <Trans i18nKey={whereKey} values={{ file }} components={{ file: <CopyPathChip path={file} onFailed={setCopyFailed} /> }} />
+        // The path is the chip's child, never a value: <Trans> parses its
+        // string as markup, so a value would be parsed with it.
+        ? <Trans i18nKey={whereKey} components={{ file: <CopyPathChip path={file} onFailed={setCopyFailed} /> }} />
         : text}
       {copyFailed && (
         <ErrorNotice
@@ -525,8 +535,8 @@ function mcpStatusHint(
   // row past the consecutive-failure threshold is ALSO "outdated", because
   // every probe pass skips it (docs/system-specs/modules/mcp-probe-quarantine.md
   // §3), and refresh alone does nothing for it. That row always carries the
-  // Failing badge in the same cell, whose tip says probing stopped and names
-  // Reset count, so this badge stays silent there rather than repeat it or
+  // Quarantined badge and its Retry server button in the same cell, whose tip
+  // says probing stopped, so this badge stays silent there rather than repeat it or
   // send the reader to a refresh that will not work (#15516).
   //
   // An `outdated` row that carries an `error` is a probe refused before any
@@ -813,18 +823,31 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     mutationFn: () => api.mcpProbe(),
     onSuccess: (data) => {
       queryClient.setQueryData<McpServer[]>(['mcp-servers'], data)
+      // These rows are a fresh check, so a Retry server failure notice that
+      // said "the status shown is from the last check" is no longer true.
+      // Only a FAILED Retry is reset: resetting one still running would detach
+      // it from the row, and its failure would then never be shown.
+      if (resetFailures.isError) resetFailures.reset()
     },
     onError: () => {
       refetch()
     },
   })
 
-  // Release is a REFETCH, not an optimistic edit: the badge has to disappear
-  // because the server actually came back, and the same request rebuilt the
-  // agent config. Painting the row clean locally would claim a remount the
-  // backend may have failed to perform (it answers 500 in that case).
+  // Retry server: clear the quarantine, then probe that one server, so one click
+  // does what used to take Reset count plus the page's refresh button. The row
+  // shown after it is the backend's fresh probe, not an optimistic edit: the
+  // badge disappears only because the server answered. A failed clear throws
+  // before the probe, so the badge stays.
   const resetFailures = useMutation({
-    mutationFn: (name: string) => api.mcpResetProbeFailures(name),
+    mutationFn: async (name: string) => {
+      await api.mcpResetProbeFailures(name)
+      return api.mcpProbeOne(name)
+    },
+    onSuccess: (row) => {
+      queryClient.setQueryData<McpServer[]>(['mcp-servers'], prev =>
+        prev?.map(x => (x.name === row.name ? row : x)))
+    },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
     },
@@ -839,6 +862,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
       // would keep a stale failing badge or sign-in note the response no longer carries.
       queryClient.setQueryData<McpServer[]>(['mcp-servers'], prev =>
         prev?.map(x => (x.name === row.name ? row : x)))
+      // A fresh check of the row a Retry server failure was about makes that
+      // notice untrue; one about another row stays.
+      if (resetFailures.isError && resetFailures.variables === row.name) resetFailures.reset()
     },
   })
 
@@ -852,6 +878,19 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     tools: (a: McpServer, b: McpServer) => (a.tools?.length || 0) - (b.tools?.length || 0),
   }), [])
   const { sorted: sortedServers, sort: mcpSort, toggle: toggleMcpSort } = useSortableTable(filtered, 'mcp-overview', mcpComparators, { key: 'name', dir: 'asc' })
+  // All off stages every listed row's Kiro Crew switch off, exactly as a click
+  // on each would, for one Apply. Inert switches are skipped (staged uninstall,
+  // disabled in the shared config, a built-in that is on). No All on: switching
+  // a fresh install on here is where the user confirms it.
+  const allOffTargets = sortedServers.filter(s => {
+    const p = pending[s.name]
+    if (p?.uninstall || disabledInSharedConfig(s)) return false
+    if (s.builtin === true && (s.presence || DEFAULT_PRESENCE).kirocrew) return false
+    return effectivePresence(s, p).kirocrew
+  })
+  const stageAllOff = () => {
+    for (const s of allOffTargets) toggleScope(s.name, 'kirocrew', false, s.presence || DEFAULT_PRESENCE)
+  }
   // Counted from the UNFILTERED list, like the header total it sits beside: the
   // count exists to say "these are here, not dropped", and a search that hides
   // them must not make the header agree that they are gone. Every disabled row
@@ -915,6 +954,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
           {mcpFilter && <button className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text transition-colors cursor-pointer" onClick={() => setMcpFilter('')} aria-label={i18nT('pages.overview.mcpTab.clear_search')}>{"\u00d7"}</button>}
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <Btn onClick={stageAllOff} disabled={apply.isPending || allOffTargets.length === 0} title={i18nT('pages.overview.mcpTab.all_off_help')} data-testid="mcp-all-off"><ToggleLeft size={14} /> {i18nT('pages.overview.mcpTab.all_off')}</Btn>
           {/* `title` as well as `aria-label`: the sign-in guidance names this control
               by that string, and an icon-only button renders none of it — without a
               hover the reader cannot match the instruction to the button it means. */}
@@ -932,6 +972,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
         {filtered.map(s => <Badge key={s.name} variant={disabledInConfigVariant(s) ?? mcpStatusVariant(s.status, mcpAuthState(s))}><Plug className="lucide-inline" /> {s.name}</Badge>)}
       </div>
       {isLoading ? <ContentSkeleton rows={6} /> : (
+        /* The scroller's width, for an open tool list to size itself to
+           (`100cqw` in McpToolsPanel), so it never scrolls sideways. */
+        <div className="@container">
         <div ref={attachMcpScroller} className="overflow-x-auto">
         {/* This table is AUTO layout (`w-full border-collapse`, no table-fixed),
             so column edges depend on content and a wrapper-anchored cue cannot
@@ -946,7 +989,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
             renders neither. Same treatment as the Hooks and Schedule tables.
             The table itself is the observed content node: auto layout means the
             ROWS set scrollWidth, which the scroller's own box never reports. */}
-        <table ref={attachMcpTable} className="w-full border-collapse table-striped"><thead><tr>
+        <table ref={attachMcpTable} className="w-full border-collapse"><thead><tr>
           <SortableHeader label={i18nT('pages.overview.mcpTab.name')} sortKey="name" sort={mcpSort} onToggle={toggleMcpSort} />
           <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.mcpTab.kirocrew')}</th>
           <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.mcpTab.globals')}</th>
@@ -965,7 +1008,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
             {i18nT('pages.overview.mcpTab.actions')}
           </th>
         </tr></thead>
-          <tbody>{servers.length === 0 ? <tr><td colSpan={6} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.mcpTab.no_mcp_servers_configured')}</td></tr> : sortedServers.length === 0 ? <tr><td colSpan={6} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.mcpTab.no_matching_servers')}</td></tr> : sortedServers.map((s, i) => {
+          {servers.length === 0 ? <tbody><tr><td colSpan={6} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.mcpTab.no_mcp_servers_configured')}</td></tr></tbody> : sortedServers.length === 0 ? <tbody><tr><td colSpan={6} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.mcpTab.no_matching_servers')}</td></tr></tbody> : sortedServers.map((s, i) => {
             const p = pending[s.name]
             const pendingUninstall = p?.uninstall === true
             const eff = effectivePresence(s, p)
@@ -982,7 +1025,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
               <span className="text-warn text-[12px]">
                 <Trans
                   i18nKey="pages.connectionsPage.needs_crew_sign_in_help"
-                  values={{ provider: crewSignInProvider.name }}
+                  values={{ provider: crewSignInProvider.name, tab: i18nT('settings.tabs.agent.label') }}
                   components={{ settingsLink: <Link to={settingsPath({ tab: 'agent' })} className="underline hover:text-accent transition-colors" /> }}
                 />{' '}
                 <Link
@@ -1024,13 +1067,17 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
             const whereKey = invalidValue
               ? (s.disabledInFile ? 'pages.overview.mcpTab.disabled_in_config_invalid_where' : 'pages.overview.mcpTab.disabled_in_config_invalid_where_unknown')
               : (s.disabledInFile ? 'pages.overview.mcpTab.disabled_in_config_where' : 'pages.overview.mcpTab.disabled_in_config_where_unknown')
-            // Plain-text twin for `title` attributes: the catalog wraps the path
-            // in `<file>` for `Trans`, which a string attribute must not carry.
-            const disabledInConfigWhereText = i18nT(whereKey, { file: s.disabledInFile ?? '' }).replace(/<\/?file>/g, '')
-            const rowBorder = pendingUninstall
-              ? 'border-l-2 border-[var(--danger)]'
+            // Plain-text twin for `title` attributes: the catalog marks the path
+            // with a `<file/>` slot for `Trans`, which this fills with the path.
+            const disabledInConfigWhereText = i18nT(whereKey).replace(/<file\s*\/>/g, () => s.disabledInFile ?? '')
+            // The staged-change edge, an inset shadow on the row's first cell and
+            // on its open list: a collapsed `<tr>` border would widen the table's
+            // own border, and the open list (as wide as the card) would then
+            // stick out past the card's edge.
+            const rowEdge = pendingUninstall
+              ? 'shadow-[inset_2px_0_0_0_var(--danger)]'
               : (hasPendingScopeChange(s, p) || hasToolOverrides)
-                ? 'border-l-2 border-[var(--warn)]'
+                ? 'shadow-[inset_2px_0_0_0_var(--warn)]'
                 : ''
             // A config-disabled row greys its non-actionable cells, not the
             // whole <tr>: Uninstall stays live on such a row (it removes the
@@ -1046,11 +1093,23 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
             // live switch, so it can be turned back on and a staged turn-on
             // can be clicked back.
             const builtinLocked = s.builtin === true && base.kirocrew && !pendingUninstall && !disabledInConfig
-            return (
-              <tr key={s.name} className={`group/mcprow hover:bg-bg-hover transition-colors align-top ${rowBorder}`} style={{ opacity: pendingUninstall ? 0.5 : 1 }} data-disabled-in-config={disabledInConfig ? 'true' : undefined}>
-                <td className="px-2.5 py-2 border-b border-border text-sm min-w-[180px]" style={dimmedCell}>
+            // The rows carry the `.table-striped` zebra themselves, because an open
+            // tool list adds a row of its own that must not shift the stripes:
+            // even rows the `--card-hl` tint (with no hover, as before), odd rows
+            // the hover tint. Each server is its own <tbody> hover group, so the
+            // server row and its open list wear one stripe and tint together.
+            const zebra = i % 2 === 1 ? 'bg-[var(--card-hl)]' : 'group-hover/mcprow:bg-bg-hover'
+            const toolsPanelId = `mcp-tools-${encodeURIComponent(s.name)}`
+            // The one test for the `N tools` button and the open list it controls,
+            // so the list only ever hangs under that button. The Tools cell's later
+            // branches all need an empty tool list, so they never come first here.
+            const toolsListed = !(s.status === 'error' && s.error) && mcpAuthState(s) !== 'sign_in_required'
+              && !(mcpAuthState(s) === 'signed_in' && signInUnsupported) && !!s.tools?.length
+            return (<tbody key={s.name} className="group/mcprow">
+              <tr className={`${zebra} transition-colors align-top`} style={{ opacity: pendingUninstall ? 0.5 : 1 }} data-disabled-in-config={disabledInConfig ? 'true' : undefined}>
+                <td className={`px-2.5 py-2 border-b border-border text-sm min-w-[180px] ${rowEdge}`} style={dimmedCell}>
                   <div className="flex items-center gap-1.5">
-                    <code className={`font-semibold ${pendingUninstall ? 'line-through' : ''}`}>{s.name}</code>
+                    <code id={`${toolsPanelId}-name`} className={`font-semibold ${pendingUninstall ? 'line-through' : ''}`}>{s.name}</code>
                     {disabledInConfig && (
                       /* Same slot and size as the Managed-by-Connections badge, so a
                          name cell carries at most one row of chips. `title` carries
@@ -1077,6 +1136,14 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                           {i18nT('pages.overview.mcpTab.builtin')}
                         </Badge>
                         <InfoTip text={i18nT('pages.overview.mcpTab.builtin_help')} placement="top" />
+                      </span>
+                    )}
+                    {s.app && (
+                      <span className="inline-flex items-center gap-1">
+                        <Badge variant="muted" className="text-[10px] px-1.5 py-0.5 font-body" style={{ color: 'var(--text)' }} data-testid="mcp-app-owned-chip">
+                          {i18nT('pages.overview.mcpTab.app_owned', { app: s.app })}
+                        </Badge>
+                        <InfoTip text={i18nT('pages.overview.mcpTab.app_owned_help', { app: s.app })} placement="top" />
                       </span>
                     )}
                     {managedProvider && (onManagedProviderClick ? (
@@ -1219,9 +1286,10 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                         className="whitespace-nowrap text-[11px] text-accent hover:text-accent-hover cursor-pointer transition-colors disabled:cursor-not-allowed disabled:text-muted"
                         onClick={() => resetFailures.mutate(s.name)}
                         disabled={resetFailures.isPending}
-                        title={i18nT('pages.overview.mcpTab.reset_failures_help')}
                       >
-                        {i18nT('pages.overview.mcpTab.reset_failures')}
+                        {resetFailures.isPending && resetFailures.variables === s.name
+                          ? i18nT('pages.overview.mcpTab.testing_server')
+                          : i18nT('pages.overview.mcpTab.reset_failures')}
                       </button>
                     </div>
                   )}
@@ -1265,6 +1333,11 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                        hand-off under the text, so it neither breaks mid-word nor clips. */
                     <ErrorNotice variant="inline" className="flex-wrap" message={i18nT('pages.overview.mcpTab.test_server_failed')} testId="mcp-test-server-failed" askAgent />
                   )}
+                  {resetFailures.isError && resetFailures.variables === s.name && (
+                    /* Retry server failed at the clear or at the probe after it, so the
+                       row shows the last check's status: say so, like Test does. */
+                    <ErrorNotice variant="inline" className="flex-wrap" message={i18nT('pages.overview.mcpTab.retry_server_failed')} testId="mcp-retry-server-failed" askAgent />
+                  )}
                   {s.tempRefusals?.map(r => (
                     /* The probe still answered with the managed temp, so the status
                        stays as it is; this line says what was ignored and why. A
@@ -1289,6 +1362,20 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                         {i18nT('pages.overview.mcpTab.agent_dropped_fix', {
                           page: i18nT('nav.mcp_servers'),
                         })}
+                      </span>
+                    </div>
+                  )}
+                  {s.ownEntryUnused && (
+                    /* The row is the shipped server; the user's own same-named
+                       entry never runs, and nothing else on screen says so. */
+                    <div className="text-warn text-[12px] break-words" data-testid="mcp-own-entry-unused">
+                      <AlertTriangle className="lucide-inline" />{' '}
+                      {i18nT('pages.overview.mcpTab.own_entry_unused', {
+                        file: s.ownEntryUnused.file,
+                        command: s.ownEntryUnused.command,
+                      })}
+                      <span className="block mt-0.5">
+                        {i18nT('pages.overview.mcpTab.own_entry_unused_fix')}
                       </span>
                     </div>
                   )}
@@ -1417,50 +1504,23 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                     <span className="text-muted text-[12px] break-words" data-testid="mcp-signed-in-no-row-sign-in">
                       {i18nT('pages.overview.mcpTab.signed_in_no_row_sign_in', { name: s.name })}
                     </span>
-                  ) : s.tools?.length ? (<div>
-                    <button className="flex items-center gap-1 text-[12px] text-accent hover:text-accent-hover cursor-pointer transition-colors mb-1" onClick={() => setExpandedTools(prev => { const next = new Set(prev); if (next.has(s.name)) next.delete(s.name); else next.add(s.name); return next })}>{i18nT('pages.overview.mcpTab.tools_count', { count: s.tools.length, n: fmtNumber(s.tools.length) })}{!expandedTools.has(s.name) && (s.disabledTools?.length || 0) > 0 && <span className="text-muted ml-1">{i18nT('pages.overview.mcpTab.off_count', { count: s.disabledTools!.length })}</span>}<ChevronRight size={14} className={`transition-transform duration-200 ${expandedTools.has(s.name) ? 'rotate-90' : ''}`} /></button>
-                    <AnimatePresence>{expandedTools.has(s.name) && <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                    {/* The cost of a tool-off, above the tools and before any click,
-                        at the card's weight: the rule strong, its exception muted
-                        right under it. Shown whenever the list is open on a harness
-                        whose reach can cost a whole server; nothing otherwise.
-                        Worded for THIS server: a server the reach spares shows
-                        only that fact. */}
-                    <McpDenyReach reach={mcpServerDeny(denyProbe, s.name)} />
-                    <McpToolGrantsNote server={s.name} />
-                    <div className="space-y-0.5">{s.tools.map(t => {
-                      const currentlyDisabled = (s.disabledTools || []).includes(t)
-                      const toolOverride = pendingTools[s.name]?.[t]
-                      const effectivelyEnabled = toolOverride !== undefined ? toolOverride : !currentlyDisabled
-                      const hasPending = toolOverride !== undefined
-                      return <div key={t} className="flex items-center gap-2"><button
-                        type="button"
-                        className={`flex items-center gap-1.5 text-[12px] font-mono cursor-pointer transition-colors bg-transparent border-none p-0 text-left ${effectivelyEnabled ? 'text-text hover:text-accent' : 'text-muted line-through opacity-60 hover:opacity-100'} ${hasPending ? 'ring-1 ring-[var(--warn)] rounded px-1' : ''}`}
-                        disabled={pendingUninstall || s.enabled === false}
-                        onClick={() => toggleToolPending(s.name, t, !effectivelyEnabled)}
-                        title={hasPending
-                          ? (effectivelyEnabled ? i18nT('pages.overview.mcpTab.pending_enable_click_to_revert') : i18nT('pages.overview.mcpTab.pending_disable_click_to_revert'))
-                          : effectivelyEnabled ? i18nT('pages.overview.mcpTab.click_to_disable_pending_until_apply') : i18nT('pages.overview.mcpTab.click_to_enable_pending_until_apply')}
-                      ><span className={`w-1.5 h-1.5 rounded-full shrink-0 ${effectivelyEnabled ? 'bg-ok' : 'bg-muted'}`} />{t}</button>
-                      {/* Beside Disable: stop asking for this one tool (the approval card's grant). */}
-                      {effectivelyEnabled && s.enabled !== false && <McpToolAlwaysAllow server={s.name} tool={t} />}</div>
-                    })}</div></motion.div>}</AnimatePresence>
+                  ) : toolsListed && s.tools ? (<div>
+                    <button type="button" id={`${toolsPanelId}-toggle`} aria-expanded={expandedTools.has(s.name)} aria-controls={expandedTools.has(s.name) ? toolsPanelId : undefined} className="flex items-center gap-1 text-[12px] text-accent hover:text-accent-hover cursor-pointer transition-colors mb-1" onClick={() => setExpandedTools(prev => { const next = new Set(prev); if (next.has(s.name)) next.delete(s.name); else next.add(s.name); return next })}>{i18nT('pages.overview.mcpTab.tools_count', { count: s.tools.length, n: fmtNumber(s.tools.length) })}{!expandedTools.has(s.name) && (s.disabledTools?.length || 0) > 0 && <span className="text-muted ml-1">{i18nT('pages.overview.mcpTab.off_count', { count: s.disabledTools!.length })}</span>}<ChevronRight size={14} className={`transition-transform duration-200 ${expandedTools.has(s.name) ? 'rotate-90' : ''}`} /></button>
                   </div>) : disabledInConfig || notProbedReason ? null : '—'}
                 </td>
                 {/* Pinned like the header cell, on an OPAQUE `bg-card`. The row
                     states live on the <tr>, which the opaque base would hide, so
-                    the overlay re-applies them: even rows mirror
-                    `.table-striped`'s translucent `--card-hl` zebra (which
-                    outranks the row's hover utility by specificity, so hover is
-                    deliberately NOT mirrored there), odd rows mirror the hover
-                    tint via the named row group. */}
+                    the overlay re-applies them with the same parity as the
+                    row's `zebra`: even rows the translucent `--card-hl` tint
+                    (with no hover, as the row has none there), odd rows the
+                    hover tint via the named row group. */}
                 <td className="sticky right-0 bg-card px-2.5 py-2 border-b border-border text-sm text-right whitespace-nowrap">
                   <div aria-hidden className={`absolute inset-0 -z-10 transition-colors ${i % 2 === 1 ? 'bg-[var(--card-hl)]' : 'group-hover/mcprow:bg-bg-hover'}`} />
                   {mcpTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
                   {/* The fade must ramp toward the surface it abuts: on a hovered
                       odd row that is the hover tint, not the card (even rows
-                      keep from-card — zebra outranks the row's hover utility,
-                      so their surface never changes). */}
+                      keep from-card: their `zebra` has no hover tint, so
+                      their surface never changes). */}
                   {mcpTableEdges.right && <div aria-hidden="true" className={`pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-card to-transparent ${i % 2 === 1 ? '' : 'group-hover/mcprow:from-bg-hover'}`} />}
                   {pendingUninstall ? (
                     <Btn onClick={() => revertRow(s.name)}>{i18nT('pages.overview.mcpTab.undo')}</Btn>
@@ -1475,16 +1535,46 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                           included -- so a greyed-out button would lie about it. The
                           hover text says exactly that; a re-enable stays out (a
                           separate decision), but a removal the user asks for is not
-                          a re-enable. */}
-                      {s.builtin !== true && (
+                          a re-enable. Not on an app's server: the rebuild writes it
+                          back from the app's manifest, so the chip says which app
+                          to remove instead. */}
+                      {s.builtin !== true && !s.app && (
                         <Btn danger onClick={() => stageUninstall(s.name)} title={disabledInConfig ? i18nT('pages.overview.mcpTab.uninstall_disabled_in_config_help') : undefined}>{i18nT('pages.overview.mcpTab.uninstall')}</Btn>
                       )}
                     </div>
                   )}
                 </td>
               </tr>
-            )
-          })}</tbody></table>
+              {/* The open tool list: a full-width row of its own under the server's
+                  row, so a long list fills the card instead of one tall column. */}
+              <AnimatePresence>{toolsListed && expandedTools.has(s.name) && (
+                <tr key="tools" className={`${zebra} transition-colors`} style={{ opacity: pendingUninstall ? 0.5 : 1 }}>
+                  <td colSpan={6} className="p-0 border-b border-border" style={dimmedCell}>
+                    <McpToolsPanel
+                      id={toolsPanelId}
+                      labelledBy={`${toolsPanelId}-name ${toolsPanelId}-toggle`}
+                      edgeClassName={rowEdge}
+                      server={s.name}
+                      tools={s.tools!}
+                      disabledTools={s.disabledTools || []}
+                      pendingTools={pendingTools[s.name]}
+                      serverOff={s.enabled === false}
+                      locked={pendingUninstall || s.enabled === false}
+                      /* The cost of a tool-off, above the tools and before any click,
+                         at the card's weight: the rule strong, its exception muted
+                         right under it. Shown whenever the list is open on a harness
+                         whose reach can cost a whole server; nothing otherwise.
+                         Worded for THIS server: a server the reach spares shows
+                         only that fact. */
+                      notice={<McpDenyReach reach={mcpServerDeny(denyProbe, s.name)} />}
+                      onToggleTool={(t, enabled) => toggleToolPending(s.name, t, enabled)}
+                    />
+                  </td>
+                </tr>
+              )}</AnimatePresence>
+            </tbody>)
+          })}</table>
+        </div>
         </div>
       )}
     </Card>

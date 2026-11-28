@@ -1,7 +1,10 @@
 """What a dashboard turn's session reports about itself mid-turn: a compaction's progress
-(``_on_compaction_status``), a native clear (``_on_clear_status``), an agent switch
-(``_on_agent_switched``), its todo list (``_on_todo_update``) and a notice its harness
-reported (``_on_harness_notice``, with the end-of-turn ``_finish_harness_notices``)."""
+(``_on_compaction_status``), a native clear (``_on_clear_status``, then
+``_keep_cleared_turns``), an agent switch (``_on_agent_switched``), its todo list
+(``_on_todo_update``), a model fallback hop (``_on_model_fallback``, whose refusal hop
+drops the refused model's text, put back by the end-of-turn ``_restore_refused_text``)
+and a notice its harness reported (``_on_harness_notice``, with the end-of-turn
+``_finish_harness_notices``)."""
 
 from __future__ import annotations
 
@@ -10,19 +13,21 @@ from typing import TYPE_CHECKING, Literal
 
 from kiro_crew.agent_sdk.drivers.acp_vocab import NOTICE_KIND_ADAPTER
 from kiro_crew.crew_mode import slot_is_crew_mode_root as crew_mode_is_root
+from kiro_crew.dashboard import engine_fallback as _engine_fallback
 from kiro_crew.dashboard.chat_utils import (
     _broadcast_compaction_result,
     drained_to_thread,
     has_leaked_tool_call,
+    slot_history_key,
 )
 from kiro_crew.dashboard.harness_notice_rows import notice_row
-from kiro_crew.dashboard.state import durable_row_count
 from kiro_crew.platform import redact_log_via_context
 from kiro_crew.runtime_ownership import is_shared_chat_runtime
 from kiro_crew.security import redact
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
+        STOP_REASON_REFUSAL,
         KiroCrewConfig,
         append_and_surface,
         crew_log_emit,
@@ -30,6 +35,7 @@ if TYPE_CHECKING:
         record_provider_agent_switch,
         refuse_stale_switch,
         restore_agent_selection,
+        save_slot_off_loop,
         sel,
     )
     from kiro_crew.dashboard.chat_turn.segment_flush import (
@@ -169,15 +175,13 @@ def _foreign_shared_clear(turn: _ChatTurn, event) -> bool:
     )
 
 
-async def _on_clear_status(turn: _ChatTurn, event) -> None:
-    """A native clear the session confirms."""
+async def _on_clear_status(turn: _ChatTurn, event) -> bool:
+    """A native clear the session confirms; returns whether the clear is this session's."""
     if _foreign_shared_clear(turn, event):
-        return
+        return False
     _replay_accepted_this_turn = turn._replay_accepted_this_turn
     _replay_pending = turn._replay_pending
-    _this_turn_is_clear = turn._this_turn_is_clear
     session_key = turn.session_key
-    slot = turn.slot
     state = turn.state
     # A confirmed native clear is the one destructive slash command:
     # replaying the persisted Kiro Crew history afterwards would undo
@@ -197,29 +201,69 @@ async def _on_clear_status(turn: _ChatTurn, event) -> None:
     # the debt armed and the next ordinary prompt rebuilds the very
     # history the user asked to drop.
     state.sessions.consume_first_turn_history_owed(session_key)
-    # Advance the durable POSITION base by the rows this clear
-    # evicts, exactly as the trim path does (`_ChatSlot.append`)
-    # and as every restore path recomputes it. The base plus the
-    # window's durable rows is the crew log turn ordinal and the
-    # session_control `since` cursor space; emptying the window
-    # without crediting the base made the next turn draw an
-    # ordinal an earlier turn already wrote (two unrelated turns
-    # then read as one turn with contradictory entries) and shifted
-    # every cursor down. `durable_row_count` is the ONE shared
-    # counting rule, so the base cannot disagree with the ordinal
-    # about which rows are durable. Counted BEFORE the clear --
-    # afterwards the rows are gone.
-    slot._disk_older_durable_count += durable_row_count(slot.messages)
-    slot.messages.clear()
     # The boundary was captured against the pre-clear message
-    # count; the list is now empty, so reset it to 0 or the
-    # clear-confirmation appended below would fall outside the
-    # turn-stats scan slice and the completed turn would drop its
+    # count; the clear folds rows off the front of the window, so reset it
+    # to 0 or the clear-confirmation appended after them would fall outside
+    # the turn-stats scan slice and the completed turn would drop its
     # elapsed/credits stats.
     _turn_msg_boundary = 0
     turn._turn_msg_boundary = _turn_msg_boundary
     _turn_start_mid = ""
     turn._turn_start_mid = _turn_start_mid
+    return True
+
+
+async def _keep_cleared_turns(turn: _ChatTurn) -> None:
+    """Fold a confirmed clear's saved rows out of the live window into the frozen prefix."""
+    slot = turn.slot
+    state = turn.state
+    # The window's last row before the save below (the first suspension
+    # point): a row another task appends meanwhile lands after it and stays in
+    # the window, and a cap trim meanwhile removes and credits rows before it.
+    last = slot.messages[-1] if slot.messages else None
+    # The clear keeps the transcript: save the window first, so its unsaved rows
+    # (usually the typed `/clear` row among them) reach disk and fold with the
+    # rest. The save re-raises a cancellation, which leaves the pane with its
+    # turns and loses no row.
+    await save_slot_off_loop(
+        state,
+        slot,
+        expected_history_key=slot_history_key(slot),
+        expected_slot_name=slot.key,
+    )
+    evicted = next(
+        (i + 1 for i in range(len(slot.messages) - 1, -1, -1) if slot.messages[i] is last),
+        0,
+    )
+    # Fold the rows up to `last` that `_disk_window_len` counts as saved
+    # (normally all of them) into the frozen prefix through the trim's own fold,
+    # so they are read from the transcript like the trim's. A refused or failed
+    # save does not raise that count, and the rows past it stay in the window for
+    # the next flush, as do the rows that arrived during the save. The other
+    # writers' lines the prefix cache holds are disk lines and positions too,
+    # read off it before the fold drops it; beside a row that stays, they keep
+    # every row in the window for the next flush.
+    folded = min(evicted, slot._disk_window_len)
+    kept = len(slot.messages) - folded
+    cache = slot._frozen_prefix_cache
+    foreign = len(cache[4]) if cache is not None else 0
+    if kept and foreign:
+        # The save merged those lines among the window's rows by time, so no
+        # count of folded rows is the prefix boundary, and crediting them could
+        # put a kept row's own disk copy in the prefix too. Fold nothing.
+        logger.warning(
+            "Slot %s: %d row(s) stay in the window after the clear's save beside "
+            "%d foreign line(s); folding none of its rows into the prefix",
+            slot.key,
+            kept,
+            foreign,
+        )
+        folded = foreign = 0
+    elif cache is not None and cache[2] != slot._disk_older_count:
+        foreign = 0
+    slot._fold_head(folded)
+    slot._disk_older_count += foreign
+    slot._disk_older_durable_count += foreign
     _drop_wire_tail(turn)
     turn.assistant_text = _cleared_segment_text(slot)
     turn._produced_visible_output = True
@@ -238,7 +282,7 @@ async def _on_clear_status(turn: _ChatTurn, event) -> None:
     # Gated on THIS turn being the /clear, not on frame ownership: a
     # shared runtime marks the frame ownerless whenever a subagent is
     # registered, which is also true for the session that typed it.
-    if _this_turn_is_clear and slot.set_todo(None):
+    if turn._this_turn_is_clear and slot.set_todo(None):
         state.broadcast_ws("todo_update", {"slot": slot.key, "todo": None})
     append_and_surface(state, slot, "assistant", "🗑️ Conversation cleared.", "msg msg-a")
 
@@ -505,6 +549,57 @@ async def _on_todo_update(turn: _ChatTurn, event) -> None:
             _crew_log_turn_no,
             items=(event.todo or {}).get("tasks"),
         )
+
+
+def _on_model_fallback(turn: _ChatTurn, event) -> None:
+    """kiro-cli moved this turn onto another model, or could not.
+
+    The handle already moved the resolved model; the slot follows a promotion, and
+    ``_run_chat``'s finally ends the walk with one notice. On a content-filter refusal
+    kiro-cli streams the refused model's text, then a ``model_fallback`` hop
+    (``cause: refused``), then the fallback's answer
+    (``test/fixtures/acp_frames/kiro/refusal-fallback-live.jsonl``). The refused text
+    is not the answer: it leaves the open segment, its chunk rows and the live tail,
+    so the flush saves only the fallback's text, and its ``chat_message`` overwrites
+    the tab's streamed copy. A promotion, or a hop with another cause, moves nothing
+    visible. The native Slack turn's rule (``_AnswerStream.on_model_fallback``).
+    """
+    notice = event.model_fallback
+    if notice is None:
+        return
+    _engine_fallback.record_engine_fallback(
+        turn.state, turn.slot, turn.client, turn._engine_fallback_walk, notice
+    )
+    if notice.promoted or notice.cause != "refused" or not turn.has_assistant_text:
+        return
+    slot = turn.slot
+    slot.purge_chunks()
+    _drop_wire_tail(turn)
+    if turn.assistant_text.strip():
+        # Kept, so a refusal nothing recovered still shows the provider's own words.
+        turn._refused_segment = (
+            turn.assistant_text,
+            slot.segment_raw_text,
+            slot.segment_shown_sha,
+            slot.segment_removed,
+        )
+    turn.assistant_text = _cleared_segment_text(slot)
+
+
+def _restore_refused_text(turn: _ChatTurn) -> None:
+    """Put the dropped refused text back on a refusal terminal no model answered after.
+
+    ``_on_text_chunk`` forgets the kept copy at the first answer text after the hop.
+    """
+    if turn._refused_segment is None or turn._stop_reason != STOP_REASON_REFUSAL:
+        return
+    slot = turn.slot
+    (
+        turn.assistant_text,
+        slot.segment_raw_text,
+        slot.segment_shown_sha,
+        slot.segment_removed,
+    ) = turn._refused_segment
 
 
 #: Harness notice rows a turn holds while a reply segment is open. A notice past it

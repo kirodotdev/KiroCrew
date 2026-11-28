@@ -342,6 +342,7 @@ describe('KiroPrerequisiteGate configured-agent notice reason', () => {
       says: /Kiro Agent runs on Kiro Crew's agent specs, which are not installed on the gateway host/,
       command: 'kirocrew setup --agent-only',
       sandbox: false,
+      opens: false,
     },
     {
       label: 'rejected agent specs',
@@ -349,6 +350,7 @@ describe('KiroPrerequisiteGate configured-agent notice reason', () => {
       says: /They are on the gateway host, but they could not be loaded/,
       command: 'kirocrew setup --agent-only --clean',
       sandbox: false,
+      opens: false,
     },
     {
       label: 'no OS sandbox and unsandboxed exec not permitted',
@@ -356,6 +358,7 @@ describe('KiroPrerequisiteGate configured-agent notice reason', () => {
       says: SANDBOX,
       command: 'kirocrew doctor',
       sandbox: true,
+      opens: true,
     },
     {
       label: 'sandbox blocked for Kiro Agent',
@@ -363,8 +366,9 @@ describe('KiroPrerequisiteGate configured-agent notice reason', () => {
       says: SANDBOX,
       command: 'kirocrew doctor',
       sandbox: true,
+      opens: true,
     },
-  ])('$label: the notice names the reason and its command', async ({ over, says, command, sandbox }) => {
+  ])('$label: the notice names the reason and its command', async ({ over, says, command, sandbox, opens }) => {
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status(over))
     vi.mocked(api.acpBackends).mockResolvedValue({
       backends: [
@@ -373,10 +377,13 @@ describe('KiroPrerequisiteGate configured-agent notice reason', () => {
       ],
     })
     render()
-    // A Kiro harness config starts the picker collapsed.
-    fireEvent.click(await screen.findByRole(
+    // A Kiro harness config starts the picker collapsed, unless the sandbox is
+    // what blocks Kiro Agent: then the notice is the only reason on screen.
+    const toggle = await screen.findByRole(
       'button', { name: 'Use other coding agents' }, GATE_READS_LAND,
-    ))
+    )
+    expect(toggle).toHaveAttribute('aria-expanded', opens ? 'true' : 'false')
+    if (!opens) fireEvent.click(toggle)
 
     await screen.findByText(/is set to use Kiro Agent, which isn't ready/)
     const reason = await screen.findByTestId('configured-agent-not-ready-reason')
@@ -395,12 +402,12 @@ describe('KiroPrerequisiteGate configured-agent notice reason', () => {
   })
 
   it.each([
-    { label: 'a workload pod with no sandbox and no opt-in', over: { container_boundary_hint: true, sandbox_backend_available: false, unsandboxed_exec_permitted: false }, shown: true },
-    { label: 'a host with no sandbox that is not a workload pod', over: { sandbox_backend_available: false, unsandboxed_exec_permitted: false }, shown: false },
-    { label: 'a workload pod whose sandbox works but blocks Kiro Agent', over: { container_boundary_hint: true, sandbox_backend_available: true, sandbox_blocked_backends: ['kas'] }, shown: false },
-    { label: 'a workload pod whose configured agent is enforced (the opt-in cannot unblock it)', over: { container_boundary_hint: true, sandbox_backend_available: false, unsandboxed_exec_permitted: false, sandbox_blocked_backends: ['kas'] }, shown: false },
-    { label: 'a workload pod that already opted in', over: { container_boundary_hint: true, sandbox_backend_available: false, unsandboxed_exec_permitted: true, sandbox_blocked_backends: ['kas'] }, shown: false },
-  ])('$label: the default view names the unsandboxed setting only for the pod case', async ({ over, shown }) => {
+    { label: 'a workload pod with no sandbox and no opt-in', over: { container_boundary_hint: true, sandbox_backend_available: false, unsandboxed_exec_permitted: false }, shown: true, opens: false },
+    { label: 'a host with no sandbox that is not a workload pod', over: { sandbox_backend_available: false, unsandboxed_exec_permitted: false }, shown: false, opens: true },
+    { label: 'a workload pod whose sandbox works but blocks Kiro Agent', over: { container_boundary_hint: true, sandbox_backend_available: true, sandbox_blocked_backends: ['kas'] }, shown: false, opens: false },
+    { label: 'a workload pod whose configured agent is enforced (the opt-in cannot unblock it)', over: { container_boundary_hint: true, sandbox_backend_available: false, unsandboxed_exec_permitted: false, sandbox_blocked_backends: ['kas'] }, shown: false, opens: true },
+    { label: 'a workload pod that already opted in', over: { container_boundary_hint: true, sandbox_backend_available: false, unsandboxed_exec_permitted: true, sandbox_blocked_backends: ['kas'] }, shown: false, opens: true },
+  ])('$label: the default view names the unsandboxed setting only for the pod case', async ({ over, shown, opens }) => {
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status(over))
     vi.mocked(api.acpBackends).mockResolvedValue({
       backends: [
@@ -409,13 +416,14 @@ describe('KiroPrerequisiteGate configured-agent notice reason', () => {
       ],
     })
     render()
-    // The default view, with "Use other coding agents" still closed.
+    // The default view: "Use other coding agents" is closed, except where its
+    // sandbox notice is the only reason on screen (no pod hint above it).
     const toggle = await screen.findByRole('button', { name: 'Use other coding agents' }, GATE_READS_LAND)
-    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(toggle.getAttribute('aria-expanded')).toBe(opens ? 'true' : 'false')
     const hint = screen.queryByTestId('workload-pod-no-sandbox')
     if (!shown) {
       expect(hint).toBeNull()
-      fireEvent.click(toggle)
+      if (!opens) fireEvent.click(toggle)
       await screen.findByTestId('configured-agent-not-ready-reason')
       expect(screen.queryByTestId('workload-pod-no-sandbox')).toBeNull()
       return
@@ -442,6 +450,30 @@ describe('KiroPrerequisiteGate configured-agent notice reason', () => {
     if (toggle.getAttribute('aria-expanded') !== 'true') fireEvent.click(toggle)
     await screen.findByTestId('other-agent-detail')
     expect(screen.getAllByTestId('workload-pod-no-sandbox')).toHaveLength(1)
+  })
+
+  it('starts open on a fresh Kiro Agent config the host cannot sandbox, so the reason shows unclicked', async () => {
+    // The Kiro CLI card cannot clear this page (installing Kiro CLI gives the
+    // host no sandbox), so the notice is the only thing saying why it holds.
+    vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: {} })
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      sandbox_backend_available: false, unsandboxed_exec_permitted: false,
+    }))
+    vi.mocked(api.acpBackends).mockResolvedValue({
+      backends: [probe({ id: 'kas', policy_id: 'kas', independent_setup: false, installed: 'installed' })],
+    })
+    render()
+
+    const toggle = await screen.findByRole('button', { name: 'Use other coding agents' }, GATE_READS_LAND)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    const reason = screen.getByTestId('configured-agent-not-ready-reason')
+    expect(reason).toHaveTextContent(SANDBOX)
+    expect(within(reason).getByText('kirocrew doctor', { selector: 'code' })).toBeVisible()
+    expect(screen.queryByTestId('workload-pod-no-sandbox')).toBeNull()
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('configured-agent-not-ready-reason')).toBeNull()
   })
 
   it('carries its own Check again for the configured agent, apart from the open row\'s', async () => {

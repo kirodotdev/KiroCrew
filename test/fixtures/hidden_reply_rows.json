@@ -530,6 +530,120 @@
       ]
     },
     {
+      "name": "note-only reply whose summary holds a markdown link, after a block",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "inject",
+          "content": "[Tool blocked \u2014 reason sent to the agent] The command was denied by policy."
+        },
+        {
+          "role": "assistant",
+          "content": "[STEERING steer-0a1b: opened [PR #7](https://example.com/pull/7) instead]"
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false,
+        true
+      ]
+    },
+    {
+      "name": "note with an unbalanced bracket in its summary, then prose, after a block",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "inject",
+          "content": "[Tool blocked \u2014 reason sent to the agent] The command was denied by policy."
+        },
+        {
+          "role": "assistant",
+          "content": "[STEERING steer-0a1b: see [the log] then stop\n\nThe check passed."
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "name": "note-only reply after a host approval decline instead of a blocked tool",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "assistant",
+          "content": "The host declined the command.",
+          "meta": {
+            "host_decline_cause": "policy"
+          }
+        },
+        {
+          "role": "assistant",
+          "content": "[STEERING steer-0a1b2c3d: Stopped retrying the blocked command.]"
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false,
+        true
+      ]
+    },
+    {
+      "name": "note-only reply when an empty host decline cause marks nothing",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "assistant",
+          "content": "The host declined the command.",
+          "meta": {
+            "host_decline_cause": ""
+          }
+        },
+        {
+          "role": "assistant",
+          "content": "[STEERING steer-0a1b2c3d: Stopped retrying the blocked command.]"
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
       "name": "note-only reply after a block when the turn's user row has steer {}",
       "rows": [
         {

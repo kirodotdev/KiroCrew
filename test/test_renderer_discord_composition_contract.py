@@ -101,7 +101,7 @@ BASE_MEMBERS = {
     "channel_type": ("attribute", "'discord'"),
     "__init__": (
         "function",
-        "(self, client: \"'DiscordClient'\", channel_id: 'str', capabilities: 'TransportCapabilities', *, session_key: 'str' = '', uploads_allowed: 'bool' = False, upload_root: 'str' = '', react_message_id: 'str' = '', reactions_enabled: 'bool' = True, show_thinking: 'bool' = False, now: 'Callable[[], float] | None' = None) -> 'None'",
+        "(self, client: \"'DiscordClient'\", channel_id: 'str', capabilities: 'TransportCapabilities', *, session_key: 'str' = '', uploads_allowed: 'bool' = False, upload_root: 'str' = '', react_message_id: 'str' = '', reactions_enabled: 'bool' = True, show_thinking: 'bool' = False, show_timing_footer: 'bool' = True, now: 'Callable[[], float] | None' = None) -> 'None'",
     ),
     "on_turn_start": ("coroutine", "(self) -> 'None'"),
     "_ensure_ladder": ("function", "(self) -> 'PhaseReactionLadder | None'"),

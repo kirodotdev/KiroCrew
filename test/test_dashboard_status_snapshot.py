@@ -9,6 +9,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.metrics import tool_calls
+from kiro_crew.stats import Stats
 from kiro_crew.testing.wait import await_until
 
 
@@ -89,6 +91,17 @@ class TestStatusSnapshot:
             "commit",
         }
         assert required.issubset(snap.keys())
+
+    def test_message_and_tool_call_counts_come_from_stats(self, state: DashboardState) -> None:
+        """The two figures ``kirocrew status`` prints have writers: ``Stats``."""
+        before = state.status_snapshot()
+        Stats().inc_message_received()
+        Stats().inc_message_admitted()
+        tool_calls.note_tool_call_started("snap-1", kind="read", scope="status-snapshot")
+        tool_calls.record_tool_call_finished("snap-1", status="completed", scope="status-snapshot")
+        after = state.status_snapshot()
+        assert after["messages"] - before["messages"] == 2, "one per counter"
+        assert after["tool_calls"] - before.get("tool_calls", 0) == 1
 
     def test_includes_build_branch_and_commit(self, state: DashboardState) -> None:
         """branch/commit come from the build info resolved at construction."""

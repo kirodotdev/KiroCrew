@@ -21,7 +21,6 @@ import type {
 } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import { AtSign, Download, FileDiff, FilePlus, FolderDot, FolderLock, FolderOpen, Undo2, Upload } from 'lucide-react'
-import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import ErrorNotice from '../components/ErrorNotice'
 import { MOVE_UNDO_MS } from '../components/MoveUndoBar'
@@ -47,6 +46,7 @@ import { planTreeStateRows, stateRowsMatchingFilter, STATE_ROW_ACTION_DECORATION
 import { recallDismissedUnreadable, rememberDismissedUnreadable } from './treeUnreadableDismissals'
 import { TreeSkeleton, type TreeReveal } from './tree'
 import { foldersOverRowBudget, mergeFolderListings, treeIsPartial, withFolder, type FolderListing } from './treeFolderListings'
+import { useWorkspaceTreeClient } from './workspaceTreeClient'
 
 /** The kind vocabulary the composer's `@`-mention plumbing speaks: a file is
  *  staged + tokenized, a folder becomes a bare `@rel/` reference. Narrower than
@@ -127,10 +127,12 @@ function expandedDirectoriesOf(
  *  row an installed app contributes for the `tree-context` surface (row click
  *  already opens a file, so the menu deliberately carries no Open duplicate).
  *  Every action closes the menu itself so focus returns to the row. */
-function TreeContextMenu({ item, context, root, onAddToContext, onUploadRequest, onNewFileRequest, contribItems, onError }: {
+function TreeContextMenu({ item, context, root, hostFileActions, onAddToContext, onUploadRequest, onNewFileRequest, contribItems, onError }: {
   item: FileTreeContextMenuItem
   context: FileTreeContextMenuOpenContext
   root: string
+  /** The tree client's `hostFileActions`: false drops the built-in Download. */
+  hostFileActions: boolean
   onAddToContext?: (absPath: string, kind: TreeEntryKind) => void
   /** Right-click "Upload files…" on a directory row: hands the host the
    *  ABSOLUTE directory path so it can open the OS file picker and upload
@@ -308,7 +310,7 @@ function TreeContextMenu({ item, context, root, onAddToContext, onUploadRequest,
   // A file row also carries a built-in Download (retrieve the bytes onto the
   // machine running the browser). Directories do not: the ask is file rows
   // only, and /api/file-download serves a single file, not a folder.
-  const canDownload = !isDir
+  const canDownload = !isDir && hostFileActions
   if (!hasBuiltinChatRow && !canDownload && !showUpload && !onNewFileRequest && rows.length === 0) return null
   return <OverlayPortal>
     <div
@@ -472,6 +474,8 @@ function dedupeTreePaths(paths: string[]): string[] {
   return unique.filter(path => path.endsWith('/') || !directories.has(path))
 }
 
+const NO_CONTRIBUTED_ITEMS: readonly ContributedFileMenuItem[] = []
+
 /** Open loaded folders one whole-tree poll re-reads, at most. */
 const FOLDER_REREADS_PER_POLL = 10
 
@@ -520,9 +524,15 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
    *  stale. Defaults to true. */
   active?: boolean
 }) {
-  // Whether any app contributes a 'tree-context' row at all — gates whether the
-  // tree wires a context menu (per-node `when` filtering happens in the menu).
-  const treeItems = useFileMenuItems('tree-context')
+  // The reads behind the tree: the dashboard's own, or the hosting app's scoped
+  // client (`app-sdk/FileTree.tsx`). Fixed for the mount.
+  const client = useWorkspaceTreeClient()
+  // The 'tree-context' rows installed apps contribute (per-node `when` filtering
+  // happens in the menu). A host without the dashboard's file actions offers none:
+  // each row dispatches to its own app's endpoint, not through this tree's client.
+  const contributedItems = useFileMenuItems('tree-context')
+  const hostFileActions = client.hostFileActions
+  const treeItems = hostFileActions ? contributedItems : NO_CONTRIBUTED_ITEMS
   // A contributed row's dispatch failure, rendered above the tree. It lives here rather
   // than in the context menu because activating a row closes that menu, so a notice
   // inside it would unmount with the thing that raised it.
@@ -533,9 +543,9 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   // focus, and becoming enabled again re-reads a stale query once.
   const { data: baseTree, dataUpdatedAt: baseTreeUpdatedAt } = useQuery({
     queryKey: ['project-tree', projectDir],
-    queryFn: () => api.projectTree(projectDir),
+    queryFn: () => client.tree(projectDir),
     enabled: !!projectDir && active,
-    // No poll while the read is failing: `api.projectTree` runs under a deadline, so a
+    // No poll while the read is failing: the tree read runs under a deadline, so a
     // wedged gateway would otherwise be re-walked every interval for as long as the tree
     // is mounted, each pass rejecting on the same deadline. A failed read recovers through
     // the host's Refresh (it refetches this key), and the poll resumes once that succeeds.
@@ -551,8 +561,8 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   }
   const { data: status, error: statusError } = useQuery({
     queryKey: ['git-status', projectDir],
-    queryFn: () => api.projectGitStatus(projectDir),
-    enabled: !!projectDir && active && (mode === 'changed' || !!baseTree?.repo),
+    queryFn: () => client.gitStatus!(projectDir),
+    enabled: !!client.gitStatus && !!projectDir && active && (mode === 'changed' || !!baseTree?.repo),
     refetchInterval: 5_000,
     refetchOnWindowFocus: true,
   })
@@ -579,7 +589,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   const folderQueries = useQueries({
     queries: (mode === 'all' ? loadedFolders : []).map(folder => ({
       queryKey: ['project-tree', projectDir, 'dir', folder],
-      queryFn: () => api.projectTree(projectDir, folder) as Promise<FolderListing>,
+      queryFn: () => client.tree(projectDir, folder) as Promise<FolderListing>,
       enabled: !!projectDir && active,
       retry: false,
       staleTime: 10_000,
@@ -1536,6 +1546,9 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   // slotted menu mid-interaction.
   const treeItemsRef = useRef(treeItems)
   treeItemsRef.current = treeItems
+  // Whether any row's menu can hold an item: the built-in Download or a
+  // contributed row (both host file actions), or a host handler's row.
+  const rowsCanHoldActions = hostFileActions || !!onAddToContext || !!onUploadRequest || !!onNewFileRequest
   const renderContextMenu = useCallback(
     (item: FileTreeContextMenuItem, ctx: FileTreeContextMenuOpenContext) => {
       // A state row has no path to act on: render nothing, the same way a
@@ -1559,6 +1572,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
           item={item}
           context={ctx}
           root={rootRef.current}
+          hostFileActions={hostFileActions}
           onAddToContext={onAddToContextRef.current}
           onUploadRequest={onUploadRequestRef.current}
           onNewFileRequest={onNewFileRequestRef.current}
@@ -1567,7 +1581,9 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
         />
       )
     },
-    [],
+    // `hostFileActions` is fixed for the mount (the client is), so it never
+    // changes this callback's identity.
+    [hostFileActions],
   )
 
   // A failed status request is terminal for this load. Changed mode has no
@@ -1584,7 +1600,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
             className="whitespace-normal"
             message={i18nT('components.workspaceTree.folder_listing_failed', { paths: fmtList(retryFolders, { style: 'narrow' }) })}
             report={reportForError(folderQueries[loadedFolders.indexOf(retryFolders[0])]?.error)}
-            askAgent
+            askAgent={hostFileActions}
             testId="workspace-tree-folder-listing-retry"
           />
           {/* The notice's own retry, so the remedy is the button beside it
@@ -1610,7 +1626,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
           className="whitespace-normal"
           message={sentence(fmtList(entries.map(entry => entry.folder), { style: 'narrow' }))}
           report={reportForError(entries[0].error)}
-          askAgent
+          askAgent={hostFileActions}
           onDismiss={() => setRefusedFolders(prev => prev.filter(entry => !entries.includes(entry)))}
           testId={testId}
         />
@@ -1636,7 +1652,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
             ? i18nT(gitFilterRefusalCopyKey(gitFilterRefusalCause(statusError)))
             : i18nT('components.workspaceTree.status_failed')}
           report={findReport(errMessage(statusError))}
-          askAgent
+          askAgent={hostFileActions}
           testId="workspace-tree-status-error"
         />
       </div>
@@ -1696,7 +1712,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
             message={breakAtSlashes(root)}
             messageClassName="font-mono"
             report={rootUnreadableReport(sentence, root)}
-            askAgent
+            askAgent={hostFileActions}
           />
           <button
             type="button"
@@ -1750,6 +1766,10 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
 
   return (
     <div ref={setDragHost} className="flex-1 min-h-0 flex flex-col">
+      {/* Every notice below offers the agent hand-off only on a host with the
+          dashboard's own actions (`hostFileActions`): the hand-off navigates to
+          the chat, which would unmount an app page hosting this tree
+          (`app-sdk/FileTree.tsx`) with whatever that page had not saved. */}
       {/* A contributed row's endpoint refused or never answered. askAgent on: this
           subtree holds no editable draft, only the tree's own selection. */}
       {actionError && (
@@ -1758,7 +1778,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
             variant="inline"
             className="whitespace-normal"
             message={actionError}
-            askAgent
+            askAgent={hostFileActions}
             onDismiss={() => setActionError(null)}
             testId="workspace-tree-action-error"
           />
@@ -1828,7 +1848,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
               variant="inline"
               className="whitespace-normal"
               message={i18nT('components.workspaceTree.unreadable_folders', { paths: fmtList(unreadableFolders, { style: 'narrow' }) })}
-              askAgent
+              askAgent={hostFileActions}
               onDismiss={dismissUnreadable}
               dismissLabel={i18nT('components.workspaceTree.dismiss_unreadable')}
               testId="workspace-tree-unreadable-notice"
@@ -1871,7 +1891,12 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
         // a node with no action — a directory with no host, no upload handler and
         // no app row — so a right-click there opens no bordered popup despite the
         // menu being wired.
-        renderContextMenu={renderContextMenu}
+        //
+        // Not wired when no row can hold an action (a host without the dashboard's
+        // file actions and no row handler, as the App SDK tree's external client):
+        // Pierre would still open its menu state for an empty menu, which swallows
+        // every key but Escape, and draw a "..." on rows that offer nothing.
+        renderContextMenu={rowsCanHoldActions ? renderContextMenu : undefined}
       />
     </div>
   )

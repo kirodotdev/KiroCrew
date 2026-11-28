@@ -23,7 +23,7 @@ import {
 } from './notifMeta'
 import NotificationPermissionHint from './NotificationPermissionHint'
 import NotificationCard, { CARD_RADIUS, type NotificationCardAction } from './NotificationCard'
-import { CrewmateNoteFace, CrewmateNoteName, CrewmateRosterError, noteMember } from './CrewmateNoteFace'
+import { CrewmateNoteFace, CrewmateNoteLabel, CrewmateNoteName, CrewmateRosterError, noteMember } from './CrewmateNoteFace'
 import NotificationClearButton, { NOTIF_CONTROL_HEIGHT } from './NotificationClearButton'
 import { keepsOutOfDayClear, stackKeyOf, stackLabelOf } from './notificationStacks'
 
@@ -786,15 +786,14 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 // Show less and the stack's clear on the right. The head card
                 // stays the same element, so expanding never swaps it out.
                 const expandedHead = !!(stackKey && stackCount && stackCount > 1 && stackExpanded)
-                const stackLabel = expandedHead ? stackLabelOf(n) : ''
-                const stackHeader = expandedHead && stackKey ? (
+                const namedStackHeader = (label: string) => stackKey ? (
                   <motion.div
                     initial={reduceMotion ? false : { opacity: 0, y: -4 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.18 }}
                     className={`flex items-center gap-1.5 px-1.5 ${mac ? 'mb-2 mt-0.5' : 'mb-1.5'}`}
                   >
-                    <div className={`flex-1 min-w-0 truncate font-semibold text-text-strong ${mac ? 'text-[13px] drop-shadow-xs' : 'text-[12px]'}`}>{stackLabel}</div>
+                    <div className={`flex-1 min-w-0 truncate font-semibold text-text-strong ${mac ? 'text-[13px] drop-shadow-xs' : 'text-[12px]'}`}>{label}</div>
                     <button
                       type="button"
                       aria-expanded
@@ -806,7 +805,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                         Armed, it names its scope so it never reads as the
                         inbox-wide "Clear all". */}
                     <NotificationClearButton
-                      aria-label={i18nT('components.notifications.notificationFeed.clear_group', { group: stackLabel })}
+                      aria-label={i18nT('components.notifications.notificationFeed.clear_group', { group: label })}
                       icon="none"
                       confirmText={i18nT('components.notifications.notificationFeed.clear_this_group')}
                       alwaysVisible
@@ -814,6 +813,12 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                     >{i18nT('components.notifications.notificationFeed.clear')}</NotificationClearButton>
                   </motion.div>
                 ) : null
+                // A crewmate's stack is named as its face is, by the roster's
+                // display label, so a renamed Bot's header matches its cards.
+                const stackLabel = expandedHead ? stackLabelOf(n) : ''
+                const stackHeader = !expandedHead ? null
+                  : member ? <CrewmateNoteLabel member={member} fallback={stackLabel}>{namedStackHeader}</CrewmateNoteLabel>
+                  : namedStackHeader(stackLabel)
                 // Every row's ⓧ, a collapsed deck's head included, dismisses only
                 // that one note; clearing a whole stack is the expanded header's
                 // two-press Clear, so one ⓧ press never deletes more than it shows.
@@ -887,7 +892,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                       >
                         {member ? <CrewmateNoteFace member={member} size={18} fallback={kindIcon} /> : kindIcon}
                         <div className="flex-1 min-w-0">
-                          {member && <CrewmateNoteName member={member} className="block text-[11px] text-muted truncate leading-tight" />}
+                          {member && <CrewmateNoteName member={member} title={title} className="block text-[11px] text-muted truncate leading-tight" />}
                           <div className={`text-[13px] font-semibold truncate leading-tight ${silenced ? 'text-muted font-normal' : 'text-text-strong'}`}>{title}</div>
                           {approvalBody ?? (
                             <div className="text-[12px] text-muted mt-0.5 truncate">{stripMd(bodyText).slice(0, 80)}</div>

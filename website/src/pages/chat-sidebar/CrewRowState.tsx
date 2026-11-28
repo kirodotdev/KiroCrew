@@ -26,11 +26,12 @@ export const CREW_STATE_STYLE: Record<CrewStateKind, CrewStateStyle> = {
   // Open ledger work gone quiet, its next step not taken (`lib/crewWork.ts`).
   quiet: { wordKey: 'components.crewMode.conductor_mode_row_stalled', tone: 'crew-tone-warn font-medium', mark: null },
   waiting: { wordKey: 'commandCenter.worker_group_waiting', tone: 'text-muted', mark: 'ring' },
-  done: { wordKey: 'commandCenter.worker_group_done', tone: 'crew-tone-ok', mark: null },
+  done: { wordKey: 'commandCenter.worker_group_done', tone: 'crew-tone-muted', mark: null },
 }
 
-/** The dot wears the working count's green; the ring the waiting count's muted tone. */
-const MARK_TONE = { filled: 'text-[var(--ok)]', ring: 'crew-tone-muted' } as const
+/** Both marks are muted: on a session row only "needs you" and failures carry
+ *  colour (#38200), so the filled dot and the ring differ by shape alone. */
+const MARK_TONE = { filled: 'crew-tone-muted', ring: 'crew-tone-muted' } as const
 
 export function crewStateWord(kind: CrewStateKind): string {
   return i18nT(CREW_STATE_STYLE[kind].wordKey)

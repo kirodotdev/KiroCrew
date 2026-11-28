@@ -7,15 +7,15 @@ Status: partially implemented in `src/kiro_crew/hooks.py` and the dashboard appr
 The approval layer is the seam between an autonomous agent and any consequential action.
 It already exists in Kiro Crew as three cooperating pieces:
 
-1. **Enforcement (backend):** `HookManager.on_tool_call` in `src/kiro_crew/hooks.py`
+1. **Enforcement (backend):** `HookManager.on_tool_call` in `src/kiro_crew/hook_runtime/hook_manager.py`
    returns `TOOL_ALLOW` / `TOOL_AUTO_APPROVE` / `TOOL_DENY` at the PreToolUse boundary,
    applying sensitive-path, exfiltration, write-protected-config, deny-by-default-shell,
    and governance (ceiling ∩ profile) rules. This is the **only** policy authority.
 2. **Render (frontend):** `components/ApprovalCard.tsx` + `components/ToolInputPreview.tsx`
    render a pending call as a card, currently as a raw `<pre>` args dump.
 3. **Resume (frontend → backend):** `components/chat-input/approval.ts` (`useToolApproval`, rendered by `components/ChatInput.tsx`) submits the decision via
-   the id-scoped `api.resolveApproval(request_id, action)` for plain approve/reject
-   (`api.approveChatSlot(slot, …)` is reserved for trust grants); the paused turn resumes
+   the id-scoped `api.decideApproval(approvalTarget, action, responseId)` for plain approve/reject
+   (`api.approveChatSlot(slot, …)` carries trust grants and a rejection with a reason); the paused turn resumes
    with the tool either executed or rejected.
 
 This design does NOT add a second policy. It (a) enriches the **render** step with a typed
@@ -31,7 +31,7 @@ Agent turn
    │  emits tool call (PreToolUse event)
    ▼
 ┌──────────────────────────────────────────────┐
-│ HookManager.on_tool_call  (hooks.py) — AUTHORITY│
+│ HookManager.on_tool_call  (hook_manager.py) — AUTHORITY│
 │   TOOL_DENY ──────────► blocked + SEL audit     │  (never surfaced)
 │   TOOL_AUTO_APPROVE ──► executes, no prompt      │
 │   TOOL_ALLOW ─────────► held as pending decision │
@@ -50,7 +50,7 @@ Agent turn
    ▼
 ┌──────────────────────────────────────────────┐
 │ onApprove(decision, pattern?) → approval.ts     │
-│   api.resolveApproval(request_id, action)       │  (EXISTING id-scoped path)
+│   api.decideApproval(approvalTarget, action, responseId)       │  (EXISTING id-scoped path)
 └──────────────────────────────────────────────┘
    │  resume the SAME interrupted invocation (by request_id)
    ▼
@@ -61,10 +61,10 @@ Tool executes (approved) or is skipped (rejected); agent turn continues
 
 | Existing | Layer relationship |
 |---|---|
-| `src/kiro_crew/hooks.py` (`on_tool_call`) | **Unchanged.** Sole policy authority; the layer reads its verdict. |
+| `src/kiro_crew/hook_runtime/hook_manager.py` (`on_tool_call`) | **Unchanged.** Sole policy authority; the layer reads its verdict. |
 | `website/src/components/ApprovalCard.tsx` | Hosts `ToolPreviewFrame` + the batch affordance. |
 | `website/src/components/ToolInputPreview.tsx` | The fallback preview and the "show raw input" surface. |
-| `website/src/components/chat-input/approval.ts` (`resolveApproval`) | **Unchanged** resume path the layer reuses (id-scoped by `request_id`; `approveChatSlot` is trust-grants only). |
+| `website/src/components/chat-input/approval.ts` (`decideApproval`) | **Unchanged** resume path the layer reuses (id-scoped by `request_id`; `approveChatSlot` carries trust grants and a rejection with a reason). |
 | `website/src/hooks/useWebSocket.ts` | Delivers the pending-decision + resume events (existing). |
 | `website/src/kit/tool-views/` (App Builder Kit spec — **prerequisite, not built by this spec**) | Supplies `ToolPreviewFrame` / schema-matched typed previews. This spec **consumes** it and is sequenced after it (see "Dependency and sequencing" below, and Req 8). |
 | `website/src/types/index.chat.ts` (`tool_input: string`) | The opaque input string a preview parses; no new wire field. |
@@ -137,14 +137,14 @@ body to `ToolPreviewFrame` (from `kit/tool-views`):
 Controls (approve / reject / optional pattern field) are keyboard operable with ARIA
 roles (Req 2.5).
 
-### Resume: `onApprove` → `resolveApproval`
+### Resume: `onApprove` → `decideApproval`
 
 The decision is passed straight to the existing callback:
 
 ```ts
 onApprove(decision: 'approve' | 'reject', pattern?: string)
-// plain approve/reject → api.resolveApproval(approval.request_id, decision)  (chat-input/approval.ts)
-// (trust grants only → approveChatSlot; unattended sources downgrade to resolveApproval)
+// plain approve/reject → api.decideApproval(approvalTarget, decision, responseId)  (chat-input/approval.ts)
+// (trust grants and a rejection with a reason → approveChatSlot; unattended sources downgrade to decideApproval)
 ```
 
 `approval.request_id` pins the resume to the interrupted invocation (Req 3.4). The optional
@@ -157,10 +157,10 @@ policy. The layer introduces no new approval API path (Req 3.3).
 Batch is a **UI affordance over the per-call resume**, not a new transport (Req 4.2).
 When N calls are pending in a slot, `ApprovalCard` renders a multi-select; submitting a
 batch iterates the slot-scoped `approveChatSlot(slot, mappedAction, { request_id })` per
-included call — NOT the bare id-scoped `resolveApproval`. `state.resolve_approval` matches a
+included call — NOT the bare id-scoped `decideApproval`. `state.resolve_approval` matches a
 bare `request_id` across all slots with no session-identity check, so a connection-scoped id
 that collides in two slots could otherwise resolve the wrong slot's call; pinning the batch
-resume to the addressed slot removes that hazard (single approve/reject keeps `resolveApproval`
+resume to the addressed slot removes that hazard (single approve/reject keeps `decideApproval`
 — one owned id, no collision). **Exclusion is
 backend-driven, not predicted (Req 4.3–4.4, Req 6.1):** the frontend does not compute or
 forecast a gate verdict — it submits each selected call's resume, and if the `on_tool_call`
@@ -179,10 +179,10 @@ The portable shape is three steps; the table names what an adopter substitutes.
 |---|---|---|---|
 | Intercept | evaluate the call before it executes | `HookManager.on_tool_call` | a tool with no `execute`, or `prepareStep`/`onStepFinish` interruption |
 | Render | build a card from the invocation state | `ApprovalCard` + `ToolPreviewFrame` | render from `UIToolInvocation` at `input-available` |
-| Resume | apply the decision to the same invocation | `resolveApproval(request_id, action)` | `addToolResult({ toolCallId, output })` + continued stream |
+| Resume | apply the decision to the same invocation | `decideApproval(approvalTarget, action, responseId)` | `addToolResult({ toolCallId, output })` + continued stream |
 
 **Explicit boundary (Req 5.3):** the *enforcement* (`on_tool_call`) and the *transport*
-(`resolveApproval` / `approveChatSlot`) are Kiro-Crew-specific — an adopter swaps in their own. The *portable*
+(`decideApproval` / `approveChatSlot`) are Kiro-Crew-specific — an adopter swaps in their own. The *portable*
 part is: intercept before execute, render a card from the invocation state, resume the
 same invocation on decision. **The AI-SDK `UIToolInvocation` union is reused as a state
 model, not a transport claim (Req 5.4)** — Kiro Crew's chat transport is markdown +
@@ -212,7 +212,7 @@ schema; a parse failure downgrades to `<pre>` (no throw).
 
 - **Unit (vitest):** `ApprovalCard` renders each `PendingDecision` state; schema-match vs
   `<pre>` fallback; "show raw input" reveals verbatim `approval.tool_input`; keyboard/ARIA on controls.
-- **Resume:** approve and reject each route through a mocked `onApprove`/`resolveApproval`
+- **Resume:** approve and reject each route through a mocked `onApprove`/`decideApproval`
   with the correct `request_id`/`pattern`; a stale `request_id` is a no-op.
 - **Batch:** multi-select resolves per-call; a denied call is excluded, not approved.
 - **Enforcement non-bypass:** a `TOOL_DENY` verdict never yields an approvable card and

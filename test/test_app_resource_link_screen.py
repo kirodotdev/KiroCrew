@@ -264,6 +264,8 @@ def test_an_unchecked_builtin_is_not_reported_orphaned(tmp_path, app_env, monkey
     manager.register_builtin_apps()
     assert manager._read_installed("shipped-app").origin == "builtin"
     _screen_refusing(monkeypatch, _AGENT_FILE)
+    # Registration's whole scan is kept; drop it so the orphan check scans under the stall.
+    monkeypatch.setattr(discovery, "_package_scan", None, raising=False)
 
     assert "shipped-app" not in manager.detect_orphaned_builtins(force_refresh=True)
 

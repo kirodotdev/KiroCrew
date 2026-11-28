@@ -7,6 +7,7 @@ import { STALE_OWNER_SESSION_CODE } from '../../api/staleOwnerSignal'
 import { Card, CardTitle, Btn, Badge, EmptyState, Input } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
+import { MemoryRowList, fieldValue, useMemoryRowLayout } from './memoryPage/MemoryRowList'
 import { fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import RepeatedFailuresNoticeToggle from './RepeatedFailuresNoticeToggle'
@@ -32,8 +33,16 @@ const TREND_VARIANT = { new: 'warn', growing: 'err', steady: 'muted' } as const
 /** Literal class names, so Tailwind sees each one. */
 const NOTE_CLASS = { ok: 'text-ok', warn: 'text-warn' } as const
 
+/** The tool kind `failure_recurrence` gives a log row that named none. */
+const UNNAMED_TOOL_KIND = 'unknown'
+
+/** True when the log row carried no tool kind, MCP tool or rule to name it by. */
+const isUnnamed = (row: RecurringFailure) => !row.tool && !row.rule_id && row.tool_kind === UNNAMED_TOOL_KIND
+
 /** The name a row goes by: the MCP tool or class error, else the rule, else the tool kind. */
-const failureName = (row: RecurringFailure) => row.tool || row.rule_id || row.tool_kind
+const failureName = (row: RecurringFailure) => isUnnamed(row)
+  ? i18nT('pages.overview.memoryFailuresCard.unnamed_tool')
+  : row.tool || row.rule_id || row.tool_kind
 
 /** This card's element id, the landing spot for that focus. */
 export const FAILURES_CARD_ID = 'memory-failures-card'
@@ -80,6 +89,7 @@ export default function MemoryFailuresCard({ refreshTrigger, onLessonSaved, onDi
   // The shared client never marks a read stale, so the page's refresh is what
   // re-reads it; the value on mount is the first read's, not a refresh.
   const queryClient = useQueryClient()
+  const [measure, list] = useMemoryRowLayout()
   const [attachScroller, tableEdges, , attachTable] = useScrollEdges<HTMLDivElement>()
   const mountTrigger = useRef(refreshTrigger)
   useEffect(() => {
@@ -146,11 +156,26 @@ export default function MemoryFailuresCard({ refreshTrigger, onLessonSaved, onDi
   const keyboardStop = (tableEdges.left || tableEdges.right) && (rows.length === 0 || draft !== null)
   const th = 'text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium'
   const td = 'px-2.5 py-2 border-b border-border text-sm align-top'
+  const openDraft = (row: RecurringFailure) => {
+    setNote(null)
+    setSaveError(null)
+    setDraft({ signature: row.signature, name: failureName(row), text: i18nT('pages.overview.memoryFailuresCard.draft_text', { failure: failureName(row) }) })
+  }
+  // One draft at a time: opening another would replace the open one's text.
+  const draftButton = (row: RecurringFailure, className: string) => <Btn className={className} disabled={draft !== null} onClick={() => openDraft(row)}>
+    <PenLine className="lucide-inline" aria-hidden="true" /> {i18nT('pages.overview.memoryFailuresCard.draft_lesson')}
+  </Btn>
+  // No tool name to show (a shell row's operation is its command line, never
+  // read): the surface that logged it is the next best hint.
+  const loggedBy = (row: RecurringFailure) => isUnnamed(row) && !row.error && row.source && <span className="block text-[12px] text-muted break-words">{i18nT('pages.overview.memoryFailuresCard.logged_by', { source: row.source })}</span>
+  const rowStatus = (row: RecurringFailure) => note?.signature === row.signature && <span role="status" className={`mt-1 block text-[13px] ${NOTE_CLASS[note.tone]}`}>{note.text}</span>
 
   return (
     <Card id={FAILURES_CARD_ID}>
       <CardTitle>{i18nT('pages.overview.memoryFailuresCard.title')}</CardTitle>
       <p className="text-[12px] leading-relaxed text-muted mb-2">{i18nT('pages.overview.memoryFailuresCard.hint')}</p>
+      {/* Under the title and hint, so a grouped Settings frame still lifts both out of the box. */}
+      <div ref={measure}>
       <RepeatedFailuresNoticeToggle />
       {/* No hand-off: a draft lesson in this card may be unsaved. */}
       <ErrorNotice
@@ -168,7 +193,27 @@ export default function MemoryFailuresCard({ refreshTrigger, onLessonSaved, onDi
         className="mb-2"
       />
       {failures.isPending && <p role="status" className="text-[13px] text-muted">{i18nT('pages.overview.memoryTab.loading')}</p>}
-      {failures.isSuccess && (
+      {failures.isSuccess && list && (rows.length === 0
+        ? <EmptyState icon={<Repeat className="lucide-inline" />} title={i18nT('pages.overview.memoryFailuresCard.empty_title')} subtitle={i18nT('pages.overview.memoryFailuresCard.empty_hint')} />
+        // A phone or a narrow card reads a list: what failed and why, its one action, then the counts.
+        : <MemoryRowList rows={rows.map(row => ({
+          id: row.signature,
+          testId: 'recurring-failure-row',
+          title: <span className={isUnnamed(row) ? undefined : 'font-mono'}>{failureName(row)}</span>,
+          badge: <Badge variant={TREND_VARIANT[row.trend]}>{i18nT(TREND_KEYS[row.trend])}</Badge>,
+          body: row.error && row.error !== row.tool ? <>
+            {/* No hand-off: this card can hold an unsaved lesson draft. */}
+            <ErrorNotice message={row.error} variant="inline" className="max-w-full" />
+          </> : loggedBy(row),
+          status: rowStatus(row),
+          action: draft?.signature === row.signature ? undefined : { label: i18nT('pages.overview.memoryFailuresCard.draft_lesson'), icon: PenLine, disabled: draft !== null, onClick: () => openDraft(row) },
+          meta: [
+            fieldValue(i18nT('pages.overview.memoryFailuresCard.times'), fmtNumber(row.hits)),
+            fieldValue(i18nT('pages.overview.memoryFailuresCard.chats'), fmtNumber(row.sessions)),
+            fieldValue(i18nT('pages.overview.memoryFailuresCard.days'), fmtNumber(row.days)),
+          ],
+        }))} />)}
+      {failures.isSuccess && !list && (
         // The wrapper anchors the edge cue: a scroller's own absolute children scroll with it.
         <div className="relative"><div
           ref={attachScroller}
@@ -198,35 +243,19 @@ export default function MemoryFailuresCard({ refreshTrigger, onLessonSaved, onDi
               </td></tr>
             ) : rows.map(row => {
               const editing = draft?.signature === row.signature ? draft : null
-              const rowNote = note?.signature === row.signature ? note : null
               return (
                 <tr key={row.signature} className="hover:bg-bg-hover transition-colors" data-testid="recurring-failure-row">
                   <td className={td}>
                     {/* Stored text, rendered as React text children (never a key, never markup). */}
-                    <span className="font-mono">{failureName(row)}</span>
-                    {row.error && row.error !== row.tool && <span className="block text-[12px] text-muted break-words">{row.error}</span>}
-                    {rowNote && (
-                      <span role="status" className={`block mt-1 text-[13px] ${NOTE_CLASS[rowNote.tone]}`}>{rowNote.text}</span>
-                    )}
+                    <span className={`block ${isUnnamed(row) ? '' : 'font-mono'}`}>{failureName(row)}</span>
+                    {row.error && row.error !== row.tool && <>
+                      {/* No hand-off: this card can hold an unsaved lesson draft. */}
+                      <ErrorNotice message={row.error} variant="inline" className="max-w-full" />
+                    </>}
+                    {loggedBy(row)}
+                    {rowStatus(row)}
                     {/* In the first column, so a narrow screen never scrolls the action out of view. */}
-                    {!editing && (
-                      <Btn
-                        className="whitespace-nowrap mt-1.5"
-                        // One draft at a time: opening another would replace the open one's text.
-                        disabled={draft !== null}
-                        onClick={() => {
-                          setNote(null)
-                          setSaveError(null)
-                          setDraft({
-                            signature: row.signature,
-                            name: failureName(row),
-                            text: i18nT('pages.overview.memoryFailuresCard.draft_text', { failure: failureName(row) }),
-                          })
-                        }}
-                      >
-                        <PenLine className="lucide-inline" aria-hidden="true" /> {i18nT('pages.overview.memoryFailuresCard.draft_lesson')}
-                      </Btn>
-                    )}
+                    {!editing && draftButton(row, 'whitespace-nowrap mt-1.5')}
                   </td>
                   <td className={td}>{fmtNumber(row.hits)}</td>
                   <td className={td}>{fmtNumber(row.sessions)}</td>
@@ -260,6 +289,7 @@ export default function MemoryFailuresCard({ refreshTrigger, onLessonSaved, onDi
           <Btn disabled={draft.saving} onClick={() => { setDraft(null); setSaveError(null) }}>{i18nT('pages.overview.memoryTab.cancel')}</Btn>
         </div>
       )}
+      </div>
     </Card>
   )
 }

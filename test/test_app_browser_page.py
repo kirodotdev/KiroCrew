@@ -364,7 +364,7 @@ async def test_an_app_op_leaves_the_tab_move_notice_for_the_bot(home, tmp_path, 
 async def test_an_app_op_does_not_count_against_the_bots_run_budget(home, tmp_path, monkeypatch):
     _install(tmp_path, ["read"], ["read"])
     _supervisor(monkeypatch)
-    monkeypatch.setattr(mod, "_run_limits", lambda: (1, 0))
+    monkeypatch.setattr(mod, "_run_limits", lambda: (1, 0, 0))
     page = _sdk(tmp_path, ["read"]).page("pager-1", state=_State(_Slot("pager-1", "pager")))
     for _ in range(3):
         assert (await page.tabs())["ok"] is True

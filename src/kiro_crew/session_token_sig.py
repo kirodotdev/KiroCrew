@@ -36,7 +36,7 @@ Retraction belongs to ``session_pid._prune_stale_session_token_files`` rather th
 call at session teardown, and its lifecycle is worth stating exactly: it runs from
 ``cleanup_orphaned_sessions`` at startup and graceful shutdown, and from the session
 cleanup loop's periodic tick (``SessionCleanup._sweep_session_token_mappings``, at most
-``MAX_TICK_INTERVAL_SECS`` apart). A mapping goes once it is unrefreshed for the TTL, so
+once per ``SESSION_TOKEN_PRUNE_INTERVAL_SECS``). A mapping goes once it is unrefreshed for the TTL, so
 the bound on the directory is one file per session active within that window, whether
 or not the gateway has restarted.
 

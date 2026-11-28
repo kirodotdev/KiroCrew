@@ -338,6 +338,30 @@ describe('createTrackpadSwipeReader', () => {
     expect(back.verdicts[0].lead).toBeUndefined()
   })
 
+  it('a reveal that goes further down than sideways before its start is handed back to the browser', () => {
+    const reveals = (d: TrackpadSwipeDir) => d === 'left'
+    const step = (dx: number, dy: number, at: number): WheelSample => ({ dx, dy, mode: 0, ctrl: false, owned: false, at })
+    // A scroll whose first step drifts sideways, then goes on down with a little
+    // leftward drift: 124px sideways in all, past the start distance. The desktop
+    // shell reports the fingers down, so every step is read as the fingers.
+    const reader = createTrackpadSwipeReader(yes, () => true, reveals)
+    const drift = [step(4, 2, 0), ...run(4, 30, 30, 16)].map((s) => reader.feed(s))
+    expect(drift.filter((v) => v.start || v.move !== undefined)).toEqual([])
+    // Only the first step was held; from the second the scroll is the browser's.
+    expect(drift.map((v) => v.consume)).toEqual([true, ...Array<boolean>(30).fill(false)])
+    expect(reader.runId()).toBe(2)
+    expect(reader.waitingReveal()).toBe(false)
+    // A deliberate swipe that starts at a slant is still one, and starts at 80px.
+    const slant = feedAll([step(3, 2, 0), ...run(20, 1, 5, 16)], yes, reveals)
+    expect(slant.starts).toEqual(['left'])
+    expect(slant.verdicts.findIndex((v) => v.start)).toBe(4)
+    // A jitter back and forth with no vertical travel is not a scroll: the run
+    // stays the page's and the swipe after it starts.
+    const jitter = feedAll([step(1, 0, 0), step(-1, 0, 16), ...run(20, 0, 5, 32)], yes, reveals)
+    expect(jitter.starts).toEqual(['left'])
+    expect(jitter.consumed).toBe(7)
+  })
+
   it("a reveal whose fingers stop short of SWIPE_THRESHOLD_PX is never started by what follows them", () => {
     const reveals = () => true
     const at = (dx: number[], t0 = 0) => dx.map((d, i) => ({ dx: d, dy: 0, mode: 0, ctrl: false, owned: false, at: t0 + i * 16 }))
@@ -420,6 +444,88 @@ describe('useTrackpadSwipe: the quiet check after a run', () => {
     expect(wheel(25, 5, scrollAt + 16)).toBe(false)
     expect(onDragStart).toHaveBeenCalledTimes(1)
     expect(onDragEnd).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('useTrackpadSwipe: a pinch-zoomed page', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    document.body.replaceChildren()
+  })
+
+  /** Mounts the hook on a fresh root; returns a wheel that says whether the page took it. */
+  const mountRoot = (onDragStart: () => void) => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    renderHook(() => useTrackpadSwipe({ current: root }, {
+      enabled: true, wants: () => true, onDragStart, onDragMove: () => {}, onDragEnd: () => {}, onSwipe: () => {},
+    }))
+    return (dx: number, at: number) => {
+      const ev = new WheelEvent('wheel', { deltaX: dx, deltaY: 0, bubbles: true, cancelable: true })
+      Object.defineProperty(ev, 'timeStamp', { value: at })
+      act(() => { root.dispatchEvent(ev) })
+      return ev.defaultPrevented
+    }
+  }
+
+  it('leaves a sideways swipe to the browser while zoomed in, so it pans the view', () => {
+    vi.stubGlobal('visualViewport', Object.assign(new EventTarget(), { scale: 2 }))
+    const onDragStart = vi.fn()
+    const wheel = mountRoot(onDragStart)
+    for (let i = 0; i < 6; i++) expect(wheel(20, 1 + i * 16)).toBe(false)
+    expect(onDragStart).not.toHaveBeenCalled()
+  })
+
+  /** A relaying frame under a fresh root whose hook accepts frames. */
+  const mountWithFrame = (onDragStart: () => void) => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const post = vi.fn()
+    const frame = document.createElement('iframe')
+    frame.setAttribute('data-wheel-relay', '')
+    // The test DOM gives every frame a null `contentWindow`: stand one in.
+    Object.defineProperty(frame, 'contentWindow', { value: { postMessage: post } })
+    root.appendChild(frame)
+    renderHook(() => useTrackpadSwipe({ current: root }, {
+      enabled: true, wants: () => true, onDragStart, onDragMove: () => {}, onDragEnd: () => {}, onSwipe: () => {},
+      acceptFrame: () => true,
+    }))
+    const relay = (dx: number, t: number) => {
+      const ev = new MessageEvent('message', { data: { type: 'mc-frame-wheel', dx, dy: 0, mode: 0, inv: null, t } })
+      Object.defineProperty(ev, 'source', { value: frame.contentWindow })
+      act(() => { window.dispatchEvent(ev) })
+    }
+    return { post, relay }
+  }
+
+  it("never drags from a frame's relayed run while zoomed in", () => {
+    vi.stubGlobal('visualViewport', Object.assign(new EventTarget(), { scale: 2 }))
+    const onDragStart = vi.fn()
+    const { post, relay } = mountWithFrame(onDragStart)
+    expect(post).toHaveBeenLastCalledWith({ type: 'mc-frame-wheel-armed', on: false, natural: null }, '*')
+    for (let i = 0; i < 6; i++) relay(20, 1 + i * 16)
+    expect(onDragStart).not.toHaveBeenCalled()
+  })
+
+  it('disarms its frames when the page zooms in, and arms them again when it zooms back out', () => {
+    const viewport = Object.assign(new EventTarget(), { scale: 1 })
+    vi.stubGlobal('visualViewport', viewport)
+    const { post } = mountWithFrame(() => {})
+    expect(post).toHaveBeenLastCalledWith({ type: 'mc-frame-wheel-armed', on: true, natural: null }, '*')
+    viewport.scale = 2
+    act(() => { viewport.dispatchEvent(new Event('resize')) })
+    expect(post).toHaveBeenLastCalledWith({ type: 'mc-frame-wheel-armed', on: false, natural: null }, '*')
+    viewport.scale = 1
+    act(() => { viewport.dispatchEvent(new Event('resize')) })
+    expect(post).toHaveBeenLastCalledWith({ type: 'mc-frame-wheel-armed', on: true, natural: null }, '*')
+  })
+
+  it('still takes the same swipe at normal zoom', () => {
+    vi.stubGlobal('visualViewport', Object.assign(new EventTarget(), { scale: 1 }))
+    const onDragStart = vi.fn()
+    const wheel = mountRoot(onDragStart)
+    for (let i = 0; i < 6; i++) wheel(20, 1 + i * 16)
+    expect(onDragStart).toHaveBeenCalledTimes(1)
   })
 })
 

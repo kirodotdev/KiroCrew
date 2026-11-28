@@ -28,6 +28,7 @@ from handlers_memory_coverage_helpers import (  # noqa: F401 -- the autouse fixt
 import kiro_crew.dashboard.handlers.memory as mem_mod
 from kiro_crew.embeddings import CustomModelSpec
 from kiro_crew.embeddings_shared import ReembedProgress
+from kiro_crew.testing.module_table import patched_sys_modules
 from kiro_crew.testing.wait import await_until
 
 _MOD = "kiro_crew.dashboard.handlers.memory"
@@ -538,7 +539,7 @@ class TestEnsurePipEdgeCases:
             raise SandboxUnavailableError("no backend", kind="no_backend", detail="not Linux")
 
         with (
-            patch.dict("sys.modules", {"pip": None}),
+            patched_sys_modules({"pip": None}),
             patch(f"{_MOD}.wrap_argv", side_effect=_refuse),
             patch(f"{_MOD}.create_subprocess_limited") as spawn,
         ):
@@ -560,7 +561,7 @@ class TestEnsurePipEdgeCases:
             raise asyncio.TimeoutError
 
         with (
-            patch.dict("sys.modules", {"pip": None}),
+            patched_sys_modules({"pip": None}),
             patch(f"{_MOD}.wrap_argv", side_effect=lambda argv, **kw: (argv, None)),
             patch(f"{_MOD}.create_subprocess_limited", AsyncMock(return_value=proc)),
             patch("asyncio.wait_for", side_effect=_timeout),
@@ -584,7 +585,7 @@ class TestEnsurePipEdgeCases:
         proc.communicate = AsyncMock(return_value=(b"", b""))
 
         with (
-            patch.dict("sys.modules", {"pip": None}),
+            patched_sys_modules({"pip": None}),
             patch(f"{_MOD}.wrap_argv", side_effect=lambda argv, **kw: (argv, str(ghost))),
             patch(f"{_MOD}.create_subprocess_limited", AsyncMock(return_value=proc)),
         ):
@@ -739,7 +740,7 @@ class TestEnableDisableEmbeddings:
             patch(f"{_MOD}.model_file_present", return_value=True),
             patch(f"{_MOD}.config_path", return_value=cfg_path),
             patch(f"{_MOD}.make_sync_embed_fn", return_value=lambda t: [0.0]),
-            patch.dict("sys.modules", {"faiss": MagicMock(), "pip": MagicMock()}),
+            patched_sys_modules({"faiss": MagicMock(), "pip": MagicMock()}),
             patch(f"{_MOD}._get_vector_store", return_value=store),
         ):
             resp = await mem_mod.api_memory_enable_embeddings(_make_request(state, method="POST"))
@@ -764,7 +765,7 @@ class TestEnableDisableEmbeddings:
             patch(f"{_MOD}.model_file_present", return_value=True),
             patch(f"{_MOD}.config_path", return_value=cfg_path),
             patch(f"{_MOD}.make_sync_embed_fn", return_value=lambda t: [0.0]),
-            patch.dict("sys.modules", {"faiss": MagicMock(), "pip": MagicMock()}),
+            patched_sys_modules({"faiss": MagicMock(), "pip": MagicMock()}),
             patch(f"{_MOD}._get_vector_store", return_value=store),
         ):
             resp = await mem_mod.api_memory_enable_embeddings(_make_request(state, method="POST"))

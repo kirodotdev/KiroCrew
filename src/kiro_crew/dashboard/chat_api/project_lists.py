@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         atomic_write,
         config_dir,
         deny_non_dashboard_caller,
+        is_sensitive_canonical_path,
         is_sensitive_path,
         read_bounded_json,
         read_bytes_with_retry,
@@ -181,13 +182,18 @@ def _probe_favorite_candidate(path: str) -> tuple[str, bool, bool]:
     One function so the add handler can hand every filesystem probe to a worker thread
     in a single call: `realpath` walks the symlink chain and the sensitivity check
     resolves too, and on a stalled network mount either would freeze the event loop.
+
+    The path is already canonical here, so the sensitivity check is the canonical-path
+    gate: off the loop it answers inline with the same gate list, where
+    `is_sensitive_path` would resolve again on the resolver pool and read a stall
+    cooldown over a healthy directory as a match.
     """
 
     try:
         resolved = os.path.realpath(os.path.expanduser(path))
     except ValueError:  # a NUL byte or a lone surrogate in the path
         return path, False, False
-    return resolved, os.path.isdir(resolved), is_sensitive_path(resolved)
+    return resolved, os.path.isdir(resolved), is_sensitive_canonical_path(resolved)
 
 
 def _add_favorite_project(path: str) -> list[str]:

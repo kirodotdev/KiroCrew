@@ -1,21 +1,20 @@
-import { useCallback, useEffect, useRef, type MutableRefObject } from 'react'
+import { useEffect, type MutableRefObject } from 'react'
 
-import type { useMessageSearch } from '../../../hooks/useMessageSearch'
 import { clearMessageJump, usePendingMessageJump } from '../../../lib/pendingMessageJump'
 import { store, useAppSelector } from '../../../store'
 import type { ChatMessage } from '../../../types'
-import { pickSearchScrollBehavior, scrollCurrentMatchIntoView } from '../../../utils/searchScroll'
 import { resolveMsgIndex } from '../../../utils/shareUrl'
 import type { MarkJump } from './jumpMark'
 import { drawnSuccessorIdx } from './transcriptPins'
 
 interface TranscriptJumpsOptions {
-  search: ReturnType<typeof useMessageSearch>
   messages: ChatMessage[]
+  /** Changes when the rows on screen do: a target drawn late is looked for again. */
   messageToDisplayIdx: Map<number, number>
-  /** The same map through a ref, so a rebuilt map does not re-run the search scroll. */
-  messageToDisplayIdxRef: MutableRefObject<Map<number, number>>
-  navToDisplayIndex: (idx: number, opts?: { behavior?: ScrollBehavior; align?: ScrollLogicalPosition; offset?: number }) => void
+  /** Scroll to the row that draws a message; false when no row on screen draws it. */
+  navToMessage: (msg: ChatMessage, opts?: { behavior?: ScrollBehavior; align?: ScrollLogicalPosition; offset?: number }) => boolean
+  /** The display index of the row on screen that draws a message, or -1. */
+  rowOfMessage: (msg: ChatMessage) => number
   activeSlot: string | null
   cursorIsForActiveSlot: boolean
   slotHasMore: boolean
@@ -31,16 +30,15 @@ interface TranscriptJumpsOptions {
 }
 
 /**
- * Scroll intent that targets one message: stepping and clicking through search
- * results, the approval bar's "Show in chat", and a `?msg=` deep link on a cold
- * load (which hands a target outside the loaded window to the pins' paging jump).
+ * Scroll intent that targets one message: the approval bar's "Show in chat", a
+ * `?msg=` deep link on a cold load (which hands a target outside the loaded
+ * window to the pins' paging jump), and a jump Search all chats filed.
  */
 export function useTranscriptJumps({
-  search,
   messages,
   messageToDisplayIdx,
-  messageToDisplayIdxRef,
-  navToDisplayIndex,
+  navToMessage,
+  rowOfMessage,
   activeSlot,
   cursorIsForActiveSlot,
   slotHasMore,
@@ -51,58 +49,6 @@ export function useTranscriptJumps({
   markJump,
   handleJumpToPinnedMessage,
 }: TranscriptJumpsOptions) {
-  // Track the timestamp of the previous search-nav step so we can tell "user is
-  // holding Enter through many matches" apart from "user landed on one match".
-  // Rapid consecutive steps snap instantly (behavior:'auto') — a smooth glide
-  // would be interrupted and restarted on every keypress, producing the stutter
-  // of half-finished eased scrolls. A lone step (or the final one after a pause)
-  // glides smoothly and centers. navToDisplayIndex still forces 'auto' for FAR
-  // jumps regardless; this only governs NEAR jumps, which is where the queued-
-  // animation jank lived.
-  const lastSearchStepAtRef = useRef(0)
-  // Set when the user clicks a row in the results panel (vs. Enter/Arrow
-  // stepping). A click is a direct jump that's usually FAR and to an unmeasured
-  // virtualized row — a smooth scroll animates to the *estimated* offset and
-  // then visibly corrects once the row mounts. Snapping instantly collapses
-  // that into one jump.
-  const searchClickJumpRef = useRef(false)
-  // Cancel handle for the re-click converge loop (below) so repeated re-clicks
-  // of the same result don't stack concurrent loops + window listeners.
-  const reclickScrollCancelRef = useRef<(() => void) | null>(null)
-  const jumpToSearchResult = useCallback((i: number) => {
-    // Re-clicking the already-selected result won't change currentIdx, so the
-    // nav effect won't fire — scroll back to it imperatively so a click always
-    // returns to the match even after the user has scrolled away from it.
-    if (i === search.currentIdx) {
-      const m = search.matches[i]
-      const di = m ? messageToDisplayIdxRef.current.get(m.msgIdx) : undefined
-      if (di !== undefined) {
-        requestAnimationFrame(() => {
-          navToDisplayIndex(di, { behavior: 'auto', align: 'center' })
-          // currentOcc is unchanged so the message's occurrence-scroll effect
-          // won't re-run; converge-center the already-rendered active mark.
-          reclickScrollCancelRef.current?.()
-          reclickScrollCancelRef.current = scrollCurrentMatchIntoView()
-        })
-      }
-      return
-    }
-    searchClickJumpRef.current = true
-    search.goTo(i)
-  }, [search, navToDisplayIndex, messageToDisplayIdxRef])
-  useEffect(() => {
-    if (search.currentMessageIdx < 0) return
-    const di = messageToDisplayIdxRef.current.get(search.currentMessageIdx)
-    if (di === undefined) return
-    const now = performance.now()
-    const behavior = searchClickJumpRef.current
-      ? 'auto'
-      : pickSearchScrollBehavior(now, lastSearchStepAtRef.current)
-    searchClickJumpRef.current = false
-    lastSearchStepAtRef.current = now
-    navToDisplayIndex(di, { behavior, align: 'center' })
-  }, [search.currentMessageIdx, search.currentIdx, navToDisplayIndex, messageToDisplayIdxRef])
-
   // "Show in chat" button on the approval bar dispatches openActivityToTool,
   // which sets `focusToolCallId`. Pulling a virtualised pill back into the DOM
   // requires Virtuoso's own scrollToIndex — direct DOM scrollIntoView fails
@@ -111,14 +57,12 @@ export function useTranscriptJumps({
   const focusToolCallId = useAppSelector(s => s.chat.focusToolCallId)
   useEffect(() => {
     if (!focusToolCallId) return
-    const msgIdx = messages.findIndex(m =>
+    const target = messages.find(m =>
       m.role === 'tool' && m.meta?.tool_call_id === focusToolCallId
     )
-    if (msgIdx < 0) return
-    const di = messageToDisplayIdx.get(msgIdx)
-    if (di === undefined) return
-    navToDisplayIndex(di, { behavior: 'smooth', align: 'center' })
-  }, [focusToolCallId, messages, messageToDisplayIdx, navToDisplayIndex])
+    // `messageToDisplayIdx` runs this again once the rows on screen draw it.
+    if (target) navToMessage(target, { behavior: 'smooth', align: 'center' })
+  }, [focusToolCallId, messages, messageToDisplayIdx, navToMessage])
 
   // Deep-link: scroll to ?msg= timestamp on cold load.
   // When ?mid= is also present (copied from a pinned-message link), resolve by
@@ -157,14 +101,16 @@ export function useTranscriptJumps({
       handleJumpToPinnedMessage(targetTs, targetMid ?? undefined, { origin: 'link' })
       return
     }
-    const di = messageToDisplayIdx.get(msgIdx)
-    if (di === undefined) return
+    // Its row is looked for in the rows on screen, and the jump aims at the
+    // message: a page that lands in the next 500ms renumbers the rows.
+    const target = messages[msgIdx]
+    if (rowOfMessage(target) < 0) return
     initialMsgRef.current = null
     initialMidRef.current = null
     setTimeout(() => {
-      navToDisplayIndex(di, { behavior: 'auto', align: 'center' })
-      const markedMid = (messages[msgIdx].meta as Record<string, unknown> | undefined)?.mid
-      markJump(messages[msgIdx].ts ?? targetTs, true, typeof markedMid === 'string' ? markedMid : undefined)
+      navToMessage(target, { behavior: 'auto', align: 'center' })
+      const markedMid = (target.meta as Record<string, unknown> | undefined)?.mid
+      markJump(target.ts ?? targetTs, true, typeof markedMid === 'string' ? markedMid : undefined)
     }, 500)
   }, [messages, messageToDisplayIdx, slotHasMore, slotOldestIndex, handleJumpToPinnedMessage, activeSlot, cursorIsForActiveSlot]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -180,5 +126,4 @@ export function useTranscriptJumps({
     clearMessageJump(pendingJump)
     handleJumpToPinnedMessage(pendingJump.ts, pendingJump.mid, { origin: 'link' })
   }, [pendingJump, activeSlot, cursorIsForActiveSlot, handleJumpToPinnedMessage])
-  return { jumpToSearchResult }
 }

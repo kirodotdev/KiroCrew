@@ -1,7 +1,7 @@
 """Dev Fleet's agent tools, served from the gateway through the manifest ``agentTools`` seam.
 
-``app.json`` declares the five pod tools (``pod_up``, ``pod_restart``, ``pod_down``,
-``pod_status``, ``pod_ls``) under the namespace ``pod``, so they keep the names agents,
+``app.json`` declares pod tools under the namespace ``pod``, including the five
+lifecycle tools, so they keep the names agents,
 skills and policies already know. ``kirocrew-core`` lists them and forwards each call
 to ``POST /api/app-tools/call``, which hands it to the ONE route registered here,
 ``POST /api/apps/dev-fleet/agent-tools``. This app has a backend process too, but that
@@ -203,6 +203,74 @@ async def pod_down(args: dict[str, Any]) -> dict[str, Any]:
     return _answer(f"Pod `{_pd_worktree}` is stopped and its data directory reclaimed.")
 
 
+#: Longest pod reply body ``pod_api`` hands the model. ``app.json`` declares the
+#: tool's ``maxResultChars`` above this, so the cut is made here, where it is said.
+_POD_API_BODY_CHARS = 50_000
+
+
+async def pod_api(args: dict[str, Any]) -> dict[str, Any]:
+    _pa_worktree = args["worktree"]
+    body = {
+        "worktree": _pa_worktree,
+        "method": args.get("method"),
+        "path": args.get("path"),
+        "data": args.get("data") or "",
+        "allow_write": args.get("allow_write") is True,
+    }
+    _pa_resp = _client_view(await agent_pod_api.pod_api_response(body))
+    _pa_err = _pod_failure(_pa_resp, f"pod api {_pa_worktree!r}")
+    if _pa_err:
+        return _answer(_pa_err)
+    _pa_body = _pa_resp.get("body")
+    _pa_text = _pa_body if isinstance(_pa_body, str) else json.dumps(_pa_body, default=str)
+    # Redact before cutting so credentials split at the boundary cannot leak.
+    _pa_text = redact(_pa_text)
+    _pa_cut = ""
+    if len(_pa_text) > _POD_API_BODY_CHARS:
+        _pa_cut = f"\n[body cut at {_POD_API_BODY_CHARS} of {len(_pa_text)} characters]"
+        _pa_text = _pa_text[:_POD_API_BODY_CHARS]
+    _pa_header = redact(
+        f"Pod `{_pa_worktree}` answered {_pa_resp.get('method')} {_pa_resp.get('path')}: "
+        f"HTTP {_pa_resp.get('status')}"
+    )
+    return _answer(f"{_pa_header}\n{_pa_text}{_pa_cut}")
+
+
+async def pod_provision_start(args: dict[str, Any]) -> dict[str, Any]:
+    _pv_worktree = args["worktree"]
+    _pv_resp = _client_view(
+        await agent_pod_api.pod_provision_start_response({"worktree": _pv_worktree})
+    )
+    _pv_err = _pod_failure(_pv_resp, f"pod provision {_pv_worktree!r}")
+    if _pv_err:
+        return _answer(_pv_err)
+    return _answer(
+        redact(
+            f"Provisioning `{_pv_worktree}` started (venv and SPA build; usually several "
+            f"minutes). run_id: {_pv_resp.get('run_id')}\n"
+            "Check it with pod_provision_status; call pod_up once it reports done."
+        )
+    )
+
+
+async def pod_provision_status(args: dict[str, Any]) -> dict[str, Any]:
+    _pq_worktree = args["worktree"]
+    _pq_resp = _client_view(
+        await agent_pod_api.pod_provision_status_response(
+            {"worktree": _pq_worktree, "run_id": args.get("run_id")}
+        )
+    )
+    _pq_err = _pod_failure(_pq_resp, f"pod provision status {_pq_worktree!r}")
+    if _pq_err:
+        return _answer(_pq_err)
+    _pq_status = _pq_resp.get("status")
+    _pq_head = f"Provision run {_pq_resp.get('run_id')} for `{_pq_worktree}`: {_pq_status}"
+    if _pq_status != "running":
+        _pq_head += f" (exit code {_pq_resp.get('exit_code')})"
+    _pq_tail = [str(line) for line in (_pq_resp.get("output") or [])]
+    return _answer(redact("\n".join([_pq_head, *_pq_tail])))
+
+
 async def pod_status(args: dict[str, Any]) -> dict[str, Any]:
     _ps_worktree = args["worktree"]
     _ps_resp = _client_view(await agent_pod_api.pod_status_response(_ps_worktree))
@@ -254,6 +322,9 @@ TOOLS = {
     "pod_down": pod_down,
     "pod_status": pod_status,
     "pod_ls": pod_ls,
+    "pod_api": pod_api,
+    "pod_provision_start": pod_provision_start,
+    "pod_provision_status": pod_provision_status,
 }
 
 #: The verb a refusal names before the grant check: the one each tool's reply names.
@@ -263,6 +334,9 @@ _VERBS = {
     "pod_down": "pod down",
     "pod_status": "pod status",
     "pod_ls": "pod ls",
+    "pod_api": "pod api",
+    "pod_provision_start": "pod provision",
+    "pod_provision_status": "pod provision status",
 }
 
 

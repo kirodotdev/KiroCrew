@@ -1,7 +1,7 @@
 ---
 name: web-browse
 description: Open a REAL external web page with the `browser` MCP tool; the user watches it live in the chat and can take over with one click. Use when the user wants to VIEW, read or verify a public URL (a local dev server = web-preview).
-triggers: open this page, show me this site, show me the page, view this url, render this page, look at this website, open in the browser, see what this page looks like, pull up this site, visit this url
+triggers: open this page, show this site, view this url, render this page, open in browser, visit this url
 ---
 
 # Web Browse: open a real page for the user to look at
@@ -22,10 +22,13 @@ a long page names the `offset` to read next), then
 `click` (`clicks: 2` or `3` for a double or triple click) / `type` / `fill`
 (replace a field's value with real key presses when `type` is ignored) /
 `paste` / `press_key` / `dispatch_key` / `hover` / `drag` / `scroll` /
-`select_option` / `upload` (local files into a `[file]` field) / `wait_for` /
+`select_option` / `upload` (local files, folders or globs into a `[file]`
+field, a button's file picker with `via: chooser`, or a drop zone with
+`via: drop`) / `wait_for` /
 `wait_for_element` / `wait_for_network_idle` / `back` / `console` /
 `screenshot` / `tabs` (list, switch or close the tabs you opened) / `dialog` /
-`reflex`, and `ask` for a step only the user may do. When no op fits, `js`
+`set_appearance` (light, dark or reset) / `resize` (viewport width and
+height, or reset) / `reflex`, and `ask` for a step only the user may do. When no op fits, `js`
 runs JavaScript in your tab, `cdp` sends one DevTools Protocol command to it
 (`iframe_target` finds a cross-site frame for `js`), and `http_get` fetches a
 public URL without the browser's cookies; prefer the ops above. Call `snapshot`
@@ -40,10 +43,12 @@ first.
 `.localhost`, private, link-local, CGNAT or metadata address is refused. The
 one exception is an exact `host:port` (`localhost`, `127.0.0.1` or `[::1]`
 plus a port) the user listed under **Settings → Browser → Local preview
-origins**; the gateway's own port is refused even when listed, and you cannot
-edit that list. So a local dev server is the **web-preview** marker (the
-dashboard's Preview tab) unless the user told you its origin is listed; a
-refusal means it is not, so ask them to add it or to open it themselves.
+origins**; the gateway's own port is refused even when listed, and so is this
+dashboard under the other names the gateway knows it by (its tunnel, tailnet
+name or `dashboard.url`). You cannot edit the Local preview list. So a local dev
+server is the **web-preview** marker (the dashboard's Preview tab) unless the
+user told you its origin is listed; a refusal means it is not, so ask them to
+add it or to open it themselves.
 
 The gate does not resolve DNS: an internal hostname passes it, so a successful
 `navigate` is not proof the host is public.

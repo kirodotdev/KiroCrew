@@ -214,11 +214,14 @@ Available in `@kirocrew/app-sdk`:
 | `useChatLauncher()` | `openChat`: open a new chat or target `slotKey`; set `autoSend: false` for an unsent draft. `createChat`: create or reopen the person's chat your manifest's `permissions.chatLaunch` declares, without declaring `/api/chat/slots`, and resolve to its key; seam level 10, so feature-detect `createChat` ([API reference](api-reference.md#app-sdk-hooks-dashboard-ui)) |
 
 `useAppInfo().active` tells your app whether its host surface is the one the user is
-looking at. A routed `ui.pages` page is always the visible surface, so it reads `true`.
+looking at. A routed `ui.pages` page reads `true` while it is on screen, and `false`
+while the dashboard keeps it running after the person left (`useKeepAlive`).
 A `contributes.panelTabs` side-panel tab is different: it stays MOUNTED while hidden —
 behind another tab, with the panel closed, or while another chat is active — so that
 switching back does not discard your component's state. Poll on an interval, hold a
 global hotkey, or run an animation loop and it keeps costing while nobody can see it.
+While `active` is `false`, `useNavigate` and `useChatLauncher().openChat` do nothing,
+so a hidden tab or page cannot move the dashboard the person is using.
 
 ```tsx
 const { active } = useAppInfo()

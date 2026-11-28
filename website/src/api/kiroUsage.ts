@@ -25,6 +25,7 @@ export type KiroUsageState =
   | 'signin-required'
   | 'signin-rejected'
   | 'api-key'
+  | 'no-limit'
   | null
 
 /**
@@ -133,6 +134,9 @@ export function parseKiroUsagePayload(d: { usage?: KiroUsagePayload } | undefine
       const type = u.account_type
       return { accountOnly: true, accountType: typeof type === 'string' && type ? type : undefined }
     }
+    // `no-limit`: the usage service reports a used amount and no credit limit
+    // for this account, so there is no balance to show, now or on a re-read.
+    if (u.reason === 'plan_without_limit') return 'no-limit' as const
     return 'none' as const
   }
   return null
@@ -153,7 +157,7 @@ export const KIRO_USAGE_STEADY_POLL_MS = 30_000
  * the next poll sees the warmed value, so the pill sits "checking" for roughly
  * two intervals after a reopen. Polling fast while the state is unsettled
  * collapses that wait to a couple of seconds; a settled state — a real reading,
- * or a terminal `none` / `api-key` / `signin-required` / `signin-rejected` the next poll would not
+ * or a terminal `none` / `api-key` / `no-limit` / `signin-required` / `signin-rejected` the next poll would not
  * change — drops back to the steady cadence so a resolved pill is not polled
  * every few seconds forever.
  *
@@ -171,12 +175,22 @@ export const KIRO_USAGE_STEADY_POLL_MS = 30_000
  */
 export const KIRO_USAGE_WARMING_MAX_READS = 12
 
+/**
+ * A failed read backs off: the warming cadence doubles with each failure
+ * (`failedReads`, the errors the query has settled so far), up to the steady
+ * cadence. A boot 503 is retried in seconds; a standing one (kiro-cli missing
+ * or signed out) stops being asked every few seconds after the first few.
+ */
 export function kiroUsageRefetchInterval(
   state: KiroUsageState,
   isError: boolean,
   settledReads: number,
+  failedReads: number,
 ): number {
   if (settledReads >= KIRO_USAGE_WARMING_MAX_READS) return KIRO_USAGE_STEADY_POLL_MS
-  if (isError || state === null) return KIRO_USAGE_WARMING_POLL_MS
+  if (isError) {
+    return Math.min(KIRO_USAGE_WARMING_POLL_MS * 2 ** Math.max(failedReads - 1, 0), KIRO_USAGE_STEADY_POLL_MS)
+  }
+  if (state === null) return KIRO_USAGE_WARMING_POLL_MS
   return KIRO_USAGE_STEADY_POLL_MS
 }

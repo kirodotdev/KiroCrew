@@ -439,8 +439,10 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
        ``/context`` uses) drained onto the user's next manual message exactly
        once, then cleared.
 
-    Both writes always happen. A context-only write is ``POST /context``, which
-    already exists; there is no visible-only mode, because no caller wanted one.
+    Both writes are always asked for; the visible line is written alone only in
+    the ``contextSkipped`` cases below. A context-only write is ``POST /context``,
+    which already exists; there is no visible-only mode, because no caller wanted
+    one.
 
     A session reset in between can replay the transcript row into the new
     session, so the model may see the note twice in one prompt. The queued copy
@@ -466,6 +468,10 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     A credential-shaped ``content`` never seats a context half: the context
     half reaches the model in-band and is not a confidential channel. The
     visible line is still written, redacted, and ``contextSkipped`` is true.
+    The same holds on a session linked or mirrored to a channel (a linked
+    thread, an outbound mirror, the channel a conversation started in), even
+    while the link is paused: that channel never shows the visible line, so the
+    note is not queued for a reply published there to draw on.
 
     Returns ``{"ok", "appended", "visibleDeferred", "contextSkipped", "pending"}``.
     If the source's per-source context cap is already full the visible line is
@@ -564,6 +570,9 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     if stale is not None:
         return stale
 
+    # circular import: session_control imports this package's modules at module level.
+    from kiro_crew.dashboard.session_control import _has_channel_mirror
+
     return await write_slot_note(
         state,
         slot,
@@ -573,6 +582,8 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
         max_age=body.get("maxAge", _UNSET),
         ephemeral=body.get("ephemeral", True),
         caller=request_app or request.get("user", "dashboard"),
+        # An unreadable store counts as mirrored: the cost is a skipped half.
+        context_withheld=_has_channel_mirror(state, slot),
     )
 
 
@@ -587,6 +598,7 @@ async def write_slot_note(
     ephemeral: Any,
     caller: str,
     admission: dict[str, object] | None = None,
+    context_withheld: bool = False,
 ) -> web.Response:
     """Deliver a validated note on a slot its caller was just authorized for, and answer.
 
@@ -595,7 +607,8 @@ async def write_slot_note(
     :func:`deliver_note`'s first write, so an authorization the caller decided
     synchronously still holds when it lands. *admission* is the containment the
     caller was admitted under; it rides on the context half to the drain, which
-    compares it.
+    compares it. *context_withheld* writes the visible line alone (see
+    :func:`deliver_note`).
     """
     delivery = await deliver_note(
         state,
@@ -606,6 +619,7 @@ async def write_slot_note(
         max_age=max_age,
         ephemeral=ephemeral,
         admission=admission,
+        context_withheld=context_withheld,
     )
     if isinstance(delivery, web.Response):
         return delivery
@@ -650,7 +664,7 @@ class NoteDelivery(NamedTuple):
     """A turn was running, so the note is HELD and written when that turn ends."""
 
     context_skipped: bool
-    """A context cap had no seat, so only the visible line was written."""
+    """The context half was not seated, so only the visible line was written."""
 
 
 async def deliver_note(
@@ -671,6 +685,7 @@ async def deliver_note(
     target_expected_keys: tuple[str, ...] | None = None,
     on_context_full: Callable[[], web.Response] | None = None,
     admission: dict[str, object] | None = None,
+    context_withheld: bool = False,
 ) -> NoteDelivery | web.Response:
     """Write one validated note into *slot*: its visible row and its context half.
 
@@ -713,6 +728,8 @@ async def deliver_note(
     ``context_secret_shaped``. Without it, the visible note lands with context
     skipped in both cases. ``admission`` is the containment a ``session_set_note``
     caller was admitted under; it rides on the context half to the drain.
+    ``context_withheld`` writes the visible note alone, with context skipped: the
+    note route sets it for a session linked or mirrored to a channel.
 
     Returns a :class:`NoteDelivery`, or the refusal as a finished response.
     """
@@ -767,7 +784,7 @@ async def deliver_note(
         # credential-shaped one too: that half is never seated, so the visible row
         # alone would be all it delivered.
         return secret_shaped
-    if secret_shaped is not None:
+    if secret_shaped is not None or context_withheld:
         # Pending context reaches the model in-band, so a credential-shaped note
         # never seats a context half. Its visible line is still written,
         # redacted below, and the skip is reported the way a full cap is.

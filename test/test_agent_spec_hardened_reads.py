@@ -339,7 +339,7 @@ class TestFindServerSpecAnywhere:
         self, agents_dir_resolver
     ):
         from kiro_crew import template_mcp_additions
-        from kiro_crew.mcp_provenance import DERIVED_KEY, WITHHELD_KEY
+        from kiro_crew.mcp_provenance import DERIVED_KEY, SOURCE_KEY, WITHHELD_KEY
 
         _plant(
             agents_dir_resolver,
@@ -347,11 +347,13 @@ class TestFindServerSpecAnywhere:
             {
                 "name": "kirocrew",
                 "mcpServers": {
+                    # Short values: the planted file must stay under the read cap.
                     "derived-hr": {
-                        "command": "/opt/bin/derived-hr",
+                        "command": "/o/d",
                         "args": [],
-                        DERIVED_KEY: {"from": "derived-hr", "emitted": "/opt/bin/derived-hr"},
+                        DERIVED_KEY: {"from": "d", "emitted": "/o/d"},
                         WITHHELD_KEY: True,
+                        SOURCE_KEY: "a:b",
                         "disabled": True,
                     }
                 },
@@ -360,7 +362,7 @@ class TestFindServerSpecAnywhere:
 
         found = _find_server_spec_anywhere("derived-hr")
 
-        assert found == {"command": "/opt/bin/derived-hr", "args": []}
+        assert found == {"command": "/o/d", "args": []}
         # request_server records this copy, and the record refuses any key it does
         # not know (unknown_key), so a derived server is addable only without them.
         assert template_mcp_additions.validate_entry(found) == found
@@ -1140,6 +1142,8 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("connections_warm_mint", "dashboard"),
     ],
     "kiro_crew/context_assembly/agent_spec.py": [
+        # A pinned session's file, read for its ``includeCrossSessionContext`` key.
+        ("agent_context_scope", "context"),
         ("agent_prompt", "context"),
         ("steering_resources", "unknown"),
     ],
@@ -1183,12 +1187,14 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # One read: the configured-server mint resolves the server's URL from the
     # owner's main spec, so the caller never supplies it.
     "kiro_crew/dashboard/handlers/connections.py": [("connections_mint", "dashboard")],
+    "kiro_crew/dashboard/handlers/mcp_agent_sync.py": [("mcp_app_owned_servers", "dashboard")],
     "kiro_crew/dashboard/handlers/mcp_config_entries.py": [("mcp_find_server_spec", "dashboard")],
     "kiro_crew/dashboard/handlers/mcp_gateway_routes.py": [
         ("mcp_server_rows", "dashboard"),
         ("mcp_stub_eligibility", "dashboard"),
     ],
     "kiro_crew/dashboard/handlers/mcp_probe.py": [("api_mcp_active", "dashboard")],
+    "kiro_crew/dashboard/handlers/request_server_page.py": [("mcp_card_share", "dashboard")],
     # The side chat reads the base spec in both scopes under one label. The two
     # ``agent_mode_refusal`` reads word an ACP refusal on any channel, so "unknown";
     # ``side_readonly_reap`` is gateway maintenance, so "unknown" as well.
@@ -1213,6 +1219,9 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("forward:operation", "forward:source"),
         ("resolve_agent_model", "unknown"),
     ],
+    # The spawn tools' roster reads each user-level spec to mark one that mounts
+    # nothing; a denial belongs to the sub-agent surface that lists the names.
+    "kiro_crew/mcp_tools/spawn_parts/schemas.py": [("spawn_roster", "subagent")],
     # The spawn gate walks every spec for the PARENT agent's
     # ``toolsSettings.subagent.availableAgents`` allowlist, and keeps a file the
     # reader refuses as unreadable (refuse) rather than as "no spec"; a denial
@@ -1462,6 +1471,8 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("mcp_overlay_rewrite", "unknown"),
     ],
     "kiro_crew/mcp_gateway/rewriter.py": [("mcp_overlay_rewrite", "unknown")],
+    # The value-free folder-use scan reads the same agent and crewmate files.
+    "kiro_crew/mcp_gateway/folder_use.py": [("mcp_folder_facts", "unknown")],
     "kiro_crew/slack/handler_runtime/agent_names.py": [("slack_resolve_agent", "slack")],
     # A spawn refused because the parent's allowlist is unknown names each spec
     # the reader refused; this re-read keeps the error class for that text.
@@ -1491,7 +1502,11 @@ _EXPECTED_SCOPE_GUARD_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 
 
 _EXPECTED_TEMPLATE_SPEC_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
-    "kiro_crew/context_assembly/agent_spec.py": [("agent_prompt", "context")],
+    # The agent prompt, and the ``includeCrossSessionContext`` key of the same spec.
+    "kiro_crew/context_assembly/agent_spec.py": [
+        ("agent_context_scope", "context"),
+        ("agent_prompt", "context"),
+    ],
     "kiro_crew/member_essential_context.py": [("member_essentials", "context")],
 }
 _EXPECTED_LINKED_TEMPLATE_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
@@ -1510,6 +1525,8 @@ _EXPECTED_DECLARED_ENTRY_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 
 
 _EXPECTED_DECLARED_CLAIM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    # The KAS session start's held-file refusal, under the projection's label.
+    "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
     # The kiro-cli view's source for a contested name, and the launch refusal for
     # handing kiro-cli the authored name of one.
     "kiro_crew/acp/skill_projection_parts/preparation.py": [("native_skill_projection", "acp")],
@@ -1528,7 +1545,9 @@ _EXPECTED_DECLARED_CLAIM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/mcp_gateway/session_servers.py": [("mcp_overlay_pin", "unknown")],
     # The start refusal for a contested name on the hosts that read their servers
     # from the session MCP read (R-SPEC-13).
-    "kiro_crew/acp/session_mcp.py": [("session_start_spec_check", "acp")],
+    "kiro_crew/acp/session_mcp_spec_check.py": [("session_start_spec_check", "acp")],
+    # The spawn roster's tool-less mark, judged on the claimant a spawn of the name runs.
+    "kiro_crew/mcp_tools/spawn_parts/schemas.py": [("spawn_roster", "subagent")],
 }
 _RATCHET_INVENTORY: dict[str, dict[str, list[tuple[str, str]]]] = {
     "declared_spec_claim": _EXPECTED_DECLARED_CLAIM_CALL_SITE_LABELS,

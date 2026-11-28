@@ -661,6 +661,7 @@ class ChatSlotSDK:
         max_cycles: int,
         stop_sentinel_path: str = "",
         caller: str = "",
+        max_runtime_secs: int | None = None,
     ) -> tuple[Any | None, str | None, int]:
         """Arm an AutoNudge loop on this app's *slot*: ``(loop, error, status)``.
 
@@ -670,8 +671,22 @@ class ChatSlotSDK:
         *caller* is the requesting user, for the audit row. A loop is armed only
         when *error* is ``None``. When AutoNudge is not running the answer is
         ``(None, <reason>, 503)``.
+
+        *max_runtime_secs* bounds the loop: 1 up to the owner's
+        ``monitoring.max_runtime_secs`` ceiling, which is also the default, so an
+        app loop always ends. Out of range is ``(None, <reason>, 400)``.
         """
         self._require_live(state, slot)
+        limits = _host("kiro_crew.monitoring.limits", "runtime_ceiling_secs")
+        validate = _host("kiro_crew.monitoring.limits", "validate_runtime_secs")
+        try:
+            runtime = (
+                limits()
+                if max_runtime_secs is None
+                else validate(max_runtime_secs, allow_unbounded=False)
+            )
+        except ValueError as exc:
+            return None, str(exc), 400
         get_instance = _optional_host("kiro_crew.autonudge", "get_instance")
         service = get_instance() if get_instance is not None else None
         if service is None:
@@ -685,6 +700,7 @@ class ChatSlotSDK:
             idle_secs=idle_secs,
             max_cycles=max_cycles,
             stop_sentinel_path=stop_sentinel_path,
+            max_runtime_secs=runtime,
             source=f"app:{self._app}",
             caller=caller,
         )

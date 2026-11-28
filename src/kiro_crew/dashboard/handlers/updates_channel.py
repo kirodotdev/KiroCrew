@@ -42,7 +42,7 @@ from kiro_crew.dashboard.handlers.updates_verdict import (
     _update_info,
 )
 from kiro_crew.dashboard.urls import is_loopback
-from kiro_crew.platform.update_layout import detect_install_layout
+from kiro_crew.platform.update_layout import RELEASE_CHANNELS, detect_install_layout
 from kiro_crew.platform.update_layout import release_channel as _release_channel
 from kiro_crew.platform.update_layout import set_release_channel, wheel_update_command
 from kiro_crew.platform.update_provider import resolve_provider
@@ -218,8 +218,19 @@ _changelog_cache: tuple[tuple[str, int, int], str] | None = None
 
 
 def _read_changelog() -> str:
-    """Return CHANGELOG.md's contents, re-reading only when the file changes."""
+    """Return CHANGELOG.md's contents, re-reading only when the file changes.
+
+    Empty in an LTS build. The bundled CHANGELOG.md describes the open-source
+    releases, whose numbers are a separate line from LTS's (open-source 0.2.0 is
+    not LTS 0.2.0), and LTS follows only its own channel. Served to LTS, the
+    release notes listed open-source 0.13.0 ... 0.3.0 as "Newer than yours" and
+    showed open-source 0.2.0's notes as the installed version's.
+    """
+    from kiro_crew.edition import is_lts
+
     global _changelog_cache
+    if is_lts():
+        return ""
     path = _changelog_path()
     if path is None:
         return ""
@@ -270,6 +281,8 @@ async def api_releases(request: web.Request) -> web.Response:
     on the file staying small.
     """
 
+    from kiro_crew.edition import is_lts
+
     def _read_and_parse() -> list[Release]:
         return build_release_list(_read_changelog(), _display_local_version())
 
@@ -279,6 +292,8 @@ async def api_releases(request: web.Request) -> web.Response:
             "current_version": _display_local_version(),
             "releases": [r._asdict() for r in releases],
             "stale": any(r.in_progress for r in releases),
+            # The page names the LTS line in place of notes it has none of.
+            "edition": "lts" if is_lts() else "oss",
         }
     )
 
@@ -358,8 +373,17 @@ async def api_update_channel(request: web.Request) -> web.Response:
             status=409,
         )
     if layout.is_externally_managed:
+        from kiro_crew.platform import desktop_installer_update as desktop
+
+        # A Windows desktop install follows the channel chosen in the app's
+        # Settings, headless or not, so this endpoint is no second writer of it.
+        error = (
+            desktop.CHANNEL_CHOSEN_IN_APP
+            if layout.kind == desktop.NSIS_DISTRIBUTION
+            else layout.guidance
+        )
         return web.json_response(
-            {"error": layout.guidance, "code": "channel_not_applicable_managed"},
+            {"error": error, "code": "channel_not_applicable_managed"},
             status=409,
         )
 
@@ -382,12 +406,26 @@ async def api_update_channel(request: web.Request) -> web.Response:
             status=409,
         )
 
+    normalized = requested.strip().lower()
+    if normalized not in RELEASE_CHANNELS:
+        # Rejected before anything is written, the channel move record included.
+        return web.json_response(
+            {"error": "unknown release channel", "code": "invalid_channel"}, status=400
+        )
     try:
+        # The channel this install came from, recorded BEFORE the file names
+        # another one: a one-click update is for a newer release of the channel an
+        # install came from, and a restart would otherwise forget the move. A
+        # record that cannot be written refuses the switch.
+        from kiro_crew.platform import update_channel_move
+
         # Offloaded: mkdir + write + os.replace are synchronous syscalls, and the
         # data home can be network-backed (NFS/SMB), where even a ten-byte write
         # can stall long enough to freeze the loop and the liveness heartbeat with
         # it. Small does not mean non-blocking.
-        stored = await asyncio.to_thread(set_release_channel, requested)
+        stored = await asyncio.to_thread(
+            update_channel_move.switch_channel, normalized, set_release_channel
+        )
     except ValueError:
         # The allowlist is the whole guard: `channel` becomes a path segment in
         # every feed URL and an argument in a shell command, so an unknown value

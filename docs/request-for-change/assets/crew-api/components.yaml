@@ -101,6 +101,7 @@ components:
       - invalid_request
       - unsupported_parameter
       - unsupported_tool_type
+      - invalid_scope
       - invalid_token
       - token_revoked
       - stale_session_reauth
@@ -117,6 +118,7 @@ components:
       - method_not_supported
       - response_in_progress
       - approval_already_resolved
+      - grant_request_already_resolved
       - resync_required
       - payload_too_large
       - capability_unavailable
@@ -425,6 +427,11 @@ components:
           enum:
           - user
           - assistant
+          - developer
+          - system
+          description: 'Proposed amendment, 2026-11-25, waiting for a maintainer''s sign-off: `developer` and `system`,
+            the roles an input item can be sent with, so that GET /v1/responses/{response_id}/input_items can list
+            such an item.'
         status:
           enum:
           - in_progress
@@ -627,7 +634,8 @@ components:
       description: 'Retention: stored responses (with the stream events used to resume), the event index, resolved
         approvals and uploaded files are all kept 30 days by default; the owner can set `crew_api.retention_days`
         in the crew settings to 1 to 365 days. Deleting a conversation deletes its responses and events. After the
-        retention period GET returns 404 not_found.'
+        retention period GET returns 404 not_found. Proposed amendment, 2026-11-25, waiting for a maintainer''s
+        sign-off: the `crew_api.retention_days` setting is not built yet; a response is kept 30 days.'
     ResponseStreamEvent:
       type: object
       required:

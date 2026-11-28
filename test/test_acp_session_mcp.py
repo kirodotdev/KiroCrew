@@ -393,6 +393,116 @@ class TestMounting:
         (tmp_path / "settings-mcp.json").write_text("[not a dict]", encoding="utf-8")
         assert session_mcp.session_mcp_disabled_tools("kirocrew") == frozenset()
 
+    def test_a_raw_slash_key_restriction_reaches_the_alias_the_session_mounts(
+        self, tmp_path, agents_dir
+    ):
+        """The tool-off route writes ``disabledTools`` under the raw key the file
+        holds (``npm:@playwright/mcp``) while the spec mounts the alias
+        (``playwright-mcp``), so the pair must name the alias too or the mounted
+        tool stays on. A raw key whose alias is itself a key in the same file is a
+        different server's entry and lends that server nothing."""
+        _write_spec(
+            agents_dir,
+            servers={"playwright-mcp": {"command": "/p"}, "team-foo": {"command": "/t"}},
+            tools=["@playwright-mcp", "@team-foo"],
+        )
+        (tmp_path / "settings-mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "npm:@playwright/mcp": {"command": "/p", "disabledTools": ["nav"]},
+                        "team-foo": {"command": "/t"},
+                        "team/foo": {"command": "/u", "disabledTools": ["x"]},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        pairs = session_mcp.session_mcp_disabled_tools("kirocrew")
+        assert ("playwright-mcp", "nav") in pairs
+        assert ("npm:@playwright/mcp", "nav") in pairs
+        assert ("team/foo", "x") in pairs
+        assert ("team-foo", "x") not in pairs
+
+    def test_a_raw_slash_key_restriction_skips_an_alias_the_store_holds(
+        self, tmp_path, agents_dir, monkeypatch
+    ):
+        """When the Kiro Crew store holds ``playwright-mcp`` itself, that entry is
+        the mount and the global raw key ``npm:@playwright/mcp`` mounts beside it as
+        ``playwright-mcp-2``, so the raw key's list switches nothing off on the
+        store's server."""
+        _write_spec(
+            agents_dir,
+            servers={
+                "playwright-mcp": {"command": "/store"},
+                "playwright-mcp-2": {"command": "/p", "disabledTools": ["nav"]},
+            },
+            tools=["@playwright-mcp", "@playwright-mcp-2"],
+        )
+        monkeypatch.setattr(agent_mod, "_user_dir", lambda: tmp_path)
+        (tmp_path / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"playwright-mcp": {"command": "/store"}}}),
+            encoding="utf-8",
+        )
+        (tmp_path / "settings-mcp.json").write_text(
+            json.dumps(
+                {"mcpServers": {"npm:@playwright/mcp": {"command": "/p", "disabledTools": ["nav"]}}}
+            ),
+            encoding="utf-8",
+        )
+        pairs = session_mcp.session_mcp_disabled_tools("kirocrew")
+        assert ("npm:@playwright/mcp", "nav") in pairs
+        assert ("playwright-mcp-2", "nav") in pairs
+        assert ("playwright-mcp", "nav") not in pairs
+
+    def test_a_raw_slash_key_restriction_reaches_a_custom_agents_remote_entry_under_its_alias(
+        self, tmp_path, agents_dir, monkeypatch
+    ):
+        """The tool-off route writes the list on the raw key ``team/server``, and a
+        custom agent is never rebuilt, so its ``team-server`` may be spelled unlike
+        the global's (``oauthScopes``, no command). An alias-keyed entry switches the
+        tool off on whatever the spec mounts under the alias; the raw key's does too."""
+        _write_spec(
+            agents_dir,
+            name="my-agent",
+            servers={
+                "team-server": {"url": "https://mcp.example.test/team", "oauthScopes": ["read"]}
+            },
+            tools=["@team-server"],
+        )
+        monkeypatch.setattr(agent_mod, "_user_dir", lambda: tmp_path)
+        (tmp_path / "settings-mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "team/server": {
+                            "url": "https://mcp.example.test/team",
+                            "scopes": ["read"],
+                            "disabledTools": ["read_item"],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        pairs = session_mcp.session_mcp_disabled_tools("my-agent")
+        assert ("team-server", "read_item") in pairs
+        assert ("team/server", "read_item") in pairs
+        rules = session_mcp.session_mcp_deny_rules("my-agent")
+        assert "mcp__team-server__read_item" in rules
+
+    def test_a_raw_slash_key_restriction_skips_an_alias_two_raw_keys_share(self, agents_dir):
+        """Two raw keys with one alias mount as ``team-foo`` and ``team-foo-2`` in an
+        order the file does not show, so neither key's list names the alias."""
+        settings = {
+            "mcpServers": {
+                "team/foo": {"command": "/a", "disabledTools": ["x"]},
+                "other:team/foo": {"command": "/b"},
+            }
+        }
+        pairs = session_mcp.session_mcp_disabled_tools(None, spec=None, settings=settings)
+        assert pairs == frozenset({("team/foo", "x")})
+
     def test_an_explicit_none_spec_is_honoured_not_re_read(self, agents_dir, monkeypatch):
         """``None`` means "there is no spec"; only "not supplied" reads.
 

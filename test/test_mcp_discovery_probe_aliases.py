@@ -4,7 +4,9 @@ One server is often configured under several names. ``probe_all`` keys each loca
 server by the process its probe starts (command plus args) and never runs two probes
 with the same key at once, while servers with different keys still share the
 ``PROBE_MAX_CONCURRENCY`` slots. A timeout that only the overlap caused therefore
-cannot build a quarantine streak against a server that works.
+cannot build a quarantine streak against a server that works. The lock is the
+gateway's, not one pass's: two passes at once and the shareability pre-flight wait
+on the same one.
 
 Each stand-in probe parks on a gate the test opens once the first wave of probes is
 parked, so overlap is read from state, never from how long a sleep lasted.
@@ -15,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections import Counter
+from copy import deepcopy
 
 import pytest
 from mcp_discovery_helpers import (  # noqa: F401 -- the autouse fixture registers by import
@@ -67,7 +70,7 @@ class _Tracker:
         self.probed: list[str] = []
         self.envs: dict[str, dict] = {}
 
-    async def __call__(self, server: McpServerInfo) -> McpServerInfo:
+    async def __call__(self, server: McpServerInfo, **_kw) -> McpServerInfo:
         key = _key(server)
         self.live[key] += 1
         self.live_total += 1
@@ -175,6 +178,97 @@ class TestAliasesDoNotOverlap:
         assert tracker.peak_total == 3
 
 
+def _queued(server: McpServerInfo) -> int:
+    """How many checks hold or wait on the same-process lock of *server*."""
+    from kiro_crew import mcp_discovery
+
+    return mcp_discovery._same_process_users.get(_spawn_fingerprint(server), 0)
+
+
+class TestAliasesDoNotOverlapAcrossChecks:
+    """Checks that overlap share one lock per process.
+
+    A Probe press during Measure All, or two Probe presses, run at the same time.
+    Each test opens the gate once two copies of the process are live (the overlap
+    this forbids) or once every check holds or waits on the lock, so a broken lock
+    fails on the peak, never on a timeout.
+    """
+
+    @pytest.mark.asyncio
+    async def test_two_overlapping_probe_passes_start_one_copy_at_a_time(self, monkeypatch) -> None:
+        from kiro_crew.mcp_discovery import probe_all
+
+        tracker = _Tracker()
+        rows = _aliases(2)
+        _configure(monkeypatch, rows, tracker)
+        monkeypatch.setattr("kiro_crew.mcp_discovery.list_servers", lambda: deepcopy(rows))
+
+        passes = [asyncio.ensure_future(probe_all()) for _ in range(2)]
+        await async_wait_until(
+            lambda: tracker.live_total >= 2 or _queued(rows[0]) == 4,
+            describe=lambda: f"live={tracker.live_total} queued={_queued(rows[0])}",
+        )
+        tracker.gate.set()
+        results = await asyncio.gather(*passes)
+
+        assert max(tracker.peak.values()) == 1, f"aliases overlapped: {dict(tracker.peak)}"
+        assert [[r.status for r in out] for out in results] == [["ok", "ok"], ["ok", "ok"]]
+        assert _queued(rows[0]) == 0, "the lock is dropped once nobody holds it"
+
+    @pytest.mark.asyncio
+    async def test_the_preflight_measures_aliases_one_at_a_time(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """Measure All: each name's two pre-flight spawns run alone, and both get a verdict."""
+        from kiro_crew.mcp_gateway import evaluate, preflight
+
+        tracker = _Tracker()
+        rows = _aliases(2)
+        monkeypatch.setattr(preflight, "probe_server", tracker)
+
+        measuring = asyncio.ensure_future(
+            evaluate.evaluate_new_servers(rows, tmp_path, budget=None)
+        )
+        await async_wait_until(
+            lambda: tracker.live_total >= 2 or _queued(rows[0]) == 2 or measuring.done(),
+            describe=lambda: f"live={tracker.live_total} queued={_queued(rows[0])}",
+        )
+        tracker.gate.set()
+        known = await measuring
+
+        assert max(tracker.peak.values()) == 1, f"aliases overlapped: {dict(tracker.peak)}"
+        assert {name: row.ran for name, row in known.items()} == {"ado-0": True, "ado-1": True}
+        assert sorted(tracker.probed) == ["ado-0", "ado-0", "ado-1", "ado-1"]
+
+    @pytest.mark.asyncio
+    async def test_the_preflight_waits_for_a_probe_pass_of_another_name(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """A Probe press while Measure All runs: the pass and the pre-flight never overlap."""
+        from kiro_crew.mcp_discovery import probe_all
+        from kiro_crew.mcp_gateway import evaluate, preflight
+
+        tracker = _Tracker()
+        rows = _aliases(2)
+        _configure(monkeypatch, rows, tracker)
+        monkeypatch.setattr(preflight, "probe_server", tracker)
+
+        probing = asyncio.ensure_future(probe_all())
+        measuring = asyncio.ensure_future(
+            evaluate.evaluate_new_servers(deepcopy(rows), tmp_path, budget=None)
+        )
+        await async_wait_until(
+            lambda: tracker.live_total >= 2 or _queued(rows[0]) == 4,
+            describe=lambda: f"live={tracker.live_total} queued={_queued(rows[0])}",
+        )
+        tracker.gate.set()
+        probed, known = await asyncio.gather(probing, measuring)
+
+        assert max(tracker.peak.values()) == 1, f"aliases overlapped: {dict(tracker.peak)}"
+        assert [r.status for r in probed] == ["ok", "ok"]
+        assert {name: row.ran for name, row in known.items()} == {"ado-0": True, "ado-1": True}
+
+
 def _times_out_when_crowded(overlap: int) -> tuple[str, str]:
     if overlap > 1:
         return "timeout", "probe timed out after 15s"
@@ -273,122 +367,27 @@ class TestSpawnFingerprint:
         assert _spawn_fingerprint(a) != _spawn_fingerprint(b)
 
 
-class _CrowdedHost:
-    """A ``probe_server`` stand-in for a host busy starting up.
-
-    A probe times out when any other probe ran at the same moment, and answers when
-    it ran alone -- servers that are each fast, on a host that is not. *hangs* names
-    servers that time out even alone; *raises* names servers whose second call raises.
-    """
-
-    def __init__(
-        self, *, hangs: frozenset[str] = frozenset(), raises: frozenset[str] = frozenset()
-    ):
-        self.gate = asyncio.Event()
-        self.active: list[dict] = []
-        self.calls: Counter = Counter()
-        self.hangs = hangs
-        self.raises = raises
-
-    async def __call__(self, server: McpServerInfo) -> McpServerInfo:
-        me = {"crowded": bool(self.active)}
-        for other in self.active:
-            other["crowded"] = True
-        self.active.append(me)
-        self.calls[server.name] += 1
-        try:
-            await self.gate.wait()
-            if server.name in self.raises and self.calls[server.name] > 1:
-                raise RuntimeError("probe blew up")
-            if me["crowded"] or server.name in self.hangs:
-                server.status, server.error = "error", "timeout\nstderr: still importing"
-            else:
-                server.status = "ok"
-            return server
-        finally:
-            self.active.remove(me)
-
-    async def run_pass(self, first_wave: int) -> list[McpServerInfo]:
-        from kiro_crew.mcp_discovery import probe_all
-
-        self.gate.clear()
-        task = asyncio.ensure_future(probe_all())
-        await async_wait_until(
-            lambda: len(self.active) >= first_wave or task.done(),
-            describe=lambda: f"parked={len(self.active)} calls={dict(self.calls)}",
-        )
-        self.gate.set()
-        return await task
-
-
 def _distinct(count: int) -> list[McpServerInfo]:
     return [McpServerInfo(name=f"srv-{i}", command="uvx", args=[f"pkg-{i}"]) for i in range(count)]
 
 
-class TestTimedOutProbeIsRetriedAlone:
-    @pytest.mark.asyncio
-    async def test_servers_that_time_out_only_together_end_ok(self, monkeypatch) -> None:
-        """The startup burst: every server of the first wave times out in the same
-        second. Each retry runs alone, so each answers and the pass reports ok."""
-        host = _CrowdedHost()
-        _configure(monkeypatch, _distinct(PROBE_MAX_CONCURRENCY), host)
-
-        rows = await host.run_pass(first_wave=PROBE_MAX_CONCURRENCY)
-
-        assert [r.status for r in rows] == ["ok"] * PROBE_MAX_CONCURRENCY
-        assert all(r.error == "" for r in rows)
-        assert set(host.calls.values()) == {2}, "each timed-out server is retried once"
+class TestATimedOutProbeIsNotRepeated:
+    """``probe_server`` already gives a local server the longer wait it needs to start,
+    so a pass keeps that one probe's verdict instead of starting the server again."""
 
     @pytest.mark.asyncio
-    async def test_the_burst_adds_no_quarantine_strike(self, monkeypatch) -> None:
-        from kiro_crew import mcp_quarantine
-
-        host = _CrowdedHost()
-        _configure(monkeypatch, _distinct(3), host)
-
-        for _ in range(3):
-            rows = await host.run_pass(first_wave=3)
-            mcp_quarantine.record_verdicts([(s.name, s.status, s.error) for s in rows])
-
-        failing = {n for n, st in mcp_quarantine.snapshot().items() if st.get("failing")}
-        assert failing == set()
-
-    @pytest.mark.asyncio
-    async def test_a_server_that_hangs_alone_is_retried_once_and_still_quarantined(
+    async def test_a_server_that_hangs_is_probed_once_per_pass_and_still_quarantined(
         self, monkeypatch
     ) -> None:
         from kiro_crew import mcp_quarantine
 
-        host = _CrowdedHost(hangs=frozenset({"srv-0"}))
-        _configure(monkeypatch, _distinct(2), host)
+        tracker = _Tracker(verdict=lambda overlap: ("error", "timeout\nstderr: still importing"))
+        _configure(monkeypatch, _distinct(2), tracker)
 
         for _ in range(3):
-            rows = await host.run_pass(first_wave=2)
+            rows = await tracker.run_pass(first_wave=2)
             mcp_quarantine.record_verdicts([(s.name, s.status, s.error) for s in rows])
 
-        assert host.calls["srv-0"] == 6, "one retry per pass, not a loop"
-        assert [r.status for r in rows] == ["error", "ok"]
+        assert Counter(tracker.probed) == {"srv-0": 3, "srv-1": 3}, "one probe per pass"
         failing = {n for n, st in mcp_quarantine.snapshot().items() if st.get("failing")}
-        assert failing == {"srv-0"}
-
-    @pytest.mark.asyncio
-    async def test_a_remote_timeout_is_not_retried(self, monkeypatch) -> None:
-        """A remote timeout is the network's answer, not a cold start."""
-        host = _CrowdedHost()
-        rows = [McpServerInfo(name=f"r{i}", url="https://mcp.example/x") for i in range(2)]
-        _configure(monkeypatch, rows, host)
-
-        out = await host.run_pass(first_wave=2)
-
-        assert [r.status for r in out] == ["error", "error"]
-        assert set(host.calls.values()) == {1}
-
-    @pytest.mark.asyncio
-    async def test_a_retry_that_raises_keeps_the_first_verdict(self, monkeypatch) -> None:
-        host = _CrowdedHost(raises=frozenset({"srv-0"}))
-        _configure(monkeypatch, _distinct(2), host)
-
-        rows = await host.run_pass(first_wave=2)
-
-        assert (rows[0].status, rows[0].error.partition("\n")[0]) == ("error", "timeout")
-        assert rows[1].status == "ok"
+        assert failing == {"srv-0", "srv-1"}

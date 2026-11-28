@@ -23,7 +23,11 @@ import { usePersistedBool } from '../hooks/usePersistedBool'
 
 type Messages = Parameters<typeof foldEarlierConversation>[0]
 
-export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, revealActions = false, linkPreviews = false, resume: { continuable, interrupted, continuing, onContinue } }: {
+/** The sign-in strip (`KiroSignInStrip`) opens its own dialog; the option only
+ *  says this surface offers Kiro Crew's sign-in, so there is nothing to call. */
+const SIGN_IN_IN_PLACE = () => {}
+
+export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, noSignIn = false, revealActions = false, linkPreviews = false, resume: { continuable, interrupted, continuing, onContinue } }: {
   slotKey: string
   busyMode: ComposerBusyMode
   onFileOpen?: ChatPaneProps['onFileOpen']
@@ -38,6 +42,8 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOp
   foldBefore?: string
   /** The Resume press for this slot (`useChatPaneContinue`), for the newest error row. */
   resume: { continuable: boolean; interrupted: boolean; continuing: boolean; onContinue: () => void }
+  /** `ChatPaneProps.noSignIn`: a signed-out row draws as text, no Sign in. */
+  noSignIn?: boolean
   /** The browser blocked this slot's playback: a crewmate reply shows its
    *  action row without hover, so the notice's More → Read aloud is reachable. */
   revealActions?: boolean
@@ -68,6 +74,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOp
   // Settings -> Chat -> Copy on Select, the same device-only key the Sessions
   // chat reads (transcriptRendering), so a reply here copies a selection too.
   const [copyOnSelect] = usePersistedBool('mc-chat-copy-on-select', false)
+  const unfold = useCallback(() => setOpenFold(foldBefore), [foldBefore])
   const listMessages = useMemo(
     () => foldEarlierConversation(messages, foldBefore, foldOpen),
     [messages, foldBefore, foldOpen],
@@ -100,6 +107,9 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOp
       interrupted,
       continuing,
       onContinue,
+      // A signed-out row offers Sign in here as on the single-chat page: the
+      // row's strip opens the sign-in dialog in place, so the pane needs no route.
+      onOpenSignIn: noSignIn ? undefined : SIGN_IN_IN_PLACE,
       // A crewmate's reply offers Read aloud like a Sessions reply. Only the
       // crewmate thread is read aloud off the active chat (`storeFocusedSlot`),
       // so a split pane keeps its menu as it is.
@@ -108,7 +118,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOp
       copyOnSelect,
       linkPreviews,
     }),
-    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, continuable, interrupted, continuing, onContinue, onSpeak, revealActions, copyOnSelect, linkPreviews],
+    [slotKey, noSignIn, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, continuable, interrupted, continuing, onContinue, onSpeak, revealActions, copyOnSelect, linkPreviews],
   )
   const renderers = useMemo(() => {
     // A crewmate's chat keeps each turn's browser call as a card row (crewmateBrowserLive).
@@ -118,7 +128,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOp
       : rows
   }, [baseRenderers, foldBefore, foldOpen, crewmate, slotKey])
 
-  return { listMessages, renderers }
+  return { listMessages, renderers, unfold }
 }
 
 export function ChatPaneAboveRows({ slotKey, activeSlot, messages, paneMessages, crewmate, crewmateLive, running, slotDetailFailed, refetchSlotDetail, hideEmptyHint, crewmateQuietUnproven, onOpenCrewWorkLog, warmHasMore, pagesPane, onOpenFull }: {

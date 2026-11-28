@@ -196,6 +196,7 @@ class KiroCrewClient:
         base_url: str = "",
         token: str = "",
         app_name: str = "",
+        app_secret: str = "",
         timeout: int = _DEFAULT_TIMEOUT,
         max_retries: int = _DEFAULT_MAX_RETRIES,
         retry_base_delay: float = _DEFAULT_RETRY_BASE_DELAY,
@@ -217,11 +218,14 @@ class KiroCrewClient:
         self._default_slot: str | None = None
         self._last_flush_dropped = 0
 
-        # Auto-token: if app_name is set and no explicit auth, read secret
+        # Auto-token: with app_name set, use the given app secret, or look it up
+        # when no explicit auth is given
         self._app_secret = ""
-        has_explicit_auth = bool(token or on_auth_expired)
-        if app_name and not has_explicit_auth:
-            self._app_secret = _read_app_secret(app_name)
+        if app_name:
+            if app_secret:
+                self._app_secret = app_secret
+            elif not (token or on_auth_expired):
+                self._app_secret = _read_app_secret(app_name)
 
         if self._app_secret and not on_auth_expired:
             self._on_auth_expired = self._auto_refresh_token
@@ -229,11 +233,11 @@ class KiroCrewClient:
             self._on_auth_expired = on_auth_expired
 
     async def _auto_refresh_token(self) -> str:
-        """Exchange the on-disk app secret for a fresh token."""
+        """Exchange the app secret for a fresh token."""
         return await _exchange_app_token(self.base_url, self.app_name, self._app_secret)
 
     async def authenticate(self) -> bool:
-        """Bootstrap app auth by exchanging the on-disk secret for a token.
+        """Bootstrap app auth by exchanging the app secret for a token.
 
         Call once after construction if no explicit token was provided.
         No-op if the client already has a token or no app secret is available.

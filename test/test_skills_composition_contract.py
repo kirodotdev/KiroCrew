@@ -261,9 +261,9 @@ _LOADER_SIGNATURES = {
     "find_similar": "(self, description: 'str', threshold: 'float' = 0.85, *, exclude: 'str' = '') -> 'str | None'",
     "get_always_skills": "(self, project_dir: 'str | Path | None' = None) -> 'list[str]'",
     "get_auto_skill_version": "(self, name: 'str') -> 'int'",
-    "get_context": "(self, budget: 'int | None' = None, only: 'list[str] | None' = None, project_dir: 'str | Path | None' = None, project_body_budget: 'int | None' = None, *, discovery_only: 'bool' = False, required_parts_out: 'list[str] | None' = None) -> 'str'",
+    "get_context": "(self, budget: 'int | None' = None, only: 'list[str] | None' = None, project_dir: 'str | Path | None' = None, project_body_budget: 'int | None' = None, *, discovery_only: 'bool' = False, required_parts_out: 'list[str] | None' = None, index_counts_out: 'dict[str, int] | None' = None) -> 'str'",
     "get_pending_skill": "(self, slug: 'str') -> 'dict | None'",
-    "get_triggered_skills": "(self, text: 'str', project_dir: 'str | Path | None' = None, *, select: 'Callable[[], list[str] | None] | None' = None, unusable: 'Collection[str]' = ()) -> 'list[str]'",
+    "get_triggered_skills": "(self, text: 'str', project_dir: 'str | Path | None' = None, *, select: 'Callable[[], list[str] | None] | None' = None, unusable: 'Collection[str]' = (), only: 'Collection[str] | None' = None) -> 'list[str]'",
     "has_dollar_candidate": "(text: 'str') -> 'bool'",
     "is_auto_generated": "(self, name: 'str') -> 'bool'",
     "list_archived_auto_skills": "(self) -> 'list[dict]'",
@@ -914,10 +914,12 @@ class TestSourceKeyedGuards:
     holds what they count."""
 
     def test_no_runtime_module_screens_a_path_for_links(self) -> None:
-        """The link-screen baseline keys its sites to the ``skills_*`` owners; a screen in a
-        runtime module would be a site that baseline cannot name."""
+        """A screen is code the link-screen baseline pins by path, so it goes to a
+        ``skills_*`` owner. The one exception is ``read_auto_skill_body``'s two
+        ``os.path.islink`` checks, which the baseline keys as ``skill_runtime/versions.py``."""
         for stem, source in _runtime_sources().items():
-            assert [name for _line, name in _called_names(source) if name in SCREENS] == [], stem
+            found = [name for _line, name in _called_names(source) if name in SCREENS]
+            assert found == (["islink", "islink"] if stem == "versions" else []), stem
 
     def test_the_link_screen_scan_catches_a_planted_screen(self) -> None:
         planted = "def f(p):\n    if sk.is_link_or_junction(p):\n        return shutil.rmtree(p)\n"

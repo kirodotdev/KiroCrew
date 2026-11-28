@@ -24,10 +24,12 @@ from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from kiro_crew import env as env_mod
 from kiro_crew import model_registry, platform_compat
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp import raw_sdk_tasks
 from kiro_crew.acp.claude_settings_sources import a_source_decides_thinking
+from kiro_crew.acp.harness import pi_node
 from kiro_crew.acp.harness._common import MembershipHarness
 from kiro_crew.acp.harness.base import (
     NotificationAliases,
@@ -51,6 +53,7 @@ from kiro_crew.agent_sdk.backends import (
     NODE_ADAPTER_ENTRY_SEGMENTS,
     model_registry_namespace,
 )
+from kiro_crew.constants import MIN_NODE_VERSION, format_node_version
 from kiro_crew.env import describe_search_path
 
 # The client's logger name: these lines have always been filed under it.
@@ -172,7 +175,10 @@ def _sdk_bundles_native_binary(resolved: object) -> bool:
     spawn that runs first. The SDK ships that binary as an optional dependency,
     ``@anthropic-ai/claude-agent-sdk-<platform>-<arch>[-musl]``, and Node resolves
     it by walking up from the adapter's entry script, so this walks the same way
-    and looks for the ``claude`` file inside. Blocking: it stats files.
+    and looks for the ``claude`` file inside. An npm Windows shim is a text file,
+    not a link to that script, so the walk starts from the script it launches
+    (:func:`~kiro_crew.acp.launch._npm_windows_shim_target`). Blocking: it stats
+    files.
     """
     import platform
     import sys
@@ -186,7 +192,10 @@ def _sdk_bundles_native_binary(resolved: object) -> bool:
         entry = Path(str(part))
         if not entry.is_file():
             continue
-        for directory in Path(os.path.realpath(entry)).parents:
+        shim_target = launch_mod._npm_windows_shim_target(
+            str(entry), CLAUDE_ACP_BIN, _CLAUDE_ACP_PKG_ENTRY
+        )
+        for directory in Path(os.path.realpath(shim_target or entry)).parents:
             scope = directory / "node_modules" / "@anthropic-ai"
             if scope.is_dir() and any(
                 (pkg / name).is_file()
@@ -396,6 +405,7 @@ class ClaudeLaunch(ProcessAdapter):
             session._model, model_registry_namespace(self.backend)
         )
         argv = await _resolve_claude_argv()
+        await _refuse_claude_without_node(argv, session._extra_env)
         await prepare_claude_session(cast(ClaudeProcessSession, session), argv)
         # Bound here rather than in AcpClient.__init__ for the same reason: the
         # constructor is shared with kiro-cli.
@@ -448,6 +458,50 @@ async def _resolve_claude_argv() -> list[str]:
             f"dependency), or set CLAUDE_AGENT_ACP_BIN to its entry script."
         )
     return list(claude_argv)
+
+
+async def _refuse_claude_without_node(argv: list[str], extra_env: Mapping[str, str]) -> None:
+    """Refuse to launch *argv* when its ``node`` shebang would find no Node.js.
+
+    An entry the ladder hands back alone is run as-is, so its shebang picks the Node,
+    and a child started without one dies at exec, before it answers ``initialize``,
+    which the client can only report as a lost connection. Both drivers' spawns call
+    this with the ``extra_env`` they launch with, before anything is seeded.
+    """
+    if len(argv) != 1:
+        return
+    search_path = await asyncio.to_thread(_node_missing_search_path, argv[0], extra_env)
+    if search_path is not None:
+        raise AcpError(
+            _claude_node_missing_message(argv[0], search_path),
+            transient=False,
+            user_worded=True,
+        )
+
+
+def _node_missing_search_path(entry: str, extra_env: Mapping[str, str]) -> str | None:
+    """The PATH searched when *entry*'s ``node`` shebang finds no ``node``, else ``None``.
+
+    The adapter child's PATH, built as ``acp.launch`` builds it: the spawn's
+    *extra_env* over the gateway's ``PATH`` (``agent.env`` cannot set it), augmented,
+    with the contributed MCP dirs last. Only a prediction of what the shebang finds,
+    so a contributed dir is no trust widening. Read now rather than at resolution,
+    which is memoized. Blocking (file read, PATH stats, a ``~user`` lookup).
+    """
+    base = extra_env.get("PATH", os.environ.get("PATH", ""))
+    search_path = env_mod.append_mcp_path_dirs(env_mod.augmented_path(base))
+    return search_path if pi_node.shebang_node_missing(entry, search_path) else None
+
+
+def _claude_node_missing_message(entry: str, search_path: str) -> str:
+    """The refusal for a host with no Node.js, worded for the person who must install it."""
+    floor = format_node_version(MIN_NODE_VERSION)
+    return (
+        "Claude Code cannot start: it needs Node.js, and none was found. Install "
+        f"Node.js v{floor} or newer (24 LTS recommended) from https://nodejs.org, then "
+        f"start a new chat. ({CLAUDE_ACP_BIN} at {entry} is a Node.js program; no 'node' "
+        f"was found, {describe_search_path(search_path)}.)"
+    )
 
 
 def _claude_spawn_plan(argv: list[str], **kwargs: Any) -> SpawnPlan:
@@ -608,6 +662,7 @@ class ClaudeHarness(MembershipHarness):
 
         try:
             argv = await _resolve_claude_argv()
+            await _refuse_claude_without_node(argv, ctx.extra_env)
         except AcpError as exc:
             raise AcpRuntimeError(str(exc)) from exc
         # The process's own directory, which decides whether a Claude Code
@@ -742,6 +797,7 @@ class ClaudeHarness(MembershipHarness):
         mcp_servers: list[dict[str, Any]],
         *,
         zero_tools: bool = False,
+        builtin_tools: tuple[str, ...] | None = None,
         stub_token: str = "",
     ) -> dict[str, Any] | None:
         """The ``_meta.claudeCode`` envelope the per-session client sends, for this session.
@@ -766,6 +822,10 @@ class ClaudeHarness(MembershipHarness):
         # The spec's "tools": [] as the mirror's projection read it: a zero-tool
         # session whose array still mounts a server is refused here.
         state._spec_zero_tools = zero_tools
+        # The built-ins the mirror's projection keeps (a Bot worker's excludes, a named
+        # agent's ``tools`` list), carried as the envelope's ``tools`` option as on the
+        # per-session client.
+        state._note_worker_builtin_tools(builtin_tools)
         # The array this start sends, which the starting-mode pin reads to tell a
         # session carrying Crew's tools from one with none (on the per-session
         # client, ``_begin_session_report`` records it).

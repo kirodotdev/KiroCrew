@@ -191,7 +191,7 @@ def test_session_start_renders_provider_items_in_crews_frames(served) -> None:
     )
     blocks = _budgets.ContextParts()
     route = resolver.route_for("default")
-    index = chokepoints.replace_session_parts(
+    placed = chokepoints.replace_session_parts(
         blocks,
         route,
         memory_store="default",
@@ -209,6 +209,7 @@ def test_session_start_renders_provider_items_in_crews_frames(served) -> None:
     # A whole document keeps its lines.
     assert "the preferences document" in text and "- Tabs.\n- Short replies." in text
     assert "[Memory tools]" in text
+    index = placed.rules_index
     assert index is not None and "Never force-push main." in blocks.parts[index]
     assert chokepoints.compaction_rules(route, "dashboard:x") == blocks.parts[index]
     # A chat this process never started (resumed slim after a restart) reads them again.

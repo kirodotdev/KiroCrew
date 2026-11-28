@@ -10,7 +10,7 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_answer_tasks``, ``_audit_tasks``, ``_kas_host_auth_logged``,
 ``_kas_host_auth_failure_logged``, ``_kas_served_token_digest``,
-``_mcp_reattempts``, ``_mcp_sign_in``, ``_mcp_sign_in_ended_hooks``.
+``_mcp_consent_hooks``, ``_mcp_reattempts``, ``_mcp_sign_in``, ``_mcp_sign_in_ended_hooks``.
 
 Instance fields read: ``_agent``, ``_answer_cap_wait_secs``, ``_dead``, ``_fold_mcp_frame``,
 ``_max_answer_tasks``, ``_pid``, ``_session_queues``, ``_subagent_owner``.
@@ -22,6 +22,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Callable
 
+from kiro_crew.acp import kas_mcp_lazy_sign_in as _lazy_sign_in
 from kiro_crew.acp import kas_secret_storage
 from kiro_crew.acp._dispatch import redact_text
 from kiro_crew.acp._dispatch import reject_option_id as _reject_option_id
@@ -61,7 +62,7 @@ _JSONRPC_METHOD_NOT_FOUND = -32601
 # while the engine can still send that attempt's link would hand the link to
 # the next sign-in.
 _MCP_SIGN_IN_TIMEOUT = 630.0
-# How long a credential re-attempt (a reset without startOAuth) may hold off a
+# How long a re-attempt (a reset without startOAuth) may hold off a
 # sign-in. It opens no consent URL, so the slot does not have to outlast the
 # longest connect: past the engine's default 60 s connect timeout it is freed,
 # and a URL the engine still sends for it is refused because no sign-in is in
@@ -430,8 +431,14 @@ async def _answer_host_request(self: AcpRuntime, request_id: int | str, method: 
 
 
 def mcp_sign_in_holds(self: AcpRuntime, session_id: str, server_name: str) -> bool:
-    """Whether the runtime holds this session and server's sign-in slot."""
-    return self._mcp_sign_in == (session_id, server_name)
+    """Whether a sign-in of this session and server is live.
+
+    Its slot is held, or the engine's mid-session sign-in whose link this session
+    was shown has not ended yet (``kas_mcp_lazy_sign_in.flow_open``).
+    """
+    return self._mcp_sign_in == (session_id, server_name) or _lazy_sign_in.flow_open(
+        self, session_id, server_name
+    )
 
 
 def begin_mcp_sign_in(self: AcpRuntime, session_id: str, server_name: str) -> bool:
@@ -515,13 +522,27 @@ def set_mcp_sign_in_ended_hook(
     self._mcp_sign_in_ended_hooks[session_id] = hook
 
 
+def set_mcp_consent_hook(
+    self: AcpRuntime, session_id: str, hook: Callable[[JsonRpcMessage], bool]
+) -> None:
+    """Install the hook offered *session_id*'s consent frame before it is queued.
+
+    It answers True when it delivered the frame itself, so the frame is not put on
+    the queue; that is how a link that lands while no turn reads the queue reaches
+    the chat. ``unregister_session`` removes it.
+    """
+    self._mcp_consent_hooks[session_id] = hook
+
+
 def begin_mcp_reattempt(self: AcpRuntime, session_id: str, server_name: str) -> bool:
     """Ask the engine to connect a failed MCP server of one session again.
 
     For a server that failed to start for want of a credential that may
-    exist now. Sends ``_kiro/mcp/resetServer`` with ``startOAuth``
-    false in the background; the server's next ``_kiro/mcp/status`` entry
-    reports whether it connected. The host that takes this request is the
+    exist now or because its start ran out of time, or that lost its
+    connection mid-session. Sends
+    ``_kiro/mcp/resetServer`` with ``startOAuth`` false in the background;
+    the server's next ``_kiro/mcp/status`` entry reports whether it
+    connected. The host that takes this request is the
     one that sends consent URLs, so the same capability gates both.
 
     Returns False, starting nothing, on a host without the request, when
@@ -568,19 +589,29 @@ async def _run_mcp_reattempt(self: AcpRuntime, session_id: str, server_name: str
 async def _answer_open_external_url(self: AcpRuntime, request_id: int | str, params: Any) -> None:
     """Deliver an MCP consent URL to the session whose sign-in is in flight.
 
-    The URL becomes an ordinary ``_kiro.dev/mcp/oauth_request`` frame on that
-    session's queue, so it takes the same safety checks and banner as the
-    kiro-cli engine's own request. It is refused with a JSON-RPC error when
+    The URL becomes an ordinary ``_kiro.dev/mcp/oauth_request`` frame, so it
+    takes the same safety checks and banner as the kiro-cli engine's own
+    request. The session's consent hook (``set_mcp_consent_hook``) is offered it
+    first and delivers it while no turn reads the session; otherwise, and on a
+    session without a hook, it goes on that session's queue. It is refused with a JSON-RPC error when
     no sign-in is in flight (the link cannot be attributed to a server), when
     the owning session is gone, or when the URL is not http(s), which the
     banner would refuse. The engine raises on that error, so its connect
     attempt ends at once instead of waiting for a callback no user was shown.
+    A mid-session sign-in's link goes by its server name instead
+    (``kas_mcp_lazy_sign_in.deliver_mid_session_consent``).
     """
     url = params.get("url") if isinstance(params, dict) else None
-    entry = self._mcp_sign_in
+    # A mid-session sign-in's link names its server; see kas_mcp_lazy_sign_in.
+    lazy = _lazy_sign_in.is_mid_session_consent(params)
+    entry = None if lazy else self._mcp_sign_in
     queue = self._session_queues.get(entry[0]) if entry is not None else None
     refusal = ""
-    if entry is None:
+    if lazy and isinstance(url, str) and _is_safe_oauth_url(url):
+        refusal = await _lazy_sign_in.deliver_mid_session_consent(self, params, url)
+    elif lazy:
+        refusal = "the consent URL is not an http(s) URL"
+    elif entry is None:
         refusal = "no MCP sign-in is in flight"
     elif queue is None:
         refusal = "the MCP sign-in's session has left"
@@ -594,7 +625,15 @@ async def _answer_open_external_url(self: AcpRuntime, request_id: int | str, par
         )
         # Made here, so the reader never saw it: folded as the reader folds one.
         self._fold_mcp_frame(session_id, consent)
-        await queue.put(consent)
+        hook = self._mcp_consent_hooks.get(session_id)
+        delivered = False
+        if hook is not None:
+            try:
+                delivered = hook(consent) is True
+            except Exception:  # noqa: BLE001 -- a display hook never breaks the runtime
+                logger.warning("MCP consent hook failed; the link is queued", exc_info=True)
+        if not delivered:
+            await queue.put(consent)
     try:
         if refusal:
             logger.info("MCP consent URL not opened: %s", refusal)
@@ -615,12 +654,13 @@ async def _answer_secret_request(
     """Answer one ``_kiro/secret/*`` request from *server*, off the reader loop.
 
     A refusal goes back as a JSON-RPC error whose message names only the
-    category; the request's value is never logged.
+    category; the request's value is never logged. It is logged at WARNING: a
+    refused request fails the engine's MCP sign-in.
     """
     try:
         result = await server.answer(method, params)
     except kas_secret_storage.SecretStorageRefused as exc:
-        logger.info("MCP grant store request refused: %s", exc)
+        logger.warning("MCP grant store request refused: %s", exc)
         try:
             await self.send_error(request_id, _MCP_SECRET_REFUSED, str(exc))
         except AcpRuntimeDead:

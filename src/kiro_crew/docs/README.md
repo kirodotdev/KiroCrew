@@ -13,11 +13,13 @@ organized for someone browsing the repository.
 |---|---|
 | [getting-started.md](getting-started.md) | Install, first run, and background operation. |
 | [coming-from-kiro-cli.md](coming-from-kiro-cli.md) | How Kiro Crew relates to kiro-cli: what carries over, why a chat behaves differently, and how to get CLI-style behaviour. |
+| [coming-from-claude-code.md](coming-from-claude-code.md) | What Kiro Crew adds around Claude Code: the gateway, bots, conductors, ledgers and monitors in plain terms, and how to run Claude Code as the harness. |
 | [configuration.md](configuration.md) | Config file reference, environment variables, and sandbox modes. |
 | [use-cases.md](use-cases.md) | Real-world workflows. |
 | [troubleshooting.md](troubleshooting.md) | Common problems and fixes. |
 | [blocked-commands.md](blocked-commands.md) | Why a command was refused, what the agent is told to do instead, and how to check your credential setup. |
-| [tool-approvals.md](tool-approvals.md) | Auto-approving one MCP tool on KAS with a `permissions.yaml` rule, and the settings that look like they would but do not. |
+| [tool-approvals.md](tool-approvals.md) | Stopping one MCP tool asking with the dashboard's Always allow, a KAS `permissions.yaml` rule when you need a pattern, and the settings that look like they would but do not. |
+| [security-model.md](security-model.md) | The defense-in-depth layers, what each one protects against, where they stop, and which posture fits a work vs. personal host. |
 
 ## Core capabilities
 

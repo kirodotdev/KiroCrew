@@ -27,6 +27,19 @@ const IMAGE_EXTS = Object.freeze([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bm
 const IMAGE_EXT_SET = new Set(IMAGE_EXTS);
 
 /**
+ * Two leading separators: a UNC name (`\\host\share\x`, `//host/share/x`, `\\?\UNC\...`).
+ * On Windows a `stat` or `realpath` of one opens an SMB session to the host it names,
+ * which sends the user's NTLM response, so it is refused BEFORE the first file-system
+ * call, as `context-menu.js` refuses it. A file on a share is reached by a mapped drive.
+ */
+const UNC_PREFIX_RE = /^[/\\]{2}/;
+
+/** A non-empty string that names no host. */
+function isLocalPathArg(filePath) {
+  return typeof filePath === "string" && filePath !== "" && !UNC_PREFIX_RE.test(filePath);
+}
+
+/**
  * Reveal *filePath* in the system file manager when it names an existing regular file.
  *
  * @param {{fs: {statSync: Function}, shell: {showItemInFolder: Function}}} deps
@@ -34,7 +47,7 @@ const IMAGE_EXT_SET = new Set(IMAGE_EXTS);
  * @returns {boolean} whether the shell was asked to reveal it
  */
 function revealLocalFile(deps, filePath) {
-  if (typeof filePath !== "string" || filePath === "") return false;
+  if (!isLocalPathArg(filePath)) return false;
   try {
     if (!deps.fs.statSync(filePath).isFile()) return false;
   } catch {
@@ -58,7 +71,7 @@ function revealLocalFile(deps, filePath) {
  * @returns {Promise<boolean>} whether the system viewer accepted it
  */
 async function openLocalImage(deps, filePath) {
-  if (typeof filePath !== "string" || filePath === "") return false;
+  if (!isLocalPathArg(filePath)) return false;
   try {
     // Resolved BEFORE the extension test: a `.png` link must be judged by its target.
     const real = deps.fs.realpathSync(filePath);

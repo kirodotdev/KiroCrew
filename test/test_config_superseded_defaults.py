@@ -431,6 +431,37 @@ def test_stored_session_control_false_is_reported_but_not_adopted(
     assert issues == []
 
 
+def test_stored_instances_enabled_false_is_reported_but_never_flipped(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    """A stored false may be the owner refusing remote-crew tunnels, so it is only named."""
+    row = _row("instances.enabled")
+    assert row.auto_adopt is False
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"instances": {"enabled": False}})
+
+    assert superseded_default_drift(_on_disk(tmp_path)) == [row]
+    assert KiroCrewConfig.load().instances.enabled is False
+    assert _on_disk(tmp_path)["instances"]["enabled"] is False
+
+    issues: list[str] = []
+    SD.render_doctor_section(issues)
+    out = " ".join(capsys.readouterr().out.split())
+    assert "instances.enabled" in out and "#39300" in out
+    assert "remote crews over SSH or SSM" in out
+    assert "kirocrew config set instances.enabled true" in out and "restart the gateway" in out
+    assert issues == []
+    assert _on_disk(tmp_path)["instances"]["enabled"] is False
+
+
+@pytest.mark.parametrize("stored", [{"instances": {"enabled": True}}, {"instances": {}}, {}])
+def test_instances_enabled_true_or_unset_is_not_reported(stored):
+    keys = [e.dotted_key for e in superseded_default_drift(stored, acked={})]
+    assert "instances.enabled" not in keys
+
+
 def test_absent_key_and_absent_section_are_not_drift():
     """An absent key already resolves to the current default, so there is nothing to say."""
     assert superseded_default_drift({"mcp_gateway": {}}) == []
@@ -1038,6 +1069,9 @@ def test_only_unpinned_broken_budgets_adopt_themselves():
         "telemetry.retention_days",
         "telemetry.max_total_mb",
         "memory.embedding_idle_evict_secs",
+        # A stored false may be the owner keeping this gateway from opening SSH or
+        # SSM tunnels to remote crews; adopting would open them without consent.
+        "instances.enabled",
     }
 
 

@@ -218,6 +218,8 @@ class SaveFolds:
     mutes_opened: bool | None = None
     # Staged per-row ``muted`` value; same contract as ``mutes_opened`` above.
     muted: bool | None = None
+    # Staged per-session ``source_links_off`` value; the same contract.
+    source_links_off: bool | None = None
     # Staged ``turn_timeout_secs``, the same shape for the turn-time-limit
     # endpoint. Wrapped in a 1-tuple because ``None`` is a real value there (it
     # clears the session's limit): ``None`` here means "nothing staged, read the
@@ -524,6 +526,15 @@ def _read_backend(r: _Read) -> None:
         members_mod.note_session_backend_pick(r.slot.key, value)
 
 
+def _read_trigger_skills(r: _Read) -> None:
+    # The worker's conductor-chosen trigger list. A malformed value reads as no
+    # list; the trigger path holds a well-formed one to the session's own scope.
+    # Lazy, as `_read_backend`'s import is: only a restore pays for it.
+    from kiro_crew.worker_trigger_skills import META_KEY, restored_trigger_skills
+
+    r.slot.trigger_skills = restored_trigger_skills(r.meta.get(META_KEY))
+
+
 def _read_crew_mode_agent(r: _Read) -> None:
     # The conductor the chat runs in Crew Mode: it marks the chat as Crew Mode until
     # the migration moves it onto ``agent.crew_mode_agent`` (``crew_mode.runs_crew_mode``).
@@ -604,6 +615,17 @@ def _read_created_by(r: _Read) -> None:
             claimed.startswith(_CRON_CREATOR_PREFIX) or _creation_parent(r.slot.key) == claimed
         )
         r.slot._created_by = claimed if verified else UNVERIFIED_CREATOR
+        # A fence here is a verdict on what the tree held at THIS moment. The tree can
+        # learn the creation record later in the same process, so the claim is kept for
+        # ``session_revive.reconfirm_restored_creators``, which re-checks it on each tree
+        # change and lifts the fence only when the crew log names this creator.
+        r.slot._unconfirmed_creator = "" if verified else claimed
+        # A worker a Bot's own thread created is thread-born (``members.worker_conducts``);
+        # only the verified creator says so, so an unverified claim marks nothing here,
+        # and ``reconfirm_restored_creators`` marks it if the tree confirms it later.
+        from kiro_crew import members as members_mod  # members imports artifacts: see cp
+
+        members_mod.note_worker_lineage(r.slot.key, r.slot._created_by)
         # A mode a person set on this session lived in memory and did not survive,
         # so the session follows its creator's next mode change again. A raise
         # still needs the crew log's creation record (``approval_inheritance``).
@@ -704,6 +726,11 @@ def _read_mutes_opened(r: _Read) -> None:
 def _read_muted(r: _Read) -> None:
     if r.meta.get("muted"):
         r.slot.muted = True
+
+
+def _read_source_links_off(r: _Read) -> None:
+    if r.meta.get("source_links_off"):
+        r.slot.source_links_off = True
 
 
 def _read_color_index(r: _Read) -> None:
@@ -1015,6 +1042,15 @@ FIELDS: tuple[Field, ...] = (
         merge=_or_cleared(lambda s: s.reasoning_effort, ""),
         why="restored with the model",
     ),
+    # The merge cannot delete a key, so it writes the cleared False.
+    Field(
+        "effort_overlay_clear",
+        _STARTUP,
+        attr="_effort_overlay_clear",
+        line=_flag(lambda s: s._effort_overlay_clear),
+        merge=lambda s, f: bool(s._effort_overlay_clear),
+        why="restored with the model, beside the Default it belongs to",
+    ),
     Field(
         "autocompact_pct",
         _ALL,
@@ -1089,6 +1125,15 @@ FIELDS: tuple[Field, ...] = (
         # copy is always current and a line without one stays byte-identical to main's.
         merge=_truthy(lambda s: s.backend),
         read=_read_backend,
+    ),
+    Field(
+        "trigger_skills",
+        _ALL,
+        attr="trigger_skills",
+        # Set once at creation and never cleared, as ``backend`` is: not slot-owned.
+        line=_truthy(lambda s: list(s.trigger_skills or ())),
+        merge=_truthy(lambda s: list(s.trigger_skills or ())),
+        read=_read_trigger_skills,
     ),
     Field(
         "crew_mode_agent",
@@ -1312,6 +1357,21 @@ FIELDS: tuple[Field, ...] = (
         line=lambda s, f: True if (s.muted if f.muted is None else f.muted) else OMIT,
         merge=lambda s, f: bool(s.muted if f.muted is None else f.muted),
         read=_read_muted,
+    ),
+    Field(
+        "source_links_off",
+        _ALL,
+        attr="source_links_off",
+        # Same staged-override contract as ``mutes_opened`` above.
+        line=lambda s, f: (
+            True
+            if (s.source_links_off if f.source_links_off is None else f.source_links_off)
+            else OMIT
+        ),
+        merge=lambda s, f: bool(
+            s.source_links_off if f.source_links_off is None else f.source_links_off
+        ),
+        read=_read_source_links_off,
     ),
     Field(
         "color_index",
@@ -1562,6 +1622,7 @@ LINE_ORDER: tuple[str, ...] = (
     "agent",
     "model",
     "reasoning_effort",
+    "effort_overlay_clear",
     "autocompact_pct",
     "turn_timeout_secs",
     "dismissed_source_links",
@@ -1570,6 +1631,7 @@ LINE_ORDER: tuple[str, ...] = (
     "memory_store",
     "agent_kind",
     "backend",
+    "trigger_skills",
     "crew_mode_agent",
     "app_agent_owner",
     "project",
@@ -1590,6 +1652,7 @@ LINE_ORDER: tuple[str, ...] = (
     "pinned",
     "mutes_opened",
     "muted",
+    "source_links_off",
     "color_index",
     "color_hex",
     "color_theme",
@@ -1618,9 +1681,11 @@ MERGE_ORDER: tuple[str, ...] = (
     "pinned",
     "mutes_opened",
     "muted",
+    "source_links_off",
     "mode",
     "artifact",
     "reasoning_effort",
+    "effort_overlay_clear",
     "color_index",
     "color_hex",
     "color_theme",
@@ -1638,6 +1703,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "memory_store",
     "agent_kind",
     "backend",
+    "trigger_skills",
     "crew_mode_agent",
     "app_agent_owner",
     "project",
@@ -1713,8 +1779,18 @@ def _own_link(meta: Mapping[str, Any], history_key: str, prefix: str | tuple[str
 
 
 def own_cron_link(meta: Mapping[str, Any], history_key: str) -> str:
-    """The line's ``cron:`` link when it names *history_key*'s own file, else ``""``."""
-    return _own_link(meta, history_key, "cron:")
+    """The ``cron:`` key of *history_key*'s own file, else ``""``.
+
+    The line's link when it names that file. An existing ``cron_<job id>``
+    transcript that no tab ever saved carries no link, so it gets the key its
+    job's tab ``cron-<job id>`` restores to (``slot_transcript_key``). No other
+    cron transcript is keyed by its name.
+    """
+    if meta.get("linked_session_key"):
+        return _own_link(meta, history_key, "cron:")
+    stem = transcript_stem(history_key)
+    key = slot_transcript_key("cron-" + stem.removeprefix("cron_"))
+    return key if meta and stem.startswith("cron_") and key.startswith("cron:") else ""
 
 
 def slot_args(meta: dict[str, Any], purpose: Purpose) -> dict[str, Any]:
@@ -1738,7 +1814,10 @@ def slot_args(meta: dict[str, Any], purpose: Purpose) -> dict[str, Any]:
         # Unbound, the slot of a cron transcript, or of a task-runner review
         # transcript the dashboard user reopens, saves to a second ``dashboard:`` file.
         kinds = ("cron:",) if purpose.app else ("cron:", "taskrunner:")
-        if link := _own_link(meta, purpose.history_key, kinds):
+        link = _own_link(meta, purpose.history_key, kinds)
+        if not link and not purpose.app:
+            link = own_cron_link(meta, purpose.history_key)
+        if link:
             args["linked_session_key"] = link
     else:
         args["app"] = meta.get("app", "")

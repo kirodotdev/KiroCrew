@@ -618,6 +618,29 @@ class TestAgentPicker:
             "crew-bbbbbbbbbbbbbbbbbbbbbbbb": "No crew (crew-bbbb…)",
         }
 
+    def test_the_first_crewmates_copy_is_labelled_as_the_dashboard_labels_it(self) -> None:
+        """The first crewmate's key is ``mate``, an id nobody chose: with no display
+        name its button reads "Bot", as the Bots page does (``agent_files.member_label``).
+        A display name still wins."""
+        from kiro_crew.agent_discovery import AgentInfo
+        from kiro_crew.config import loader
+        from kiro_crew.telegram import transport_dispatch as td
+
+        copy = AgentInfo(
+            name="crew-dddddddddddddddddddddddd",
+            filename="crew-dddddddddddddddddddddddd.json",
+            description="",
+            model="auto",
+            private_to="mate",
+        )
+        for display_name, shown in (("", "Bot"), ("  ", "Bot"), ("Mia", "Mia")):
+            crews = {"mate": SimpleNamespace(kiro_agent=copy.name, display_name=display_name)}
+            with (
+                patch.object(td, "list_agents", lambda: [copy]),
+                patch.object(loader.KiroCrewConfig, "load", lambda: SimpleNamespace(agents=crews)),
+            ):
+                assert td.TelegramDispatcher._agent_labels() == {copy.name: shown}
+
     @pytest.mark.asyncio
     async def test_a_crewless_copy_is_labelled_and_still_selects_its_id(
         self, monkeypatch: pytest.MonkeyPatch

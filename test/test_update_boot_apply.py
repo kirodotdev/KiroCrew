@@ -79,6 +79,37 @@ def test_an_armed_update_runs_the_apply_then_reexecs_onto_the_new_install(calls)
     assert update_next_start.read().pending_apply_error == ""
 
 
+def test_a_boot_apply_from_the_followed_channel_settles_the_channel_move(calls) -> None:
+    # A gateway on the stable link arms an approved install for the next start;
+    # the boot apply installs the followed channel's release, so the move is over.
+    from kiro_crew.platform import update_channel_move
+    from kiro_crew.platform.update_layout import set_release_channel
+
+    set_release_channel("stable")
+    update_channel_move.switch_channel("insider", set_release_channel)
+    assert update_channel_move.moved_from() == "stable"
+    update_next_start.arm("2.0.0")
+    calls.installed_after = "2.0.0"
+
+    assert _boot() is True
+
+    assert update_channel_move.moved_from() == ""
+
+
+def test_a_failed_boot_apply_keeps_the_channel_move(calls) -> None:
+    from kiro_crew.platform import update_channel_move
+    from kiro_crew.platform.update_layout import set_release_channel
+
+    set_release_channel("stable")
+    update_channel_move.switch_channel("insider", set_release_channel)
+    update_next_start.arm("2.0.0")
+    calls.child_result = (False, "boom")
+
+    assert _boot() is False
+
+    assert update_channel_move.moved_from() == "stable"
+
+
 def test_an_install_that_already_moved_only_reexecs(calls) -> None:
     update_next_start.arm("2.0.0")
     calls.installed.append("2.0.0")
@@ -373,7 +404,9 @@ def test_a_manual_update_that_finishes_clears_a_stale_boot_apply_error(
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     update_next_start.finish(error="the update command failed")
     ran: list[bool] = []
-    monkeypatch.setattr("kiro_crew.cli_server._update", lambda force=False: ran.append(force))
+    monkeypatch.setattr(
+        "kiro_crew.cli_server._update", lambda force=False, release=None: ran.append(force)
+    )
     monkeypatch.setattr(sys, "argv", ["kirocrew", "update"])
 
     main()

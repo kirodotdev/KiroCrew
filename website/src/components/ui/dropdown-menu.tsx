@@ -119,6 +119,9 @@ function DropdownMenu({ open: openProp, defaultOpen, onOpenChange, modal: modalP
   )
 }
 
+/** A click this soon after a pointer event on the trigger belongs to that gesture. */
+const CLICK_AFTER_POINTER_MS = 1000
+
 /**
  * Radix `DropdownMenu.Trigger`; it also tells its menu which element it is (for a
  * guide's probe).
@@ -142,11 +145,22 @@ function DropdownMenu({ open: openProp, defaultOpen, onOpenChange, modal: modalP
  * Mouse presses keep toggling on `pointerdown`, the rule `usePressActivation`
  * applies to the composer chips. Keyboard opening is Radix's own `keydown`
  * handling and is unchanged.
+ *
+ * A `click` that belongs to no pointer gesture toggles the menu. A screen
+ * reader's activation, Switch Control and a scripted `element.click()` send
+ * only the click, and Radix listens for `pointerdown` and `keydown` alone. A
+ * click belongs to a gesture when a pointer event fired on the trigger less
+ * than `CLICK_AFTER_POINTER_MS` before it; the rules above already settled
+ * that one. A press that ended in a scroll, or was released elsewhere, stops
+ * counting after that long, so the next click-only activation still works.
+ * Such a click does nothing on a trigger marked `aria-disabled="true"`: a
+ * consumer that keeps its menu closed while busy cancels the press and the
+ * key, and a bare click carries neither.
  */
 const DropdownMenuTrigger = React.forwardRef<
   React.ComponentRef<typeof DropdownMenuPrimitive.Trigger>,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Trigger>
->(function DropdownMenuTrigger({ onPointerDown, onPointerCancel, onClick, ...props }, ref) {
+>(function DropdownMenuTrigger({ onPointerDown, onPointerUp, onPointerCancel, onClick, ...props }, ref) {
   const setRef = useTriggerRef(DropdownTriggerSink, ref)
   const menu = React.useContext(DropdownOpenState)
   // True between a deferred press on a closed menu and its click. The browser
@@ -155,30 +169,46 @@ const DropdownMenuTrigger = React.forwardRef<
   // may carry `detail` 0, so `detail` cannot tell it apart from a keyboard or
   // programmatic click.
   const tapPending = React.useRef(false)
+  // When the last pointer event on the trigger fired; null once a click spent
+  // it. A click that comes later than `CLICK_AFTER_POINTER_MS` after it, or
+  // finds none, belongs to no pointer gesture.
+  const lastPointerAt = React.useRef<number | null>(null)
   const handlePointerDown = React.useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
     onPointerDown?.(e)
     tapPending.current = false
+    lastPointerAt.current = e.timeStamp
     if (e.defaultPrevented || !menu || !isScrollingPointer(e)) return
     e.preventDefault()
     if (props.disabled) return
     if (menu.isOpen()) menu.setOpen(false)
     else tapPending.current = true
   }, [menu, onPointerDown, props.disabled])
+  const handlePointerUp = React.useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    onPointerUp?.(e)
+    lastPointerAt.current = e.timeStamp
+  }, [onPointerUp])
   const handlePointerCancel = React.useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
     onPointerCancel?.(e)
     tapPending.current = false
+    lastPointerAt.current = e.timeStamp
   }, [onPointerCancel])
   const handleClick = React.useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
     onClick?.(e)
     const pending = tapPending.current
+    const last = lastPointerAt.current
     tapPending.current = false
-    if (!pending || e.defaultPrevented || props.disabled) return
-    menu?.setOpen(true)
+    lastPointerAt.current = null
+    if (!menu || e.defaultPrevented || props.disabled) return
+    if (pending) menu.setOpen(true)
+    else if (e.currentTarget.getAttribute('aria-disabled') === 'true') return
+    // A consumer that keeps its menu closed some other way calls preventDefault on the click.
+    else if (last === null || e.timeStamp - last >= CLICK_AFTER_POINTER_MS) menu.setOpen(!menu.isOpen())
   }, [menu, onClick, props.disabled])
   return (
     <DropdownMenuPrimitive.Trigger
       ref={setRef}
       onPointerDown={handlePointerDown}
+      onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
       onClick={handleClick}
       {...props}

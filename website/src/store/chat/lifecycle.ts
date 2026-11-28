@@ -2,10 +2,12 @@
  *  history list and its paging, resume and delete of a history row (with the
  *  notices a failed attempt leaves), and creating or forking a slot. `deleteSlot`
  *  stays in chatSlice.ts, where its fallback navigation dispatches `switchSlot`. */
+import type { PrivateForkMemoryMode } from '../../utils/forkMemoryModes'
 import { createAsyncThunk, type ActionReducerMapBuilder } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
 import type { ChatSlot, SessionInfo } from '../../types'
 import { api } from '../../api/client'
+import { isPermissionRefusal } from '../../api/apiError'
 import { resolveDefaultMemoryMode } from '../../api/queryClient'
 import { crewModeCatalogKnown, crewModeEnabled, newChatCrewModeAgent, setCrewModeCatalog } from '../../lib/crewMode'
 import { featurePreviewLockKnown, whenFeaturePreviewLockKnown } from '../../utils/editionLocks'
@@ -63,36 +65,51 @@ type NewChatConfig = { default_memory_mode?: unknown; new_chat_crew_mode?: unkno
  * patched onto that row (`updateSlot`): a socket that drops before the switch
  * broadcast would otherwise leave the row showing the plain agent.
  */
-async function startNewChatInCrewMode(slot: ChatSlot, config: NewChatConfig | undefined, publish: (patch: Partial<ChatSlot> & { key: string }) => void): Promise<void> {
-  if (!slot?.key || (crewModeEnabled() === false && featurePreviewLockKnown())) return
+// Resolves `true` only when the switch to the conductor was sent and refused (it
+// rejected, or answered no agent) and the caller asked for it outright
+// (`requested`), so that caller can say conductor mode did not start. Every exit
+// before the switch is sent (not eligible, no edition lock, no catalog) leaves
+// the chat plain and resolves `false`, as the New chat default does.
+async function startNewChatInCrewMode(slot: ChatSlot, config: NewChatConfig | undefined, publish: (patch: Partial<ChatSlot> & { key: string }) => void, requested = false): Promise<boolean> {
+  if (!slot?.key || (crewModeEnabled() === false && featurePreviewLockKnown())) return false
+  let conductor: string | null
   try {
-    const cfg = config ?? await api.dashboardConfig() as NewChatConfig
-    if (cfg?.new_chat_crew_mode !== true) return
+    // `requested`: the caller asked for conductor mode itself (a
+    // `?new=1&conductor=1` link), so the New-chat default setting is not read.
+    if (!requested) {
+      const cfg = config ?? await api.dashboardConfig() as NewChatConfig
+      if (cfg?.new_chat_crew_mode !== true) return false
+    }
     // One-shot: the page's first chat can be made before the edition lock is known.
     await whenFeaturePreviewLockKnown()
-    if (!crewModeEnabled()) return
+    if (!crewModeEnabled()) return false
     if (!crewModeCatalogKnown()) {
       const catalog = await api.agentCatalog(slot.key)
       setCrewModeCatalog(catalog.crew_mode_agent, catalog.conductor_agents, catalog.default_agent)
     }
-    const conductor = newChatCrewModeAgent(slot)
-    if (!conductor) return
-    const switched = await api.chatSlotAgent(slot.key, conductor, 'template')
-    if (switched?.agent) {
-      slot.agent = switched.agent
-      slot.agent_kind = switched.agent_kind || 'template'
-      if (switched.workspace) slot.workspace = switched.workspace
-      publish({ key: slot.key, agent: slot.agent, agent_kind: slot.agent_kind, ...(switched.workspace ? { workspace: slot.workspace } : {}) })
-    }
+    conductor = newChatCrewModeAgent(slot)
   } catch {
     // The plain chat the person asked for is already made; it stays plain.
+    return false
+  }
+  if (!conductor) return false
+  try {
+    const switched = await api.chatSlotAgent(slot.key, conductor, 'template')
+    if (!switched?.agent) return requested
+    slot.agent = switched.agent
+    slot.agent_kind = switched.agent_kind || 'template'
+    if (switched.workspace) slot.workspace = switched.workspace
+    publish({ key: slot.key, agent: slot.agent, agent_kind: slot.agent_kind, ...(switched.workspace ? { workspace: slot.workspace } : {}) })
+    return false
+  } catch {
+    return requested
   }
 }
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; crewModeDefault?: boolean; prefill?: string; automatic?: boolean; projectFromSlot?: string } | string | undefined,
-  { fulfilledMeta: Required<OriginMeta> & { activate: boolean; prefillStaged?: boolean; automatic?: boolean } }
+  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; projectAtCreate?: boolean; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; crewModeDefault?: boolean; startModeDefault?: boolean; conductor?: boolean; prefill?: string; automatic?: boolean; projectFromSlot?: string } | string | undefined,
+  { fulfilledMeta: Required<OriginMeta> & { activate: boolean; prefillStaged?: boolean; automatic?: boolean; conductorFailed?: boolean } }
 >(
   'chat/createSlot',
   async (opts, { getState, dispatch, fulfillWithValue }) => {
@@ -114,6 +131,9 @@ export const createSlot = createAsyncThunk<
     const explicitColor = typeof opts === 'string' ? undefined : opts?.color_index
     const explicitHex = typeof opts === 'string' ? undefined : opts?.color_hex
     const project = typeof opts === 'string' ? undefined : opts?.project
+    // `projectAtCreate` sends `project` on the create itself, so the server binds it
+    // before the chat is first published and a refused one leaves no chat behind.
+    const projectAtCreate = typeof opts === 'object' && opts.projectAtCreate === true && !!project
     // `activate: false` creates the session WITHOUT stealing focus, so a caller
     // that must finish setting the slot up (e.g. scoping it to a worktree) can
     // do so before the user is able to type into it. Defaults to true — every
@@ -133,6 +153,12 @@ export const createSlot = createAsyncThunk<
     // it (an app's launch, a hand-off, a recreated slot) keeps today's unfiled
     // placement instead of moving into another folder and its project. A
     // folder or project named on the same call still wins over the default.
+    // The person's stored approval start mode (`dashboard.default_approval_mode`)
+    // is OPT-IN too: every plain New chat entry point asks for it, either
+    // through `crewModeDefault` or on its own (`startModeDefault`, for the
+    // New Incognito / Temporary and first-message creates that conductor mode
+    // does not apply to), so an app's launch or a hand-off keeps Normal.
+    const startModeDefault = typeof opts === 'object' && (opts.startModeDefault === true || opts.crewModeDefault === true)
     const useDefaultFolder = typeof opts === 'object' && opts.defaultFolder === true
       && opts.folder_id === undefined && !project
     // Capture the active slot and its move count BEFORE the (potentially slow)
@@ -147,11 +173,16 @@ export const createSlot = createAsyncThunk<
     // can read or write memory.
     let config: NewChatConfig | undefined
     const memory_mode = requestedMemoryMode || await resolveDefaultMemoryMode(async () => (config = await api.dashboardConfig() as NewChatConfig))
-    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, agentKind, skipSessionFolder, appAgentOwner, useDefaultFolder, typeof opts === 'string' ? undefined : opts?.projectFromSlot)
+    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, agentKind, skipSessionFolder, appAgentOwner, useDefaultFolder, typeof opts === 'string' ? undefined : opts?.projectFromSlot, startModeDefault, ...(projectAtCreate ? [project as string] : []))
     // `crewModeDefault` is OPT-IN like `defaultFolder`: only the person's own New
     // chat entry points pass it, so an app's launch or a hand-off never lands on
     // the conductor.
-    if (typeof opts === 'object' && opts.crewModeDefault === true) await startNewChatInCrewMode(slot, config, patch => dispatch(updateSlot(patch)))
+    // `conductor: true` asks for conductor mode outright, on the gateway's
+    // configured conductor (`newChatCrewModeAgent`), with the same eligibility.
+    // `conductorFailed` rides the fulfilled meta so that caller can tell the person.
+    const conductorFailed = typeof opts === 'object' && (opts.crewModeDefault === true || opts.conductor === true)
+      ? await startNewChatInCrewMode(slot, config, patch => dispatch(updateSlot(patch)), opts.conductor === true)
+      : false
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a
     // mode switch) wins; otherwise fall back to the default-color policy.
@@ -167,11 +198,18 @@ export const createSlot = createAsyncThunk<
       // deleting the original, so the colored session survives. Same contract
       // as the background project carry below. The default-color policy branch
       // stays fire-and-forget: nothing is lost if a default fails to apply.
+      // A permission refusal (`owner_only`, on both colour branches) is the one
+      // exception: this caller may not set a colour on any session, so failing
+      // here would block the recreate for good. The new slot is kept uncoloured.
       try {
         await api.setSlotColorHex(slot.key, explicitHex)
       } catch (err) {
-        await api.deleteChatSlot(slot.key, slot.incarnation).catch(() => {})
-        throw err
+        if (isPermissionRefusal(err)) {
+          slot.color_hex = null
+        } else {
+          await api.deleteChatSlot(slot.key, slot.incarnation).catch(() => {})
+          throw err
+        }
       }
     } else {
       const ci = explicitColor != null ? explicitColor : resolveDefaultColor(
@@ -185,8 +223,12 @@ export const createSlot = createAsyncThunk<
           try {
             await api.setSlotColor(slot.key, ci)
           } catch (err) {
-            await api.deleteChatSlot(slot.key, slot.incarnation).catch(() => {})
-            throw err
+            if (isPermissionRefusal(err)) {
+              slot.color_index = null
+            } else {
+              await api.deleteChatSlot(slot.key, slot.incarnation).catch(() => {})
+              throw err
+            }
           }
         } else {
           api.setSlotColor(slot.key, ci).catch(() => {})
@@ -204,7 +246,10 @@ export const createSlot = createAsyncThunk<
     // re-issue setSlotAgent here: that endpoint resets the project back to the
     // workspace default, which would clobber this carry. Agent rides the
     // create payload instead.)
-    if (project) {
+    if (project && projectAtCreate) {
+      // Bound by the create; the server's resolved path is the slot's own.
+      slot.project = slot.project || project
+    } else if (project) {
       slot.project = project
       // Await the scope on BOTH paths before publishing the slot. Publishing
       // (dashboardSlice's createSlot.fulfilled matcher) makes the slot
@@ -241,7 +286,7 @@ export const createSlot = createAsyncThunk<
     // caller can fall back to another channel.
     const prefill = typeof opts === 'string' ? undefined : opts?.prefill
     const prefillStaged = !!prefill && writePrefill(slot.key, prefill)
-    return fulfillWithValue(slot, { ...originMeta(origin), activate, prefillStaged, automatic })
+    return fulfillWithValue(slot, { ...originMeta(origin), activate, prefillStaged, automatic, conductorFailed })
   },
 )
 
@@ -318,9 +363,9 @@ function newestResumeOf(chat: Pick<ChatState, 'pendingResumes'>, key: string): {
 /** The action that lists a successful fork in the sidebar. Every fork path
  *  dispatches this before activating the fork: the chat page clears an active
  *  session its slot list lacks. `openCreatedSlot` uses it the same way for a
- *  session another server route created. memory_mode is the parent's, echoed by the
- *  server; without it the new tab would read as persistent until the next
- *  slots refresh. */
+ *  session another server route created. memory_mode is the child's (the parent's,
+ *  or the stricter one the fork asked for), echoed by the server; without it the new
+ *  tab would read as persistent until the next slots refresh. */
 export function listForkedSlot(d: Pick<ChatSlot, 'key'> & Partial<Pick<ChatSlot, 'title' | 'messages' | 'folder_id' | 'memory_mode' | 'pinned'>>) {
   return addSlotOptimistic({ key: d.key, title: d.title || d.key, messages: d.messages || 0, running: false, folder_id: d.folder_id, memory_mode: d.memory_mode, ...(d.pinned ? { pinned: true } : {}) })
 }
@@ -398,14 +443,17 @@ export function forkMayOpen(state: Pick<RootState, 'chat'>, origin: ForkOrigin):
 export const forkSlot = createAsyncThunk(
   'chat/forkSlot',
   async (
-    { slot, atIndex, messageId, prompt, mode, direction }: { slot: string; atIndex?: number; messageId?: string; prompt?: string; mode?: string; direction?: 'head' | 'tail' },
+    { slot, atIndex, messageId, prompt, mode, direction, memoryMode }: { slot: string; atIndex?: number; messageId?: string; prompt?: string; mode?: string; direction?: 'head' | 'tail'; memoryMode?: PrivateForkMemoryMode },
     { dispatch, rejectWithValue },
   ) => {
     let d
     try {
-      d = messageId
-        ? await api.forkChatSlot(slot, atIndex, prompt, mode, direction, messageId)
-        : await api.forkChatSlot(slot, atIndex, prompt, mode, direction)
+      // A more private mode for the child rides last; without one each call keeps its shape.
+      d = memoryMode
+        ? await api.forkChatSlot(slot, atIndex, prompt, mode, direction, messageId, memoryMode)
+        : messageId
+          ? await api.forkChatSlot(slot, atIndex, prompt, mode, direction, messageId)
+          : await api.forkChatSlot(slot, atIndex, prompt, mode, direction)
     } catch (e) {
       // `miniSerializeError` at the thunk boundary drops the backend `code`, so
       // reject with it as a value. The check is STRUCTURAL (duck-typed on

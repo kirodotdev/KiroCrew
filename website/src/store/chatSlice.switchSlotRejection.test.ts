@@ -15,7 +15,7 @@ import { configureStore, type Middleware } from '@reduxjs/toolkit'
 
 vi.mock('../api/client', () => ({ api: { chatSlotDetail: vi.fn() } }))
 
-import chatReducer, { captureForkOrigin, createSlot, switchSlot, warmSlotCache, setActiveSlot, setSlotState, setSlotRunning, startLocalTurn, sseChatMessage, clearMessages, clearSlotCache } from './chatSlice'
+import chatReducer, { captureForkOrigin, createSlot, selectPageLoaded, switchSlot, warmSlotCache, setActiveSlot, setSlotState, setSlotRunning, startLocalTurn, sseChatMessage, clearMessages, clearSlotCache } from './chatSlice'
 import { fetchSlots, removeSlotOptimistic, armConfirmedCloseHold } from './dashboardSlice'
 import { api } from '../api/client'
 import { isMissingSlotError } from '../utils/thunkError'
@@ -173,6 +173,29 @@ describe('switchSlot.rejected — a gone target restores the pre-switch selectio
     expect(s.activeSlot).toBe('flaky')
     expect(s.messages).toEqual([])
     expect(s.slotLoading).toBe(false)
+  })
+
+  it('a transient failure is not a loaded page until a retry loads it', async () => {
+    // The pane it leaves is empty, so taken for the loaded page it would make
+    // the retry's whole history read as new rows.
+    const store = await primedStore()
+    await store.dispatch(switchSlot('flaky'))
+    expect(selectPageLoaded(store.getState(), 'flaky')).toBe(false)
+    detail.mockImplementation(() => Promise.resolve(PAGES.A))
+    await store.dispatch(switchSlot('flaky'))
+    expect(selectPageLoaded(store.getState(), 'flaky')).toBe(true)
+  })
+
+  it('a transient failure reads loaded once a live row reaches its empty pane, so that row starts the baseline', async () => {
+    // A turn still running there streams on; held to the refresh its end
+    // dispatches, the baseline would already hold the reply.
+    const store = await primedStore()
+    await store.dispatch(switchSlot('flaky'))
+    expect(selectPageLoaded(store.getState(), 'flaky')).toBe(false)
+    store.dispatch(sseChatMessage({ slot: 'flaky', role: 'chunk', content: 'x' }))
+    expect(store.getState().chat.messages.length).toBeGreaterThan(0)
+    expect(store.getState().chat.slotOpenFailed).toBe('flaky')
+    expect(selectPageLoaded(store.getState(), 'flaky')).toBe(true)
   })
 
   it('a transient failure keeps the run state live frames gave the selected chat, so its Stop stays (#34428)', async () => {

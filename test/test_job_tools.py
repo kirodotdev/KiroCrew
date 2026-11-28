@@ -22,6 +22,7 @@ import kiro_crew.config.paths as paths_mod
 from kiro_crew import agent
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
 from kiro_crew.agent_sdk.tool_search import (
+    CUSTOM_AGENT_JOB_TOOLS,
     JOB_TOOLS,
     job_tool_ids,
     kas_never_defer_ids,
@@ -46,13 +47,21 @@ JOB_TOOL_BUDGETS: dict[str, int] = {
     "kirocrew": 4_950,
     "kirocrew-worker": 1_200,
     "kirocrew-mate-worker": 1_200,
-    # 7,653 with ``mcp_server_wait`` (63 tokens, on every row): the next 50 up.
-    "kirocrew-pipeline-conductor": 7_700,
-    "kirocrew-security-conductor": 7_700,
-    # 7,808 with it: the next 50 up.
-    "kirocrew-conductor": 7_850,
-    "kirocrew-ledger-conductor": 7_850,
-    "kirocrew-team-lead": 7_850,
+    # 7,653 with ``mcp_server_wait`` (63 tokens, on every row): the next 50 up; then
+    # +50 for the ``git_commit`` acceptance shape in ``work_ledger_record``; then +100
+    # for the reach sentence on the session_send, session_read_message and
+    # session_close ``target`` fields (108 measured: 7,733 -> 7,841, the next 50 up),
+    # so a fenced caller learns the rule before a refusal teaches it; then +150 for a
+    # worker's trigger list, ``skills`` on ``session_create`` and ``work_dispatch``
+    # (137 measured: 7,841 -> 7,978, the next 50 up).
+    "kirocrew-pipeline-conductor": 8_000,
+    "kirocrew-security-conductor": 8_000,
+    # 7,808 with it: the next 50 up; then +50 for the ``git_commit`` shape; then +100
+    # for the same reach sentence (7,888 -> 7,996, the next 50 up); then +150 for
+    # ``skills`` (7,996 -> 8,133, the next 50 up).
+    "kirocrew-conductor": 8_150,
+    "kirocrew-ledger-conductor": 8_150,
+    "kirocrew-team-lead": 8_150,
 }
 
 
@@ -116,6 +125,25 @@ def test_each_row_fits_its_budget(agent_name):
     assert cost <= JOB_TOOL_BUDGETS[agent_name], (
         f"{agent_name}: its job tools cost {cost} schema tokens per request, "
         f"over its budget of {JOB_TOOL_BUDGETS[agent_name]}"
+    )
+
+
+#: The same bound for :data:`CUSTOM_AGENT_JOB_TOOLS`, which rides in every request
+#: of every custom agent whose Crew servers Crew added. 3,188 measured with
+#: :func:`_engine_tokens` (``spawn_run`` 2,049, ``spawn_sub_agents`` 749,
+#: ``spawn_status`` 327, ``mcp_server_wait`` 63; ``spawn_run``'s description carries
+#: the installed agent roster, so it moves a little per host); plus 5%, the next 50 up.
+CUSTOM_AGENT_JOB_TOOL_BUDGET = 3_350
+
+
+def test_the_custom_agent_row_fits_its_budget():
+    for tool_id in CUSTOM_AGENT_JOB_TOOLS:
+        server, _, name = tool_id.partition("::")
+        assert name in _served_tools(server), f"{tool_id} is not a tool {server} serves"
+    cost = sum(_engine_tokens(tool_id) for tool_id in CUSTOM_AGENT_JOB_TOOLS)
+    assert cost <= CUSTOM_AGENT_JOB_TOOL_BUDGET, (
+        f"a custom agent's job tools cost {cost} schema tokens per request, "
+        f"over its budget of {CUSTOM_AGENT_JOB_TOOL_BUDGET}"
     )
 
 

@@ -223,7 +223,7 @@ beforeEach(() => {
 
 const leaveSpy = vi.fn((perform: () => void | Promise<void>) => { void perform() })
 
-function Host({ memberId, openCrew }: { memberId?: string; openCrew?: string } = {}) {
+function Host({ memberId, openCrew, onOpenProfile }: { memberId?: string; openCrew?: string; onOpenProfile?: (name: string) => void } = {}) {
   const [editingCrew, setEditingCrew] = useState('')
   const crewAgentsQuery = useQuery({
     queryKey: ['kirocrew-agents'],
@@ -250,20 +250,20 @@ function Host({ memberId, openCrew }: { memberId?: string; openCrew?: string } =
           save/collision paths are exercised. */}
       <button data-testid="ctl-save" onClick={() => ctl.save()}>save</button>
       <div data-testid="ctl-colliding">{ctl.collidingCrews.join(',')}</div>
-      <CrewEditorModal ctl={ctl} />
+      <CrewEditorModal ctl={ctl} onOpenProfile={onOpenProfile} />
     </>
   )
 }
 
 let lastQc: QueryClient | undefined
-function renderHost(opts?: { memberId?: string; openCrew?: string }) {
+function renderHost(opts?: { memberId?: string; openCrew?: string; onOpenProfile?: (name: string) => void }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   lastQc = qc
   const store = configureStore({ reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer } })
   return render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
-        <MemoryRouter><Host memberId={opts?.memberId} openCrew={opts?.openCrew} /></MemoryRouter>
+        <MemoryRouter><Host memberId={opts?.memberId} openCrew={opts?.openCrew} onOpenProfile={opts?.onOpenProfile} /></MemoryRouter>
       </Provider>
     </QueryClientProvider>,
   )
@@ -271,7 +271,7 @@ function renderHost(opts?: { memberId?: string; openCrew?: string }) {
 
 /** Render the host and open the editor. The New experience is the default, so
  *  the New dialog mounts directly; wait for the options read then return it. */
-async function openNew(opts?: { memberId?: string; openCrew?: string }) {
+async function openNew(opts?: { memberId?: string; openCrew?: string; onOpenProfile?: (name: string) => void }) {
   renderHost(opts)
   fireEvent.click(screen.getByTestId('open-editor'))
   // New dialog is the default experience — it mounts directly, no toggle flip.
@@ -293,6 +293,26 @@ describe('CrewEditorModal — single editing experience', () => {
     expect(within(next).queryByTestId('crew-editor-experience-toggle')).toBeNull()
     expect(within(next).queryByTestId('crew-editor-exp-classic')).toBeNull()
     expect(within(next).queryByTestId('crew-editor-exp-next')).toBeNull()
+  })
+})
+
+describe('CrewEditorNextDialog — the way to the profile card', () => {
+  it('names what the profile holds and opens it through the leave guard', async () => {
+    const onOpenProfile = vi.fn()
+    const dialog = await openNew({ onOpenProfile })
+    const row = await within(dialog).findByTestId('next-open-profile-row')
+    expect(row).toHaveTextContent("oncall's sessions, goals and permission are on its profile.")
+    expect(within(row).getByText("oncall's sessions, goals and permission are on its profile.")).toHaveClass('min-w-0', 'flex-1', 'break-words')
+    expect(within(row).getByTestId('next-open-profile')).toHaveClass('shrink-0')
+    fireEvent.click(within(row).getByRole('button', { name: 'Open profile' }))
+    expect(leaveSpy).toHaveBeenCalledTimes(1)
+    expect(onOpenProfile).toHaveBeenCalledWith('oncall')
+  })
+
+  it('draws no such row for a host that has no profile card to open', async () => {
+    const dialog = await openNew()
+    await within(dialog).findByTestId('next-general-model')
+    expect(within(dialog).queryByTestId('next-open-profile-row')).toBeNull()
   })
 })
 
@@ -500,6 +520,40 @@ describe('CrewEditorNextDialog — section rail', () => {
     expect(draft.operations).toEqual([{ section: 'mcpServers', id: 'github', action: 'remove' }])
   })
 
+  it("lists a tool's carried settings under Tool settings and removes them on confirm", async () => {
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' },
+      worker: { rows: [{
+        section: 'toolsSettings', id: 'shell', label: 'shell', state: 'local', present: true,
+        value: { deniedCommands: ['(touch|mkdir).*'] }, managed: false, shared_reference: false,
+        remove: { section: 'toolsSettings', id: 'shell' },
+      }] },
+    })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1', unenforced_denies: ['(touch|mkdir).*'] })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    const added = await within(dialog).findByTestId('next-band-added')
+    expect(await within(dialog).findByTestId('worker-kit-unenforced-current')).toBeInTheDocument()
+    expect(within(added).getByTestId('next-band-added-group-toolsSettings')).toHaveTextContent('Tool settings')
+    // The row and its confirm name what goes in words, never the file's keys.
+    const row = within(added).getByTestId('next-band-added-row')
+    expect(row).toHaveTextContent('Terminal')
+    expect(row).toHaveTextContent('blocked commands')
+    expect(row).not.toHaveTextContent('deniedCommands')
+    expect(row).not.toHaveTextContent('shell')
+    fireEvent.click(within(added).getByTestId('next-band-remove-toolsSettings-shell'))
+    const ask = await screen.findByRole('dialog', { name: 'Remove “Terminal: blocked commands”?' })
+    expect(ask).toHaveTextContent("This bot stops applying these settings and every limit that comes from them, such as blocked terminal commands. Anything they allow goes through this bot's approvals again. This is saved right away.")
+    expect(ask).not.toHaveTextContent('deniedCommands')
+    expect(ask).not.toHaveTextContent('shell')
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r2', unenforced_denies: [] })
+    fireEvent.click(within(ask).getByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(mockCaps.save).toHaveBeenCalled())
+    expect(mockCaps.preview.mock.calls[0][1].operations).toEqual([{ section: 'toolsSettings', id: 'shell', action: 'remove' }])
+    // The notice it lifted goes with it, without reopening the editor.
+    await waitFor(() => expect(within(dialog).queryByTestId('worker-kit-unenforced-current')).toBeNull())
+  })
+
   it('removes against the revision shown when Remove was pressed, not a fresh read', async () => {
     const view: CapabilityView = {
       ...CAPS_VIEW, mode: 'mate', revision: 'r1',
@@ -550,6 +604,27 @@ describe('CrewEditorNextDialog — section rail', () => {
     fireEvent.click(within(retryAsk).getByRole('button', { name: 'Remove' }))
     await waitFor(() => expect(mockCaps.save).toHaveBeenCalledTimes(1))
     expect(mockCaps.preview.mock.calls[1][1].revision).toBe('r2')
+  })
+
+  it('says a Remove refused for an unreadable Bot file in words, never as the code', async () => {
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW, mode: 'mate', revision: 'r1',
+      worker: { rows: [{
+        section: 'mcpServers', id: 'github', label: 'github', state: 'local', present: true, value: true,
+        remove: { section: 'mcpServers', id: 'github' },
+      }] },
+    })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    mockCaps.preview.mockRejectedValueOnce(new ApiError(409, 'invalid_spec', '{"error":"invalid_spec","code":"invalid_spec"}'))
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    fireEvent.click(await within(dialog).findByTestId('next-band-remove-mcpServers-github'))
+    const ask = await screen.findByRole('dialog', { name: 'Remove “github”?' })
+    fireEvent.click(within(ask).getByRole('button', { name: 'Remove' }))
+    const notice = await within(dialog).findByTestId('next-builtfrom-remove-error')
+    expect(notice).toHaveTextContent("This bot's config file can't be read. Fix or restore the file, then try again.")
+    expect(notice).not.toHaveTextContent(/invalid_spec/)
+    expect(mockCaps.save).not.toHaveBeenCalled()
   })
 
   it('asks before removing an added capability, naming it, and sends nothing on cancel', async () => {
@@ -740,6 +815,16 @@ describe('CrewEditorNextDialog — Capabilities view (read-only two bands)', () 
     const notice = await within(dialog).findByTestId('next-builtfrom-error')
     expect(notice).toHaveTextContent('The gateway log has the details.')
     expect(notice).not.toHaveTextContent(/in time/)
+  })
+
+  it('says a Bot file that no longer parses can be fixed or restored, never as the code', async () => {
+    mockCaps.get.mockRejectedValue(new ApiError(409, 'invalid_spec', '{"error":"invalid_spec","code":"invalid_spec"}'))
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const notice = await within(dialog).findByTestId('next-builtfrom-error')
+    expect(notice).toHaveTextContent(/load this bot.s capabilities/)
+    expect(notice).toHaveTextContent("This bot's config file can't be read. Fix or restore the file, then try again.")
+    expect(notice).not.toHaveTextContent(/invalid_spec/)
   })
 
   it('reads the capabilities again on Try again and shows them once they load', async () => {
@@ -981,6 +1066,19 @@ describe('CrewEditorNextDialog — Behavior / Approvals', () => {
     expect(await within(approvals).findByTestId('next-approvals-runtime-failed')).toBeInTheDocument()
   })
 
+  it('points a saved spec that fails validation at a page reload, since the section has no reload control', async () => {
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW,
+      runtime: { status: 'failed', saved_revision: 'rev-1', sessions: [], error_code: 'materialization_pending' },
+    } as CapabilityView)
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-approvals'))
+    const approvals = await within(dialog).findByTestId('next-approvals')
+    const notice = await within(approvals).findByTestId('next-approvals-runtime-failed')
+    expect(notice).toHaveTextContent("Couldn't validate the saved configuration. Reload this page to retry.")
+    expect(notice).not.toHaveTextContent(/server/i)
+  })
+
   it('cascades: turning an MCP server off removes the server AND its auto-approved verbs', async () => {
     const dialog = await openNew()
     fireEvent.click(within(dialog).getByTestId('next-rail-approvals'))
@@ -1178,6 +1276,18 @@ describe('CrewEditorNextDialog — General edits, footer, danger', () => {
     )
   })
 
+  it('shows the stored triggers on General and saves changed ones', async () => {
+    mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, { ...OTHER_CREW, triggers: 'incidents, outages' }] })
+    const dialog = await openNew()
+    const input = within(dialog).getByRole('textbox', { name: 'Triggers' })
+    await waitFor(() => expect(input).toHaveValue('incidents, outages'))
+    fireEvent.change(input, { target: { value: 'incidents, pager escalations' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() =>
+      expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', expect.objectContaining({ triggers: 'incidents, pager escalations' })),
+    )
+  })
+
   it('clears the stored session colour and saves the empty value', async () => {
     mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, { ...OTHER_CREW, session_color: '#ef4444' }] })
     const dialog = await openNew()
@@ -1230,6 +1340,21 @@ describe('CrewEditorNextDialog — General edits, footer, danger', () => {
     expect(pane).toHaveTextContent('memory and past chats are kept. A new bot can take that memory over')
     fireEvent.click(within(dialog).getByTestId('next-delete-crew'))
     expect(pane).toHaveTextContent('A new bot can start from its memory.')
+  })
+
+  it('gives the danger delete buttons a resting fill and a strong edge on its tint', async () => {
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-danger'))
+    const expectFilled = (button: HTMLElement) => {
+      expect(button).toHaveClass('bg-bg-elevated', 'border-border-strong')
+      expect(button).not.toHaveClass('bg-transparent')
+      expect(button).not.toHaveClass('border-border')
+    }
+    const del = await within(dialog).findByTestId('next-delete-crew')
+    expectFilled(del)
+    fireEvent.click(del)
+    expectFilled(await within(dialog).findByTestId('next-confirm-delete-crew'))
+    expectFilled(within(dialog).getByTestId('next-cancel-delete-crew'))
   })
 
   it('cancels the armed danger delete', async () => {

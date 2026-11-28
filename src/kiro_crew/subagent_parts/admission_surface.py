@@ -8,7 +8,7 @@ attribute of the same name in :mod:`kiro_crew.subagent_parts.manager`.
 
 Manager fields read: ``_admission``, ``_admitting_waiting``, ``_agents``,
 ``_batch_owner``, ``_batch_progress_ts``, ``_batch_submitted``, ``_floor_deferred_ids``,
-``_floor_waits``, ``_held_approval_modes``, ``_max_concurrent``, ``_memory_mode_for_session``, ``_monitor``,
+``_floor_waits``, ``_held_approval_modes``, ``_learned_settled_gb``, ``_max_concurrent``, ``_memory_mode_for_session``, ``_monitor``,
 ``_run_events``, ``_session_start_concurrency``, ``_session_start_configured``,
 ``_sessions``, ``_startup_reservations``.
 
@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         _host_memory_reading_off_loop,
         _inherited_member_agent,
         _redact,
+        _settled_runtime_hold_gb,
         _validate_agent,
         _validate_app_agent_ownership,
         asyncio,
@@ -121,10 +122,16 @@ def _in_startup(info: SubagentInfo) -> bool:
     stagger and in-startup checks a fresh spawn passes, so ``_startup_cap``
     holds through the flood without the parked agents ever counting.
     """
+    # A shared start counts before ``_exec_started`` once it is handed to its run
+    # (``_startup_before_exec``: at registration, or at its approval release): it
+    # does not stamp the stagger clock, so nothing else covers the step before its
+    # run begins, and a burst admitted in one pass would otherwise all pass the
+    # bound. One still parked at, or waiting for release from, the prompt does not.
+    begun = info._exec_started is not None or getattr(info, "_startup_before_exec", False)
     return (
         not info.done
         and not info._reap_started
-        and info._exec_started is not None
+        and begun
         and info.turns == 0
         and info._pid is None
         and info._first_stream_started is None
@@ -263,6 +270,19 @@ def task_memory_rows(self: SubagentManager) -> list[dict[str, object]]:
     return self._monitor.task_memory_rows_impl()
 
 
+def settled_runtime_hold_gb(self: SubagentManager, cost_gb: float) -> float:
+    """What this manager's settled runtimes hold outside the free-memory reading (GiB).
+
+    0.0 except on macOS (:func:`_settled_runtime_hold_gb`). Host memory sizing
+    (``_host_mem_term``) subtracts it, so the TaskRunner's memory-sized value
+    and the auto cap with the floor at 0 count our runtimes as the floor does.
+    Reads no config and takes no lock, so any thread may call it.
+    """
+    return _settled_runtime_hold_gb(
+        list(self._agents.values()), cost_gb=cost_gb, settled_gb=self._learned_settled_gb
+    )
+
+
 def spawn(
     self: SubagentManager,
     task: str,
@@ -302,9 +322,12 @@ def spawn(
     backend: str | None = None,
     failover_from: str | None = None,
     label: str = "",
+    isolate: str = "",
     _execution_context: dict | None = None,
     _parent_spawn_policy: "ParentSpawnPolicy | None" = None,
     _parent_project_dirs: "list[str] | None" = None,
+    _parent_held_spawn: "tuple[str, ...] | None" = None,
+    _parent_live_agent: str = "",
     _agent_check: "AgentCheck | None" = None,
     _recovering_row: bool = False,
     _stop_before_memory_read: bool = False,
@@ -350,9 +373,12 @@ def spawn(
         backend=backend,
         failover_from=failover_from,
         label=label,
+        isolate=isolate,
         _execution_context=_execution_context,
         _parent_spawn_policy=_parent_spawn_policy,
         _parent_project_dirs=_parent_project_dirs,
+        _parent_held_spawn=_parent_held_spawn,
+        _parent_live_agent=_parent_live_agent,
         _agent_check=_agent_check,
         _recovering_row=_recovering_row,
         _stop_before_memory_read=_stop_before_memory_read,
@@ -609,6 +635,15 @@ async def spawn_async(self: SubagentManager, task: str, **kwargs: Any) -> Subage
             str(kwargs.get("parent_session_key") or ""),
             kwargs.get("_parent_project_dirs"),
         )
+    if kwargs.get("_parent_held_spawn") is None and kwargs.get("parent_session_key"):
+        from kiro_crew.mate_held_rules import held_spawn_limits
+
+        # The moved Bot's held sub-agent limits, read off the loop like the
+        # declaration above, so the gate never reads them on the loop.
+        parent = str(kwargs["parent_session_key"])
+        kwargs["_parent_held_spawn"] = tuple(
+            await asyncio.to_thread(held_spawn_limits, parent, self._sessions.get_agent(parent))
+        )
     if kwargs.get("_agent_check") is None:
         # The agent-directory scan, off the loop: the gate consumes this
         # answer instead of walking the directory on the loop itself.
@@ -628,6 +663,7 @@ async def spawn_async(self: SubagentManager, task: str, **kwargs: Any) -> Subage
     # durable path does (taskq.waits, W3).
     policy = {
         "_parent_spawn_policy": kwargs.get("_parent_spawn_policy"),
+        "_parent_held_spawn": kwargs.get("_parent_held_spawn"),
         "_agent_check": kwargs.get("_agent_check"),
         "_child_registration": False,
     }
@@ -720,6 +756,7 @@ async def _spawn_async_accepted(
         _window_hint=window_hint,
         _child_registration=False,  # the W3 branch runs awaited, below
         _agent_check=kwargs.get("_agent_check"),
+        _parent_held_spawn=kwargs.get("_parent_held_spawn"),
     )
     # The read's re-entry re-runs the policy gates on this committed row
     # (a refusal there fails it); the parent's declaration ``spawn_async``
@@ -766,8 +803,10 @@ def _announce_rejection(self: SubagentManager, info: SubagentInfo) -> SubagentIn
     return self._admission._announce_rejection_impl(info)
 
 
-def _should_stagger_queue(self: SubagentManager, now: float) -> tuple[bool, bool]:
-    return self._admission._should_stagger_queue_impl(now)
+def _should_stagger_queue(
+    self: SubagentManager, now: float, *, shared: bool = False
+) -> tuple[bool, bool]:
+    return self._admission._should_stagger_queue_impl(now, shared=shared)
 
 
 def _memory_pressure_hold(self: SubagentManager, *, floor_gb: float | None = None) -> int | None:
@@ -900,8 +939,10 @@ def _after_dispatch(
     return self._admission._after_dispatch_impl(params, drained, refill=refill)
 
 
-async def _spawn_with_approval(self: SubagentManager, info: SubagentInfo) -> None:
-    return await self._admission._spawn_with_approval_impl(info)
+async def _spawn_with_approval(
+    self: SubagentManager, info: SubagentInfo, held: tuple[str, ...] = ()
+) -> None:
+    return await self._admission._spawn_with_approval_impl(info, held)
 
 
 def _log_spawned(self: SubagentManager, info: SubagentInfo) -> None:

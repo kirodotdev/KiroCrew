@@ -130,6 +130,19 @@ class _FakePool:
         pass
 
 
+def _attest_walk(monkeypatch: pytest.MonkeyPatch, *keys: str) -> None:
+    """The kernel reports a peer pid and gatewayd's own walk from it resolves
+    *keys* in turn (the last one repeats): the register-time walk first, then
+    the one a recaller frame triggers."""
+    answers = list(keys)
+    monkeypatch.setattr(socketsec, "get_peer_pid", lambda _writer: 8001)
+    monkeypatch.setattr(
+        gw,
+        "_resolve_peer_identity",
+        lambda _pid: (answers.pop(0) if len(answers) > 1 else answers[0], [8001]),
+    )
+
+
 def _rekey_events(sel_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """SEL events for the caller-rekey permission decision (accept + reject),
     excluding the register-time ``mcp-gateway.connect`` accept."""
@@ -183,7 +196,7 @@ async def _run(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["tools/list", "tools/call"])
 async def test_an_unowned_legacy_v1_caller_keeps_working_without_a_proof(monkeypatch, method):
-    monkeypatch.setattr(socketsec, "get_peer_pid", lambda _writer: 8001)
+    _attest_walk(monkeypatch, "dashboard:global")
     backend, _audit = await _run(
         [_register("dashboard:global"), {**_CALL, "method": method}], monkeypatch
     )
@@ -193,7 +206,10 @@ async def test_an_unowned_legacy_v1_caller_keeps_working_without_a_proof(monkeyp
 @pytest.mark.asyncio
 async def test_recaller_flips_injected_caller(monkeypatch: pytest.MonkeyPatch) -> None:
     """Key-less register → forwarded call has caller=None; after a recaller the
-    next forwarded call carries the real identity, emitting an 'allowed' audit."""
+    next forwarded call carries the real identity, emitting an 'allowed' audit.
+    The recaller's key is adopted because gatewayd's own peer walk now resolves
+    it (the mapping appeared after register)."""
+    _attest_walk(monkeypatch, "", "dashboard:chat-RC-1")
     fb, sel = await _run(
         [
             _register(""),
@@ -224,6 +240,7 @@ async def test_recaller_denied_when_caller_already_set(monkeypatch: pytest.Monke
     """Deny-by-default: a connection that already has a session identity rejects
     a recaller claiming a DIFFERENT session (no pivot). Every forward keeps the
     original identity and a 'denied' SEL event is emitted."""
+    _attest_walk(monkeypatch, "dashboard:orig-1")
     fb, sel = await _run(
         [
             _register("dashboard:orig-1"),

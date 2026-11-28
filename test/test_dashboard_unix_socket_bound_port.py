@@ -10,8 +10,8 @@ shares (and unlinks) the same name. The prevent-sleep poll asks whether
 
 No host listener is bound here (``no-test-side-effects``): both boots run on the
 harnesses' inert TCP doubles, so the kernel's ephemeral choice is supplied through
-``_resolved_bound_port`` after the bind, and through the reserved socket double's
-``getsockname`` before it.
+the reserved socket double's ``getsockname`` for the dashboard boot, and through
+``_resolved_bound_port`` for the API-only server.
 """
 
 from __future__ import annotations
@@ -60,7 +60,10 @@ async def test_an_auto_port_dashboard_names_its_socket_for_the_bound_port(
 
     second, poll = _kernel_assigns(monkeypatch)
     async with harness._dashboard(tmp_path, monkeypatch):
-        assert _ports_named(srv._start_unix_site, second, poll) == [_EPHEMERAL] * 3
+        # The dashboard boot names the port of the socket it reserved.
+        reserved = srv._reserve_dashboard_port.return_value.getsockname()[1]
+        assert reserved != 0
+        assert _ports_named(srv._start_unix_site, second, poll) == [reserved] * 3
 
 
 @pytest.mark.asyncio

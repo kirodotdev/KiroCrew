@@ -1,6 +1,10 @@
 # `kirocrew pod` — Requirements
 
-Status: implemented in `src/kiro_crew/pod/` and exposed by `kirocrew pod`.
+Status: implemented in `src/kiro_crew/pod/` and exposed by `kirocrew pod`. This text is
+historical where it differs from the code: the shared data home is `~/.kiro/crew`, not
+`~/.kirocrew`, and macOS launchd and Windows backends ship (`pod/launchd.py`,
+`pod/windows.py`), so NFR-6 and the "macOS / non-systemd backends" out-of-scope line no
+longer hold. The current contract is [`src/kiro_crew/pod/README.md`](../../../src/kiro_crew/pod/README.md).
 
 ## Overview
 

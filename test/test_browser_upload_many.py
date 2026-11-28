@@ -56,7 +56,7 @@ def _upload(fake: FakeBrowser, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def test_the_gateway_and_the_worker_cap_the_same_count() -> None:
-    assert upload.UPLOAD_MAX_FILES == helper_worker._MAX_FILES
+    assert upload.UPLOAD_MAX_TREE_FILES == helper_worker._MAX_FILES
 
 
 def test_several_files_go_to_a_multiple_input_from_one_staging_folder(
@@ -150,6 +150,7 @@ def test_each_file_is_staged_in_a_folder_of_its_own(fake: FakeBrowser, tmp_path:
     for path, text in ((first, "first"), (second, "second")):
         path.parent.mkdir()
         path.write_text(text)
-    staged = upload.stage_many([str(first), str(second)], fake.tmp / "uploads")
+    made = upload.stage(upload.expand([str(first), str(second)])[0], fake.tmp / "uploads")
+    staged = [(copy, size) for _source, copy, size in made.files]
     assert [p.parent for p, _ in staged][0] != [p.parent for p, _ in staged][1]
     assert sorted(p.read_text() for p, _ in staged) == ["first", "second"]

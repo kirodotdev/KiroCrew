@@ -72,7 +72,7 @@ from kiro_crew import (  # noqa: F401
 )
 from kiro_crew.apps import agent_readonly_dirs, credential_masks  # noqa: F401
 from kiro_crew.atomic_write import fsync_dir, refuse_linked_parent  # noqa: F401
-from kiro_crew.config.paths import config_dir, kiro_agents_dir  # noqa: F401
+from kiro_crew.config.paths import config_dir, kiro_agents_dir, mate_agents_dir  # noqa: F401
 from kiro_crew.config.write_provenance import (  # noqa: F401
     launcher_record as _published_file_record,
 )
@@ -441,6 +441,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _CLONE_NEWNS,
         _CLONE_NEWUSER,
         _LINUX_REMEDY_GUIDANCE,
+        _MAX_USER_NAMESPACES_PATH,
         _PROBE_CHILD_FD_SWEEP_CAP,
         _PROBE_CHILD_GONE_ERRNOS,
         _PROBE_HANDSHAKE_TIMEOUT_SECS,
@@ -461,12 +462,14 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         REMEDY_MAX_USER_NAMESPACES,
         REMEDY_MOUNT_DENIED,
         REMEDY_NO_USER_NS,
+        REMEDY_USERNS_CAP_ZERO,
         REMEDY_USERNS_DENIED,
         _close_fd_ranges,
         _close_probe_fds,
         _fd_sweep_ranges,
         _inside_kirocrew_sandbox,
         _inside_macos_sandbox,
+        _last_sandbox_exec_failure,
         _linux_remedy_guidance,
         _macos_sandbox_state,
         _probe_bind_libc,
@@ -488,9 +491,12 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _probe_unshare_via_fork,
         _probe_unshare_via_spawn,
         _probe_write_identity_maps,
+        _read_max_user_namespaces,
         _remedy_for_step,
+        _sandbox_exec_failed,
         is_docker_container,
         is_wsl,
+        sandbox_exec_failure_reason,
     )
     from kiro_crew.sandbox_rlimit import (  # noqa: F401
         _BUILD_NOFILE_CEILING,
@@ -547,9 +553,13 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
     )
     from kiro_crew.sandbox_seals import (  # noqa: F401
         _CREW_NO_ALIAS_LEAVES,
+        _EMPTY_KIRO_MCP_REGISTRY,
+        _MAX_REGISTRY_LINK_HOPS,
         SandboxCeilingUnsealable,
         _delete_file_command,
         _is_link_or_junction,
+        _materialize_kiro_mcp_registry,
+        _materialize_mate_ledger,
         _materialize_sealable_ceilings,
         _materialize_sealable_parent_dirs,
         _mint_gateway_id_before_seal,
@@ -559,8 +569,10 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _refuse_if_dangling_symlink,
         _refuse_if_symlink_leaf,
         _refuse_linked_models_leaf,
+        _registry_chain_end,
         _require_real_dir_nofollow,
         _require_real_file_nofollow,
+        _resolved_kiro_mcp_registry_targets,
         _sealable_absent_ceilings,
         _symlink_target_display,
         _warn_aliased_strict_leaves,
@@ -744,6 +756,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _relocated_policy_cache_dirs,
         _resolved_install_root_targets,
         _resolved_kiro_agents_targets,
+        _resolved_mate_ledger_targets,
         _resolves_to,
         _sandbox_policy,
         app_backend_secret_mask_targets,
@@ -764,6 +777,8 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _LAUNCHER_REFUSAL_RE,
         _SSH_VISIBLE_TIERS,
         _TRUSTED_LAUNCHER_TIMEOUT_SECS,
+        CONFIG_MISSING,
+        CONFIG_UNREADABLE,
         CRON_SCRIPT_CHILD_ENV,
         LAUNCHER_EXEC_FAILURE_RE,
         LAUNCHER_EXIT_PREFIXES,
@@ -776,11 +791,13 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _apparmor_userns_restricted,
         _bundled_cli_invocation,
         _classify_unavailable,
+        _config_not_read,
         _first_party_no_backend_passthrough,
         _forward_for_effective_tier,
         _forward_ssh_auth_sock,
         _forwards_without_consent,
         _no_backend_guidance,
+        _platform_allows_unsandboxed,
         _ssh_dir_masked,
         _tier_lists_ssh,
         _unsandboxed_exec_key_declared,
@@ -852,6 +869,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         detect_backend,
         prewarm_backend,
         remedy_guidance,
+        remedy_recovery,
         reset_backend,
         unavailable_kind,
         unavailable_reason,

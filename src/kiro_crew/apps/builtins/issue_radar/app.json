@@ -361,7 +361,7 @@
     "Triage issues and pull requests across connected providers while retaining summaries, suggested labels, and investigation history."
   ],
   "configuration": [
-    "Connect a repository and authenticate its provider CLI on the gateway host: gh for GitHub, glab for GitLab, or az with the Azure DevOps extension on macOS, Linux, or WSL."
+    "Connect a repository and authenticate its provider CLI on the gateway host: gh for GitHub, glab for GitLab, or az with the Azure DevOps extension."
   ],
   "screenshots": [
     "/app-assets/issue-radar/screenshot-main.png"

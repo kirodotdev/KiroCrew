@@ -25,6 +25,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from kiro_crew import platform_compat, update_next_start
 from kiro_crew.cli_server_peer import (
@@ -63,6 +64,14 @@ from kiro_crew.sel import sel
 from kiro_crew.service import controller as service_controller
 from kiro_crew.service import linux as svc_linux
 from kiro_crew.service.common import RESTART_NOT_UP, RESTART_REFUSED, RESTART_UNCONFIRMED
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+#: What :func:`_poll_until_serving` saw: the outcome, the child's exit status (for
+#: :data:`_POLL_EXITED`) and the whole seconds it waited (for :data:`_POLL_EXPIRED`;
+#: longer than the budget while a boot-time update apply ran).
+_PollResult = tuple[str, "int | None", int]
 
 
 def _wait_for_pids_exit(pids: list[int], timeout: float) -> list[int]:
@@ -147,6 +156,11 @@ def _incumbent_from_lock_holder(port: int, *, shutdown_acknowledged: bool) -> li
     if shutdown_acknowledged:
         return [holder.pid]
     _refuse_lock_holder("gateway_restart", port, holder.pid)
+
+
+def _parent_pid() -> int:
+    """This process's parent pid; named so a test stands in for the real parent."""
+    return os.getppid()
 
 
 def _own_console_script() -> str | None:
@@ -307,7 +321,9 @@ def _gateway_log_lines_since(mark: _GatewayLogMark | None) -> list[str]:
     return [line for line in safe if line.strip()][-_RESTART_LOG_RELAY_LINES:]
 
 
-def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
+def _spawn_detached_gateway(
+    port: int | None = None, *, headless: bool = False
+) -> subprocess.Popen[bytes]:
     """Spawn a detached ``kirocrew gateway`` so the calling shell returns.
 
     Used by :func:`_restart` when no platform service is active. The
@@ -368,6 +384,8 @@ def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
         argv = platform_compat.isolated_python_argv("-P", "-m", "kiro_crew", "gateway")
     if port is not None:
         argv += ["--port", str(int(port))]
+    if headless:
+        argv.append("--headless")
 
     # Detach so closing the calling terminal doesn't take the gateway with it.
     # Pass both flags explicitly (NOT **dict unpack — that breaks mypy's Popen
@@ -495,6 +513,9 @@ _READY_OK = "ready"
 
 _READY_DIED = "died"
 
+#: The replacement handed a verified desktop update to the installer helper.
+_READY_HANDED_OFF = "handed_off"
+
 
 _READY_TIMEOUT = "timeout"
 
@@ -614,35 +635,107 @@ def _wait_gateway_ready(
 
     One "still starting" line is printed on the first check after
     :data:`_RESTART_READY_SOFT_CHECKPOINT` seconds, if the deadline is still
-    ahead, so a slow boot does not look hung.
+    ahead, so a slow boot does not look hung. The loop itself, the checkpoint
+    line and the boot-time update-apply extension are :func:`_poll_until_serving`,
+    which the in-place restart waits on too; this waiter adds the probe and the
+    child's exit status.
+    """
+    # The verdict between UNCONFIRMED and TIMEOUT is the last probe's answer.
+    answered = False
+
+    def serving() -> bool:
+        nonlocal answered
+        answered = _probe_gateway_ready(port) == 200
+        return answered and _replacement_is_serving(port, prior_pid)
+
+    outcome, exit_status, _waited = _poll_until_serving(
+        serving,
+        budget=timeout,
+        extension=timeout,
+        apply_pid=lambda: proc.pid,
+        exited=proc.poll,
+    )
+    if outcome == _POLL_EXITED:
+        return _READY_DIED, exit_status
+    if outcome == _POLL_HANDED_OFF:
+        return _READY_HANDED_OFF, None
+    if outcome == _POLL_SERVED:
+        return _READY_OK, None
+    return (_READY_UNCONFIRMED if answered else _READY_TIMEOUT), None
+
+
+#: Outcomes of :func:`_poll_until_serving`.
+_POLL_SERVED = "served"
+_POLL_EXITED = "exited"
+#: The replacement verified an update and handed its install to a helper.
+_POLL_HANDED_OFF = "handed_off"
+_POLL_EXPIRED = "expired"
+
+
+def _poll_until_serving(
+    serving: Callable[[], bool],
+    *,
+    budget: float,
+    extension: float,
+    apply_pid: Callable[[], int | None],
+    exited: Callable[[], int | None] | None = None,
+) -> _PollResult:
+    """The one readiness poll both restart paths wait on.
+
+    Each pass asks *exited* first (a status ends the wait as :data:`_POLL_EXITED`),
+    then *serving* (``True`` ends it as :data:`_POLL_SERVED`). The deadline is
+    checked only after that, so a zero *budget* still asks once. At the deadline
+    *exited* is asked again, so a child that died during the last probe is not
+    reported as still running. One "still starting" line is printed on the first
+    pass after :data:`_RESTART_READY_SOFT_CHECKPOINT` seconds while the deadline
+    is still ahead.
+
+    A boot-time update apply binds nothing, so a long one reads as a hang. While
+    the process *apply_pid* names reports applying, the deadline moves to the end
+    of the apply bound plus *extension* (the readiness window that follows it),
+    with one line saying so. The clock and the sleep are this module's ``time``,
+    read at call time, so a test that drives it through the facade drives both
+    waiters.
     """
     start = time.monotonic()
-    deadline = start + timeout
+    started_wall = update_next_start.wall_clock()
+    deadline = start + budget
     checkpoint = start + _RESTART_READY_SOFT_CHECKPOINT
     checkpoint_printed = False
     applying_printed = False
     while True:
-        status = proc.poll()
-        if status is not None:
-            return _READY_DIED, status
-        answered = _probe_gateway_ready(port) == 200
-        if answered and _replacement_is_serving(port, prior_pid):
-            return _READY_OK, None
+        if exited is not None:
+            status = exited()
+            if status is not None:
+                if update_next_start.handed_off(apply_pid(), since=started_wall):
+                    # A Windows desktop install: the replacement handed the
+                    # installer to a helper and exited. The helper waits for
+                    # every process running from the install, this one included,
+                    # so this waiter must end rather than wait for the port.
+                    return _POLL_HANDED_OFF, None, 0
+                return _POLL_EXITED, status, 0
+        if serving():
+            return _POLL_SERVED, None, 0
         now = time.monotonic()
         if not checkpoint_printed and checkpoint <= now < deadline:
             _print_still_starting(now - start)
             checkpoint_printed = True
         if now >= deadline:
-            status = proc.poll()
-            if status is not None:
-                return _READY_DIED, status
-            # A boot-time apply binds nothing, so a long one reads as a hang. While
-            # the replacement itself reports applying, wait out the apply bound
-            # plus the readiness window that follows it.
-            applying = update_next_start.applying_started(proc.pid)
+            if exited is not None:
+                status = exited()
+                if status is not None:
+                    if update_next_start.handed_off(apply_pid(), since=started_wall):
+                        return _POLL_HANDED_OFF, None, 0
+                    return _POLL_EXITED, status, 0
+            pid = apply_pid()
+            # By pid, or by a record written since this wait began: a replacement
+            # started through a launcher shim has a pid of its own.
+            applying = update_next_start.applying_started(pid) if pid is not None else None
+            if applying is None:
+                applying = update_next_start.applying_started(None, since=started_wall)
             if applying is not None:
                 left = max(0.0, update_next_start.APPLY_BOUND_SECS - (time.time() - applying))
-                extended = now + left + timeout
+                extended = now + left + extension
                 if extended > deadline:
                     if not applying_printed:
                         _print_applying_update(extended - now)
@@ -650,8 +743,16 @@ def _wait_gateway_ready(
                     deadline = extended
                     time.sleep(_RESTART_READY_POLL_INTERVAL)
                     continue
-            return (_READY_UNCONFIRMED if answered else _READY_TIMEOUT), None
+            # The seconds waited: a slow last pass ends the wait past the deadline.
+            return _POLL_EXPIRED, None, int(now - start)
         time.sleep(_RESTART_READY_POLL_INTERVAL)
+
+
+def _desktop_update_log() -> str:
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.platform.desktop_installer_update import HELPER_LOG
+
+    return str(data_home() / HELPER_LOG)
 
 
 def _died_replacement_message(pid: int, exit_status: int | None, port: int) -> str:
@@ -826,8 +927,8 @@ def _print_running_cron_runs() -> None:
     desktop app's), and then nothing was signalled. The source is the in-flight
     marker a run writes once its payload starts (``cron_inflight``), kept to
     markers whose writer is alive here: one a crashed gateway left names no run
-    that is still going. A run still in its jitter wait has started nothing and
-    writes no marker. Best-effort: nothing readable prints nothing.
+    that is still going. A run still in its jitter wait has started nothing, and
+    ``read_markers`` leaves its marker out. Best-effort: nothing readable prints nothing.
     """
     from kiro_crew import cron_inflight
 
@@ -898,6 +999,29 @@ _RESTART_AUDIT_KIND = {
 }
 
 
+_now = time.time
+
+
+def _print_resume_hint(started: float, cli_port: int | None, port: int) -> None:
+    """Name ``kirocrew resume`` when this restart's stop recorded cut chats. Never resumes them.
+
+    Only a record written at or after *started* is this restart's: a crash, or a
+    restart with no gateway running, runs no graceful stop, and an older record
+    names another stop's chats. On a coarse-mtime filesystem that can drop a
+    real hint; on a local filesystem it cannot print a wrong one.
+    """
+    from kiro_crew.dashboard.restart_resume import last_stop_record
+
+    try:
+        record = last_stop_record()
+    except OSError:
+        return
+    if record is None or record[0] < started or not record[1]:
+        return
+    command = "kirocrew resume" if cli_port is None else f"kirocrew resume --port {port}"
+    print(f"   {len(record[1])} chat(s) were cut by the stop. To resume them, run: {command}")
+
+
 def _restart(cli_port: int | None = None) -> None:
     """Restart a running Kiro Crew gateway.
 
@@ -920,7 +1044,14 @@ def _restart(cli_port: int | None = None) -> None:
        cannot see a service gateway bound to a unix socket, would misreport the
        outcome, and would spawn an unmanaged gateway beside an installed unit.
        An installed service that is stopped, with no gateway running, is refused.
-    2. Otherwise, SIGTERM the foreground gateway via the existing
+    2. Otherwise, on POSIX, ask the foreground gateway to restart itself in
+       place (:mod:`kiro_crew.cli_restart_in_place`). The gateway decides: a
+       supervised one re-execs with the same pid, so its supervisor keeps its
+       child, and this waits for the new generation to serve. Every other
+       gateway refuses, and a gateway that refuses or cannot answer falls
+       through to the next step without a word (a 409 prints its reason); one
+       that accepted and does not come back is reported, never replaced.
+    3. Otherwise, SIGTERM the foreground gateway via the existing
        lsof+SIGTERM path used by ``kirocrew stop``, then spawn a
        detached replacement and **verify it is serving** before reporting
        success: a spawn only proves a pid was created, so the replacement is
@@ -931,8 +1062,18 @@ def _restart(cli_port: int | None = None) -> None:
     When ``cli_port is not None`` (user passed ``--port N``), branch (1) is
     bypassed: the systemd unit name is not bound to a specific port, so
     short-circuiting through it would target the wrong gateway.
+
+    After either path succeeds it names ``kirocrew resume`` when the
+    gateway's stop during this restart recorded cut chats (:func:`_print_resume_hint`).
+    It resumes nothing itself: a stop may have been the way to end those
+    turns, so resuming them is the operator's call.
     """
+    from kiro_crew.cli_restart_headless import live_gateway_headless
+    from kiro_crew.cli_restart_in_place import restart_in_place
+    from kiro_crew.dashboard.headless import print_client_access
+
     port = resolve_client_port(cli_port)
+    started = _now()
     # Before either path signals or refuses anything: both stop the gateway's cron
     # runs, and the line stays true when a refusal below follows it.
     _print_running_cron_runs()
@@ -947,7 +1088,16 @@ def _restart(cli_port: int | None = None) -> None:
                 resources=f"port={port} via=service",
             )
             print("✅ Restarted kirocrew service.")
-            _print_token_url(port)
+            # The line printed follows the start command the manager has
+            # loaded. One that cannot be read is said to be unknown.
+            headless = service_controller.restarted_headless(report)
+            if headless is None:
+                print(f"   mode: {service_controller.MODE_UNKNOWN}")
+            if headless:
+                print_client_access(port)
+            else:
+                _print_token_url(port)
+            _print_resume_hint(started, cli_port, port)
             return
         if report.attempted or service_controller.is_service_active():
             # A managed unit was there and the restart did not take. An ATTEMPTED
@@ -1070,6 +1220,27 @@ def _restart(cli_port: int | None = None) -> None:
     # applies only when this home's gateway is the one on that port.
     if _refuse_desktop_supervised("gateway_restart", port, explicit_port=cli_port is not None):
         sys.exit(1)
+
+    # Before anything is stopped: the replacement repeats a live gateway's
+    # --headless. A live gateway whose argv cannot be established is restarted
+    # the way a restart that reads no mode restarts it, with one warning line:
+    # an ordinary gateway never loses its restart to this read.
+    headless = live_gateway_headless(port)
+    # A supervised POSIX gateway restarts itself in place: it keeps its pid, so
+    # its supervisor keeps its child. The gateway decides, and every other one
+    # refuses, which falls through silently to the stop and spawn below. The exec
+    # reuses its own argv, so the mode read above matters only to that path.
+    if restart_in_place(port, headless=headless):
+        return
+    if headless is None:
+        headless = False
+        print(
+            "⚠️  Could not read how the running gateway was started, so this restart "
+            "starts it with the dashboard. If it was headless, run "
+            f"kirocrew stop --port {port} and then "
+            f"kirocrew gateway --headless --port {port}.",
+            file=sys.stderr,
+        )
 
     # No service active — bounce the foreground gateway and detach a fresh one.
     # Reuse _stop() for the SIGTERM path so behavior stays in sync if _stop
@@ -1217,7 +1388,9 @@ def _restart(cli_port: int | None = None) -> None:
     _refuse_if_lock_held("gateway_restart", port)
 
     log_mark = _gateway_log_mark()
-    proc = _spawn_detached_gateway(port)
+    proc = (
+        _spawn_detached_gateway(port, headless=True) if headless else _spawn_detached_gateway(port)
+    )
     pid = proc.pid
     # A pid is not a running gateway. The replacement can be refused by the
     # ownership guard, crash on a bad config, or hang before it binds — all of
@@ -1225,6 +1398,21 @@ def _restart(cli_port: int | None = None) -> None:
     # Report success only once the NEW gateway answers, and audit what happened.
     ready_timeout = _resolve_restart_ready_timeout()
     verdict, exit_status = _wait_gateway_ready(proc, port, prior_marker_pid, ready_timeout)
+    if verdict == _READY_HANDED_OFF:
+        sel().log_api_access(
+            caller="cli",
+            operation="gateway_restart",
+            outcome="allowed",
+            source="cli",
+            resources=f"port={port} via=fork pid={pid} handed_off=desktop_update",
+        )
+        print(
+            "⏳ The new gateway verified the armed update and handed it to the installer.\n"
+            f"   The gateway starts again on port {port} once the install finishes "
+            "(a few minutes).\n"
+            f"   Installer log: {_desktop_update_log()}"
+        )
+        return
     if verdict != _READY_OK:
         if verdict == _READY_DIED:
             reason = f"replacement_died exit={exit_status}"
@@ -1268,7 +1456,7 @@ def _restart(cli_port: int | None = None) -> None:
                 f"{ready_timeout}s. It is still running but not "
                 f"serving port {port}.\n"
                 f"   It may be slow to start or wedged during startup; nothing is "
-                f"serving the dashboard yet.\n"
+                f"serving {'the API' if headless else 'the dashboard'} yet.\n"
                 f"   To follow its startup, run: kirocrew logs -f"
             )
         sys.exit(1)
@@ -1281,4 +1469,8 @@ def _restart(cli_port: int | None = None) -> None:
         resources=f"port={port} via=fork pid={pid}",
     )
     print(f"✅ Started detached gateway (pid {pid}). Logs: kirocrew logs -f")
-    _print_token_url(port)
+    if headless:
+        print_client_access(port)
+    else:
+        _print_token_url(port)
+    _print_resume_hint(started, cli_port, port)

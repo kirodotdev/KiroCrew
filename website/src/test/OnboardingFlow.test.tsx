@@ -18,6 +18,7 @@ vi.mock('../api/client', async importOriginal => {
         dashboard: { user_role: '', user_technical_level: '' },
       }),
       patchConfig: vi.fn().mockResolvedValue({}),
+      kasBundleStatus: vi.fn().mockResolvedValue({ chat_needs_sign_in: false }),
       themeBoot: vi.fn().mockResolvedValue({ mode: '', color: '', onboarded: false }),
       beaconStatus: vi.fn().mockResolvedValue({
         enabled: true,
@@ -231,7 +232,10 @@ describe('OnboardingFlow — About You step', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'UX Designer' }))
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     // Error surfaces, still on step 2, tour NOT shown
-    expect(await screen.findByRole('alert')).toHaveTextContent(/Couldn't save/)
+    const notice = await screen.findByTestId('onboarding-profile-save-error')
+    expect(notice.querySelector('span.whitespace-pre-wrap')?.textContent).toBe(
+      "Couldn't save your answers — press Next to retry, or Skip again to continue without saving.",
+    )
     expect(screen.getByText('Tell Kiro about you')).toBeInTheDocument()
     expect(screen.queryByText('Work that runs on time')).not.toBeInTheDocument()
   })
@@ -690,6 +694,21 @@ describe('OnboardingFlow — end of the tour', () => {
     expect(screen.getByRole('button', { name: 'Done' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Next' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Skip' })).not.toBeInTheDocument()
+  })
+
+  // The gateway's `chat_needs_sign_in` (`GET /api/kas-bundle`, the field the chat's
+  // sign-in prompt reads) decides the last card: "your agent is ready" only when
+  // no Kiro sign-in is missing.
+  it.each([
+    [true, /Settings → Kiro account/, /your agent is ready/],
+    [false, /your agent is ready/, /Settings → Kiro account/],
+  ])('words the last card from chat_needs_sign_in=%s', async (needed, shown, absent) => {
+    vi.mocked(api.kasBundleStatus).mockResolvedValueOnce({ chat_needs_sign_in: needed } as never)
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    await advanceToLastPopover()
+    await waitFor(() => expect(api.kasBundleStatus).toHaveBeenCalled())
+    expect(await screen.findByText(shown)).toBeInTheDocument()
+    expect(screen.queryByText(absent)).not.toBeInTheDocument()
   })
 
   it('Done on the last popover finishes onboarding', async () => {

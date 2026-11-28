@@ -23,6 +23,7 @@ from kiro_crew.agent import (
     AGENT_FILENAME,
     SharedAgentHomeRefused,
     _atomic_json_write,
+    _declares_server,
     _declined_foreign_spec_write,
     entry_as_enabled,
     gateway_routed_names,
@@ -51,9 +52,12 @@ from kiro_crew.dashboard.handlers._shared import (
 from kiro_crew.dashboard.handlers.mcp_agent_sync import (
     _agent_home_not_owned,
     _agent_home_not_owned_response,
+    _app_owned_apply_refusal,
+    _app_owned_server_refusal,
     _builtin_apply_refusal,
     _builtin_server_refusal,
     _builtin_stays_on,
+    _mark_live_sessions,
     _mcp_hot_reload_active,
     _sync_mcp_to_agent,
     _sync_mcp_to_agent_batch,
@@ -62,6 +66,7 @@ from kiro_crew.dashboard.handlers.mcp_agent_sync import (
 from kiro_crew.dashboard.handlers.mcp_config_entries import (
     _find_server_spec_anywhere,
     _kirocrew_entry_is_muted,
+    _name_held_elsewhere,
     _remove_kirocrew_entry,
     _scope_has_entry,
     _set_kirocrew_entry,
@@ -82,6 +87,7 @@ from kiro_crew.dashboard.handlers.mcp_config_files import (
     _load_config_or_refusal,
     _mcp_config_busy,
     _mcp_config_corrupt,
+    _mcp_config_unreadable,
     _mcp_server_not_found,
     _mcp_spec_invalid,
     _mcp_write_failed,
@@ -116,9 +122,11 @@ from kiro_crew.mcp_gateway import hazards, is_gateway_supported, launch_resolve
 from kiro_crew.mcp_gateway.hashing import hash_command
 from kiro_crew.mcp_gateway.launch_approval import (
     approve,
+    check_store_rewritable,
     display_launches,
     load_approvals,
     refused_servers,
+    refused_share_records,
     refused_shares,
     restore,
     revoke,
@@ -130,9 +138,9 @@ from kiro_crew.mcp_gateway.verdict_cache import load_cache
 from kiro_crew.mcp_hot_reload import (  # noqa: F401 - live_sessions_hot_reload is a public name of this facade
     live_sessions_apply_mcp_live,
     live_sessions_hot_reload,
-    mark_reinjecting_providers,
+    mark_sessions_for_mcp_change,
 )
-from kiro_crew.mcp_provenance import ABSENT, WITHHELD_KEY, resolve_write, stamp
+from kiro_crew.mcp_provenance import ABSENT, COPIED_KEY, WITHHELD_KEY, resolve_write, stamp
 from kiro_crew.mcp_utils import (
     INTERNAL_CLIENT_ID_KEY,
     INTERNAL_SCOPES_KEY,
@@ -155,7 +163,10 @@ from kiro_crew.user_json import (
 if TYPE_CHECKING:
     from kiro_crew.session import SessionManager
 # Bound here: an owner-served name needs a TYPE_CHECKING import, which the hoist ratchet refuses.
-from kiro_crew.agent import emission_eligible_mcp_servers  # noqa: F401  # isort: skip
+from kiro_crew.agent import (  # noqa: F401  # isort: skip
+    _app_owned_mcp_server_apps,
+    emission_eligible_mcp_servers,
+)
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.mcp")
 
@@ -606,6 +617,8 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
                 {"error": f"{name!r} is ambiguous", "code": "mcp_server_name_ambiguous"},
                 status=409,
             )
+        if store_action == "unreadable":
+            return _mcp_config_unreadable("the Kiro Crew mcp.json")
         if store_action == "corrupt":
             return web.json_response(
                 {"error": "cannot parse the Kiro Crew mcp.json", "code": "config_corrupt"},
@@ -676,6 +689,7 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
             except OSError:
                 return _mcp_write_failed("mcp toggle", "kirocrew.json")
 
+    _mark_live_sessions(request)
     return web.json_response({"ok": True, "name": name, "enabled": enabled, "applied": True})
 
 
@@ -725,7 +739,21 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
             return _mcp_config_corrupt()
 
         servers = data.setdefault("mcpServers", {})
-        if server not in servers:
+        # By the ONE key the row stands for, as POST /api/mcp/toggle does: the
+        # table names ``playwright-mcp`` while the file may hold
+        # ``npm:@playwright/mcp``, and a stub beside the raw entry would hold
+        # disabledTools that the mounted entry never reads. An alias of
+        # several raw keys is refused rather than guessed. A name another store
+        # holds itself is that store's mount, so its list stays under the name.
+        key: str | None = None
+        if server in servers or not await asyncio.to_thread(_name_held_elsewhere, server):
+            try:
+                key = _config_key_for(servers, server)
+            except AmbiguousServerKey as exc:
+                return web.json_response(
+                    {"error": str(exc), "code": "mcp_server_name_ambiguous"}, status=409
+                )
+        if key is None:
             # Server may exist in another scope (agent config, ~/.claude.json)
             # but not in kiro global mcp.json. Create a stub entry to hold
             # disabledTools state — kiro-cli reads this file for enforcement.
@@ -737,11 +765,12 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
             if server not in known:
                 return _mcp_server_not_found(server)
             servers[server] = {}
+            key = server
 
-        spec = servers[server]
+        spec = servers[key]
         if not isinstance(spec, dict):
             if isinstance(spec, str):
-                servers[server] = spec = {"command": spec}
+                servers[key] = spec = {"command": spec}
             else:
                 return _mcp_spec_invalid(server, spec)
         disabled_tools: list[str] = spec.get("disabledTools", [])
@@ -759,6 +788,7 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
             _write_mcp_json(data)
         except Exception:
             return _mcp_write_failed("mcp toggle-tool")
+    _mark_live_sessions(request)
     return web.json_response({"ok": True, "server": server, "tool": tool, "enabled": enabled})
 
 
@@ -832,6 +862,7 @@ async def api_mcp_toggle_all(request: web.Request) -> web.Response:
             except OSError:
                 return _mcp_write_failed("mcp toggle-all", "kirocrew.json")
 
+    _mark_live_sessions(request)
     return web.json_response({"ok": True, "enabled": enabled, "count": len(servers)})
 
 
@@ -862,6 +893,8 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
     if not name:
         return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
     if (refused := await _builtin_server_refusal(name)) is not None:
+        return refused
+    if (refused := await _app_owned_server_refusal(name)) is not None:
         return refused
 
     # Ownership BEFORE the first mutation: this handler writes the
@@ -948,6 +981,7 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
             except OSError:
                 return _mcp_write_failed("mcp remove", "kirocrew.json")
 
+    _mark_live_sessions(request)
     await _forget_owner_servers([name])
     return web.json_response({"ok": True, "name": name, "removed": removed})
 
@@ -1028,8 +1062,11 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
             {"error": "server name is required", "code": "name_required"}, status=400
         )
     name = name.strip()
-    if request.method == "DELETE" and (refused := await _builtin_server_refusal(name)) is not None:
-        return refused
+    if request.method == "DELETE":
+        if (refused := await _builtin_server_refusal(name)) is not None:
+            return refused
+        if (refused := await _app_owned_server_refusal(name)) is not None:
+            return refused
 
     # Ownership BEFORE the first mutation: this handler writes the
     # user-level registry (and, on remove, asks the companion package
@@ -1083,6 +1120,7 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
                 {"ok": False, "name": name, "removed": False, "code": "mcp_server_not_found"},
                 status=404,
             )
+        _mark_live_sessions(request)
         return web.json_response({"ok": True, "name": name, "removed": True})
 
     # PUT — register or update
@@ -1168,6 +1206,7 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
             except OSError:
                 return _mcp_write_failed("mcp server register", "kirocrew.json")
 
+    _mark_live_sessions(request)
     logger.info("MCP register via REST: %s command=%s", name, command)
     if warnings:
         # The name only: the warning text is built from the body, which can carry env secrets.
@@ -1185,17 +1224,23 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
 
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    import functools  # noqa: F401
+
     from kiro_crew.config.loader import read_endorsed_config_text  # noqa: F401
     from kiro_crew.dashboard.handlers.mcp_agent_sync import (  # noqa: F401
+        _app_owned_mcp_servers,
         _builtin_mcp_server_names,
         _is_builtin_mcp_server,
+        _is_page_placeholder,
         _mark_agent_entries_disabled,
         _shared_agent_home_declined,
         _sync_mcp_to_agent_batch_unlocked,
         _sync_mcp_to_agent_unlocked,
     )
     from kiro_crew.dashboard.handlers.mcp_config_entries import (  # noqa: F401
+        _another_scope_declares,
         _get_kirocrew_entry,
+        _muted_raw_keys,
         _remove_from_agent_file,
         _replace_kirocrew_spec,
         _rmw_remove_entry,
@@ -1210,8 +1255,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _get_mcp_lock_sync,
         _has_json_comments_on_disk,
         _load_config_for_update,
+        _load_config_or_reason,
         _load_json_or_empty,
-        _mcp_config_unreadable,
         _McpFileLockSync,
         _resolve_key_from_read,
         _unreadable_mcp_files,
@@ -1230,6 +1275,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _env_blocks_every_share,
         _env_decl_branches,
         _env_pooling_outcome,
+        _folder_declarations,
         _freeze_stub_servers,
         _launch_specs_for,
         _load_shareability_state,
@@ -1243,12 +1289,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_mcp_gateway_status,
         api_mcp_resolve_refresh,
         declared_launch,
+        mcp_sharing_can_turn_on,
     )
     from kiro_crew.dashboard.handlers.mcp_gateway_stubs import (  # noqa: F401
         _MAX_STUB_BATCH,
+        _grant_trust_from_row,
+        _launch_already_approved,
         _record_stub_decisions,
         _set_cwd_bindings,
         _stub_eligibility,
+        _trust_refusal,
         api_mcp_gateway_server_launches,
         api_mcp_gateway_set_stub,
     )
@@ -1267,6 +1317,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _evaluate_shareability,
         _invalid_flag_reason,
         _kirocrew_mcp_servers,
+        _live_backend_of_slot,
         _mcp_probe_cache,
         _mcp_probe_in_progress,
         _mcp_probe_task,
@@ -1291,6 +1342,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_mcp_quarantine_clear,
         api_mcp_servers,
     )
+    from kiro_crew.mcp_gateway import folder_use  # noqa: F401
+    from kiro_crew.mcp_gateway.launch_approval_heal import forget_trust  # noqa: F401
 
 
 async def api_mcp_apply(request: web.Request) -> web.Response:
@@ -1369,8 +1422,11 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
 
     if (refused := await _builtin_apply_refusal(changes, _get_mcp_lock)) is not None:
         return refused
+    if (refused := await _app_owned_apply_refusal(changes)) is not None:
+        return refused
     results: list[dict] = []
     corrupt = False  # a scope file broke mid-batch: stop and refuse
+    unreadable = False  # the store could not be read mid-batch: stop and refuse
 
     # ── Phase 1 (BEFORE the MCP file lock): companion package uninstalls ──
     # Run capability-manager uninstalls FIRST, off the lock, so:
@@ -1664,6 +1720,10 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                         spec=resolved_spec,
                         preferred=keys.get(f"{scope.id}Global"),
                     )
+                if "unreadable" in outcome["actions"].values():
+                    unreadable = True
+                    results.append(outcome)
+                    break
                 if "corrupt" in outcome["actions"].values():
                     corrupt = True
                     results.append(outcome)
@@ -1790,6 +1850,10 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
         _urls_clean, _ = redact_exfiltration_urls(str(exc))
         rebuild_error, _ = redact_credentials(_urls_clean)
         logger.warning("rebuild_agent_config failed after apply: %s", exc)
+    if unreadable:
+        return _mcp_config_unreadable("the Kiro Crew mcp.json")
+    if rebuild_ok and results:
+        _mark_live_sessions(request)
     if corrupt:
         return _mcp_config_corrupt()
     return web.json_response(

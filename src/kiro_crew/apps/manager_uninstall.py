@@ -12,10 +12,12 @@ as ``kiro_crew.apps.manager.<name>``, and a patch there reaches this module too
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import logging
 import os
 import shutil
+import stat
 from pathlib import Path
 
 from kiro_crew import platform_compat
@@ -32,6 +34,7 @@ from kiro_crew.apps.manager_builtins import (
     migrated_builtin_cleanup_applies,
 )
 from kiro_crew.apps.manager_records import (
+    INSTALLED_META_FILENAME,
     AppResult,
     InstalledApp,
     _import_app_tree_grants,
@@ -61,20 +64,150 @@ from kiro_crew.sel import sel
 logger = logging.getLogger("kiro_crew.apps.manager")
 
 
-def _rmtree_app_dir(dest: Path) -> None:
-    """Remove the app tree, waiting out a Windows file held open in it.
+_UNINSTALL_RETRY_HINT = (
+    "Stop the app's backend or close the program using that file, then uninstall again"
+)
+_APP_DELETE_USES_DIR_FD = platform_compat.IS_POSIX
 
-    A backend still closing its ``backend.log`` or an editor with an app file
-    open fails the delete with a sharing violation;
-    :func:`~kiro_crew.platform_compat.remove_with_retry` retries it for about
-    three seconds and then names the held file. The dashboard route runs the
-    uninstall in an executor, so the retry may sleep.
+
+def _app_entry_exists_at(fd: int, name: str) -> bool:
+    """Whether *name* still exists in the pinned app directory."""
+    try:
+        os.stat(name, dir_fd=fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _remove_posix_app_entry(fd: int, dest: Path, name: str, *, is_dir: bool) -> None:
+    """Remove one app entry through *fd*, clearing read-only parents when needed."""
+    failed: list[str] = []
+    if is_dir:
+
+        def _onexc(func, target: str, exc: BaseException) -> None:
+            if getattr(exc, "errno", None) not in (errno.EACCES, errno.EPERM):
+                failed.append(target)
+                return
+            platform_compat._clear_readonly_and_retry(
+                func,
+                target,
+                exc,
+                root=os.curdir,
+                root_fd=fd,
+                failed=failed,
+            )
+
+        shutil.rmtree(name, dir_fd=fd, onexc=_onexc)
+    else:
+        try:
+            os.unlink(name, dir_fd=fd)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            if exc.errno not in (errno.EACCES, errno.EPERM):
+                raise
+            platform_compat._clear_readonly_and_retry(
+                os.unlink,
+                name,
+                exc,
+                root=os.curdir,
+                root_fd=fd,
+                failed=failed,
+            )
+    if _app_entry_exists_at(fd, name):
+        target = failed[0] if failed else name
+        shown = dest / target
+        raise PermissionError(errno.EACCES, f"cannot remove app entry {shown}", str(shown))
+
+
+def _same_directory_at_path(dest: Path, expected: os.stat_result) -> bool:
+    """Whether *dest* still names the real directory held by the caller."""
+    try:
+        current = os.lstat(dest)
+    except OSError:
+        return False
+    return stat.S_ISDIR(current.st_mode) and (
+        current.st_dev,
+        current.st_ino,
+    ) == (expected.st_dev, expected.st_ino)
+
+
+def _rmtree_app_dir(dest: Path) -> None:
+    """Remove the app tree, read-only entries included, and its ``installed.json`` last.
+
+    Every entry but the record goes first, then the record with the folder, so an
+    uninstall that stops partway leaves the app listed and a retry finds it. A
+    folder that is a link or junction is unlinked alone, never traversed.
+
+    On POSIX the app directory is opened with ``O_DIRECTORY | O_NOFOLLOW`` and
+    checked against the directory selected by the caller. Child enumeration and
+    removal stay relative to that descriptor, so replacing the app-root name cannot
+    redirect deletion. On Windows the held-file retry keeps its path-based behavior;
+    the directory pin prevents a rename there, and links or junctions are unlinked.
+
+    An install copies its source's modes, so the tree can hold read-only entries:
+    a folder without the write bit on POSIX, a file with the read-only attribute on
+    Windows. The read-only clearing hook removes those entries. Whatever still stays
+    on Windows goes through :func:`~kiro_crew.platform_compat.remove_with_retry`.
+    It waits about three seconds for a file another process holds open, such as a
+    backend still closing its ``backend.log``, and raises naming it. The dashboard
+    route runs the uninstall in an executor, so the retry may sleep.
     """
-    platform_compat.remove_with_retry(
-        dest,
-        retry_hint="Stop the app's backend or close the program using that file, "
-        "then uninstall again",
-    )
+    record = os.path.normcase(INSTALLED_META_FILENAME)
+    if not _APP_DELETE_USES_DIR_FD:
+        rest: list[tuple[str, bool]] = []
+        if not platform_compat.is_link_or_junction(dest):
+            with os.scandir(dest) as entries:
+                rest = [
+                    (entry.path, entry.is_dir(follow_symlinks=False))
+                    for entry in entries
+                    if os.path.normcase(entry.name) != record
+                ]
+        for path, is_dir in rest:
+            if is_dir:
+                platform_compat.rmtree_force(path, failures=[])
+            else:
+                try:
+                    os.unlink(path)
+                except OSError as exc:
+                    platform_compat._clear_readonly_and_retry(os.unlink, path, exc, failed=[])
+            if os.path.lexists(path):
+                platform_compat.remove_with_retry(path, retry_hint=_UNINSTALL_RETRY_HINT)
+        platform_compat.remove_with_retry(dest, retry_hint=_UNINSTALL_RETRY_HINT)
+        return
+
+    chosen = os.lstat(dest)
+    if stat.S_ISLNK(chosen.st_mode):
+        os.unlink(dest)
+        return
+    if not stat.S_ISDIR(chosen.st_mode):
+        raise NotADirectoryError(errno.ENOTDIR, "app path is not a directory", str(dest))
+
+    fd = platform_compat.pin_directory(dest)
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (chosen.st_dev, chosen.st_ino):
+            raise OSError(
+                errno.EBUSY,
+                "app directory changed before it could be pinned",
+                str(dest),
+            )
+        with os.scandir(fd) as entries:
+            rest_names = [
+                (entry.name, entry.is_dir(follow_symlinks=False))
+                for entry in entries
+                if os.path.normcase(entry.name) != record
+            ]
+        for name, is_dir in rest_names:
+            _remove_posix_app_entry(fd, dest, name, is_dir=is_dir)
+        if not _same_directory_at_path(dest, opened):
+            raise OSError(errno.EBUSY, "app directory was replaced during uninstall", str(dest))
+        _remove_posix_app_entry(fd, dest, INSTALLED_META_FILENAME, is_dir=False)
+        if not _same_directory_at_path(dest, opened):
+            raise OSError(errno.EBUSY, "app directory was replaced during uninstall", str(dest))
+    finally:
+        os.close(fd)
+    os.rmdir(dest)
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +656,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         protected_app_state.forget_deleted_app_crons(name)
     except (OSError, ValueError):
         logger.warning("could not clear an uninstalled app's deleted cron jobs", exc_info=True)
+    try:
+        protected_app_state.forget_owner_browser_sites(name)
+    except (OSError, ValueError):
+        logger.warning("could not clear an uninstalled app's browser sites", exc_info=True)
     # The Bots the owner ticked go only once the uninstall committed, so a failed one
     # keeps them. A record left by a failure here grants nothing to a later install:
     # it names this install's ``installedAt`` (``bot_grant_store.read_granted_bots``).

@@ -154,7 +154,9 @@ class TestChildArrivesBooted:
         # SystemExit(str) exits non-zero with the payload on stderr, which is the
         # one channel the launcher does not reshape into its own JSON envelope.
         assert result["status"] == "error"
-        payload = json.loads(result["error"].strip().splitlines()[-1])
+        # The reason ends with its stderr tail, a blank line, then a ``Next:`` step.
+        output = result["error"].split("\n\nNext: ", 1)[0]
+        payload = json.loads(output.strip().splitlines()[-1])
         assert payload["booted"] is True, (
             "the cron child reached user code with an un-booted platform: the "
             "context was lazily defaulted, not composed by boot_platform"

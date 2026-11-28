@@ -13,7 +13,7 @@ superseded-by: []
 ---
 # RFC: Notification Bridge (bus egress fanout to chat transports)
 
-> **Nothing here is built, and its dependency claim is overstated.** The bus
+> **The bridge is built (see Status), and its dependency claim is overstated.** The bus
 > RFC's phases did not all ship: the phases this bridge actually needs are on
 > main, but Phase 2 has no producer and Phase 5 shipped two of three items.
 > `docs/system-specs/modules/app-notifications.md` is the record of what the

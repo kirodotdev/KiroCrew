@@ -481,7 +481,7 @@ async def test_a_quick_ask_posted_as_the_deny_lands_is_refused(monkeypatch, ceil
     async def _no_stream(*_a: Any, **_k: Any) -> None:
         return None
 
-    async def _ask_put_on_the_card(hub: Any, key: str, args: Any) -> dict[str, Any]:
+    async def _ask_put_on_the_card(hub: Any, key: str, args: Any, **_kw: Any) -> dict[str, Any]:
         ceiling(_DENY_DOC)
         return {"ok": True, "ask_id": "a1"}
 

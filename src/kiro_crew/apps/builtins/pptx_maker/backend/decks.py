@@ -37,7 +37,7 @@ from pathlib import Path
 from kiro_crew import hooks
 from kiro_crew.apps.builtins.pptx_maker.backend import paths
 from kiro_crew.hooks import FileTooLargeError
-from kiro_crew.security import redact
+from kiro_crew.security import redact, refuses
 
 logger = logging.getLogger("kirocrew.app.pptx-maker")
 
@@ -151,7 +151,7 @@ def _preview_url(deck_id: str, *rel: str) -> str | None:
     affected link and keeps the rest of the deck usable.
     """
     segments = (deck_id, *rel)
-    if any(redact(segment) != segment for segment in segments):
+    if any(refuses(segment, redact) for segment in segments):
         logger.warning("pptx-maker: refused an artifact URL whose segment looks like a credential")
         return None
     return "preview/" + "/".join(segments)
@@ -467,7 +467,7 @@ def deck_detail(deck_id: str) -> dict | None:
         # credential-shaped deck id rather than rewriting it: the slug IS the filename
         # the browser sends back, so a scrubbed value would name a slide that resolves
         # to nothing. Dropping the one slide keeps the rest of the deck usable.
-        if redact(slug) != slug:
+        if refuses(slug, redact):
             logger.warning("pptx-maker: skipped a slide whose slug looks like a credential")
             continue
         slides.append(

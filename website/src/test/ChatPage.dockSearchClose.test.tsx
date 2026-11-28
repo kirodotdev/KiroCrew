@@ -1,32 +1,36 @@
 /**
- * Regression test: opening a right-dock panel closes the find pane.
+ * The session chat's history search, end to end on the real ChatPage.
  *
- * The behavior this pins: the right-hand dock is a single slot. The
- * find/search pane renders on `search.isOpen` and takes precedence — every
- * other dock panel (file viewer via `panel`, diff via `diffPanel`) is
- * render-gated behind `!search.isOpen`. If the open handlers (`handleFileOpen`,
- * `handleOpenDiff`) set their panel state without closing the find pane, the
- * requested panel opens *underneath* the find pane and only becomes visible
- * once the user manually closes find ("layered").
+ * On desktop the search is a Search tab of the chat's side panel
+ * (`useChatHistorySearchTab`); on a phone it is that panel's full-width overlay. Opening a
+ * file or a diff from the transcript ends the search and shows the requested
+ * tab: the open handlers (`handleFileOpen`, `handleOpenDiff`) call
+ * `search.close()` directly (the `useMessageSearch` hook is hoisted above
+ * them). These tests drive the real handlers (via a stub AssistantMessage that
+ * calls the passed `onOpenDiff` / `onFileOpen` props).
  *
- * So both open handlers call `search.close()` directly (the `useMessageSearch`
- * hook is hoisted above the handlers) so the find pane closes and the requested
- * panel renders immediately. This test drives the real ChatPage handlers (via a
- * stub AssistantMessage that calls the passed `onOpenDiff` / `onFileOpen`
- * props) with the find pane open and asserts the find input disappears and the
- * target panel appears.
- *
- * Uses the REAL useMessageSearch hook so the
- * single-dock precedence + close-on-open wiring is exercised end to end.
+ * Uses the REAL useMessageSearch hook so the open, close and Escape wiring is
+ * exercised end to end.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, renderHook, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
+
+// The phone case flips this; every other test is a desktop window.
+const viewport = vi.hoisted(() => ({ mobile: false }))
+vi.mock('../hooks/useIsMobile', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hooks/useIsMobile')>()),
+  useIsMobile: () => viewport.mobile,
+}))
+
+// jsdom lays nothing out, so the side panel's on-screen check would read the
+// open panel as lost and close it; the close rules below need it left alone.
+vi.mock('../hooks/useSidePanelHealth', () => ({ useSidePanelHealth: () => {} }))
 
 // --- Stub the chat message components: AssistantMessage exposes the real
 // handler props as clickable buttons so we can fire the actual ChatPage
@@ -57,8 +61,8 @@ vi.mock('../components/DiffPanel', async () => {
 
 // Everything else ChatPage pulls in that is irrelevant to dock/search wiring.
 // NOTE: useMessageSearch is intentionally NOT
-// mocked — the test exercises the real hook. DetailPanel + SearchBar are also
-// real so the find pane and diff pane actually mount/unmount.
+// mocked — the test exercises the real hook. DetailPanel + the history search
+// are also real so the find pane and diff pane actually mount/unmount.
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
 // The real message list uses a custom virtualizer (useVirtualChat) driven by
 // IntersectionObserver + height measurement, neither of which works in jsdom,
@@ -90,9 +94,6 @@ vi.mock('../hooks/virtualizer/useVirtualChat', () => ({
   },
 }))
 vi.mock('../pages/ChatSidebar', () => ({ default: () => null, SIDEBAR_MIN: 200, SIDEBAR_MAX: 500 }))
-// SearchResultsList is left REAL: SearchBar imports SEARCH_LISTBOX_ID /
-// searchOptionId from it, and the list body only renders when there are
-// matches (empty term → placeholder), so it stays out of the way.
 vi.mock('../components/ChatInput', () => ({ default: () => null }))
 vi.mock('../components/WelcomeView', () => ({ default: () => null }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: () => null }))
@@ -158,6 +159,9 @@ const fileReadStub = () => vi.fn().mockResolvedValue({
 globalThis.fetch = fileReadStub()
 
 import ChatPage from '../pages/ChatPage'
+import { closeActivityPanel, openActivityPanel } from '../store/chatSlice'
+import { __resetPanelTabs, openPanelView, panelStripOf, usePanelTabs } from '../hooks/usePanelTabs'
+import { CHAT_HISTORY_SEARCH_TAB_ID } from '../pages/chat/useChatHistorySearchTab'
 import { virtualKeyFor, turnLeadKey } from '../pages/chat/ChatPageMessageContent'
 import type { DisplayItem } from '../pages/chat/types'
 import type { ChatMessage } from '../types'
@@ -222,14 +226,19 @@ const seedMessage = (store: ReturnType<typeof createTestStore>) => {
   })
 }
 
-const FIND_PLACEHOLDER = 'Find in chat…'
+const FIND_PLACEHOLDER = 'Search'
+// The field sits behind a lazy boundary (`ChatSidePanels`' `lazyRetry` import
+// of `ChatHistorySearch`), so its first wait covers a chunk load: a cold or
+// loaded runner can take longer than Testing Library's 1000ms default.
+const SEARCH_FIELD_WAIT = { timeout: 10_000 }
+const findField = () => screen.findByPlaceholderText(FIND_PLACEHOLDER, {}, SEARCH_FIELD_WAIT)
 const openFind = () => {
   act(() => {
     fireEvent.keyDown(document, { key: 'f', ctrlKey: true })
   })
 }
 
-describe('ChatPage – opening a dock panel closes the find pane', () => {
+describe('ChatPage – the find pane and dock panels', () => {
   beforeEach(() => {
     Object.keys(apiMocks).forEach(k => delete apiMocks[k])
     globalThis.fetch = fileReadStub()
@@ -239,43 +248,57 @@ describe('ChatPage – opening a dock panel closes the find pane', () => {
     renderChatPage()
     expect(screen.queryByPlaceholderText(FIND_PLACEHOLDER)).toBeNull()
     openFind()
-    expect(await screen.findByPlaceholderText(FIND_PLACEHOLDER)).toBeTruthy()
+    expect(await findField()).toBeTruthy()
   })
 
-  it('opening the diff pane (diff pill) closes the find pane and shows the diff', async () => {
+  it("the session menu's first row is Search: it names the shortcut and opens the find pane", async () => {
+    // The menu's Move rows read the folder list while it is open.
+    apiMocks.chatFolders = vi.fn().mockResolvedValue([])
+    renderChatPage()
+    // The title row's trailing group already holds its peers, so Search is a
+    // row in the session menu, not another button beside them.
+    expect(screen.queryByRole('button', { name: 'Search' })).toBeNull()
+    const trigger = await screen.findByRole('button', { name: 'Session options' })
+    act(() => { fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' }) })
+    const row = await screen.findByTestId('chat-header-search')
+    expect(row).toHaveAttribute('role', 'menuitem')
+    expect(row).toHaveTextContent('Search')
+    expect(row).toHaveTextContent('Ctrl+F')
+    expect(row.getAttribute('aria-keyshortcuts')).toBe('Control+F')
+    expect(screen.getAllByRole('menuitem')[0]).toBe(row)
+    expect(screen.queryByPlaceholderText(FIND_PLACEHOLDER)).toBeNull()
+    act(() => { fireEvent.click(row) })
+    expect(await findField()).toBeTruthy()
+  })
+
+  it("the side panel's + menu Search opens the find pane", async () => {
+    const store = renderChatPage()
+    act(() => { store.dispatch(openActivityPanel()) })
+    const add = await screen.findByRole('button', { name: 'Open side panel tab' })
+    act(() => { fireEvent.pointerDown(add, { button: 0, ctrlKey: false, pointerType: 'mouse' }) })
+    act(() => { fireEvent.click(screen.getByRole('menuitem', { name: 'Search' })) })
+    expect(await findField()).toBeTruthy()
+  })
+
+  // Opening a document from the chat only switches tabs: the Search tab and its
+  // query stay until the person closes it, as in a bot chat.
+  it.each([
+    ['diff pane (diff pill)', 'open-diff', 'diff-panel'],
+    ['file viewer (file chip)', 'open-file', 'md-panel'],
+  ])('opening the %s keeps the Search tab and its query behind the new tab', async (_name, opener, body) => {
     const store = renderChatPage()
     seedMessage(store)
     openFind()
-    expect(await screen.findByPlaceholderText(FIND_PLACEHOLDER)).toBeTruthy()
+    const field = await findField()
+    act(() => { fireEvent.change(field, { target: { value: 'plum' } }) })
 
-    const diffBtn = await screen.findByTestId('open-diff')
-    act(() => {
-      fireEvent.click(diffBtn)
-    })
+    act(() => { fireEvent.click(screen.getByTestId(opener)) })
 
-    // find pane gone, diff pane visible
-    await waitFor(() => {
-      expect(screen.queryByPlaceholderText(FIND_PLACEHOLDER)).toBeNull()
-      expect(screen.getByTestId('diff-panel')).toBeTruthy()
-    })
-  })
-
-  it('opening the file viewer (file chip) closes the find pane and shows the file', async () => {
-    const store = renderChatPage()
-    seedMessage(store)
-    openFind()
-    expect(await screen.findByPlaceholderText(FIND_PLACEHOLDER)).toBeTruthy()
-
-    const fileBtn = await screen.findByTestId('open-file')
-    act(() => {
-      fireEvent.click(fileBtn)
-    })
-
-    // handleFileOpen is async (awaits file read) — wait for the panel.
-    await waitFor(() => {
-      expect(screen.getByTestId('md-panel')).toBeTruthy()
-      expect(screen.queryByPlaceholderText(FIND_PLACEHOLDER)).toBeNull()
-    })
+    await waitFor(() => expect(screen.getByTestId(body)).toBeTruthy())
+    const searchTab = screen.getByRole('tab', { name: /Search this chat/ })
+    expect(searchTab).toHaveAttribute('aria-selected', 'false')
+    act(() => { fireEvent.click(searchTab) })
+    await waitFor(() => expect(screen.getByPlaceholderText(FIND_PLACEHOLDER)).toHaveValue('plum'))
   })
 
   it('draws no status-tile HUD above the composer', async () => {
@@ -284,6 +307,198 @@ describe('ChatPage – opening a dock panel closes the find pane', () => {
     // A worker makes a team, which is exactly what used to raise the tiles.
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
     expect(screen.queryByTestId('command-center-dock')).toBeNull()
+  })
+})
+
+describe('ChatPage – the history search is an on-demand tab of the side panel', () => {
+  beforeEach(() => {
+    Object.keys(apiMocks).forEach(k => delete apiMocks[k])
+    globalThis.fetch = fileReadStub()
+    localStorage.clear()
+    __resetPanelTabs()
+    viewport.mobile = false
+  })
+  afterEach(() => { viewport.mobile = false })
+
+  const searchChip = () => screen.queryByTestId(`side-panel-leading-tab-${CHAT_HISTORY_SEARCH_TAB_ID}`)
+  const strip = () => panelStripOf('chat-1')
+  const closeChip = () => act(() => { fireEvent.click(within(searchChip()!).getByRole('button', { name: 'Close tab' })) })
+  const searchGone = () => waitFor(() => expect(screen.queryByPlaceholderText(FIND_PLACEHOLDER)).toBeNull())
+
+  it('Ctrl+F opens the panel on a focused Search tab holding the search, with no separate pane', async () => {
+    const store = renderChatPage()
+    openFind()
+    const input = await findField()
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(searchChip()).toBeTruthy()
+    expect(strip().activeId).toBe(CHAT_HISTORY_SEARCH_TAB_ID)
+    // The search is the Search tab's body inside the side panel itself.
+    expect(input.closest('[data-testid="side-panel-leading-body"]')?.getAttribute('data-leading-id')).toBe(CHAT_HISTORY_SEARCH_TAB_ID)
+    expect(input.closest('[data-testid="side-panel-inline"]')).toBeTruthy()
+    expect(screen.getAllByTestId('chat-history-search')).toHaveLength(1)
+    await waitFor(() => expect(document.activeElement).toBe(input))
+  })
+
+  it('a panel opened normally shows no Search tab, also after a search was left open and the panel closed', async () => {
+    const store = renderChatPage()
+    act(() => { store.dispatch(openActivityPanel()) })
+    expect(await screen.findByTestId('side-panel-inline')).toBeTruthy()
+    expect(searchChip()).toBeNull()
+    openFind()
+    await findField()
+    // Closing the panel ends the search, so the next open has no Search tab.
+    act(() => { store.dispatch(closeActivityPanel()) })
+    await searchGone()
+    act(() => { store.dispatch(openActivityPanel()) })
+    expect(await screen.findByTestId('side-panel-inline')).toBeTruthy()
+    expect(searchChip()).toBeNull()
+    expect(strip().activeId).not.toBe(CHAT_HISTORY_SEARCH_TAB_ID)
+  })
+
+  it('a search that opened the panel closes the whole panel when its close button ends it', async () => {
+    const store = renderChatPage()
+    openFind()
+    await findField()
+    closeChip()
+    await searchGone()
+    await waitFor(() => expect(store.getState().chat.activityOpen).toBe(false))
+    expect(searchChip()).toBeNull()
+  })
+
+  it('Escape on a search that opened the panel closes the panel too', async () => {
+    const store = renderChatPage()
+    openFind()
+    await findField()
+    act(() => { fireEvent.keyDown(document, { key: 'Escape' }) })
+    await searchGone()
+    await waitFor(() => expect(store.getState().chat.activityOpen).toBe(false))
+  })
+
+  it('a panel already open on Pins goes back to Pins and stays open', async () => {
+    const store = renderChatPage()
+    act(() => { store.dispatch(openActivityPanel()) })
+    act(() => { openPanelView('chat-1', 'pins') })
+    openFind()
+    await findField()
+    expect(strip().activeId).toBe(CHAT_HISTORY_SEARCH_TAB_ID)
+    closeChip()
+    await searchGone()
+    expect(searchChip()).toBeNull()
+    expect(strip().activeId).toBe('pins')
+    expect(store.getState().chat.activityOpen).toBe(true)
+  })
+
+  it('owns Escape only while its tab is in front, and Ctrl+F brings the tab back', async () => {
+    renderChatPage()
+    openFind()
+    await findField()
+    expect(screen.getByTestId('chat-history-search-tab')).toHaveAttribute('data-escape-owner')
+    // Another tab in front: the search stays open behind it and owns nothing.
+    act(() => { openPanelView('chat-1', 'pins') })
+    await waitFor(() => expect(screen.getByTestId('chat-history-search-tab')).toHaveAttribute('data-history-search-off-screen'))
+    expect(screen.getByTestId('chat-history-search-tab')).not.toHaveAttribute('data-escape-owner')
+    act(() => { fireEvent.keyDown(document, { key: 'Escape' }) })
+    expect(searchChip()).toBeTruthy()
+    expect(strip().activeId).toBe('pins')
+    openFind()
+    await waitFor(() => expect(strip().activeId).toBe(CHAT_HISTORY_SEARCH_TAB_ID))
+    expect(screen.getByTestId('chat-history-search-tab')).toHaveAttribute('data-escape-owner')
+  })
+
+  it('Ctrl+F in the focused search field ends the search; outside the field it focuses the field', async () => {
+    const store = renderChatPage()
+    openFind()
+    const input = await findField()
+    await waitFor(() => expect(document.activeElement).toBe(input))
+    act(() => { (document.activeElement as HTMLElement).blur() })
+    openFind()
+    await waitFor(() => expect(document.activeElement).toBe(input))
+    expect(searchChip()).toBeTruthy()
+    act(() => { fireEvent.keyDown(input, { key: 'f', ctrlKey: true }) })
+    await searchGone()
+    await waitFor(() => expect(store.getState().chat.activityOpen).toBe(false))
+  })
+
+  it('a stored focus on the Search tab with no search open goes back to a real tab', async () => {
+    act(() => { openPanelView('chat-1', 'pins') })
+    // A remount (an in-app return) finds the strip still focused on the tab.
+    const tabs = renderHook(() => usePanelTabs('chat-1', undefined, { keepFocusIds: [CHAT_HISTORY_SEARCH_TAB_ID] }))
+    act(() => { tabs.result.current.setActive(CHAT_HISTORY_SEARCH_TAB_ID) })
+    tabs.unmount()
+    expect(strip().activeId).toBe(CHAT_HISTORY_SEARCH_TAB_ID)
+    renderChatPage()
+    await waitFor(() => expect(strip().activeId).not.toBe(CHAT_HISTORY_SEARCH_TAB_ID))
+    expect(searchChip()).toBeNull()
+  })
+
+  it('on a phone the search is the full-screen Search tab of the overlay, with no tab strip and no sheet of its own', async () => {
+    viewport.mobile = true
+    const store = renderChatPage()
+    openFind()
+    const input = await findField()
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(input.closest('[data-testid="side-panel-inline"]')).toBeTruthy()
+    expect(strip().activeId).toBe(CHAT_HISTORY_SEARCH_TAB_ID)
+    // Only the search's own header (field and Cancel) shows: the strip is not drawn.
+    expect(screen.getByTestId('side-panel-strip')).toHaveClass('!hidden')
+    expect(screen.queryByTestId('chat-history-sheet')).toBeNull()
+    // It covers the chat's top bar too (title, bell, ⋯): truly full screen.
+    const overlay = screen.getByTestId('side-panel-inline')
+    expect(overlay).toHaveClass('top-safe', 'z-[60]')
+    expect(overlay).not.toHaveClass('top-safe-offset-[42px]')
+  })
+
+  it('on a phone a panel opened normally sits below the top bar', async () => {
+    viewport.mobile = true
+    const store = renderChatPage()
+    act(() => { store.dispatch(openActivityPanel()) })
+    act(() => { openPanelView('chat-1', 'pins') })
+    const overlay = await screen.findByTestId('side-panel-inline')
+    expect(overlay).toHaveClass('top-safe-offset-[42px]')
+  })
+
+  it('on a desktop the Search tab sits in the drawn tab strip', async () => {
+    renderChatPage()
+    openFind()
+    await findField()
+    expect(screen.getByTestId('side-panel-strip')).not.toHaveClass('!hidden')
+    expect(searchChip()).toBeTruthy()
+  })
+
+  it('on a phone Cancel closes the overlay, even one already open on another tab', async () => {
+    viewport.mobile = true
+    const store = renderChatPage()
+    act(() => { store.dispatch(openActivityPanel()) })
+    act(() => { openPanelView('chat-1', 'pins') })
+    openFind()
+    await findField()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await searchGone()
+    await waitFor(() => expect(store.getState().chat.activityOpen).toBe(false))
+  })
+
+  it('on a phone Quote in the preview closes the overlay and ends the search', async () => {
+    viewport.mobile = true
+    const store = renderChatPage()
+    apiMocks.chatHistorySearch = vi.fn().mockResolvedValue({
+      hits: [{ index: 0, role: 'assistant', ts: ASSISTANT_MSG.ts, mid: 'm-1', snippet: 'hello there' }], next_before: null, total: 1,
+    })
+    apiMocks.chatHistoryAround = vi.fn().mockResolvedValue({
+      messages: [{ role: 'assistant', content: 'hello there', cls: 'msg msg-a', ts: ASSISTANT_MSG.ts, meta: { mid: 'm-1' } }],
+      start: 0, end: 1, total: 1, has_earlier: false,
+    })
+    openFind()
+    const input = await findField()
+    fireEvent.change(input, { target: { value: 'hello' } })
+    fireEvent.click((await screen.findAllByRole('option', {}, { timeout: 3000 }))[0])
+    const target = await waitFor(() => {
+      const el = screen.getByTestId('chat-history-preview').querySelector('[data-jump-target]')
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    })
+    act(() => { fireEvent.click(within(target).getByTestId('quote-message')) })
+    await searchGone()
+    await waitFor(() => expect(store.getState().chat.activityOpen).toBe(false))
   })
 })
 

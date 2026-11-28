@@ -6,8 +6,10 @@ those denies. :func:`spec_denies_refusal` backs the ``spec-denies`` deny row: it
 a call a deny names, on every approval policy. :func:`denied_grant_applies` is
 asked by the ``spec-builtin-grant`` row: it grants only a call a deny check
 cleared, and treats every unknown (a command it cannot split, a target it cannot
-read or resolve) as no grant, so the call asks. A ``web_fetch`` is granted by a
-plain ``web_fetch.trusted`` URL only, never refused here (:func:`url_literal`).
+read or resolve) as no grant, so the call asks. A ``web_fetch`` is refused only
+when a plain-URL ``web_fetch.blocked`` entry definitely matches it, and granted by
+a plain ``web_fetch.trusted`` URL, or by name when no blocked entry can reach it
+(:func:`url_literal`, :func:`web_fetch_blocked_match`).
 """
 
 from __future__ import annotations
@@ -127,6 +129,9 @@ def spec_denies_refusal(call: ToolCall, names: tuple[str, ...]) -> str | None:
     if grant.denied_write_paths and _is_write(call, names):
         if _write_denied(call, grant) is True:
             return prefix + "the write target is in its deniedPaths"
+    if grant.web_fetch_blocked and _WEB_FETCH in names:
+        if web_fetch_blocked_match(call, grant) is True:
+            return prefix + "the URL matches its web_fetch.blocked"
     return None
 
 
@@ -336,6 +341,85 @@ def _query_decoded(canonical: str) -> tuple[str, ...]:
     return tuple(f"{head}{sep}{decode(query)}" for decode in (unquote, unquote_plus))
 
 
+def _fetch_url(call: ToolCall) -> str | None:
+    """The ``web_fetch`` call's ``url`` as written, or ``None`` when it is not a
+    non-empty string."""
+    url = call.raw_params.get("url") if isinstance(call.raw_params, dict) else None
+    return url if isinstance(url, str) and url else None
+
+
+def _clear_forms(url: str) -> tuple[list[str], list[str]] | None:
+    """``(canonical forms, every form)`` of *url* a ``blocked`` entry is compared
+    with, or ``None`` when the URL is unsure: a control character (Rust's ``.`` does
+    not match a newline), no canonical form in some collapse mode, or an escape
+    :func:`_escape_unsafe` names. *every form* is the URL as written, its canonical
+    forms and their query-decoded forms."""
+    if any(ch < " " or ch == "\x7f" for ch in url):
+        return None
+    canonicals = [canonical_url(url, collapse=c) for c in _COLLAPSE_MODES]
+    if any(form is None or _escape_unsafe(form) for form in canonicals):
+        return None
+    forms = [form for form in canonicals if form is not None]
+    return forms, [url, *forms, *(text for form in forms for text in _query_decoded(form))]
+
+
+def _kiro_cli_matches(entry: tuple[str, bool], url: str) -> bool:
+    """kiro-cli's own anchored, case-sensitive whole-URL test of one entry: a
+    prefix entry's ``.*`` does not cross a newline."""
+    literal, prefix = entry
+    if prefix:
+        return url.startswith(literal) and "\n" not in url[len(literal) :]
+    return url == literal
+
+
+def _definitely_blocked(entry: tuple[str, bool], url: str) -> bool:
+    """Whether the read ``blocked`` *entry* matches *url* as kiro-cli reads it, or in
+    the single canonical form of both with no ``/`` collapse. An entry with a ``#``,
+    or a prefix cut before its path (``https://evil\\..*``), is compared as written
+    only: its canonical form drops the fragment, a trailing host dot or a default
+    port, so it would name more URLs than the entry does."""
+    if _kiro_cli_matches(entry, url):
+        return True
+    literal, prefix = entry
+    if "#" in literal or (prefix and _URL_SEP not in literal.partition("://")[2]):
+        return False
+    form = canonical_url(literal, prefix=prefix, collapse="")
+    target = canonical_url(url, collapse="")
+    return form is not None and target is not None and _url_matches((form, prefix), target)
+
+
+def web_fetch_blocked_match(call: ToolCall, grant: SpecDeniedGrant) -> bool | None:
+    """The one judge of a ``web_fetch`` against the record's ``blocked`` entries.
+
+    ``True`` (the ``spec-denies`` row refuses): an entry :func:`url_literal` reads
+    matches the URL by :func:`_definitely_blocked`. ``False`` (clear, so the by-name
+    grant may answer): the URL has every :func:`_clear_forms` form and no entry hits
+    it in any of them (:func:`_blocked_hits`, which counts an unsure entry as a hit).
+    ``None`` otherwise: the call keeps asking. The collapse modes, the
+    query-decoded forms and an entry with no canonical form only ever withhold."""
+    url = _fetch_url(call)
+    if url is None:
+        return None
+    blocked = [url_literal(raw) for raw in grant.web_fetch_blocked]
+    if any(entry is not None and _definitely_blocked(entry, url) for entry in blocked):
+        return True
+    read = _clear_forms(url)
+    named = [entry for entry in blocked if entry is None or _may_start_http_url(entry)]
+    if read is None or any(_blocked_hits(entry, read[1]) for entry in named):
+        return None
+    return False
+
+
+def _may_start_http_url(entry: tuple[str, bool]) -> bool:
+    """Whether a read ``blocked`` entry can match an ``http(s)`` URL at all: one with
+    no ``://`` (a host entry KAS already denies) only when it is a prefix of one."""
+    literal, prefix = entry
+    if "://" in literal:
+        return True
+    low = literal.lower()
+    return prefix and ("http://".startswith(low) or "https://".startswith(low))
+
+
 def _web_fetch_granted(call: ToolCall, grant: SpecDeniedGrant) -> bool:
     """Whether a ``web_fetch`` call is granted: only by a ``trusted`` entry that is a
     plain URL (equal) or a plain URL plus ``.*`` (prefix), with every ``blocked``
@@ -352,14 +436,11 @@ def _web_fetch_granted(call: ToolCall, grant: SpecDeniedGrant) -> bool:
     that keeps an escape :func:`_escape_unsafe` names, is never granted."""
     if not grant.web_fetch_blocked_complete or not grant.web_fetch_trusted:
         return False
-    url = call.raw_params.get("url") if isinstance(call.raw_params, dict) else None
-    if not isinstance(url, str) or not url or any(ch < " " or ch == "\x7f" for ch in url):
+    url = _fetch_url(call)
+    read = _clear_forms(url) if url is not None else None
+    if url is None or read is None:
         return False
-    canonicals = [canonical_url(url, collapse=c) for c in _COLLAPSE_MODES]
-    if any(form is None or _escape_unsafe(form) for form in canonicals):
-        return False
-    forms = [form for form in canonicals if form is not None]
-    seen = [url, *forms, *(text for form in forms for text in _query_decoded(form))]
+    forms, seen = read
     blocked = [url_literal(raw) for raw in grant.web_fetch_blocked]
     trusted = [url_literal(raw) for raw in grant.web_fetch_trusted]
     if any(_blocked_hits(entry, seen) for entry in blocked):
@@ -398,7 +479,11 @@ def denied_grant_applies(call: ToolCall, names: tuple[str, ...]) -> bool:
     shell = call.is_shell and bool(_SHELL_NAMES.intersection(names))
     by_name = bool(grant.builtins.intersection(names))
     if _WEB_FETCH in names:
-        return _web_fetch_granted(call, grant)
+        # By name only when the URL is clear of every readable blocked entry; the
+        # projection lifts it only where its asks alone held the fetch back.
+        return _web_fetch_granted(call, grant) or (
+            _WEB_FETCH in grant.builtins and web_fetch_blocked_match(call, grant) is False
+        )
     by_command = (
         shell
         and allowed_commands.plain_command(call.command)

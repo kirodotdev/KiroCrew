@@ -9,8 +9,49 @@
  */
 
 import type { MemoryCarveEntry, MemoryStoreSummary, RetiredMemory, MemoryBackup } from '../../types'
-import type { MemoryRecordQuery, MemoryRecord, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRef, MemoryRecordRevision } from '../../types/memoryEditing'
+import type { MemoryRecordQuery, MemoryRecord, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRef, MemoryRecordRevision, MemoryRecordFacets, MemoryRecordFacetGroup, MemoryRecordSort, MemoryAuditQuery, MemoryAuditPage, MemoryStoreDecay } from '../../types/memoryEditing'
 import type { ClientTransport } from './transport'
+
+/** How the memory page orders a record list and whether it asks for facet counts. */
+export type MemoryRecordView = { sort?: MemoryRecordSort; order?: 'asc' | 'desc'; facets?: boolean
+  /** Rank by meaning instead of matching words; `weak` also lists rows under the cut-off. */
+  meaning?: boolean; weak?: boolean }
+
+// Every facet group the route reads, as a record so a group added to the type
+// without a parameter here fails to compile instead of being dropped silently.
+const FACET_PARAM: Record<MemoryRecordFacetGroup, true> = { category: true, applies: true, scope: true, source: true, surface: true, crew: true, tag: true, strength: true }
+const RECORD_FACET_GROUPS = Object.keys(FACET_PARAM) as MemoryRecordFacetGroup[]
+
+/** `GET /api/memory/records`'s query string: each facet value is a repeated parameter. */
+export function memoryRecordParams(store: string, query: MemoryRecordQuery, offset: number, limit: number, view: MemoryRecordView = {}): URLSearchParams {
+  const params = new URLSearchParams({ store: store || 'default', q: query.q, kind: query.kind, offset: String(offset), limit: String(limit) })
+  if (view.sort) params.set('sort', view.sort)
+  if (view.sort && view.order) params.set('order', view.order)
+  if (view.facets) params.set('facets', '1')
+  if (view.meaning) params.set('mode', 'meaning')
+  if (view.meaning && view.weak) params.set('weak', '1')
+  const filters = query.filters || {}
+  for (const group of RECORD_FACET_GROUPS) for (const value of filters[group] || []) params.append(group, value)
+  for (const ref of filters.ref || []) params.append('ref', ref)
+  if (filters.conf_min !== undefined) params.set('conf_min', String(filters.conf_min))
+  if (filters.conf_max !== undefined) params.set('conf_max', String(filters.conf_max))
+  if (filters.since) params.set('since', filters.since)
+  if (filters.until) params.set('until', filters.until)
+  if ((filters.since || filters.until) && filters.date_field === 'created') params.set('date_field', 'created')
+  return params
+}
+
+/** The Audit tab's query string. The global store sends no `store=` (see memoryStoreQuery). */
+export function memoryAuditParams(store: string, query?: Partial<MemoryAuditQuery>, offset = 0, limit = 50): URLSearchParams {
+  const params = new URLSearchParams({ offset: String(offset), limit: String(limit), order: query?.order === 'asc' ? 'asc' : 'desc' })
+  if (store && store !== 'default') params.set('store', store)
+  if (!query) return params
+  if (query.q) params.set('q', query.q)
+  for (const group of ['event', 'kind', 'source'] as const) for (const value of query.filters?.[group] || []) params.append(group, value)
+  if (query.since) params.set('since', query.since)
+  if (query.until) params.set('until', query.until)
+  return params
+}
 
 /**
  * The optional `store=` parameter on memory content routes.
@@ -47,6 +88,9 @@ export interface RecurringFailure {
   /** The MCP tool name, or the class error (`turn_limit`); `''` when neither applies. */
   tool: string
   rule_id: string
+  /** The surface that logged most of the rows (`dashboard`, `agent`, ...). Read
+   *  only to hint at a row with no tool name; older gateways leave it out. */
+  source?: string
   /** The error with paths, ids and numbers collapsed. */
   error: string
   hits: number
@@ -179,8 +223,8 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
       fetch('/api/memory/carve' + memoryQuery(q)).then(j) as Promise<MemoryCarveResult>,
     memoryRecall: (query: string, store: string) =>
       fetch('/api/memory/recall?q=' + encodeURIComponent(query) + memoryStoreQuery(store, '&')).then(j),
-    memoryRecords: (store: string, query: MemoryRecordQuery, offset = 0, limit = 50) =>
-      fetch('/api/memory/records?' + new URLSearchParams({ store: store || 'default', q: query.q, kind: query.kind, offset: String(offset), limit: String(limit) })).then(j) as Promise<{ entries: MemoryRecord[]; total: number; has_more: boolean }>,
+    memoryRecords: (store: string, query: MemoryRecordQuery, offset = 0, limit = 50, view: MemoryRecordView = {}) =>
+      fetch('/api/memory/records?' + memoryRecordParams(store, query, offset, limit, view)).then(j) as Promise<{ entries: MemoryRecord[]; total: number; has_more: boolean; facets?: MemoryRecordFacets; hidden?: number; decay?: MemoryStoreDecay }>,
     memoryEditPreview: (store: string, selection: MemoryRecordSelection, operation: MemoryEditOperation) =>
       post('/api/memory/bulk/preview', { store: store || 'default', selection, operation }).then(j) as Promise<MemoryEditPreview>,
     memoryEditPreviewPage: (store: string, previewId: string, offset: number) =>
@@ -202,13 +246,17 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
       }>,
     // Vector memory
     vectorSemantic: (store?: string) => fetch('/api/memory/semantic' + memoryStoreQuery(store)).then(j),
+    /** The rows whose key or value contains `q`, at most `limit` of them. */
+    vectorSemanticSearch: (q: string, limit = 20) => fetch('/api/memory/semantic?' + new URLSearchParams({ q, limit: String(limit) })).then(j) as Promise<{ entries: { key: string; value_json?: unknown; confidence: number; source?: string }[] }>,
     vectorSemanticWrite: (key: string, value: unknown, store?: string) => put('/api/memory/semantic' + memoryStoreQuery(store), { key, value, source: 'user_explicit' }).then(j),
     vectorSemanticDelete: (key: string, store?: string) => del('/api/memory/semantic/' + encodeURIComponent(key) + memoryStoreQuery(store)),
     vectorEpisodic: (limit = 50, offset = 0, tags?: string, store?: string) => fetch('/api/memory/episodic?limit=' + limit + '&offset=' + offset + (tags ? '&tags=' + encodeURIComponent(tags) : '') + memoryStoreQuery(store, '&')).then(j),
     vectorEpisodicSearch: (q: string, tags?: string, store?: string) => fetch('/api/memory/episodic/search?q=' + encodeURIComponent(q) + (tags ? '&tags=' + encodeURIComponent(tags) : '') + memoryStoreQuery(store, '&')).then(j),
     vectorEpisodicDelete: (id: string, store?: string) => del('/api/memory/episodic/' + encodeURIComponent(id) + memoryStoreQuery(store)),
     vectorStats: (store?: string) => fetch('/api/memory/stats' + memoryStoreQuery(store)).then(j),
-    vectorEvents: (limit = 50, offset = 0, store?: string) => fetch('/api/memory/events?limit=' + limit + '&offset=' + offset + memoryStoreQuery(store, '&')).then(j),
+    /** One page of the store's write log, with exact counts per value (`memory_audit.list_events`). */
+    memoryEvents: (store = '', query?: MemoryAuditQuery, offset = 0, limit = 50) =>
+      fetch('/api/memory/events?' + memoryAuditParams(store, query, offset, limit)).then(j) as Promise<MemoryAuditPage>,
     vectorEmbeddingStatus: () => fetch('/api/memory/embedding-status').then(j),
     vectorEnableEmbeddings: () => post('/api/memory/enable-embeddings').then(j),
     vectorValidateEmbedModel: (path: string) =>
@@ -217,8 +265,9 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
       post('/api/memory/embedding-model', { path }).then(j),
     vectorDisableEmbeddings: () => post('/api/memory/disable-embeddings').then(j),
     vectorImport: (data: object) => post('/api/memory/import', data).then(j),
-    vectorContextPreview: (query?: string) => fetch('/api/memory/context-preview' + (query ? '?q=' + encodeURIComponent(query) : '')).then(j),
-    memoryGraph: () => fetch('/api/memory/graph').then(j),
+    /** What a session start admits from this store (`session_start`), with `query` as its first message. */
+    vectorContextPreview: (query?: string, store?: string) => fetch('/api/memory/context-preview' + (query ? '?q=' + encodeURIComponent(query) + memoryStoreQuery(store, '&') : memoryStoreQuery(store))).then(j),
+    memoryGraph: (store?: string) => fetch('/api/memory/graph' + memoryStoreQuery(store)).then(j),
     consolidateMemory: (key: string, includeHistory: boolean) => post('/api/memory/consolidate', { key, include_history: includeHistory }).then(j),
   }
 

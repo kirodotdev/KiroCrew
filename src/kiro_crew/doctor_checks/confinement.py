@@ -125,7 +125,7 @@ def _service_profile_applies(profile_path: Path, profile_name: str) -> bool:
     """
     return (
         cli_doctor.apparmor.service_profile_attachment(
-            cli_doctor.service_linux.kirocrew_bin(),
+            cli_doctor.service_linux.service_attach_path(cli_doctor.service_linux.kirocrew_bin()),
             cli_doctor.service_linux.UNIT_PATH,
             profile_path,
             profile_name,
@@ -213,9 +213,14 @@ def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
     # install path containing spaces or shell metacharacters must arrive as one
     # argument, not execute.
     try:
-        launcher = str(Path(cli_doctor.service_linux.kirocrew_bin()).resolve(strict=True))
+        attach = cli_doctor.service_linux.service_attach_path(
+            cli_doctor.service_linux.kirocrew_bin()
+        )
+        launcher = str(Path(attach).resolve(strict=True))
     except OSError:
-        launcher = cli_doctor.service_linux.kirocrew_bin()
+        launcher = cli_doctor.service_linux.service_attach_path(
+            cli_doctor.service_linux.kirocrew_bin()
+        )
     print(f"{render._INDENT}  {shlex.quote(launcher)} doctor")
     render._print_wrapped(
         "and read its Sandbox section: launched through the attached path, the "
@@ -382,6 +387,22 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
         return
 
     reason = cli_doctor.sandbox.unavailable_reason() or "no probe detail recorded"
+    remedy = cli_doctor.sandbox.unavailable_remedy()
+    if remedy == cli_doctor.sandbox.REMEDY_USERNS_CAP_ZERO:
+        # The cap read as 0, so the cause is certain even on the uncached ENOSPC
+        # verdict: a broken backend with its fix, never the transient row.
+        print(
+            "  backend:     ❌ none — user namespaces are disabled on this host "
+            "(user.max_user_namespaces=0)"
+        )
+        print(f"{render._INDENT}({reason})")
+        guidance = cli_doctor.sandbox.remedy_guidance(remedy)
+        # The odd segments between backticks are the commands; each prints on one
+        # line, so it pastes as it reads.
+        render._print_wrapped(guidance, keep=tuple(guidance.split("`")[1::2]))
+        render._print_wrapped(cli_doctor.sandbox.remedy_recovery(remedy, kind == "transient"))
+        issues.append("sandbox backend")
+        return
     if kind == "transient":
         print("  backend:     ⚠️  probe failed transiently — not cached; the next spawn re-probes")
         print(f"{render._INDENT}({reason})")
@@ -403,7 +424,6 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
         )
         return
 
-    remedy = cli_doctor.sandbox.unavailable_remedy()
     if remedy == cli_doctor.sandbox.REMEDY_APPARMOR_USERNS:
         _doctor_sandbox_apparmor(reason, issues)
         return

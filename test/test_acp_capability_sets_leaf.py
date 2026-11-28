@@ -149,14 +149,14 @@ def test_membership_is_unchanged_by_the_move() -> None:
     Opting a harness in is a deliberate edit with evidence (harness-parity H5/H6);
     a relocation is not the place for it.
     """
-    # kiro and codex are in all three; KAS is on the runtime and in eviction, and
-    # out of sharing. No two of these sets may be derived from another, and KAS is
-    # the case that shows it: eviction and sharing both read its teardown verb and
-    # reach opposite conclusions, because ``_kiro/session/delete`` frees the session
-    # (eviction) by REMOVING the record a continuation would load (no sharing).
-    # codex's ``session/close`` frees the session and leaves the record, so it is in
-    # both.
-    assert ACP_BACKENDS_SESSION_SHARING == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CODEX})
+    # kiro, codex and KAS are in all three. KAS's teardown verb
+    # ``_kiro/session/delete`` removes the record, but a shared sub-agent leaves with
+    # ``session/close`` on an engine that advertises it, which keeps the record a
+    # continuation loads; whether the process in hand can is asked per process
+    # (``acp.kas_subagent_sharing``), not by this set.
+    assert ACP_BACKENDS_SESSION_SHARING == frozenset(
+        {ACP_BACKEND_KIRO, ACP_BACKEND_CODEX, ACP_BACKEND_KAS}
+    )
     # The three harnesses added on captured evidence are named here too, so a
     # relocation still cannot grant the capability quietly -- the pin moves with
     # the deliberate edit rather than being loosened to accommodate it.
@@ -246,16 +246,14 @@ def test_a_harness_that_persists_a_catalog_owns_its_own_namespace() -> None:
 def test_acp_runtime_is_a_superset_of_session_sharing() -> None:
     """The documented relationship between the two sets, asserted rather than described.
 
-    AcpRuntime is necessary, not sufficient: KAS runs there but is excluded, since its
-    teardown removes the record a continuation would load.
+    AcpRuntime is necessary for sharing: a harness Crew opens one process per
+    session for has no second session to share. Every member today is in both; a
+    KAS member's own process is still asked whether it qualifies
+    (``acp.kas_subagent_sharing.runtime_hosts_subagents``).
     """
     assert ACP_BACKENDS_SESSION_SHARING <= ACP_BACKENDS_ACP_RUNTIME
     assert ACP_BACKEND_KAS in ACP_BACKENDS_ACP_RUNTIME
-    assert ACP_BACKEND_KAS not in ACP_BACKENDS_SESSION_SHARING
-    # Sharing is a PROPER subset, and KAS is now the only member of the runtime that
-    # demonstrates it -- so the assertion is kept rather than dropped when codex
-    # moved across, or nothing would hold the two sets apart.
-    assert ACP_BACKENDS_SESSION_SHARING != ACP_BACKENDS_ACP_RUNTIME
+    assert ACP_BACKEND_KAS in ACP_BACKENDS_SESSION_SHARING
     # codex is in ALL THREE, and the pair below is the fact that puts it in sharing
     # without softening its teardown: the session is evicted, and the record the
     # harness owns is what a ``session/load`` restores.

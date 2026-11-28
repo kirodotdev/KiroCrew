@@ -278,9 +278,9 @@ class AcpClient:
         # array cache: the host already holds the array this describes, and dropping
         # the cache for the NEXT session must not erase what THIS one consumed.
         self._session_agent_spec: dict[str, Any] | None = None
-        # A member session's spec ``tools`` allowlist on a mirror-less array host
-        # (pi), from the same parse; the pooled stubs pass through it.
+        # pi: the stubs' spec ``tools`` allowlist, and a worker's stub names withheld.
         self._member_stub_allowlist: ToolsAllowlist | None = None
+        self._pi_worker_stub_names: frozenset[str] = frozenset()
         self.member_context = False
         self._loaded_capability_template = ""
         self._capability_projection_gaps: tuple[str, ...] = ()
@@ -435,6 +435,13 @@ class AcpClient:
         # descendant's exit. A work-directory reclaim reads this fail-closed
         # verdict after shutdown.
         self._process_tree_confirmed_dead = False
+        # True from this client's first spawn on (``client_start``): a client that
+        # never launched a process has nothing a close could leave running.
+        self._spawned = False
+        # The PIDs the last reset could not show gone (``client_lifecycle._reset_state``).
+        self._unreaped_pids: tuple[int, ...] = ()
+        # The Windows tree cleanup a reset left pending, retired once drained.
+        self._windows_cleanup_receipt: object | None = None
         self._start_time: str | None = None  # start identity for PID-recycle detection
         # Names THIS spawn of the child, not the session it serves: a resume
         # re-uses the session id on a brand-new process (see ensure_ready's
@@ -472,6 +479,11 @@ class AcpClient:
         #: How many pruned servers the last array build had past
         #: ``MCP_REPORT_BUCKET_CAP``; counted on the report, never listed.
         self._mcp_pruned_omitted = 0
+        #: Servers the spec writer dropped from this session's spec because their
+        #: command was not found, read with the spec snapshot at spawn
+        #: (``mcp_prune.spec_dropped_servers``). Recorded as failed on every
+        #: attempt's report, beside the pruned ones.
+        self._mcp_spec_dropped: tuple[PrunedServer, ...] = ()
         #: The MCP array a harness was given at LAUNCH rather than on the wire, or
         #: ``None`` when the wire array is the whole set. Strands' Python-project
         #: mode refuses a non-empty ``session/new`` array, so its servers ride the
@@ -1067,6 +1079,10 @@ class AcpClient:
         """Why Crew's MCP tools are withheld for want of a governed settings file: never here."""
         return ""
 
+    def settings_withheld_reason(self, *, with_fix: bool = False) -> str:
+        """Why Crew's MCP tools are withheld for want of a governed settings file: never here."""
+        return ""
+
     async def _discard_settings_seed(self) -> None:
         """Remove the per-session settings file this session seeded: it seeded none."""
 
@@ -1110,7 +1126,7 @@ class AcpClient:
         return False, None
 
     def _note_worker_builtin_tools(self, builtin_tools: tuple[str, ...] | None) -> None:
-        """Keep the built-ins a crewmate worker's projection allows: this backend has
+        """Keep the built-ins a worker's or a named agent's projection allows: this backend has
         no option that carries them."""
 
     def _worker_settings_lag(self, spec: dict[str, Any] | None) -> bool:
@@ -1369,6 +1385,7 @@ class AcpClient:
     reject_tool = _client_permissions.reject_tool
     _handle_permission = _client_permissions._handle_permission
     _refuse_identity_drift = _client_permissions._refuse_identity_drift
+    _refuse_reused_call_id = _client_permissions._refuse_reused_call_id
     _foreign_mcp_identity = _client_permissions._foreign_mcp_identity
     _unclassified_tool_call = _client_permissions._unclassified_tool_call
     _tripwire_spec_disabled_tool = _client_permissions._tripwire_spec_disabled_tool

@@ -240,6 +240,98 @@ class TestRenderedStringsAreUnchanged:
                 assert spawn_tools.spawn_list("spawn_list", {}) == "No subagents running."
 
 
+class TestToollessAgentsAreMarkedAndListedLast:
+    """A tool-less agent can only answer in text. Named bare in the roster it read
+    like any other child, and a file job sent to it was lost, so both spawn rosters
+    mark it and list it after the agents that have tools: a cap cuts it first."""
+
+    @staticmethod
+    def _toolless(*names: str):
+        return patch.object(spawn_tools, "_toolless_agent_names", lambda rows: set(names))
+
+    def test_the_parameter_roster_marks_them_after_the_rest(self) -> None:
+        with (
+            self._toolless("kirocrew-lite"),
+            patch.object(
+                spawn_tools.mcp_core,
+                "list_agents",
+                return_value=_agents("kirocrew-lite", "scout", "kirocrew-worker"),
+            ),
+        ):
+            hint = spawn_tools._agent_roster_hint()
+        assert hint == " Valid names right now: kirocrew-worker, scout, kirocrew-lite (no tools)."
+
+    def test_the_cap_cuts_tool_less_names_first(self) -> None:
+        many = [f"agent-{i:02d}" for i in range(spawn_tools._MAX_ROSTER_NAMES)]
+        with (
+            self._toolless("aaa-helper"),
+            patch.object(
+                spawn_tools.mcp_core, "list_agents", return_value=_agents("aaa-helper", *many)
+            ),
+        ):
+            hint = spawn_tools._agent_roster_hint()
+        assert hint == f" Valid names right now: {', '.join(many)} (+1 more)."
+
+    def test_spawn_list_marks_them_too(self) -> None:
+        with (
+            self._toolless("kirocrew-lite"),
+            patch.object(spawn_tools.mcp_core, "_get", return_value={"agents": []}),
+            patch.object(
+                spawn_tools.mcp_core, "list_agents", return_value=_agents("kirocrew-lite", "scout")
+            ),
+        ):
+            out = spawn_tools.spawn_list("spawn_list", {})
+        assert out.endswith("\nAvailable agents: scout, kirocrew-lite (no tools)")
+
+    def test_a_real_tool_less_spec_is_marked(self, tmp_path, monkeypatch) -> None:
+        """The shipped background helper's shape, read from a real file; a spec that
+        mounts anything, or a row with no file, is not marked."""
+        import json
+
+        from kiro_crew import agent_discovery
+
+        monkeypatch.setattr(agent_discovery, "_KIRO_AGENTS_DIR", tmp_path)
+        lite = {"name": "helper", "tools": [], "mcpServers": {}, "includeMcpJson": False}
+        (tmp_path / "helper.json").write_text(json.dumps(lite), encoding="utf-8")
+        (tmp_path / "scout.json").write_text(
+            json.dumps({"name": "scout", "tools": ["*"]}), encoding="utf-8"
+        )
+        rows = [
+            types.SimpleNamespace(name="helper", filename="helper.json"),
+            types.SimpleNamespace(name="scout", filename="scout.json"),
+            types.SimpleNamespace(name="nofile"),
+        ]
+        assert spawn_tools._toolless_agent_names(rows) == {"helper"}
+        with patch.object(spawn_tools.mcp_core, "list_agents", return_value=rows[:2]):
+            hint = spawn_tools._agent_roster_hint()
+        assert hint == " Valid names right now: scout, helper (no tools)."
+
+    @pytest.mark.parametrize(
+        "pin, marked",
+        [
+            pytest.param("PkgB-helper.json", set(), id="pinned-to-the-tool-enabled-file"),
+            pytest.param("PkgA-helper.json", {"helper"}, id="pinned-to-the-tool-less-file"),
+            pytest.param(None, set(), id="ambiguous-no-pin"),
+        ],
+    )
+    def test_the_spec_a_spawn_runs_decides(self, tmp_path, monkeypatch, pin, marked) -> None:
+        """Two files declare ``helper``; the roster row kept the tool-less one, but a
+        spawn runs the claimant ``agent.spec_pins`` picks, and that one is judged."""
+        import json
+
+        from kiro_crew import agent_discovery, agent_spec_pins
+
+        monkeypatch.setattr(agent_discovery, "_KIRO_AGENTS_DIR", tmp_path)
+        monkeypatch.setattr(agent_spec_pins, "spec_pins", lambda: {"helper": pin} if pin else {})
+        bare = {"name": "helper", "tools": [], "mcpServers": {}, "includeMcpJson": False}
+        (tmp_path / "PkgA-helper.json").write_text(json.dumps(bare), encoding="utf-8")
+        (tmp_path / "PkgB-helper.json").write_text(
+            json.dumps({"name": "helper", "tools": ["*"]}), encoding="utf-8"
+        )
+        rows = [types.SimpleNamespace(name="helper", filename="PkgA-helper.json")]
+        assert spawn_tools._toolless_agent_names(rows) == marked
+
+
 class TestOrderingConverged:
     """Both rosters sort by declared name, so a name that redaction rewrites is
     replaced in place instead of jumping to wherever its placeholder happens to

@@ -17,8 +17,10 @@ from slack_handler_coverage_helpers import (  # noqa: F401 -- the autouse fixtur
     _clean_handler_state,
 )
 
+from kiro_crew.constants import strip_control_comments
 from kiro_crew.safety_override import NO_EXPIRY_TEXT, fmt_grant_duration
 from kiro_crew.slack import handler as h
+from kiro_crew.slack.format import extract_options
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -38,7 +40,7 @@ class TestPureHelpers:
     def _streamed(text: str) -> str:
         """What the stream sends for *text*: the filter, then the end-of-turn settle."""
         hold, buf = h._filter_options_brackets(text, "", "")
-        hold, released = h._resolve_options_hold(hold, buf)
+        hold, released = h._resolve_options_hold(hold)
         assert hold == ""
         return buf + released
 
@@ -66,6 +68,12 @@ class TestPureHelpers:
             "Pick: [OPTIONS: Fix list[dict[str, Any]] now | Skip] and more.",
             # A reply that ends on a head prefix keeps it.
             "end [OPTI",
+            # A marker line delivery refuses is text: glued prose that does not end
+            # the reply or is not plain, or prose after a space.
+            "Pick:\n[OPTIONS: Retry | Abort]Thanks!\nMore.",
+            "Pick:\n[OPTIONS: Retry | Abort]Thanks!\n<!-- keep-visible -->\nMore.",
+            "Pick:\n[OPTIONS: Retry | Abort]Thanks *you*",
+            "[OPTIONS: Retry | Abort] is the syntax",
         ],
     )
     def test_text_the_marker_grammar_refuses_is_streamed_whole(self, text):
@@ -77,14 +85,31 @@ class TestPureHelpers:
             ("Pick:\n[OPTIONS: Fix list[0] | Skip]", "Pick:\n"),
             ("Pick:\n[OPTIONS: Retry | Abort\u3011", "Pick:\n"),
             ("a [[OPTIONS: x]", "a ["),
-            # A wrapped marker with a lookalike closer is accepted only with its
-            # leading wrapper, which has already streamed; the marker is withheld.
-            ("Pick:\n**[OPTIONS: Retry | Abort\u3011**\nThanks", "Pick:\n**\nThanks"),
-            ("Pick:\n**[OPTIONS: Retry | Abort\u3011**", "Pick:\n**"),
+            # A wrapped marker with a lookalike closer is withheld with its wrapper.
+            ("Pick:\n**[OPTIONS: Retry | Abort\u3011**\nThanks", "Pick:\n\nThanks"),
+            ("Pick:\n**[OPTIONS: Retry | Abort\u3011**", "Pick:\n"),
         ],
     )
     def test_a_marker_the_grammar_accepts_is_withheld_whole(self, text, streamed):
         assert self._streamed(text) == streamed
+
+    @pytest.mark.parametrize(
+        ("text", "streamed"),
+        [
+            # A wrapped marker line goes with its wrapper, not as "****".
+            ("Pick:\n**[OPTIONS: Retry | Abort]**", "Pick:\n"),
+            ("Pick:\n**[OPTIONS: Retry | Abort]**\nThanks", "Pick:\n\nThanks"),
+            ("Pick:\n  `[OPTIONS: Retry | Abort]`", "Pick:\n"),
+            # A glued tail that ends the reply keeps its prose; the marker goes.
+            ("Pick:\n[OPTIONS: Retry | Abort]Thanks!", "Pick:\nThanks!\n"),
+            ("Pick:\n**[OPTIONS: Retry | Abort]**Thanks!", "Pick:\nThanks!\n"),
+            # Delivery strips a control-tag tail first, so the glued line still ends the reply.
+            ("Pick:\n[OPTIONS: Retry | Abort]Thanks!\n<!-- keep-visible -->", "Pick:\nThanks!\n"),
+        ],
+    )
+    def test_a_marker_line_is_withheld_as_delivery_withholds_it(self, text, streamed):
+        assert self._streamed(text) == streamed
+        assert streamed.split() == extract_options(strip_control_comments(text))[0].split()
 
     def test_timing_footer_seconds_and_minutes(self):
         _, text = h.build_timing_footer(42.0)

@@ -347,11 +347,12 @@ class OtlpDestination:
     code that needs fixed headers sets them on ``Session.headers``; one declared
     as data uses ``headers_env`` below.
 
-    ``allow``, ``point_attributes`` and ``resource_allow`` are the three NARROWING
-    fields.  They keep this seam add-only in the direction that matters: each one
-    can only reduce or label what THIS destination receives, and none of them can
-    widen it, reach the local JSONL sink, or touch another destination.  All three
-    default to today's behaviour, so an existing destination is byte-identical.
+    ``allow``, ``point_attributes``, ``resource_allow`` and
+    ``named_entity_namespaces`` are the NARROWING fields.  They keep this seam
+    add-only in the direction that matters: each one can only reduce or label what
+    THIS destination receives, and none of them can widen it, reach the local JSONL
+    sink, or touch another destination.  All of them default to today's behaviour,
+    so an existing destination is byte-identical.
 
     - ``allow`` -- when set, a metric whose NAME is not in the set is dropped
       before encoding for this destination.  ``None`` means send every metric the
@@ -371,8 +372,20 @@ class OtlpDestination:
       destination that may receive only a few of them says so here.  A key absent
       from the shared Resource is simply absent -- nothing is invented.  ``None``
       sends the Resource as built.
+    - ``named_entity_namespaces`` -- the namespaces whose apps this destination may
+      see by name.  An edition that names the apps of a registry it ships gives
+      them ``Entity`` values of ``<namespace>.<app>`` on ``kirocrew.app.*``
+      metrics (the namespace is all before the last ``.``); a destination is sent
+      such a value only when its namespace is listed here, and ``private`` (with
+      ``entity_version`` ``private`` too) otherwise.  Points left with the same
+      attributes are merged into one, so the destination sees one ``private``
+      series.  Empty, the default, names nothing: a destination that says nothing
+      gets ``private``.  The local sink and the operator's own
+      ``telemetry.otlp_endpoint*`` entries are not governed by this field and keep
+      the names.  Nothing is hidden while no registry row declares
+      ``appNamespace``.
 
-    All three are enforced by an exporter WRAPPER the core builds
+    All of them are enforced by an exporter WRAPPER the core builds
     (``metrics/destination_filter.py``), outside this descriptor: a destination
     declares the narrowing, the core performs it, and the wrapper rebuilds the
     batch rather than mutating SDK objects another exporter also reads.
@@ -414,6 +427,7 @@ class OtlpDestination:
     headers_env: "Mapping[str, str]" = MappingProxyType({})
     temporality: str = ""
     process_env_credentials: bool = True
+    named_entity_namespaces: "frozenset[str]" = frozenset()
 
 
 class FeedbackTrackerProvider(Protocol):
@@ -446,8 +460,8 @@ class FeedbackTrackerProvider(Protocol):
         Default) leaves today's behaviour byte-for-byte.
 
         *bundle* carries the facts a report wants: ``filename``,
-        ``total_redactions``, ``path_collapses`` (host-name replacements
-        included) and ``provenance`` (release, channel). Never put
+        ``total_redactions``, ``path_collapses`` (host-name and login
+        replacements included) and ``provenance`` (release, channel). Never put
         ``bundle.zip_path`` in the URL: it sits under the data home and leaks
         the OS login. *note* is the user's free text, untrusted; percent-encode
         it or leave it out.
@@ -490,8 +504,10 @@ class BrowserCredentialTarget:
     has a window; ``reason`` is ``"start"`` (a launch or relaunch),
     ``"source_changed"`` (an agent navigation found
     :meth:`BrowserCredentialProvider.fingerprint` or ``browser.credentials``
-    changed since the last apply), ``"context"`` (a chat's new browser context) or
-    ``"sign_in"`` (the optional ``complete_sign_in`` is asked about a landed page).
+    changed since the last apply), ``"context"`` (a chat's new browser context),
+    ``"navigate"`` (the optional ``sign_in_for_origin`` is asked because the agent's
+    own navigate was sent to a sign-in host) or ``"renew"`` (the page sent itself
+    there, for example when the site's own sign-in ran out).
     """
 
     kind: str
@@ -532,24 +548,28 @@ class BrowserCredentialProvider(Protocol):
     without the cookies: never put a secret in an exception message, and never
     log a value yourself.
 
-    OPTIONAL ``complete_sign_in(target, url) -> Optional[str]``: not a member of
-    this Protocol, so a provider without it (the public Default has none) still
-    satisfies it; the gateway reads it with ``getattr`` and a missing,
-    non-callable or raising one means "no completion". v1 addition (no
-    ``CONTRACT_VERSION`` bump). WIRED: ``browser_harness.sign_in``, after an agent
-    ``navigate`` committed on an ``https`` page whose host is in BOTH
-    :meth:`domains` and ``browser.credentials.domains`` (same opt-in and same
-    browser as the cookies; ``target.reason`` is ``"sign_in"``), at most once per
-    op, in a worker thread bounded at 15 s (``budgets.SIGN_IN_PROVIDER_S``). *url*
-    is the page the tab landed on. Answer ``None`` when it is not your sign-in page
-    or you cannot finish it, and answer that from memory: it is asked on every such
-    landing. Otherwise answer a URL that finishes the sign-in when opened in that
-    tab: ``https``, on a host in :meth:`domains`, and SINGLE-USE (the secret it
-    carries is spent by the site on first load), because the tab's address,
-    history and later ``tabs`` listings are the page's to show. The gateway opens
-    it only past the browser's URL gate and both domain lists, and never shows it
-    to the agent or writes it to the SEL. A raise or a timeout is a fixed code;
-    never put a secret in an exception message.
+    OPTIONAL ``sign_in_hosts() -> Sequence[str]`` and ``sign_in_for_origin(target,
+    origin, sign_in_url, *, site_cookies) -> Mapping[str, Any]``: not members of
+    this Protocol, so a provider without them (the public Default has neither)
+    still satisfies it; the gateway reads them with ``getattr``, and both must be
+    callable. v1 addition (no ``CONTRACT_VERSION`` bump). WIRED:
+    ``browser_harness.sign_in_guard``, on Kiro's Chromium with the same opt-in as
+    the cookies. ``sign_in_hosts()`` names the EXACT hosts of the sign-in service
+    the browser must never reach; answer it from memory. While it names one, the
+    gateway fails every request to those hosts and every redirect to them, so the
+    service never sets a cookie in the browser; the bulk :meth:`cookies` never sets
+    one there either. When a tab's main frame is sent there for a site, the gateway
+    calls ``sign_in_for_origin`` in a worker thread bounded at 15 s
+    (``budgets.SIGN_IN_PROVIDER_S``): *origin* is ``https://host[:port]`` of that
+    site, checked against both domain lists and the agent's request; *sign_in_url*
+    the intercepted URL, to hand to the signer as is; *site_cookies* the site's own
+    ``{"name", "value"}`` pairs for that host. Answer ``{"ok": True, "cookies":
+    [...]}`` with the cookies the SITE sets for that one origin (``domain`` absent
+    or exactly its host; any other is dropped), or ``{"ok": False, "reason": code,
+    "message": text}`` with ``code`` one of ``not_signed_in``,
+    ``device_check_failed``, ``signer_missing``, ``signer_timeout``, ``refused`` or
+    ``other``. Refuse a sign-in whose last hop is not *origin*'s host. A raise or a
+    timeout is a fixed code; never put a secret in an exception or the message.
 
     The agent must not be able to read whatever this provider reads from. The
     provider runs in the gateway, so its own files need no sandbox access; the
@@ -924,6 +944,19 @@ class DashboardContributor(Protocol):
         region that sign-in would refuse. The form stays editable. ``{}`` (the
         Default) leaves the field empty. v1 method addition (no
         ``CONTRACT_VERSION`` bump); a contributor without it supplies nothing.
+        """
+        ...
+
+    def idc_sign_in_profiles(self) -> Dict[str, Dict[str, Any]]:
+        """IAM Identity Center start URLs that sign in with the edition's own form.
+
+        ``{start_url: {"scopes": [...], "grant_types": [...], "issuer_url": str,
+        "profile_arn": str}}``. WIRED: ``auth/login/endpoints.py`` asks it only while
+        the ``crew_client`` feature preview is on. Such a start URL registers its own
+        SSO-OIDC client with that form and takes the pinned profile ARN instead of
+        asking the control plane. While it is the stored sign-in, the usage poll
+        makes no call and no local KAS agent starts. ``{}`` (the Default) changes
+        nothing. v1 method addition (no ``CONTRACT_VERSION`` bump).
         """
         ...
 

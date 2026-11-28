@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import dep_sync
+from kiro_crew import dep_sync, extras
 from kiro_crew.platform import release_apply, wheel_engine
 from kiro_crew.platform.release_apply import _install_engine as _real_install_engine
 from kiro_crew.platform.wheel_engine_contract import WheelUpdateError, _BuildContext
@@ -182,6 +182,47 @@ class TestWheelRelease:
         passed["install_engine"](tmp_path / "crew-venv-9.9.9", ctx)
         assert engine_calls == [(tmp_path / "crew-venv-9.9.9" / "bin" / "python3", ctx)]
         assert progress == [release_apply.ENGINE_STEP_MESSAGE]
+
+    def test_the_update_names_a_package_the_new_tree_did_not_carry(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        """The note reaches the progress line and the log, naming the stable link."""
+        running = tmp_path / "crew-venv-1.0.0"
+        promoted = tmp_path / "crew-venv-9.9.9"
+        for tree, names in ((running, ("faiss_cpu", "httpx")), (promoted, ("httpx",))):
+            for name in names:
+                info = tree / "lib" / "python3.12" / "site-packages" / f"{name}-1.0.dist-info"
+                info.mkdir(parents=True)
+                (info / "METADATA").write_text(
+                    f"Metadata-Version: 2.1\nName: {name.replace('_', '-')}\nVersion: 1.0\n",
+                    encoding="utf-8",
+                )
+        stable = tmp_path / "crew-venv-current"
+        monkeypatch.setattr(wheel_engine, "apply_wheel_update", lambda **_kw: promoted)
+        monkeypatch.setattr(release_apply, "_running_tree", lambda: running, raising=False)
+        monkeypatch.setattr(
+            wheel_engine,
+            "managed_venv_layout",
+            lambda: wheel_engine.ManagedVenvLayout(
+                legacy=tmp_path / "crew-venv", stable_link=stable
+            ),
+        )
+        progress: list[str] = []
+        release = release_apply.WheelRelease(
+            channel="stable",
+            feed_base="https://f",
+            artifact_base="https://a",
+            expected_version="9.9.9",
+            progress=progress.append,
+        )
+        with caplog.at_level("WARNING", logger=release_apply.__name__):
+            assert release_apply.apply_release(release) == promoted
+
+        command = extras.pip_install_command_for("faiss-cpu", python=str(stable / "bin" / "python"))
+        expected = f"Add faiss-cpu back with: {command}"
+        assert len(progress) == 1 and progress[0].startswith("Note: "), progress
+        assert progress[0].endswith(expected)
+        assert [r.getMessage() for r in caplog.records] == progress
 
     def test_a_bundle_route_engine_failure_never_promotes(self, monkeypatch, tmp_path):
         promoted: list[bool] = []

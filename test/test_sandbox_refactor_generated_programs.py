@@ -126,6 +126,9 @@ def _pinned_host(root: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(sandbox, "config_dir", lambda: pinned.crew)
     monkeypatch.setattr(sandbox, "kiro_agents_dir", lambda: pinned.home / ".kiro" / "agents")
+    # kiro-cli's MCP registry rides the agents tree's field; its own tests pin that, and
+    # pinning it off here keeps these goldens to the output they were taken from.
+    monkeypatch.setattr(sandbox, "_resolved_kiro_mcp_registry_targets", lambda: [])
     monkeypatch.setattr(sandbox, "carveout_chain_has_planted_link", lambda _path: False)
     # The seal-parent walk stops inside the pinned root, so no golden names this machine.
     walk = sandbox._literal_ancestor_guards
@@ -145,6 +148,12 @@ def _pinned_host(root: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
     # machine-independent one (the volatile /run/user/$UID leads where it is coherent);
     # test_sandbox_plan covers the no-manager order.
     monkeypatch.setattr(sandbox, "_runtime_dir_is_durable", lambda _root: True)
+    # The checkout running the tests is a git checkout whose layout varies by host.
+    from kiro_crew import sandbox_git_control
+
+    monkeypatch.setattr(
+        sandbox_git_control, "resolved_git_control_layout", sandbox_git_control.GitControlLayout
+    )
     for name, table in _PINNED_TABLES.items():
         monkeypatch.setattr(sandbox, name, table)
     # The shipped built-ins' ``credentialMasks`` are a table too: a declaration added to
@@ -334,6 +343,7 @@ _LAUNCHER_PLAN_GOLDEN: dict[str, Any] = {
         "<ROOT>/crew",
         "<ROOT>/op/.kiro",
         "<ROOT>/op",
+        "<ROOT>/op/.kiro/mates",
         "<ROOT>/op/.kiro/crew",
         "<ROOT>/op/.kiro/crew/apps",
         "<ROOT>/op/.kiro/crew/mcp",
@@ -363,6 +373,7 @@ _LAUNCHER_PLAN_GOLDEN: dict[str, Any] = {
         "<ROOT>/op/.kirocrew/mcp-launch-approvals",
         "<ROOT>/op/.kirocrew/mcp/resolved",
         "<ROOT>/op/.kiro/agents",
+        "<ROOT>/op/.kiro/mates/migrated.json",
     ],
     "writable_dirs": ["<ROOT>/crew/run/mcp-tmp/probe-x"],
     "sensitive_files": [
@@ -624,6 +635,7 @@ _PROFILE_GOLDEN = """\
 (deny file-write* (literal "<ROOT>/crew"))
 (deny file-write* (literal "<ROOT>/op/.kiro"))
 (deny file-write* (literal "<ROOT>/op"))
+(deny file-write* (literal "<ROOT>/op/.kiro/mates"))
 (deny file-write* (literal "<ROOT>/op/.kiro/crew"))
 (deny file-write* (literal "<ROOT>/op/.kiro/crew/apps"))
 (deny file-write* (literal "<ROOT>/op/.kiro/crew/mcp"))
@@ -692,6 +704,9 @@ _PROFILE_GOLDEN = """\
 (deny file-write* (literal "<ROOT>/op/.kiro/agents"))
 (deny file-write* (subpath "<ROOT>/op/.kiro/agents"))
 (deny file-link (subpath "<ROOT>/op/.kiro/agents"))
+(deny file-write* (literal "<ROOT>/op/.kiro/mates/migrated.json"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/mates/migrated.json"))
+(deny file-link (subpath "<ROOT>/op/.kiro/mates/migrated.json"))
 (deny file-read* (literal "<ROOT>/op/.npmrc"))
 (deny file-link (literal "<ROOT>/op/.npmrc"))
 (deny file-read* (literal "<ROOT>/op/.netrc"))
@@ -799,6 +814,7 @@ _HOST_READERS: dict[str, tuple[str, ...]] = {
         "_relocated_crew_targets",
         "_relocated_policy_cache_dirs",
         "_resolved_kiro_agents_targets",
+        "_resolved_mate_ledger_targets",
         "_sandbox_policy",
         "_ssh_supports_accept_new",
         "_voice_runtime_parent_paths",
@@ -809,6 +825,7 @@ _HOST_READERS: dict[str, tuple[str, ...]] = {
         "_relocated_crew_targets",
         "_relocated_policy_cache_dirs",
         "_resolved_kiro_agents_targets",
+        "_resolved_mate_ledger_targets",
         "_sandbox_policy",
         "_voice_runtime_ancestor_guards",
         "_voice_runtime_parent_paths",

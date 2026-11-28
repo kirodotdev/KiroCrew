@@ -55,6 +55,10 @@ _EXTRA_PATH_DIRS = (
     "{home}/.volta/bin",
     "/opt/homebrew/bin",  # Apple Silicon Homebrew node / global npm bins
     "/usr/local/bin",  # Intel Homebrew + pkg-installer symlink dir
+    # Linuxbrew's default prefix, then its per-user one. A terminal gets them
+    # from ``brew shellenv``; a gateway started as a service does not.
+    "/home/linuxbrew/.linuxbrew/bin",
+    "{home}/.linuxbrew/bin",
     # n's node dir is also its ``npm i -g`` bin, so a global adapter lands here.
     # Last, so a ``node`` the Homebrew dirs above already resolve keeps winning.
     "{home}/n/bin",
@@ -467,7 +471,8 @@ def node_bin_dirs() -> tuple[str, ...]:
     3. The highest version found under each per-version manager root
        (mise / asdf / nvm / fnm; nvm under both ``~/.nvm`` and the XDG config
        dir; on Windows also fnm and nvm-windows under ``%APPDATA%``).
-    4. Shim dirs (mise shims, volta, n; on Windows also Volta's two roots).
+    4. Shim and single-dir roots (mise shims, volta, n; on Windows also Volta's
+       two roots and the nodejs.org installer's ``%ProgramFiles%\\nodejs``).
     5. Standalone Node trees -- the glibc-2.17 build ``ensure-node.sh`` unpacks
        into the data home (:data:`_NODE_TREE_DATA_HOME_DIRS`), then a
        hand-unpacked nodejs.org tarball under ``~/.local``
@@ -507,6 +512,7 @@ def node_bin_dirs() -> tuple[str, ...]:
 
     ordered.extend(d.format(home=home, mise_data=mise_data) for d in _NODE_MANAGER_DIRS)
     ordered.extend(env_node_windows.manager_dirs(home))
+    ordered.extend(env_node_windows.manager_dirs(home, templates=env_node_windows.INSTALLER_DIRS))
     # Under a KIROCREW_HOME override data_home() mkdirs, so it can raise on an
     # unwritable path. Only the data-home candidates depend on it; swallowing here
     # keeps a failure from taking out the manager and $HOME tiers with them.
@@ -834,15 +840,20 @@ def user_tool_bin_dirs(home: str) -> list[str]:
 
 
 def _extra_path_templates() -> tuple[str, ...]:
-    """:data:`_EXTRA_PATH_DIRS`, minus the fixed POSIX roots on Windows.
+    """:data:`_EXTRA_PATH_DIRS`, minus the ones that name nothing on Windows.
 
-    ``/opt/homebrew/bin`` and ``/usr/local/bin`` name nothing on Windows, where
+    ``/opt/homebrew/bin``, ``/usr/local/bin`` and Linuxbrew's
+    ``/home/linuxbrew/.linuxbrew/bin`` name nothing on Windows, where
     Python 3.12's ``isabs`` still accepts them and they resolve against the
     current drive (``C:\\opt\\homebrew\\bin``), a folder any local account can
-    create. Every ``{home}``/``{mise_data}`` template stays.
+    create. ``{home}/.toolbox/bin`` is not Toolbox's folder there either
+    (:func:`_windows_toolbox_bin_dir` is), so it would only rank a folder
+    nothing installs into ahead of the real one.
     """
     if platform_compat.IS_WINDOWS:
-        return tuple(d for d in _EXTRA_PATH_DIRS if not d.startswith("/"))
+        return tuple(
+            d for d in _EXTRA_PATH_DIRS if not d.startswith("/") and d != "{home}/.toolbox/bin"
+        )
     return _EXTRA_PATH_DIRS
 
 
@@ -870,6 +881,8 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     an ``npx`` server and its ``#!/usr/bin/env node`` reach a Node chosen for
     this host before nvm's newest, which may not load (Amazon Linux 2). Each
     must hold an executable ``node``; a pinned ``home`` gets neither.
+    On Windows the nodejs.org installer's folder is the last extra, behind every
+    version manager's dirs.
 
     The interpreter's own dir and its console-scripts dir (they differ only on
     the Windows desktop backend, ``python.exe`` at the root and scripts in
@@ -912,11 +925,7 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     # prepended in this order, so the override's own ``kirocrew`` never shadows it.
     lead = extra + pinned if pinned else []
     extra += pinned
-    extra += [
-        e
-        for d in _extra_path_templates()
-        if (e := _validated_bin_dir(d.format(home=resolved_home, mise_data=mise_data)))
-    ]
+    extra += user_tool_bin_dirs(resolved_home)
     if platform_compat.IS_WINDOWS and (
         toolbox_bin := _windows_toolbox_bin_dir(resolved_home, home)
     ):
@@ -930,6 +939,7 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     extra += _node_all_bin_dirs(
         resolved_home, mise_data, _xdg_config_dir(resolved_home), windows_globs
     )
+    extra += env_node_windows.manager_dirs(resolved_home, home, env_node_windows.INSTALLER_DIRS)
     # No anchors on Windows: System32 comes first there and _SYSTEM_BIN_DIRS never
     # matches, so anchoring would push every extra behind System32.
     entries = env_node_pins.without_dirs(base_path.split(os.pathsep) if base_path else [], lead)
@@ -1100,8 +1110,69 @@ def spec_env_path(env_path: str) -> str:
     if not isinstance(env_path, str):
         logger.debug("ignoring non-string MCP spec PATH: %s", type(env_path).__name__)
         env_path = ""
-    parts = [*_spec_path_entries(env_path), augmented_path(os.environ.get("PATH", ""))]
-    return dedup_path(os.pathsep.join(filter(None, parts)))
+    return _joined_spec_path(_spec_path_entries(env_path), gateway_spec_path())
+
+
+#: The gateway part this process is fixed to (:func:`pin_gateway_spec_path`).
+_PINNED_GATEWAY_SPEC_PATH: str | None = None
+
+
+def gateway_spec_path() -> str:
+    """The part of an expanded spec ``PATH`` that comes from this process.
+
+    :func:`spec_env_path` appends it after the spec's own entries. It is this
+    process's own ``PATH`` plus the well-known MCP directories, so it moves when
+    the service unit is re-rendered or a package installer adds a version
+    directory, while the spec's own entries stay as written. The launch
+    approval hash (``mcp_gateway.hashing``) reads it from here, so the writer
+    and the hash use one composition. A pinned part stays fixed whatever this
+    process's ``PATH`` does, so a live ``.env`` ``PATH`` edit or an added ``ffmpeg``
+    directory reaches a declared spec ``PATH`` at the next gateway start, as it
+    reaches a pooled backend's inherited env.
+    """
+    if _PINNED_GATEWAY_SPEC_PATH is not None:
+        return _PINNED_GATEWAY_SPEC_PATH
+    return augmented_path(os.environ.get("PATH", ""))
+
+
+def pin_gateway_spec_path(value: str) -> None:
+    """Fix this process's gateway part to *value*.
+
+    The gateway pins it when its MCP broker starts and hands it to gatewayd,
+    so the rewriter, the dashboard and gatewayd fold one composition
+    (:func:`spec_path_own_entries`) for the life of the daemon.
+    """
+    global _PINNED_GATEWAY_SPEC_PATH
+    _PINNED_GATEWAY_SPEC_PATH = value
+
+
+def pinned_gateway_spec_path() -> str | None:
+    """The part :func:`pin_gateway_spec_path` fixed, or ``None``; never scans."""
+    return _PINNED_GATEWAY_SPEC_PATH
+
+
+def _joined_spec_path(own: list[str], gateway_part: str) -> str:
+    return dedup_path(os.pathsep.join(filter(None, [*own, gateway_part])))
+
+
+def spec_path_own_entries(value: str, gateway_part: str) -> list[str] | None:
+    """The spec's own leading entries of an expanded *value*, or ``None``.
+
+    The shortest prefix of *value* that :func:`spec_env_path`, given
+    *gateway_part* as this process's part, expands back to exactly *value*.
+    ``None`` when no prefix does, so *value* is not this composition (a
+    hand-written ``PATH``, or one expanded under another gateway ``PATH``).
+    Shortest, so a spec entry that also leads *gateway_part* in the same order
+    counts as the gateway's; that can only cost a re-approval later, since the
+    child's ``PATH`` is the same either way.
+    """
+    if not gateway_part:
+        return None
+    entries = value.split(os.pathsep)
+    for k in range(len(entries) + 1):
+        if _joined_spec_path(entries[:k], gateway_part) == value:
+            return entries[:k]
+    return None
 
 
 def mcp_search_path(env_path: str) -> str:
@@ -1561,20 +1632,31 @@ def expand_spec_args(args: Any, *, server: str | None = None) -> Any:
     from kiro_crew.mcp_gateway.rewriter import _expand_env_placeholders
 
     source = {name: value for name in _SPEC_ARG_VARS if (value := os.environ.get(name))}
-    # On Windows the home and login-name live under USERPROFILE/USERNAME, not
-    # HOME/USER, so a POSIX-written ``${HOME}``/``${USER}`` would stay literal
-    # (the process has no HOME). Fill each missing name from its Windows twin so
-    # the one home Path.home() already resolves there (see managed_mcp.py's
-    # _HOME_DERIVING_ENV_KEYS) reaches the spec. A set HOME/USER still wins, and
-    # no name outside _SPEC_ARG_VARS is read, so no other value reaches argv.
-    if platform_compat.IS_WINDOWS:
-        for name, twin in (("HOME", "USERPROFILE"), ("USER", "USERNAME")):
-            if name not in source and (value := source.get(twin)):
-                source[name] = value
+    # The twins are read from this filtered source, so no name outside
+    # _SPEC_ARG_VARS is read and no other value reaches argv.
+    source.update(windows_twin_fills(source))
     return [
         _expand_env_placeholders(a, source=source, server=server) if isinstance(a, str) else a
         for a in args
     ]
+
+
+def windows_twin_fills(source: Mapping[str, str]) -> dict[str, str]:
+    """The ``HOME``/``USER`` values *source* lacks, read from their Windows twins.
+
+    Windows keeps the home and login name in ``USERPROFILE``/``USERNAME`` and the
+    process may have no ``HOME``/``USER``, so a POSIX-written ``${HOME}`` would
+    stay literal. A name missing or empty in *source* is filled from its twin,
+    the one home ``Path.home()`` resolves there (see managed_mcp.py's
+    ``_HOME_DERIVING_ENV_KEYS``); a set one still wins. ``{}`` off Windows.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return {}
+    return {
+        name: value
+        for name, twin in (("HOME", "USERPROFILE"), ("USER", "USERNAME"))
+        if not source.get(name) and (value := source.get(twin))
+    }
 
 
 def activate_mise(env: MutableMapping[str, str] | None = None) -> list[str]:

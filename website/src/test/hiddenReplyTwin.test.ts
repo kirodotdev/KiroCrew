@@ -15,7 +15,7 @@ describe('hidden-reply twins agree (shared fixture)', () => {
   type Case = { name: string; rows: Row[]; hidden: boolean[] }
   const cases: Case[] = JSON.parse(readFileSync(FIXTURE, 'utf8')).cases
   it('has enough cases to mean something', () => {
-    expect(cases.length).toBeGreaterThanOrEqual(21)
+    expect(cases.length).toBeGreaterThanOrEqual(25)
     expect(new Set(cases.map(c => c.hidden[c.hidden.length - 1]))).toEqual(new Set([true, false]))
   })
   for (const c of cases) {

@@ -10,6 +10,7 @@ import {
   setPanelToggleBinding,
   type PanelToggleId,
 } from '../lib/panelToggleShortcuts'
+import { announceShortcutRecording, useCancelWhenAnotherRecorderStarts } from './useExclusiveShortcutRecording'
 
 export interface UsePanelToggleShortcuts {
   /** The live resolved binding per panel (`null` = unbound), re-read on change. */
@@ -48,8 +49,12 @@ export function usePanelToggleShortcuts(): UsePanelToggleShortcuts {
     }
   }, [])
 
-  const startRecording = useCallback((id: PanelToggleId) => setRecordingId(id), [])
+  const startRecording = useCallback((id: PanelToggleId) => {
+    announceShortcutRecording()
+    setRecordingId(id)
+  }, [])
   const cancelRecording = useCallback(() => setRecordingId(null), [])
+  useCancelWhenAnotherRecorderStarts(recordingId !== null, cancelRecording)
   const clear = useCallback((id: PanelToggleId) => {
     setRecordingId(null)
     setPanelToggleBinding(id, null)

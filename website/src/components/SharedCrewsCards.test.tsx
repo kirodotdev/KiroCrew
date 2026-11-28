@@ -156,6 +156,14 @@ describe('SharedCrewsCards', () => {
     expect(link).toHaveAttribute('rel', 'noreferrer')
   })
 
+  it('says the relay domain setting hid the listed Crews instead of the empty state (row 65)', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [], offDomain: 1 })
+    renderWithProviders(<SharedCrewsCards />)
+    expect(await screen.findByTestId('shared-crews-off-domain')).toHaveTextContent('tunnel.relay_viewer_relay_domain')
+    expect(screen.queryByTestId('shared-crews-empty')).toBeNull()
+  })
+
   it.each([[409, 'SIGNED_OUT'], [403, 'REMOTE_ACCESS_DISABLED']])(
     'renders nothing, with no notice, when the read answers %i %s',
     async (status, code) => {

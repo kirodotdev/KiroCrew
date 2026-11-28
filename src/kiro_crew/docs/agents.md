@@ -63,7 +63,7 @@ Cron jobs can specify an agent at creation time.
 
 Kiro Crew owns and rewrites a fixed set of specs; [agent-spec-fields.md](agent-spec-fields.md) lists every one of them with what refreshes it. The primary and lite specs are required; the others support goal conducting, pipeline fleet supervision, security conducting, knowledge extraction, research, and heartbeat features.
 
-`kirocrew-conductor` tracks its goal in the work ledger: it mounts `kirocrew-work`, binds each item to a session before seeding it, and settles every completion claim with the acceptance evaluator instead of by reading a transcript. **Conductor mode** is a chat that runs on a conductor: pick `kirocrew-conductor` in the agent picker and the chat keeps its memory and history and runs on it. From the first message on it is locked, so the chat stays on the conductor; start a new chat to work with another agent. Turning it on in a chat that already has messages asks you to confirm first, since it cannot be undone there. Making the conductor the default agent starts every new chat on it the same way. `agent.crew_mode_agent` names the conductor conductor mode runs (default `kirocrew-conductor`); changing it, or an update that ships a new default, moves every conductor mode chat, new and old, onto the new conductor (a busy chat at its next idle point), and the chat keeps its work ledger. Every conductor is conductor mode: a chat you started on the team lead, the pipeline, security or ledger conductor, scheduled ones included, is a conductor mode chat when the dashboard loads it, locked the same way. A chat that turned conductor mode on (switched onto the conductor, or a new chat born on it) keeps the sessions it dispatches out of your folders; History still lists them. A conductor chat from before the switch existed keeps filing them as it always did. Nothing is deleted and no folder moves. The server enforces the lock: once the chat has a user message, switching a conductor mode chat to another agent, from the picker, `/agent` or a session-control send, is refused with `409 crew_mode_locked`, and an agent switch the backend makes mid-turn is blocked the same way. Before the first message only a switch back to a template that is not a conductor passes. The pipeline and security conductors mount `kirocrew-work` too and record each item they dispatch as a work-ledger row, which is what their Dashboard tab reads; their own queue or findings ledger stays the detail behind that row. `kirocrew-ledger-conductor` is a deprecated alias of it — the same spec under the flow's old name, kept for one release so a session or cron that names the old string keeps resolving, and removed next release. `kirocrew-worker` is the agent a conductor names for a leaf item — the default agent's own resolved toolset plus the two reporting tools. In short, `kirocrew-worker` is `kirocrew` + `@kirocrew-work` − cron scheduling − the opt-in sets nobody assigned to it: a worker gets your default agent's own toolset so it can do any item's work, but it does not auto-approve scheduling a recurring job that would outlive the item. Which fields are mirrored, when the mirror is re-checked, and what happens when it cannot be re-derived are in [agent-spec-fields.md](agent-spec-fields.md).
+`kirocrew-conductor` tracks its goal in the work ledger: it mounts `kirocrew-work`, binds each item to a session before seeding it, and settles every completion claim with the acceptance evaluator instead of by reading a transcript. **Conductor mode** is a chat that runs on a conductor: pick `kirocrew-conductor` in the agent picker and the chat keeps its memory and history and runs on it. From the first message on it is locked, so the chat stays on the conductor; start a new chat to work with another agent. Turning it on in a chat that already has messages asks you to confirm first, since it cannot be undone there. Making the conductor the default agent starts every new chat on it the same way. `agent.crew_mode_agent` names the conductor conductor mode runs (default `kirocrew-conductor`); changing it, or an update that ships a new default, moves every conductor mode chat, new and old, onto the new conductor (a busy chat at its next idle point), and the chat keeps its work ledger. Naming the default agent there makes the chats on it conductor mode chats, existing ones included, except an Incognito or Temporary chat, one another session or an app opened, and one on another machine: the setting does not make those conductor mode chats. Whenever the default agent is a conductor, a new chat can still move to another agent template from the picker until its first message. Once `agent.crew_mode_agent` names another agent, the chats that were on the agent before read as plain chats again, while a chat started under it stays in conductor mode unless it was moved before its first message. Every conductor is conductor mode: a chat you started on the team lead, the pipeline, security or ledger conductor, scheduled ones included, is a conductor mode chat when the dashboard loads it, locked the same way. A chat that turned conductor mode on (switched onto the conductor, or a new chat born on it) keeps the sessions it dispatches out of your folders; History still lists them. A conductor chat from before the switch existed keeps filing them as it always did. Nothing is deleted and no folder moves. The server enforces the lock: once the chat has a user message, switching a conductor mode chat to another agent, from the picker, `/agent` or a session-control send, is refused with `409 crew_mode_locked`, and an agent switch the backend makes mid-turn is blocked the same way. Before the first message only a switch back to a template that is not a conductor passes. The pipeline and security conductors mount `kirocrew-work` too and record each item they dispatch as a work-ledger row, which is what their Dashboard tab reads; their own queue or findings ledger stays the detail behind that row. `kirocrew-ledger-conductor` is a deprecated alias of it — the same spec under the flow's old name, kept for one release so a session or cron that names the old string keeps resolving, and removed next release. `kirocrew-worker` is the agent a conductor names for a leaf item — the default agent's own resolved toolset plus the two reporting tools. In short, `kirocrew-worker` is `kirocrew` + `@kirocrew-work` − cron scheduling − the opt-in sets nobody assigned to it: a worker gets your default agent's own toolset so it can do any item's work, but it does not auto-approve scheduling a recurring job that would outlive the item. Which fields are mirrored, when the mirror is re-checked, and what happens when it cannot be re-derived are in [agent-spec-fields.md](agent-spec-fields.md).
 
 ### Conductor mode in the dashboard
 
@@ -79,6 +79,16 @@ conductor mode chat, its side panel opens on the **Board**. To keep the panel
 closed instead, turn off **Settings → Chat → Side panel → Auto-Open Board in Side
 Panel** (on by default). Conductor mode used to be a Feature Preview; a switch for
 it saved from then is ignored.
+
+A link can open a new chat with a prompt waiting in its composer:
+`<dashboard>/chat?new=1&prefill=<URL-encoded prompt>`. Add `&conductor=1` to open
+that chat in conductor mode, on whichever agent `agent.crew_mode_agent` names, or
+`&bot=<name>` to open it on one of your own Bots instead (a name that is not one
+of your Bots is refused rather than opened on another agent). If the dashboard
+tries to turn conductor mode on and is refused, the chat still opens as a plain
+chat and says so. The prompt is never
+sent for you: you read it and press Enter. A bookmark, a browser userscript or an
+issue page can build these links.
 
 The LTS edition does not offer conductor mode:
 
@@ -204,6 +214,41 @@ To add, turn on or turn off an MCP server, use **MCP Servers**
 opens that page with `find_ui` or a guide, or offers an MCP card through
 `propose_change`. It does not tell you to hand-edit `kirocrew.json` or run
 `jq`/`sed` on it.
+
+An agent cannot write `~/.kiro/settings/mcp.json` itself: its file tools
+refuse the file and the agent sandbox holds it read-only. To add a server there,
+the agent's `request_server` card takes `target: "kiro-cli"`, and the card names
+the file it also writes. A `/mcp add` or `/mcp remove` you type in a dashboard
+chat never reaches the harness: Kiro Crew reads it, on every harness, in
+kiro-cli's flag spelling, and shows the same MCP server card, filled in. Nothing
+changes until you apply the card. A command the card cannot carry, or one sent
+from a messaging channel, gets one reply that links the MCP Servers page.
+`kiro-cli mcp add` in your own terminal is not affected.
+
+The same holds for a project's own MCP files, `.kiro/settings/mcp.json` and
+`.mcp.json`, in any folder. The agent asks with `request_server` instead, and the
+card adds the server to Kiro Crew's own list. To add it only to the chat's own
+folder, the card takes `target: "project"`, names the file and the command, and
+its button reads **Add** and the server's name **to this project**. Only a Kiro chat whose agent sets
+`includeMcpJson` gets that card (the default agent does not), and it writes
+`.kiro/settings/mcp.json`. In any other chat Kiro Crew cannot be sure the file
+loads, so the agent is told to use Kiro Crew's own list instead. On Linux, the sandbox seals only a file that already exists when the chat
+starts.
+
+A server in a folder's project MCP file starts only after you allow that
+launch in that folder. A server you have not allowed there, or whose launch
+changed, is held back when a chat starts, and the chat shows a card with the
+file, the launch and what changed. **Allow** the server **in this folder**
+records it and restarts the open chats; **Skip for this chat** keeps it held,
+and the next chat in that folder asks again. A server the project card above
+added is already allowed. A server name Kiro Crew cannot pass on to the agent
+stops the chat in that folder from starting: rename the server in the file,
+then start a new chat.
+
+An agent cannot write an installed app's `app.json` either
+(`~/.kiro/crew/apps/<name>/app.json`): its file tools refuse it and the
+sandbox holds it read-only. Only installing or updating the app changes it, and an
+agent that needs a server asks with `request_server`.
 
 If a server's tools are missing from sessions, check that tab first. A server
 whose program is not found on this computer is dropped from the spec at the

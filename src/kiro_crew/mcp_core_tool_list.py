@@ -50,10 +50,9 @@ def _redeem_pickup() -> None:
     because listing the tools already reads this session's tool policy from the
     gateway. A second call finds no pickup and does nothing.
     """
-    from kiro_crew.agent_ipc_client import redeem_at_startup
-    from kiro_crew.port_resolution import resolve_client_port_src
+    from kiro_crew.agent_ipc_client import redeem_server_pickup
 
-    redeem_at_startup(lambda: resolve_client_port_src(None)[0])
+    redeem_server_pickup()
 
 
 #: The server as ``initialize`` describes it. ``kiro_crew.mcp_core.run_mcp_core_server``

@@ -8,6 +8,8 @@ that has nothing to do with the bundle.
 
 from __future__ import annotations
 
+import os
+import shutil
 import sqlite3
 import tarfile
 from pathlib import Path
@@ -118,6 +120,83 @@ class TestAMidMutationIoFailureIsReportedNotRaised:
             encoding="utf-8"
         ), "the operator's own crons were replaced or lost"
         assert (home / "memory.db").read_bytes() == original
+
+    @pytest.mark.parametrize("pinned", [True, False], ids=["pinned", "by_name"])
+    def test_a_core_file_whose_move_aside_fails_is_left_in_place(
+        self, home, tmp_path, monkeypatch, capsys, pinned
+    ):
+        """A move that raised saved nothing, so recovery must not delete the live file.
+
+        A program holding the file (a scanner, a sync client) makes the move raise; the
+        live file is then the only copy of the operator's crons.
+        """
+        if pinned and unpinnable_argv():
+            pytest.skip("no pinned staging on this platform")
+        live = b'{"jobs": [{"id": "LIVE"}]}'
+        (home / "crons.json").write_bytes(live)
+        payload = tmp_path / "kirocrew-snapshot-20260101T000000Z"
+        payload.mkdir(parents=True)
+        (payload / "crons.json").write_text('{"jobs": [{"id": "ARCHIVE"}]}', encoding="utf-8")
+        (payload / "MANIFEST.json").write_text(
+            '{"version": 3, "components": {"crons": "unresolved"}}', encoding="utf-8"
+        )
+        bundle = tmp_path / "held.tar.gz"
+        with tarfile.open(bundle, "w:gz") as tf:
+            tf.add(str(payload), arcname=payload.name)
+
+        if pinned:
+            real_rename = os.rename
+
+            def rename(src, dst, *a, **k):
+                if src == "crons.json" and k.get("dst_dir_fd") is not None:
+                    raise PermissionError(13, "The process cannot access the file")
+                return real_rename(src, dst, *a, **k)
+
+            monkeypatch.setattr(os, "rename", rename)
+        else:
+            monkeypatch.setattr(snap, "_staging_is_pinned", lambda **_k: False)
+            real_move = shutil.move
+
+            def move(src, dst, *a, **k):
+                if Path(src) == home / "crons.json":
+                    raise PermissionError(13, "The process cannot access the file")
+                return real_move(src, dst, *a, **k)
+
+            monkeypatch.setattr(shutil, "move", move)
+
+        rc = snap.restore_main(
+            [str(bundle), "--mode", "replace", "--force", "--components", "crons"]
+            + unpinnable_argv()
+        )
+        out = capsys.readouterr().out
+        assert rc == 1, out
+        assert (home / "crons.json").is_file(), "recovery deleted a live file it never saved"
+        assert (home / "crons.json").read_bytes() == live, out
+
+    def test_a_derived_index_whose_move_aside_fails_is_left_in_place(
+        self, home, tmp_path, monkeypatch, capsys
+    ):
+        """The same rule for the live index a bundle lacks, which is moved aside too."""
+        (home / "memory.db").write_bytes(_real_db(tmp_path / "live.db"))
+        index = _real_db(tmp_path / "index.db")
+        (home / "memory_index.db").write_bytes(index)
+        real_move = shutil.move
+
+        def move(src, dst, *a, **k):
+            if Path(src) == home / "memory_index.db":
+                raise PermissionError(13, "The process cannot access the file")
+            return real_move(src, dst, *a, **k)
+
+        monkeypatch.setattr(shutil, "move", move)
+
+        rc = snap.restore_main(
+            [str(_bundle(tmp_path)), "--mode", "replace", "--force", "--components", "memory"]
+            + unpinnable_argv()
+        )
+        out = capsys.readouterr().out
+        assert rc == 1, out
+        assert (home / "memory_index.db").is_file(), "recovery deleted an index it never saved"
+        assert (home / "memory_index.db").read_bytes() == index, out
 
 
 class TestTheIntegrityCheckLeavesNoOpenHandle:

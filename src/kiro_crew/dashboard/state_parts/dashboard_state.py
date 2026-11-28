@@ -11,6 +11,7 @@ import logging
 import os
 import threading
 import weakref
+from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -495,6 +496,10 @@ class DashboardState:
         # /api/slack/reconnect). Set by the gateway that owns the Slack socket;
         # None on a server with no socket owner.
         self.slack_reconnect: Callable[[], Awaitable[dict[str, Any]]] | None = None
+        # Waits for that reconnect while it runs and returns at once otherwise;
+        # dashboard sends to Slack read the client it publishes afterwards
+        # (``dashboard.slack_reconnect_wait``). Set beside ``slack_reconnect``.
+        self.slack_reconnect_wait: Callable[[], Awaitable[None]] | None = None
         # The Slack owner-claim window (``kiro_crew.slack.owner_claim.OwnerClaim``,
         # /api/slack/owner-claim). Set beside ``slack_reconnect``; None otherwise.
         self.slack_owner_claim: Any = None
@@ -505,6 +510,14 @@ class DashboardState:
         # Short reason when the Discord channel failed to start, empty when
         # running or never attempted. Read by the settings badge.
         self.discord_connect_error: str = ""
+        # What the last in-place Discord reconnect could not apply (a rejected
+        # token, refused intents), empty otherwise. Set by
+        # ``discord.gateway.reconnect_discord``; read by the settings save.
+        self.discord_reconnect_error: str = ""
+        # Brings the live Discord client in line with a settings save
+        # (``discord.gateway.reconcile_after_save``). Set by maybe_start_discord;
+        # None until Discord started.
+        self.discord_reconcile: Callable[[], Awaitable[None]] | None = None
         # True once the Telegram channel's long-polling transport started this
         # session (set by maybe_start_telegram). Read by the Telegram settings
         # status badge.
@@ -596,7 +609,6 @@ class DashboardState:
         # pre-loop, post-detection); status_snapshot() reads this attribute so
         # subprocess never runs on the event loop. See module-level _build_info.
         self._build_info: tuple[str, str] = _build_info
-        self.messages_received = 0
         # Broadcast: each SSE client gets its own queue; _notify_event wakes all
         self._sse_queues: list[asyncio.Queue[dict[str, Any]]] = []
         self._notify_event = asyncio.Event()
@@ -629,6 +641,13 @@ class DashboardState:
         # Web Push subscription store (browser push endpoints). State-owned like
         # the bus/limiter/settings so its lifecycle matches the gateway.
         self.push_subscription_store = PushSubscriptionStore()
+        # Notes waiting for Web Push, the one drain sending them, and how many a
+        # burst dropped since the drain last reported (dashboard_services).
+        self._web_push_queue: deque[dict[str, Any]] = deque(
+            maxlen=_dashboard_services._WEB_PUSH_QUEUE_MAX
+        )
+        self._web_push_drain: asyncio.Task[None] | None = None
+        self._web_push_dropped = 0
         # Notification bus (schema v2) — notify() adapts legacy calls onto it;
         # _deliver_note is the delivery sink (log, count, broadcast, persist).
         # The bridge runs after it, so a chat transport never delays the
@@ -708,6 +727,8 @@ class DashboardState:
         # refuses every one of them. Bounded at three entries by construction, so
         # it needs no size cap and no eviction pass.
         self._voice_sandbox_notified: dict[str, float] = {}
+        # MCP servers a person's chat already named as waiting for a sign-in this run.
+        self._mcp_sign_in_notice_servers: set[str] = set()
         # Slot keys that EXIST but are deliberately absent from ``_slots`` while
         # they are being built (see ``session_transfer``'s import path, which
         # retracts a slot so it is unreachable until its transcript and context
@@ -919,6 +940,9 @@ class DashboardState:
         # must be held, and both must be detached in the reverse of the order
         # they were armed.
         self._secondary_listener_guard: "ListenerGuard | None" = None
+        # One guard per entry-port listener on Windows, in the order they were
+        # armed (server._arm_entry_listener_guards); empty elsewhere.
+        self._entry_listener_guards: "list[ListenerGuard]" = []
         # Which listener sidecar each guarded listener owns, keyed "primary" /
         # "secondary", as (port, address, secret). Written after publication and
         # read by the guards' lifecycle hooks, which withdraw the claim while the
@@ -929,6 +953,13 @@ class DashboardState:
         # gateway announces it to the MCP gateway daemon it owns, which binds
         # pooled control-plane backends to it. Never read from os.environ.
         self._listener_bound_port: int = 0
+        # Set when the gateway stops itself because the policy refuses the primary
+        # listener's address; read for the exit status (``bind_refresh``).
+        self._bind_refused_stop: bool = False
+        # The one pending restart task for a refused bind address (``bind_refresh``).
+        self._bind_restart_task: asyncio.Task[None] | None = None
+        # The address the primary bind asked ``bind_address`` for, IPv6 zone included.
+        self._bind_asked: str = ""
         # Prevent-sleep inhibitor + its poll task. Held to prevent GC and
         # released/cancelled on shutdown; annotated here so the assignments in
         # start_dashboard type-check under mypy.

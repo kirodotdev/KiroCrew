@@ -341,6 +341,10 @@ class TestCronCli:
             assert exc.value.code == 1
             out, err = capsys.readouterr()
             assert "invalid channel ID format" in err
+            # Plain words and where to find one, never the raw regex.
+            assert "starts with C, D, G or W" in err
+            assert "Channel ID" in err
+            assert "[CDGW]" not in err
             assert out == ""
             mock_svc.update_job.assert_not_called()
 

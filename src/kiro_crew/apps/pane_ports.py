@@ -164,7 +164,11 @@ async def note_pane_request(request: web.Request, token: str) -> None:
     Never raises: a failure here must not fail the request.
     """
     try:
-        from kiro_crew.dashboard.origin import is_direct_local_request, is_proxied_request
+        from kiro_crew.dashboard.origin import (
+            is_direct_local_request,
+            is_host_forwarded_request,
+            is_proxied_request,
+        )
 
         # The claim first: it is the cheap test, and this runs on every
         # authenticated request.
@@ -175,7 +179,9 @@ async def note_pane_request(request: web.Request, token: str) -> None:
         port = _host_port(request)
         if port is None:
             return
-        if is_proxied_request(request) or not is_direct_local_request(request):
+        if is_proxied_request(request) or not (
+            is_direct_local_request(request) or is_host_forwarded_request(request)
+        ):
             return
         forward = claims.get("embed_forward_port")
         if forward is not None and _port(forward) != port:

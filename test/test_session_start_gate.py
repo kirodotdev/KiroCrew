@@ -76,6 +76,10 @@ def _make_runtime(
     # loop yields between a start and its wire request, so it answers at once here
     # (test_acp_runtime_session_start covers the check itself).
     rt._refuse_over_ceiling_start = AsyncMock()  # type: ignore[method-assign]
+    # The project MCP hold is a thread hop too; test_project_mcp_hold_wire covers it.
+    rt._hold_project_servers = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda servers, *_a: servers
+    )
     if backend is not None:
         rt._acp_backend = backend
     return rt, reader, proc

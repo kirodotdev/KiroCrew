@@ -17,6 +17,8 @@ from kiro_crew.work_ledger_records import (
     ACCEPTANCE_CHECK_NAME,
     ACCEPTANCE_CHECK_REF,
     ACCEPTANCE_GH_REPO,
+    ACCEPTANCE_GIT_BASE,
+    ACCEPTANCE_GIT_BRANCH,
     ACCEPTANCE_KINDS,
     ACCEPTANCE_PLACEHOLDERS,
     ACCEPTANCE_READ_FIELDS,
@@ -542,10 +544,15 @@ def is_acceptance_concrete(acceptance: Any) -> bool:
     Non-concrete means: an empty acceptance; a ``kind`` outside :data:`ACCEPTANCE_KINDS`;
     a placeholder STRING (blank, or ``"TBD"`` in any case) in a read field; or a read
     field mistyped: a ``pr_checks`` / ``pr_merged`` ``pr`` that is not a positive
-    integer, a ``pr_merged`` ``repo`` or ``edition_check`` ``check`` / ``ref`` that does
-    not match the evaluator's pattern, a ``file`` ``path`` that is not a string, a
+    integer, a ``pr_merged`` ``repo``, ``edition_check`` ``check`` / ``ref`` or
+    ``git_commit`` ``branch`` / ``base`` that does not match the evaluator's pattern, a
+    ``git_commit`` ``repo`` or ``file`` ``path`` that is not a string, a
     ``file`` ``exists`` that is not a bool. An explicit ``null`` in an OPTIONAL read
-    field is absence, so concrete; in a required one the type rule refuses it.
+    field is absence, so concrete; in a required one the type rule refuses it. The
+    optional pins are held to the evaluator's rules too: a ``pr_merged`` ``head``
+    that is not a hex commit id, and a ``file`` ``min_bytes`` that is not a
+    non-negative integer or ``newer_than`` that is not a zoned ISO-8601 time, or
+    either beside ``"exists": false``.
 
     The type rules mirror ``accept_eval.py``'s error-only guards across a process
     boundary; a test pins them against the script. A ``cmd`` bar stays in the batch,
@@ -575,12 +582,31 @@ def is_acceptance_concrete(acceptance: Any) -> bool:
         repo = acceptance.get("repo")
         if not isinstance(repo, str) or not ACCEPTANCE_GH_REPO.fullmatch(repo):
             return False
+        head = acceptance.get("head")
+        if head is not None and (
+            not isinstance(head, str) or not ACCEPTANCE_GIT_BASE.fullmatch(head)
+        ):
+            return False
     if kind == "edition_check":
         check = acceptance.get("check")
         ref = acceptance.get("ref")
         if not isinstance(check, str) or not ACCEPTANCE_CHECK_NAME.fullmatch(check):
             return False
         if not isinstance(ref, str) or not ACCEPTANCE_CHECK_REF.fullmatch(ref):
+            return False
+    if kind == "git_commit":
+        # A relative ``repo`` stays concrete: the evaluator REFUSES it, and that
+        # refusal must reach the conductor, as for ``cmd``.
+        repo = acceptance.get("repo")
+        if not isinstance(repo, str) or "\x00" in repo:
+            return False
+        branch = acceptance.get("branch")
+        if not isinstance(branch, str) or not ACCEPTANCE_GIT_BRANCH.fullmatch(branch):
+            return False
+        if ".." in branch:
+            return False
+        base = acceptance.get("base")
+        if not isinstance(base, str) or not ACCEPTANCE_GIT_BASE.fullmatch(base):
             return False
     if kind == "file":
         if not isinstance(acceptance.get("path"), str):
@@ -591,7 +617,36 @@ def is_acceptance_concrete(acceptance: Any) -> bool:
         # one — the reason that guard is a type check rather than ``bool()``.
         if not isinstance(acceptance.get("exists", True), bool):
             return False
+        return _file_pins_concrete(acceptance)
     return True
+
+
+def _file_pins_concrete(acceptance: dict[str, Any]) -> bool:
+    """Whether a ``file`` bar's optional pins are ones ``accept_eval.py`` can read."""
+    min_bytes = acceptance.get("min_bytes")
+    newer_than = acceptance.get("newer_than")
+    if min_bytes is None and newer_than is None:
+        return True
+    if acceptance.get("exists", True) is False:
+        return False
+    if min_bytes is not None and (
+        isinstance(min_bytes, bool) or not isinstance(min_bytes, int) or min_bytes < 0
+    ):
+        return False
+    return newer_than is None or _is_zoned_instant(newer_than)
+
+
+def _is_zoned_instant(value: Any) -> bool:
+    """``accept_eval.py``'s ``_parse_instant``: ISO-8601 with a zone, ``Z`` read as UTC."""
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if text[-1:] in ("Z", "z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text).utcoffset() is not None
+    except ValueError:
+        return False
 
 
 def _is_placeholder(value: Any) -> bool:

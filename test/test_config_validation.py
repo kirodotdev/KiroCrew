@@ -18,7 +18,7 @@ from kiro_crew.config import validation
 
 
 def test_published_metadata_requires_config_validator() -> None:
-    """A base install must declare the validator used by the config loader."""
+    """A base install still declares jsonschema, the parity tests' reference validator."""
     requirements = metadata.requires("kirocrew") or []
     assert any(
         req.lower().startswith("jsonschema") and "extra" not in req.partition(";")[2].lower()
@@ -293,6 +293,19 @@ class TestValidateConfigData:
         validation.validate_config_data(data)
         assert data["session"]["pool_size"] == 5
         assert data["agent"]["subagent_cost_gb"] == 0.25
+
+    def test_schema_validator_is_reused_per_schema_object(self) -> None:
+        first = {"type": "object", "properties": {"n": {"type": "integer"}}}
+        second = {"type": "object", "properties": {"n": {"type": "string"}}}
+        validator = validation._schema_validator(first)
+        assert validation._schema_validator(first) is validator
+        # A different schema object is validated by its own rules.
+        assert not validation._schema_validator(second).is_valid({"n": 1})
+        assert validation._schema_validator(first).is_valid({"n": 1})
+
+    def test_schema_validator_rejects_a_broken_schema(self) -> None:
+        with pytest.raises(ValueError):
+            validation._schema_validator({"type": 12})
 
 
 class TestLoaderBackCompatReexport:

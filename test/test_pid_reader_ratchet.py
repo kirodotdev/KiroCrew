@@ -181,7 +181,7 @@ _BASELINE: dict[str, tuple[int, int]] = {
     "acp/session_provider.py": (3, 0),
     "acp/session_provider_context.py": (1, 0),
     "apps/builtins/code_review_sage/sage_lib/review_pool.py": (0, 1),
-    "connections/mint.py": (2, 0),
+    "connections/mint.py": (2, 1),
     "connections/mint_kas.py": (0, 4),
     "dashboard/chat_turn/mcp_session.py": (2, 0),
     "dashboard/chat_utils_display.py": (2, 0),

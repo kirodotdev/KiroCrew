@@ -10,7 +10,9 @@ import { codeBrowserBranchUrl, codeBrowserCommitUrl } from '../../lib/codeBrowse
 import SegmentedControl from '../../components/SegmentedControl'
 import ReportProblemCard from './ReportProblemCard'
 import { AGENT_REQUEST_POLL_MS, AgentUpdateRequestCard, copyCommand, useArmPollFailing } from './AboutPanelUpdateFlow'
-import { AboutPanelGatewayUpdates, AboutPanelUpdateConfirm, useAboutPanelGatewayUpdate } from './AboutPanelGatewayUpdate'
+import {
+  AboutPanelGatewayUpdates, AboutPanelUpdateConfirm, offeredGatewayTarget, useAboutPanelGatewayUpdate, useInstalledAndWaiting,
+} from './AboutPanelGatewayUpdate'
 import { DesktopGatewayRestartRow, useDesktopGatewayRestart } from './DesktopGatewayRestartRow'
 import { AppAutoDownloadSwitch, GatewayAutoUpdateSwitch } from './AboutPanelUpdateSwitches'
 import { AboutPanelUpcomingUpdate } from './AboutPanelUpcomingUpdate'
@@ -22,6 +24,7 @@ import { storeAnsweredUpdateInfo, updateInfoQuery } from '../../api/updateInfoQu
 import { fmtSpeed } from '../../api/helpers'
 import { failedWithNoData } from '../../api/queryState'
 import ErrorNotice from '../../components/ErrorNotice'
+import { reportForError } from '../../utils/errorReport'
 import { LockedByPolicyBadge } from '../../components/settingRef/LockedByPolicyBadge'
 import { CopyCommand } from '../../components/agentHarness/CopyCommand'
 
@@ -298,12 +301,13 @@ export function AboutPanel() {
   // keeps failing means an approval could land unseen; a refused download means
   // the click did nothing. The poll uses the same consecutive-failure threshold
   // InAppUpdateFlow uses for the same reason — one blip is left to the next
-  // interval.
+  // interval. The report reads `error`, which React Query keeps until the next
+  // answer; `failureReason` is cleared when each poll starts.
   const agentRequestPanelError = agentRequestPollFailing
-    ? i18nT('pages.settings.aboutPanel.arm_status_poll_failing')
+    ? { message: i18nT('pages.settings.aboutPanel.arm_status_poll_failing'), report: reportForError(agentRequest.error) }
     : agentDownloadFailed
-      ? i18nT('pages.settings.aboutPanel.download_failed_reason', { reason: updateState?.state === 'error' ? updateErrorText(updateState) : i18nT(UPDATE_ERROR_KEYS.unknown) })
-      : ''
+      ? { message: i18nT('pages.settings.aboutPanel.download_failed_reason', { reason: updateState?.state === 'error' ? updateErrorText(updateState) : i18nT(UPDATE_ERROR_KEYS.unknown) }) }
+      : undefined
   // While a request is live, its card owns the one Install control. Rendering
   // the ordinary card's "Download & Install" beneath it shows two buttons for
   // one update and the reader cannot tell whether they differ. The ordinary
@@ -608,7 +612,9 @@ export function AboutPanel() {
           testId="update-install-request-error"
         />
       )}
-      {cardReady && (
+      {/* A request card that owns the install control hides this card's
+          Install when I quit button, so the note that names it is left out. */}
+      {cardReady && (updateArmed || !canArmOnQuit || !ctaOwnedByRequest) && (
         <span className="text-[12px] text-muted" data-testid="update-ready-note">
           {/* Install only arms: nothing goes down or restarts until the user
               quits, so the line says when it installs, not that it is installing. */}
@@ -651,7 +657,7 @@ export function AboutPanel() {
           </span>
         </span>
       )}
-      <AboutPanelUpdateChanges notes={updateState?.notes || ''} version={updateState?.version || ''} runningVersion={info?.version || ''} bytesAreStable={desktopBytesAreStable} />
+      <AboutPanelUpdateChanges notes={updateState?.notes || ''} version={updateState?.version || ''} runningVersion={info?.version || ''} bytesAreStable={desktopBytesAreStable} desktopLts={info?.channel === 'lts'} />
     </div>
   ) : null
 
@@ -665,6 +671,7 @@ export function AboutPanel() {
   // status.update_available is set; the update itself is gated behind a
   // changelog confirm because applying restarts the gateway.
   const gwUpdate = useAboutPanelGatewayUpdate(queryClient, { checkedAt: lastCheckedAt, status: statusCheckStatus })
+  const gwOfferInstalled = useInstalledAndWaiting(offeredGatewayTarget(gwUpdate, gwStatusLatest))
   const {
     gwTargetDisplay, gwFound, gwAhead, gwBehind, gwSelfUpdatable, gwChannel,
     gwChannelError, gwCommand, showConfirm, setShowConfirm, restarting, gwCheck, gwApply,
@@ -874,9 +881,20 @@ export function AboutPanel() {
                     style={{ color: 'var(--warn)', background: 'color-mix(in oklab, var(--warn) 14%, transparent)' }}
                     data-testid="hero-diverged">
                     <GitBranch size={11} className="lucide-inline" aria-hidden /> {i18nT('pages.settings.aboutPanel.diverged')}</span>
+                // The offered version is installed or armed and waits for a restart:
+                // the same status fact the Updates card reads, worded as the header
+                // pill words each state.
+                : newestUpdateAvailable && gwOfferInstalled
+                ? <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold rounded-full px-2 py-0.5"
+                    style={{ color: 'var(--warn)', background: 'color-mix(in oklab, var(--warn) 14%, transparent)' }}
+                    data-testid={gwOfferInstalled === 'armed' ? 'hero-update-armed' : 'hero-update-ready'}>
+                    <RefreshCw size={11} className="lucide-inline" aria-hidden /> {i18nT(gwOfferInstalled === 'armed'
+                      ? 'components.updatePill.update_when_i_restart'
+                      : 'components.updatePill.update_ready')}</span>
                 : newestUpdateAvailable
                 ? <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold rounded-full px-2 py-0.5"
-                    style={{ color: 'var(--warn)', background: 'color-mix(in oklab, var(--warn) 14%, transparent)' }}>
+                    style={{ color: 'var(--warn)', background: 'color-mix(in oklab, var(--warn) 14%, transparent)' }}
+                    data-testid="hero-update-available">
                     <ArrowUp size={11} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.update_available')}</span>
                 // The followed lane has never published these bytes, so this
                 // install is not on it yet. Outranks "Up to date", which is what
@@ -969,7 +987,8 @@ export function AboutPanel() {
                       {i18nT('pages.settings.aboutPanel.update_channel_requires', { channel: info.requiredChannel })}
                     </span>
                   )}
-                  <LockedByPolicyBadge />
+                  {/* Only an LTS build requires a channel, and no policy moves it. */}
+                  <LockedByPolicyBadge setByEdition />
                 </span>
               ) : channel}
           </Row>
@@ -979,7 +998,8 @@ export function AboutPanel() {
             <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>
               <span className="inline-flex items-center gap-2">
                 {channelLabel(effectiveGwChannel)}
-                <LockedByPolicyBadge />
+                {/* `lts` is the edition's own channel; no policy moves it. */}
+                <LockedByPolicyBadge setByEdition />
               </span>
             </Row>
           </div>

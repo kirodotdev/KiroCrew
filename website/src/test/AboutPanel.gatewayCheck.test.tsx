@@ -943,8 +943,9 @@ describe('AboutPanel gateway update check', () => {
   })
 
   it('carries both deep-link anchors from the first paint, before the saved value is read', async () => {
-    // `key:auto_update` (the agent's route) resolves on the key, the palette's id
-    // form on the registry label; a search that probes once must find the row.
+    // `key:auto_update` (the agent's route) and the palette's id form both resolve
+    // on the key; the registry label is the row's other anchor. Both are on the
+    // row before the saved value is read.
     stubFetch({}, { config: () => new Promise(() => {}) })
     pushStatus({ update_auto_effect: 'install' })
     mountWeb()
@@ -1080,6 +1081,38 @@ describe('AboutPanel gateway update check', () => {
     expect(await screen.findByTestId('auto-update-refresh-error')).toBeTruthy()
     live()
     expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it("hands the agent the failed config read's report from the read and refresh notices", async () => {
+    // Both notices are worded from the catalog, so the transport's report,
+    // filed under the gateway's own message, must ride along explicitly.
+    __resetErrorJournalForTests()
+    let fail = true
+    const failed = { status: 500, body: { error: 'config store locked', code: 'config_read_failed' } }
+    stubFetch({}, {
+      config: () => Promise.resolve(fail ? failed : { status: 200, body: { auto_update: false } }),
+    })
+    pushStatus({ update_auto_effect: 'install' })
+    const { qc } = mountWeb()
+
+    const read = await screen.findByTestId('auto-update-read-error')
+    fireEvent.click(within(read).getByRole('button', { name: 'Ask the agent' }))
+    let prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('HTTP 500')
+    expect(prompt).toContain('config_read_failed')
+    expect(prompt).toContain('config store locked')
+
+    fail = false
+    await act(async () => { await qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
+    await waitFor(() => expect(screen.queryByTestId('auto-update-read-error')).toBeNull())
+    fail = true
+    await act(async () => { await qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
+    const refresh = await screen.findByTestId('auto-update-refresh-error')
+    fireEvent.click(within(refresh).getByRole('button', { name: 'Ask the agent' }))
+    prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('HTTP 500')
+    expect(prompt).toContain('config_read_failed')
+    expect(prompt).toContain('config store locked')
   })
 
   it('reports a write config.local.json refused, holds the switch, and frees it once a read says the pin is gone', async () => {

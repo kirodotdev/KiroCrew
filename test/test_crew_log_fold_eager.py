@@ -123,13 +123,17 @@ def test_the_slot_wake_types_cover_every_eager_slot_folds_types():
     )
 
 
-def test_every_committed_type_wakes_because_session_folds_read_every_type():
+def test_every_committed_type_wakes_because_session_folds_read_every_type(monkeypatch):
     """MUTATION-SENSITIVE: a ``message/chunk`` wakes the worker, not just a slot type.
 
     ``status`` and ``class`` consume the whole vocabulary, so an append-path filter would
     pass everything; one that kept the old slot-only filter would leave both stale.
+
+    ``_run`` is stubbed, not just stopped: ``note_commit`` starts the worker itself, and a
+    live one can take the wake off the queue before this test reads it.
     """
     eager.stop_for_tests()
+    monkeypatch.setattr(eager, "_run", lambda: None)
     eager.note_commit("s-any", "message/chunk", 3)
     queued = eager._queue
     assert queued is not None and not queued.empty(), "a message chunk did not wake"
@@ -453,7 +457,7 @@ def test_the_real_append_path_wakes_the_eager_fold(monkeypatch):
     assert crew_log.read_slot_projection(slot, "work").value["items"]
 
 
-def test_drain_waits_for_a_wake_it_has_not_folded_yet():
+def test_drain_waits_for_a_wake_it_has_not_folded_yet(monkeypatch):
     """``drain`` answers about FOLDING, not about the queue being empty.
 
     The counters are taken when a wake is ENQUEUED rather than when the worker takes one,
@@ -462,6 +466,7 @@ def test_drain_waits_for_a_wake_it_has_not_folded_yet():
     nobody, so a ``drain`` that answered on emptiness alone would say True here.
     """
     eager.stop_for_tests()
+    monkeypatch.setattr(eager, "_run", lambda: None)
     slot = WORK_SLOT
     handle = _slot_log("s-pending", slot)
     seq = _work_entry(handle, "it-1")
@@ -821,7 +826,7 @@ def test_an_entry_after_the_closer_leaves_its_fold_warm(monkeypatch):
     queued = eager._queue
     assert queued is not None, "the wakes were never queued"
     batch, closers, _taken = eager._coalesce(queued.get_nowait())
-    eager._fold_batch(batch, closers)
+    eager._fold_coalesced(batch, closers)
     # The drop left the cell cold, so the advance handed its fold to one background
     # prime rather than folding every unit on the eager worker; wait for that prime.
     from kiro_crew.crew_log import slot_prime
@@ -866,7 +871,7 @@ def test_a_later_entry_of_another_type_does_not_hide_a_slot_folds_advance(monkey
     queued = eager._queue
     assert queued is not None, "the wakes were never queued"
     batch, closers, _taken = eager._coalesce(queued.get_nowait())
-    eager._fold_batch(batch, closers)
+    eager._fold_coalesced(batch, closers)
     # The cell was cold, so its fold went to one background prime.
     from kiro_crew.crew_log import slot_prime
 
@@ -901,7 +906,7 @@ def test_a_closer_in_the_same_batch_as_an_earlier_entry_still_drops_the_slot(mon
     queued = eager._queue
     assert queued is not None, "the wakes were never queued"
     batch, closers, _taken = eager._coalesce(queued.get_nowait())
-    eager._fold_batch(batch, closers)
+    eager._fold_coalesced(batch, closers)
     # A cold cell's fold goes to one background prime; wait for it.
     from kiro_crew.crew_log import slot_prime
 
@@ -966,7 +971,7 @@ def test_a_workers_last_report_still_reaches_the_conductors_board_when_the_worke
     queued = eager._queue
     assert queued is not None, "the wakes were never queued"
     batch, closers, _taken = eager._coalesce(queued.get_nowait())
-    eager._fold_batch(batch, closers)
+    eager._fold_coalesced(batch, closers)
     # The board's cell was cold, so its fold went to one background prime.
     from kiro_crew.crew_log import slot_prime
 
@@ -1325,7 +1330,7 @@ def test_a_burst_pushes_once_per_board_rather_than_once_per_entry(pushed, monkey
     queued = eager._queue
     assert queued is not None, "the wakes were never queued"
     batch, closers, _taken = eager._coalesce(queued.get_nowait())
-    eager._fold_batch(batch, closers)
+    eager._fold_coalesced(batch, closers)
     # A cold cell's fold goes to one background prime; wait for it.
     from kiro_crew.crew_log import slot_prime
 

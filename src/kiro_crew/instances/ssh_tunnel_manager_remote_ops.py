@@ -42,10 +42,14 @@ from kiro_crew.instances.remote_update import (
     STATE_SUCCEEDED,
     STATE_UNCHANGED,
     STATE_UNVERIFIED,
+    UPDATE_SUBCOMMAND,
     RemoteUpdateJob,
     clean_version,
+    predates_option,
     read_gate_answer,
+    update_subcommand,
 )
+from kiro_crew.instances.ssh_tunnel_manager_child import TunnelState
 from kiro_crew.instances.ssh_tunnel_manager_transport import (
     _transport_method,
     _TransportParams,
@@ -232,8 +236,16 @@ async def _remote_command_target(
     inst = await asyncio.to_thread(self._registry.get, instance_id)
     if inst is None:
         return {"code": "not_found", "message": "unknown instance"}
+    # An asg:/param: crew runs the verb where its open forward leads, so the job
+    # acts on and reads back the machine its pane shows; with none open, on the
+    # instance the target names now.
+    st = self.status(instance_id)
+    live = st is not None and st.state is TunnelState.CONNECTED
     try:
-        params = self._resolve_transport(inst, await self._with_parent(inst))
+        params = self._resolve_transport(
+            self._with_dialled_target(inst) if live else await self._with_resolved_target(inst),
+            await self._with_parent(inst),
+        )
     except (SshValidationError, SsmValidationError) as e:
         return {
             "code": "invalid_transport",
@@ -277,9 +289,10 @@ async def _run_remote_subcommand(
     timeout_secs: float | None = None,
     stdout_tail: bool = False,
 ) -> tuple[int, str]:
-    """Run the fixed literal ``kirocrew <subcommand>`` over *params*' transport.
+    """Run ``kirocrew <subcommand>`` over *params*' transport.
 
-    *subcommand* is always a literal from this module, never caller input.
+    *subcommand* is built in this module, never from caller input: a literal, or
+    ``update --release`` with this hub's own version (:func:`update_subcommand`).
     *timeout_secs* overrides the runner's own default budget, and
     *stdout_tail* asks the runner to add a redacted stdout tail to a
     failure's message; both are passed only when set, so the default
@@ -352,6 +365,10 @@ async def _update_then_restart(
 ) -> None:
     """The job body: ``kirocrew update``, a restart once idle, then a version check.
 
+    A release hub runs ``update --release <its version>`` (:func:`update_subcommand`)
+    and reruns the bare ``update`` once, with the same budget, when the crew's CLI
+    answers argparse's exit 2 because it predates the option.
+
     The restart waits for the crew's in-flight work (:meth:`_restart_when_idle`).
     A job started with ``force`` skips the update and runs the bare ``restart``.
 
@@ -376,13 +393,24 @@ async def _update_then_restart(
     # "Restart now" (``force``) follows a job that already installed the update
     # and stopped short of its restart, so it restarts without updating again.
     if not job.force:
+        subcommand = update_subcommand()
         rc, err = await self._run_remote_subcommand(
             inst,
             params,
-            "update",
+            subcommand,
             timeout_secs=REMOTE_UPDATE_TIMEOUT_SECS,
             stdout_tail=True,
         )
+        if subcommand != UPDATE_SUBCOMMAND and predates_option(rc):
+            # A crew built before `--release`: its parser refused the option and
+            # ran nothing, so the bare update is the one it can run.
+            rc, err = await self._run_remote_subcommand(
+                inst,
+                params,
+                UPDATE_SUBCOMMAND,
+                timeout_secs=REMOTE_UPDATE_TIMEOUT_SECS,
+                stdout_tail=True,
+            )
         if rc != 0:
             logger.warning("Remote update for %s failed (rc=%s): %s", iid, rc, err)
             job.fail(err or f"update exited {rc}")
@@ -420,7 +448,8 @@ async def _restart_when_idle(
     Each ask is one remote ``restart --when-idle --max-wait 0``: the crew checks
     its own turns, subagents and workflows, and restarts only when there are
     none. While it is busy the job shows ``waiting_for_idle`` with the counts
-    and asks again every ``_remote_update_idle_poll_secs``, for up to
+    (and the work the crew named, never logged) and asks again every
+    ``_remote_update_idle_poll_secs``, for up to
     ``_remote_update_idle_wait_secs``; then it fails ``still_busy``. A crew
     whose build has no idle check fails ``peer_cannot_wait``. Either is
     retried with ``force``, which restarts at once.
@@ -453,7 +482,7 @@ async def _restart_when_idle(
             job.advance(PHASE_RESTARTING)
             job.fail(err or f"restart exited {rc}")
             return False
-        job.wait_for_idle(answer.turns, answer.background)
+        job.wait_for_idle(answer.turns, answer.background, answer.holders, answer.holders_more)
         if loop.time() >= deadline:
             logger.info("Remote update for %s: still busy when the wait ran out", iid)
             job.fail(

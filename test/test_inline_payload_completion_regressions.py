@@ -6,6 +6,7 @@ import ast
 import base64
 import inspect
 import shlex
+import threading
 
 import pytest
 
@@ -75,9 +76,12 @@ class TestDecoderArguments:
     def test_data_literals_do_not_consume_the_decode_budget(self, monkeypatch):
         calls = []
         decode = inline_payload.base64.b64decode
+        # The patch is process-wide; a decode on another thread of this worker is not ours.
+        own_thread = threading.get_ident()
 
         def counted(value, **kwargs):
-            calls.append(value)
+            if threading.get_ident() == own_thread:
+                calls.append(value)
             return decode(value, **kwargs)
 
         monkeypatch.setattr(inline_payload.base64, "b64decode", counted)

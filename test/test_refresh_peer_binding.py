@@ -466,11 +466,12 @@ async def test_a_pre_upgrade_chain_keeps_todays_unbound_semantics(
 ) -> None:
     """Migration rule from the issue: absent binding = unbound, as today.
 
-    Every chain that already exists on an upgraded install has neither the signed
-    claim nor a persisted record. Refusing those would log the whole 30-day
-    window out on upgrade, which is not what a hardening change may do silently.
+    A chain from before peer binding has neither the signed claim nor a persisted
+    record. Refusing it on that ground alone would sign the install out for the
+    binding's sake. (A chain from before credential families has no ``family`` and
+    is refused for that, ``test_renewal_never_widens.py``; this one has a family.)
     """
-    legacy, chain_id, _jti, _exp = generate_refresh_token("alice")
+    legacy, chain_id, _jti, _exp = generate_refresh_token("alice", family="fam")
     assert state.chain_peer(chain_id) == ""
 
     monkeypatch.setattr(
@@ -490,7 +491,7 @@ async def test_the_persisted_record_alone_refuses_a_different_peer(
     not. A server-side record the token cannot influence is what makes the next
     forgetful mint path fail closed instead of silently unbound.
     """
-    claimless, chain_id, jti, exp = generate_refresh_token("alice")
+    claimless, chain_id, jti, exp = generate_refresh_token("alice", family="fam")
     state.bind_chain_peer(chain_id, LAPTOP_KEY, exp)
 
     monkeypatch.setattr(
@@ -525,7 +526,7 @@ async def test_a_bound_chain_cannot_rotate_while_identity_is_unverifiable(
 
 def test_revoking_a_chain_drops_its_peer_record(state: RefreshStateManager) -> None:
     """A dead chain must not leave a binding behind for a recycled chain_id."""
-    _token, chain_id, _jti, exp = generate_refresh_token("alice")
+    _token, chain_id, _jti, exp = generate_refresh_token("alice", family="fam")
     state.bind_chain_peer(chain_id, LAPTOP_KEY, exp)
     assert state.chain_peer(chain_id) == LAPTOP_KEY
     state.revoke_chain(chain_id, exp)
@@ -623,7 +624,7 @@ def test_a_corrupt_revoked_chains_list_cannot_revive_a_revoked_chain(
     live = RefreshStateManager(state_path=path)
     monkeypatch.setattr(rt, "_state_singleton", live)
 
-    token, chain_id, _jti, exp = generate_refresh_token("alice")
+    token, chain_id, _jti, exp = generate_refresh_token("alice", family="fam")
     live.revoke_chain(chain_id, exp)
     assert rt.validate_refresh_token(token)[2] == "chain revoked"
 
@@ -644,7 +645,7 @@ async def test_a_wrong_shaped_state_file_refuses_rotation_without_a_500(
     path = tmp_path / "refresh_chains.json"
     path.write_text(json.dumps({"chain_peers": None, "consumed_jtis": None}))
 
-    token, _chain, _jti, _exp = generate_refresh_token("alice")
+    token, _chain, _jti, _exp = generate_refresh_token("alice", family="fam")
     monkeypatch.setattr(rt, "_state_singleton", RefreshStateManager(state_path=path))
 
     response = await h.api_auth_refresh(_refresh_request(token))

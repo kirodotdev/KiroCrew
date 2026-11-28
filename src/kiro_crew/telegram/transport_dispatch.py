@@ -70,6 +70,7 @@ from kiro_crew.messaging.attachments import IngestLimits, append_attachment_cont
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments  # noqa: F401
 from kiro_crew.messaging.commands import (  # noqa: F401
     YOLO_PHRASING_PLAIN,
+    clean_compact_focus,
     compact_unsupported_backend,
     compact_unsupported_reply,
     context_recycle_warning,
@@ -718,7 +719,10 @@ class TelegramDispatcher:
             return
         if cmd == "compact":
             self._conv.clear_awaiting(route)
-            await self._handle_compact(route, chat_id, session_key=resumed_key)
+            focus = clean_compact_focus(parse_command_argument(text))
+            await self._handle_compact(
+                route, chat_id, session_key=resumed_key, **({"focus": focus} if focus else {})
+            )
             return
         if cmd == "link":
             await self._handle_link(route, chat_id, resumed_key=resumed_key)
@@ -1289,6 +1293,22 @@ class TelegramDispatcher:
     def _authorized(self, user_id: int) -> bool:
         # Deny-by-default (callbacks bypass transport.receive, so re-check here).
         return bool(user_id) and bool(self._allowed) and user_id in self._allowed
+
+    def _is_owner(self, user_id: int) -> bool:
+        """Whether *user_id* may change YOLO and answer approval prompts here.
+
+        ``telegram.owner_user_id`` when it is set, else the only id in
+        ``allowed_user_ids`` (:func:`is_channel_owner`). Read live, so a config
+        change takes effect on the next message.
+        """
+        # Imported here so the facade's pinned name surface does not grow.
+        from kiro_crew.messaging.commands import is_channel_owner
+
+        return self._authorized(user_id) and is_channel_owner(
+            (user_id,),
+            owner=getattr(self._live_cfg().telegram, "owner_user_id", 0),
+            allowed=self._allowed,
+        )
 
     def _configured_agent(self, route: tuple[str, str] | None = None) -> str:
         """The agent *route*'s current conversation uses when the user has picked none."""

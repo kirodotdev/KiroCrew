@@ -1,458 +1,553 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { renderHook, act, cleanup } from '@testing-library/react'
+import { describe, it, expect, vi, afterEach, beforeEach, onTestFinished } from 'vitest'
+import { renderHook, act, cleanup, render, screen, fireEvent } from '@testing-library/react'
 import type { Terminal } from '@xterm/xterm'
-import { useTerminalTouchSelection, clientYToBufferRow } from '../hooks/useTerminalTouchSelection'
-
-afterEach(cleanup)
+import {
+  useTerminalTouchSelection,
+  clientPointToCell,
+  flingVelocity,
+  TOUCH_HANDLE_ATTR,
+} from '../hooks/useTerminalTouchSelection'
+import TerminalKeyBar from '../components/TerminalKeyBar'
 
 /**
- * clientYToBufferRow is the only geometry math the touch feature does, and
- * xterm exposes no point→row API — so it is a pure exported function derived
- * from the rendered cell height, unit-tested here without a real canvas.
+ * The geometry is a pure function: xterm has no point→cell API, so the hook
+ * derives the cell from `.xterm-screen`'s rect and the grid size.
  */
-describe('clientYToBufferRow', () => {
-  // A 240px screen, 10 rows → 24px per row. Screen top at y=100.
-  const rect = { top: 100, height: 240 }
+describe('clientPointToCell', () => {
+  // 100px wide, 10 cols → 10px per col; 80px tall, 4 rows → 20px per row.
+  const rect = { left: 0, top: 100, width: 100, height: 80 }
 
-  it('maps a Y inside the first row to the top visible row (+ viewportY)', () => {
-    // 12px below the screen top → row 0 of the viewport; viewportY=0 → buffer 0.
-    expect(clientYToBufferRow(112, rect, 10, 0)).toBe(0)
+  it('maps a point to its column and absolute buffer row', () => {
+    expect(clientPointToCell(35, 125, rect, 10, 4, 0)).toEqual({ col: 3, row: 1 })
+    expect(clientPointToCell(35, 125, rect, 10, 4, 50)).toEqual({ col: 3, row: 51 })
   })
 
-  it('adds the scrollback offset (viewportY) to the visible row', () => {
-    // Same click, but scrolled 50 rows into scrollback → absolute buffer row 50.
-    expect(clientYToBufferRow(112, rect, 10, 50)).toBe(50)
+  it('clamps a point outside the grid to its edge cells', () => {
+    expect(clientPointToCell(-5, -5, rect, 10, 4, 0)).toEqual({ col: 0, row: 0 })
+    expect(clientPointToCell(999, 999, rect, 10, 4, 0)).toEqual({ col: 9, row: 3 })
   })
 
-  it('floors to the row the pixel falls in', () => {
-    // y=100+24*3+5 = 177 → viewport row 3.
-    expect(clientYToBufferRow(177, rect, 10, 0)).toBe(3)
+  it('returns null when geometry is unusable', () => {
+    expect(clientPointToCell(5, 105, rect, 0, 4, 0)).toBeNull()
+    expect(clientPointToCell(5, 105, { ...rect, height: 0 }, 10, 4, 0)).toBeNull()
+  })
+})
+
+describe('flingVelocity', () => {
+  it('measures the speed of the last 100ms of the drag', () => {
+    // Finger moved up 100px in 50ms → 2 px/ms toward newer output.
+    expect(flingVelocity([{ t: 0, y: 300 }, { t: 50, y: 200 }], 60)).toBeCloseTo(2)
   })
 
-  it('clamps a Y below the last row to the last visible row', () => {
-    // Way past the bottom → clamps to row 9 (rows-1), not beyond.
-    expect(clientYToBufferRow(9999, rect, 10, 0)).toBe(9)
-  })
-
-  it('clamps a Y above the screen top to the first row', () => {
-    expect(clientYToBufferRow(-500, rect, 10, 0)).toBe(0)
-  })
-
-  it('returns null when geometry is unusable (no rows / zero height)', () => {
-    expect(clientYToBufferRow(112, rect, 0, 0)).toBeNull()
-    expect(clientYToBufferRow(112, { top: 100, height: 0 }, 10, 0)).toBeNull()
+  it('is zero when the finger paused before lifting', () => {
+    expect(flingVelocity([{ t: 0, y: 300 }, { t: 50, y: 200 }], 400)).toBe(0)
   })
 })
 
 /**
- * The endpoint state machine. A fake terminal models the buffer geometry
- * (rows, viewportY, isWrapped) and the .xterm-screen element getBoundingClientRect
- * so a synthetic touch at a Y resolves to a known row, and records
- * selectLines(a,b) calls so the anchor→focus span can be asserted end to end.
+ * A fake terminal on REAL DOM: the hook binds native capture listeners on the
+ * host, so the events are real TouchEvents dispatched at real elements. The
+ * buffer is 10 columns; select()/getSelectionPosition() model xterm's linear
+ * (row * cols + col) selection, and `.xterm-viewport` is a plain element whose
+ * scrollTop the fling writes.
  */
-type Row = string | { text: string; isWrapped?: boolean }
+const COLS = 10
+const ROWS = 4
+const CELL_W = 10
+const CELL_H = 20
 
-function makeTouchTerm(rows: Row[], opts?: { viewportY?: number; visibleRows?: number; screenTop?: number; screenHeight?: number; cursorY?: number }) {
-  const norm = rows.map(r => (typeof r === 'string' ? { text: r, isWrapped: false } : { text: r.text, isWrapped: r.isWrapped ?? false }))
-  const visibleRows = opts?.visibleRows ?? norm.length
-  const screenTop = opts?.screenTop ?? 0
-  const screenHeight = opts?.screenHeight ?? visibleRows * 20 // 20px/row
-  let sel: { start: number; end: number } | null = null
-  const selectionListeners = new Set<() => void>()
-  const scrollListeners = new Set<() => void>()
-  const emitSelection = () => { for (const l of [...selectionListeners]) l() }
-  const emitScroll = () => { for (const l of [...scrollListeners]) l() }
+function makeTerm(lines: string[]) {
+  const host = document.createElement('div')
+  const element = document.createElement('div')
+  element.className = 'xterm'
+  const viewport = document.createElement('div')
+  viewport.className = 'xterm-viewport'
+  const screenEl = document.createElement('div')
+  screenEl.className = 'xterm-screen'
+  element.append(viewport, screenEl)
+  host.append(element)
+  document.body.append(host)
+  Object.defineProperty(element, 'offsetParent', { get: () => document.body })
+  const rect = (left: number, top: number, width: number, height: number) => () =>
+    ({ left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON() {} }) as DOMRect
+  host.getBoundingClientRect = rect(0, 0, COLS * CELL_W, ROWS * CELL_H)
+  screenEl.getBoundingClientRect = rect(0, 0, COLS * CELL_W, ROWS * CELL_H)
 
-  // .xterm-screen stub with a fixed bounding rect. `contains` answers the
-  // target gate (a touch on the grid vs on an overlaid control).
-  const screenEl = {
-    getBoundingClientRect: () => ({ top: screenTop, height: screenHeight, left: 0, width: 300, right: 300, bottom: screenTop + screenHeight, x: 0, y: screenTop, toJSON() {} }),
-    contains: (n: unknown) => n === screenEl || n === undefined || n === null ? n === screenEl : true,
-  } as unknown as HTMLElement & { contains: (n: unknown) => boolean }
-  const element = {
-    offsetParent: {} as unknown, // laid out / visible
-    querySelector: (s: string) => (s === '.xterm-screen' ? screenEl : null),
-  }
-
-  // Markers registered on the buffer. Each remembers its absolute line; a
-  // content shift (shiftContent) remaps every marker's line by the same delta,
-  // and a trim past a marker disposes it (line -> -1). Models xterm's IMarker.
+  let sel: { s: number; len: number } | null = null
+  const selListeners = new Set<() => void>()
+  const on = (set: Set<() => void>) => (cb: () => void) => { set.add(cb); return { dispose: () => set.delete(cb) } }
+  const flat = lines.map(l => l.padEnd(COLS, ' ').slice(0, COLS)).join('')
+  // Markers model xterm's: a pan leaves `line` alone, a trim moves it up.
   const markers: { line: number; isDisposed: boolean; dispose: () => void }[] = []
-
-  const selectLines = vi.fn((a: number, b: number) => { sel = { start: a, end: b }; emitSelection() })
-  // Mutable content signature so a test can simulate NEW output (baseY/length
-  // change) vs a pure pan (only viewportY changes).
-  const bufSig = { baseY: opts?.viewportY ?? 0, length: norm.length }
-  const cursorY = opts?.cursorY ?? (visibleRows - 1)
+  const scrollListeners = new Set<() => void>()
+  const resizeListeners = new Set<() => void>()
   const term = {
     element,
-    rows: visibleRows,
-    registerMarker: (cursorYOffset: number) => {
-      const line = bufSig.baseY + cursorY + (cursorYOffset ?? 0)
-      const m = { line, isDisposed: false, dispose() { this.isDisposed = true } }
+    cols: COLS,
+    rows: ROWS,
+    modes: { mouseTrackingMode: 'none' },
+    buffer: {
+      active: {
+        viewportY: 0,
+        type: 'normal' as 'normal' | 'alternate',
+        baseY: 0,
+        cursorY: 0,
+        getLine: (r: number) => {
+          const text = lines[r]
+          if (text === undefined) return undefined
+          return { getCell: (x: number) => (x < COLS ? { getWidth: () => 1, getChars: () => text[x] ?? '' } : undefined) }
+        },
+      },
+    },
+    select: vi.fn((col: number, row: number, len: number) => {
+      sel = { s: row * COLS + col, len }
+      for (const l of [...selListeners]) l()
+    }),
+    clearSelection: vi.fn(() => { sel = null; for (const l of [...selListeners]) l() }),
+    getSelection: () => (sel ? flat.slice(sel.s, sel.s + sel.len) : ''),
+    hasSelection: () => sel !== null,
+    getSelectionPosition: () => {
+      if (!sel) return undefined
+      const e = sel.s + sel.len
+      return { start: { x: sel.s % COLS, y: Math.floor(sel.s / COLS) }, end: { x: e % COLS, y: Math.floor(e / COLS) } }
+    },
+    onSelectionChange: on(selListeners),
+    registerMarker: (offset: number) => {
+      const m = { line: offset, isDisposed: false, dispose: () => { m.isDisposed = true } }
       markers.push(m)
       return m
     },
-    buffer: {
-      active: {
-        get length() { return bufSig.length },
-        get baseY() { return bufSig.baseY },
-        cursorY,
-        viewportY: opts?.viewportY ?? 0,
-        getLine: (row: number) =>
-          row >= 0 && row < norm.length
-            ? { translateToString: () => norm[row].text, isWrapped: norm[row].isWrapped }
-            : undefined,
-      },
+    onScroll: on(scrollListeners),
+    /** A viewport pan: rows stay where they are. */
+    pan: () => { for (const l of [...scrollListeners]) l() },
+    /** New output at scrollback capacity: every row moves up by one. */
+    trim: () => {
+      for (const m of markers) m.line -= 1
+      for (const l of [...scrollListeners]) l()
     },
-    selectLines,
-    getSelection: () => (sel ? norm.slice(sel.start, sel.end + 1).map(r => r.text).join('\n') : ''),
-    clearSelection: () => { sel = null; emitSelection() },
-    onSelectionChange: (cb: () => void) => { selectionListeners.add(cb); return { dispose: () => selectionListeners.delete(cb) } },
-    onScroll: (cb: () => void) => { scrollListeners.add(cb); return { dispose: () => scrollListeners.delete(cb) } },
-  } as unknown as Terminal & { selectLines: typeof selectLines }
-
-  // A helper to fabricate a single-touch React.TouchEvent at a viewport row.
-  // Row r → clientY at the vertical centre of that row. Carries a preventDefault
-  // spy + cancelable so the synthetic-click-suppression path is observable.
-  // `target` defaults to the grid (screenEl) so the terminal-screen gate passes;
-  // pass target=null to model a touch on an overlaid control (off the grid).
-  const cellH = screenHeight / visibleRows
-  const touchAtRow = (r: number, count = 1, target: unknown = screenEl) => {
-    const clientY = screenTop + r * cellH + cellH / 2
-    const touch = { clientX: 10, clientY }
-    const touches = Array.from({ length: count }, () => touch)
-    return { touches, target, cancelable: true, preventDefault: vi.fn() } as unknown as React.TouchEvent & { preventDefault: ReturnType<typeof vi.fn> }
+    onRender: on(new Set()),
+    onResize: on(resizeListeners),
+    /** A refit (a web font loads, the phone rotates): xterm reflows to new sizes. */
+    resize: (cols: number, rows: number) => {
+      term.cols = cols
+      term.rows = rows
+      // The cell keeps its size, so the grid grows or shrinks with it.
+      host.getBoundingClientRect = rect(0, 0, cols * CELL_W, rows * CELL_H)
+      screenEl.getBoundingClientRect = rect(0, 0, cols * CELL_W, rows * CELL_H)
+      for (const l of [...resizeListeners]) l()
+    },
   }
-  // A touch on an OVERLAID control (not the grid): target is some other node.
-  const touchOffScreen = (r: number) => touchAtRow(r, 1, { nodeName: 'BUTTON' })
-  // A bare touchend event (no active touches) with a preventDefault spy.
-  const touchEnd = () => ({ touches: [], target: screenEl, cancelable: true, preventDefault: vi.fn() } as unknown as React.TouchEvent & { preventDefault: ReturnType<typeof vi.fn> })
-
-  // Simulate NEW output: shift baseY/length and remap every live marker by the
-  // same delta; a marker whose line falls below 0 is trimmed away (disposed).
-  const shiftContent = (dBaseY: number, dLen: number) => {
-    bufSig.baseY += dBaseY
-    bufSig.length += dLen
-    for (const m of markers) {
-      if (m.isDisposed) continue
-      m.line += dBaseY
-      if (m.line < 0) { m.line = -1; m.isDisposed = true }
-    }
-    emitScroll()
-  }
-
-  // Off-screen contains() for touchOffScreen targets.
-  ;(screenEl as unknown as { contains: (n: unknown) => boolean }).contains = (n: unknown) => n === screenEl
-
-  // Model xterm's at-capacity trim: baseY and length hold constant, but every
-  // absolute row remaps down by `n` — so each live marker's line drops by `n`
-  // (disposing at < 0). Then a scroll fires. This is the case a {baseY,length}
-  // signature is blind to.
-  const trimAtCapacity = (n = 1) => {
-    for (const m of markers) {
-      if (m.isDisposed) continue
-      m.line -= n
-      if (m.line < 0) { m.line = -1; m.isDisposed = true }
-    }
-    emitScroll()
-  }
-
-  return { term, selectLines, touchAtRow, touchOffScreen, touchEnd, emitScroll, shiftContent, trimAtCapacity, screenEl, clearSelection: () => term.clearSelection(), element }
+  return { term: term as unknown as Terminal, raw: term, host, element, screenEl, viewport }
 }
 
-describe('useTerminalTouchSelection', () => {
-  beforeEach(() => { vi.useFakeTimers() })
-  afterEach(() => { vi.useRealTimers() })
+function touch(target: Element, type: string, x: number, y: number): TouchEvent {
+  const t = { clientX: x, clientY: y, pageX: x, pageY: y, target } as unknown as Touch
+  const init: TouchEventInit = { bubbles: true, cancelable: true }
+  if (type === 'touchstart' || type === 'touchmove') init.touches = [t]
+  init.changedTouches = [t]
+  const e = new TouchEvent(type, init)
+  target.dispatchEvent(e)
+  return e
+}
 
-  it('sets the anchor line on a long-press and highlights just that line', () => {
-    const { term, selectLines, touchAtRow } = makeTouchTerm(['a', 'b', 'c'])
-    const { result } = renderHook(() => useTerminalTouchSelection(term, true))
+/** Centre of cell (col, row) in client px. */
+const at = (col: number, row: number) => [col * CELL_W + CELL_W / 2, row * CELL_H + CELL_H / 2] as const
 
-    act(() => { result.current.onTouchStart(touchAtRow(1)) })
-    act(() => { vi.advanceTimersByTime(500) }) // long-press fires
+let rafQueue: Map<number, FrameRequestCallback>
+let rafId = 0
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance', 'Date'] })
+  // A manual frame clock: each flush runs the pending frames 16ms apart.
+  rafQueue = new Map()
+  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { rafQueue.set(++rafId, cb); return rafId })
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => { rafQueue.delete(id) })
+})
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+  vi.useRealTimers()
+  document.body.replaceChildren()
+})
+function frames(n: number) {
+  for (let i = 0; i < n; i++) {
+    vi.advanceTimersByTime(16)
+    const due = [...rafQueue.values()]
+    rafQueue.clear()
+    for (const cb of due) cb(performance.now())
+  }
+}
 
-    expect(selectLines).toHaveBeenCalledTimes(1)
-    expect(selectLines).toHaveBeenCalledWith(1, 1)
-    expect(result.current.status).toBe('range_anchor')
+function mount(lines: string[], enabled = true) {
+  const t = makeTerm(lines)
+  const ref = { current: t.host }
+  const hook = renderHook(() => useTerminalTouchSelection(t.term, enabled, ref))
+  return { ...t, hook }
+}
+
+/** A quick upward flick on the grid, as xterm sees it while the finger is down. */
+function flick(target: Element, fromY: number, step: number, moves: number) {
+  touch(target, 'touchstart', 50, fromY)
+  for (let i = 1; i <= moves; i++) {
+    vi.advanceTimersByTime(16)
+    touch(target, 'touchmove', 50, fromY - step * i)
+  }
+  return touch(target, 'touchend', 50, fromY - step * moves)
+}
+
+describe('touch scrolling', () => {
+  it('keeps scrolling after the finger lifts, slowing down until it stops', () => {
+    const { screenEl, viewport } = mount(['a', 'b', 'c', 'd'])
+    flick(screenEl, 70, 10, 5) // 10px per 16ms ≈ 0.6 px/ms
+    const atLift = viewport.scrollTop
+    // The first 10px is still a pending press, which xterm scrolls itself (not
+    // modelled here); the hook scrolls the 40px after it, 1:1 with the finger.
+    expect(atLift).toBe(40)
+    frames(5)
+    const early = viewport.scrollTop - atLift
+    expect(early).toBeGreaterThan(0)
+    frames(5)
+    const later = viewport.scrollTop - atLift
+    // Still moving, but each frame covers less ground than the one before.
+    expect(later).toBeGreaterThan(early)
+    expect(later - early).toBeLessThan(early)
+    frames(400)
+    expect(rafQueue.size).toBe(0)
   })
 
-  it('selects the inclusive span on a second tap (anchor → focus)', () => {
-    const { term, selectLines, touchAtRow, touchEnd } = makeTouchTerm(['a', 'b', 'c', 'd', 'e'])
-    const { result } = renderHook(() => useTerminalTouchSelection(term, true))
+  it.each([
+    ['an alternate-screen app', (raw: ReturnType<typeof makeTerm>['raw']) => { raw.buffer.active.type = 'alternate' }],
+    ['an app with mouse tracking', (raw: ReturnType<typeof makeTerm>['raw']) => { raw.modes.mouseTrackingMode = 'vt200' }],
+  ])('turns a drag into wheel input for %s, one step per row, with no glide', (_name, setup) => {
+    const { screenEl, viewport, raw } = mount(['a', 'b', 'c', 'd'])
+    setup(raw)
+    const wheels: number[] = []
+    screenEl.addEventListener('wheel', e => { wheels.push((e as WheelEvent).deltaY) })
+    flick(screenEl, 70, 15, 4) // 60px up in 15px moves; rows are 20px
+    expect(wheels).toEqual([20, 20, 20])
+    expect(viewport.scrollTop).toBe(0)
+    frames(10)
+    expect(rafQueue.size).toBe(0)
+  })
 
-    // Long-press row 1 → anchor.
-    act(() => { result.current.onTouchStart(touchAtRow(1)) })
+  it('leaves a sideways swipe to the page, so an ancestor gesture still sees it', () => {
+    const { screenEl, viewport } = mount(['a', 'b', 'c', 'd'])
+    // The side panel's drawer swipe listens in the bubble phase above the grid.
+    const seen: boolean[] = []
+    const ancestor = (e: Event) => { seen.push(e.defaultPrevented) }
+    document.body.addEventListener('touchmove', ancestor)
+    try {
+      touch(screenEl, 'touchstart', 20, 40)
+      touch(screenEl, 'touchmove', 45, 44)
+      touch(screenEl, 'touchmove', 70, 46)
+      touch(screenEl, 'touchend', 70, 46)
+    } finally {
+      document.body.removeEventListener('touchmove', ancestor)
+    }
+    expect(seen).toEqual([false, false])
+    expect(viewport.scrollTop).toBe(0)
+  })
+
+  it('adds only the travel after the pending press when a scroll starts', () => {
+    const { screenEl, viewport } = mount(['a', 'b', 'c', 'd'])
+    touch(screenEl, 'touchstart', 50, 70)
+    touch(screenEl, 'touchmove', 50, 62) // within tolerance: xterm's move
+    touch(screenEl, 'touchmove', 50, 40)
+    expect(viewport.scrollTop).toBe(22)
+  })
+
+  it('stops a glide after a long frame gap instead of jumping', () => {
+    const { screenEl, viewport } = mount(['a', 'b', 'c', 'd'])
+    flick(screenEl, 70, 10, 5)
+    frames(2)
+    const before = viewport.scrollTop
+    vi.advanceTimersByTime(10_000) // the tab was in the background
+    const due = [...rafQueue.values()]
+    rafQueue.clear()
+    for (const cb of due) cb(performance.now())
+    expect(viewport.scrollTop).toBe(before)
+    expect(rafQueue.size).toBe(0)
+  })
+
+  it('does not glide when the finger stopped before lifting', () => {
+    const { screenEl, viewport } = mount(['a', 'b', 'c', 'd'])
+    touch(screenEl, 'touchstart', 50, 70)
+    vi.advanceTimersByTime(16)
+    touch(screenEl, 'touchmove', 50, 40)
+    vi.advanceTimersByTime(300)
+    touch(screenEl, 'touchend', 50, 40)
+    expect(viewport.scrollTop).toBe(30)
+    frames(10)
+    expect(viewport.scrollTop).toBe(30)
+  })
+
+  it('stops the glide on the next touch', () => {
+    const { screenEl, viewport } = mount(['a', 'b', 'c', 'd'])
+    flick(screenEl, 70, 10, 5)
+    frames(3)
+    touch(screenEl, 'touchstart', 50, 40)
+    const stoppedAt = viewport.scrollTop
+    frames(10)
+    expect(viewport.scrollTop).toBe(stoppedAt)
+  })
+
+  it('scrolls once per move: xterm does not scroll the viewport a second time', () => {
+    const { screenEl, element, viewport } = mount(['a', 'b', 'c', 'd'])
+    const xtermMove = vi.fn()
+    element.addEventListener('touchmove', xtermMove)
+    touch(screenEl, 'touchstart', 50, 70)
+    const move = touch(screenEl, 'touchmove', 50, 30)
+    expect(viewport.scrollTop).toBe(40)
+    expect(move.defaultPrevented).toBe(true)
+    expect(xtermMove).not.toHaveBeenCalled()
+  })
+
+  it('keeps following a touch whose row was repainted away', () => {
+    // xterm's DOM renderer replaces row spans as it paints; the touch keeps
+    // targeting the detached span, whose events no longer reach the host.
+    const { screenEl, viewport } = mount(['a', 'b', 'c', 'd'])
+    const span = document.createElement('span')
+    screenEl.append(span)
+    touch(span, 'touchstart', 50, 70)
+    span.remove()
+    touch(span, 'touchmove', 50, 40)
+    expect(viewport.scrollTop).toBe(30)
+  })
+})
+
+describe('long-press selection', () => {
+  it('selects the word under the finger, by character', () => {
+    const { screenEl, raw, hook } = mount(['', 'say hello', '', ''])
+    const [x, y] = at(5, 1) // the "l" of hello
+    touch(screenEl, 'touchstart', x, y)
     act(() => { vi.advanceTimersByTime(500) })
-    expect(selectLines).toHaveBeenLastCalledWith(1, 1)
-
-    // Quick tap row 3 → focus; span 1..3.
-    act(() => { result.current.onTouchStart(touchAtRow(3)) })
-    act(() => { result.current.onTouchEnd(touchEnd()) }) // lift before long-press threshold = tap
-    expect(selectLines).toHaveBeenLastCalledWith(1, 3)
-    expect(result.current.status).toBe('range_selected')
+    expect(raw.select).toHaveBeenLastCalledWith(4, 1, 5)
+    expect(raw.getSelection()).toBe('hello')
+    // The lift must not let the emulated mousedown clear the new selection.
+    expect(touch(screenEl, 'touchend', x, y).defaultPrevented).toBe(true)
+    expect(hook.result.current.handles?.start).toEqual({ left: 40, top: 20, height: 20 })
+    expect(hook.result.current.handles?.end).toEqual({ left: 90, top: 20, height: 20 })
   })
 
-  /**
-   * Regression for the GPT/Design/UX finding on #8070: after a touchend the
-   * browser synthesizes mousedown/click into the terminal, and xterm's
-   * selection service clears the selection on mousedown — which would wipe the
-   * range the completing tap just built, leaving Copy nothing to read. The
-   * completing tap must preventDefault() to suppress that synthetic sequence.
-   */
-  it('preventDefaults the completing tap so the synthetic click cannot clear the new range', () => {
-    const { term, touchAtRow, touchEnd } = makeTouchTerm(['a', 'b', 'c', 'd', 'e'])
-    const { result } = renderHook(() => useTerminalTouchSelection(term, true))
-
-    act(() => { result.current.onTouchStart(touchAtRow(1)) })
-    act(() => { vi.advanceTimersByTime(500) }) // anchor
-    act(() => { result.current.onTouchStart(touchAtRow(3)) })
-    const end = touchEnd()
-    act(() => { result.current.onTouchEnd(end) }) // completing tap
-    expect((end as unknown as { preventDefault: ReturnType<typeof vi.fn> }).preventDefault).toHaveBeenCalledTimes(1)
-  })
-
-  /**
-   * A bare tap with NO gesture in progress must fall through to xterm untouched
-   * (it may focus / place the cursor) — the hook must NOT preventDefault it.
-   */
-  it('does not preventDefault a tap when no gesture is in progress', () => {
-    const { term, touchAtRow, touchEnd } = makeTouchTerm(['a', 'b', 'c'])
-    const { result } = renderHook(() => useTerminalTouchSelection(term, true))
-
-    act(() => { result.current.onTouchStart(touchAtRow(1)) })
-    const end = touchEnd()
-    act(() => { result.current.onTouchEnd(end) }) // quick tap, no anchor set
-    expect((end as unknown as { preventDefault: ReturnType<typeof vi.fn> }).preventDefault).not.toHaveBeenCalled()
-  })
-
-  it('orders endpoints regardless of tap direction (focus above anchor)', () => {
-    const { term, selectLines, touchAtRow, touchEnd } = makeTouchTerm(['a', 'b', 'c', 'd', 'e'])
-    const { result } = renderHook(() => useTerminalTouchSelection(term, true))
-
-    act(() => { result.current.onTouchStart(touchAtRow(4)) })
-    act(() => { vi.advanceTimersByTime(500) }) // anchor at row 4
-    act(() => { result.current.onTouchStart(touchAtRow(1)) })
-    act(() => { result.current.onTouchEnd(touchEnd()) }) // tap focus at row 1
-
-    // min..max, not anchor..focus.
-    expect(selectLines).toHaveBeenLastCalledWith(1, 4)
-  })
-
-  it('expands both endpoints to their wrapped logical-line bounds', () => {
-    // Rows: 0 unwrapped, 1-2 a wrapped logical line, 3 unwrapped, 4-5 wrapped.
-    const { term, selectLines, touchAtRow, touchEnd } = makeTouchTerm([
-      'header',
-      'a long line that wraps ',
-      { text: 'onto row two', isWrapped: true },
-      'middle',
-      'another wrapped line ',
-      { text: 'continuing here', isWrapped: true },
-    ])
-    const { result } = renderHook(() => useTerminalTouchSelection(term, true))
-
-    // Anchor on the continuation of the first wrapped line (row 2) → expands up to 1.
-    act(() => { result.current.onTouchStart(touchAtRow(2)) })
+  it('turns the knob inward on the first and last visible rows', () => {
+    const { screenEl, hook } = mount(['hello', '', '', 'world'])
+    const [x, y] = at(1, 0)
+    touch(screenEl, 'touchstart', x, y)
     act(() => { vi.advanceTimersByTime(500) })
-    expect(selectLines).toHaveBeenLastCalledWith(1, 2)
-
-    // Focus on the START of the second wrapped line (row 4) → expands down to 5.
-    act(() => { result.current.onTouchStart(touchAtRow(4)) })
-    act(() => { result.current.onTouchEnd(touchEnd()) })
-    // Span: min(1,4)=1 .. max(2,5)=5.
-    expect(selectLines).toHaveBeenLastCalledWith(1, 5)
-  })
-
-  it('adds the scrollback offset so a tap addresses the visible line', () => {
-    // 4 visible rows, scrolled 10 into scrollback (viewportY=10).
-    const rows = Array.from({ length: 20 }, (_, i) => `r${i}`)
-    const { term, selectLines, touchAtRow } = makeTouchTerm(rows, { viewportY: 10, visibleRows: 4, screenHeight: 80 })
-    const { result } = renderHook(() => useTerminalTouchSelection(term, true))
-
-    // Long-press visible row 2 → absolute buffer row 12.
-    act(() => { result.current.onTouchStart(touchAtRow(2)) })
+    expect(hook.result.current.handles?.start).toEqual({ left: 0, top: 0, height: 20, flip: true })
+    touch(screenEl, 'touchend', x, y)
+    const [bx, by] = at(1, 3)
+    touch(screenEl, 'touchstart', bx, by)
     act(() => { vi.advanceTimersByTime(500) })
-    expect(selectLines).toHaveBeenLastCalledWith(12, 12)
+    expect(hook.result.current.handles?.end).toEqual({ left: 50, top: 60, height: 20, flip: true })
   })
 
-  it('cancels the pending long-press when the finger pans past tolerance (scroll, not press)', () => {
-    const { term, selectLines, touchAtRow } = makeTouchTerm(['a', 'b', 'c'], { screenHeight: 300, visibleRows: 3 })
-    const { result } = renderHook(() => useTerminalTouchSelection(term, true))
-
-    act(() => { result.current.onTouchStart(touchAtRow(1)) })
-    // Move far (a scroll): a touch 50px away in Y.
-    const moved = { touches: [{ clientX: 10, clientY: touchAtRow(1).touches[0].clientY + 50 }] } as unknown as React.TouchEvent
-    act(() => { result.current.onTouchMove(moved) })
+  it('drops a pending press when new output trims scrollback before it fires', () => {
+    const { screenEl, raw } = mount(['', 'say hello', '', ''])
+    const [x, y] = at(5, 1)
+    touch(screenEl, 'touchstart', x, y)
+    act(() => { raw.trim() })
     act(() => { vi.advanceTimersByTime(500) })
-
-    expect(selectLines).not.toHaveBeenCalled()
-    expect(result.current.status).toBeNull()
+    expect(raw.select).not.toHaveBeenCalled()
   })
 
-  /**
-   * A pure PAN through existing scrollback (only viewportY moves; buffer
-   * content unchanged) must KEEP the pending anchor — the anchor is an absolute
-   * buffer row, so a second tap after panning completes the span correctly.
-   * This is what makes a range taller than one viewport selectable (the whole
-   * point of #6834); dropping it on every scroll capped ranges at one screen
-   * (Design review #8070).
-   */
-  it('keeps the anchor across a pure pan so ranges can exceed one viewport', () => {
-    const { term, selectLines, touchAtRow, touchEnd, emitScroll } = makeTouchTerm(
-      ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7'],
-      { visibleRows: 4, screenHeight: 80 },
-    )
-    const { result } = renderHook(() => useTerminalTouchSelection(term, true))
-
-    act(() => { result.current.onTouchStart(touchAtRow(1)) })
-    act(() => { vi.advanceTimersByTime(500) }) // anchor at row 1
-    expect(selectLines).toHaveBeenLastCalledWith(1, 1)
-
-    // User pans (no new output). Anchor must survive.
-    act(() => { emitScroll() })
-    expect(result.current.status).toBe('range_anchor')
-
-    // Second tap after the pan completes the span — a range wider than a screen.
-    act(() => { result.current.onTouchStart(touchAtRow(3)) })
-    act(() => { result.current.onTouchEnd(touchEnd()) })
-    expect(selectLines).toHaveBeenLastCalledWith(1, 3)
-    expect(result.current.status).toBe('range_selected')
-  })
-
-  /**
-   * NEW output (baseY / length change) genuinely moves the highlighted row
-   * under the user — abandon the half-built gesture so the next tap starts
-   * fresh instead of completing a stale span.
-   */
-  it('drops the anchor when new output shifts the buffer mid-gesture', () => {
-    const { term, selectLines, touchAtRow, shiftContent } = makeTouchTerm(['a', 'b', 'c', 'd'])
-    const { result } = renderHook(() => useTerminalTouchSelection(term, true))
-
-    act(() => { result.current.onTouchStart(touchAtRow(1)) })
-    act(() => { vi.advanceTimersByTime(500) }) // anchor set
-    expect(selectLines).toHaveBeenCalledTimes(1)
-
-    // New output arrives: baseY + length change (not a pure pan).
-    act(() => { shiftContent(2, 2) })
-    // A subsequent tap must NOT complete a stale range — it starts fresh.
-    act(() => { result.current.onTouchStart(touchAtRow(3)) })
+  it('keeps a long-press selection when the pressed row was repainted away', () => {
+    const { screenEl, raw } = mount(['', 'say hello', '', ''])
+    const span = document.createElement('span')
+    screenEl.append(span)
+    const [x, y] = at(5, 1)
+    touch(span, 'touchstart', x, y)
     act(() => { vi.advanceTimersByTime(500) })
-    expect(selectLines).toHaveBeenLastCalledWith(3, 3) // a NEW anchor, not a 1..3 span
-    expect(result.current.status).toBe('range_anchor')
+    span.remove()
+    // Without preventDefault the browser's emulated mousedown clears it.
+    expect(touch(span, 'touchend', x, y).defaultPrevented).toBe(true)
+    expect(raw.getSelection()).toBe('hello')
   })
 
-  /**
-   * At scrollback capacity xterm trims one line per new line, so baseY and
-   * length stay constant while every absolute row remaps — a {baseY,length}
-   * check is blind to it. The anchor marker is not: its line moves (or disposes
-   * to -1), so the gesture is abandoned. This is the exact long-scrollback case
-   * #6834 targets (Design review #8070).
-   */
-  it('drops the anchor on a capacity trim even when baseY and length are unchanged', () => {
-    const { term, selectLines, touchAtRow, trimAtCapacity } = makeTouchTerm(['a', 'b', 'c', 'd'])
-    const { result } = renderHook(() => useTerminalTouchSelection(term, true))
-
-    act(() => { result.current.onTouchStart(touchAtRow(1)) })
-    act(() => { vi.advanceTimersByTime(500) }) // anchor set + marker registered
-    expect(selectLines).toHaveBeenCalledTimes(1)
-    expect(result.current.status).toBe('range_anchor')
-
-    // Capacity trim: marker line moves, baseY/length hold — a signature check
-    // would miss it, the marker does not.
-    act(() => { trimAtCapacity(1) })
-    // The next tap starts a FRESH anchor, not a stale span.
-    act(() => { result.current.onTouchStart(touchAtRow(3)) })
+  it('extends the selection while the finger keeps dragging after the press', () => {
+    const { screenEl, raw } = mount(['', 'say hello', 'world wide', ''])
+    const [x, y] = at(5, 1)
+    touch(screenEl, 'touchstart', x, y)
     act(() => { vi.advanceTimersByTime(500) })
-    expect(selectLines).toHaveBeenLastCalledWith(3, 3)
-    expect(result.current.status).toBe('range_anchor')
+    const [x2, y2] = at(4, 2)
+    const move = touch(screenEl, 'touchmove', x2, y2)
+    expect(move.defaultPrevented).toBe(true)
+    expect(raw.getSelection()).toBe('hello world') // the fake joins padded rows with no newline
   })
 
-  /**
-   * The handlers sit on a div that also hosts overlaid interactive children
-   * (Reconnect button, completion menu). A touch that starts OFF the grid must
-   * NOT arm the gesture, so those taps aren't swallowed (Design review #8070).
-   */
-  it('does not arm the gesture when the touch starts off the terminal grid', () => {
-    const { term, selectLines, touchOffScreen } = makeTouchTerm(['a', 'b', 'c'])
-    const { result } = renderHook(() => useTerminalTouchSelection(term, true))
-
-    act(() => { result.current.onTouchStart(touchOffScreen(1)) })
-    act(() => { vi.advanceTimersByTime(500) })
-
-    expect(selectLines).not.toHaveBeenCalled()
-    expect(result.current.status).toBeNull()
+  it('a moving finger is a scroll, never a selection', () => {
+    const { screenEl, raw } = mount(['', 'say hello', '', ''])
+    touch(screenEl, 'touchstart', 50, 30)
+    touch(screenEl, 'touchmove', 50, 60)
+    act(() => { vi.advanceTimersByTime(600) })
+    expect(raw.select).not.toHaveBeenCalled()
   })
 
-  /**
-   * A FOREIGN non-empty selection change (e.g. the Select soft key building its
-   * own selection) while our anchor is pending must abandon the anchor + chip —
-   * otherwise they linger contradicting the key bar's stage label, because
-   * getSelection() is not '' (UX review #8070).
-   */
-  it('abandons the pending anchor when a foreign selection replaces it', () => {
-    const { term, touchAtRow } = makeTouchTerm(['a', 'b', 'c', 'd'])
-    const { result } = renderHook(() => useTerminalTouchSelection(term, true))
+  it('ignores a press that starts off the grid (an overlaid button)', () => {
+    const { host, raw } = mount(['', 'say hello', '', ''])
+    const button = document.createElement('button')
+    host.append(button)
+    touch(button, 'touchstart', 50, 30)
+    act(() => { vi.advanceTimersByTime(600) })
+    expect(raw.select).not.toHaveBeenCalled()
+  })
+})
 
-    act(() => { result.current.onTouchStart(touchAtRow(1)) })
-    act(() => { vi.advanceTimersByTime(500) }) // our anchor at row 1
-    expect(result.current.status).toBe('range_anchor')
+describe('selection handles', () => {
+  /** Long-press "hello", lift, and render the end handle's hit area into the host. */
+  function selectHello() {
+    const m = mount(['', 'say hello', 'world wide', ''])
+    const [x, y] = at(5, 1)
+    touch(m.screenEl, 'touchstart', x, y)
+    act(() => { vi.advanceTimersByTime(500) })
+    touch(m.screenEl, 'touchend', x, y)
+    const knob = (which: 'start' | 'end') => {
+      const el = document.createElement('div')
+      el.setAttribute(TOUCH_HANDLE_ATTR, which)
+      m.host.append(el)
+      return el
+    }
+    return { ...m, knob }
+  }
 
-    // A foreign surface (the Select soft key) sets its OWN selection: emulate by
-    // driving selectLines directly (bypassing the hook), which fires
-    // onSelectionChange with a non-empty selection the hook did not cause.
-    act(() => { (term as unknown as { selectLines: (a: number, b: number) => void }).selectLines(3, 3) })
-
-    // The pending anchor + chip are abandoned.
-    expect(result.current.status).toBeNull()
+  it('dragging the end handle moves the end a character at a time', () => {
+    const { raw, knob } = selectHello()
+    const end = knob('end')
+    // Grab the knob right on the last selected cell (col 8, row 1)...
+    const [gx, gy] = at(8, 1)
+    touch(end, 'touchstart', gx, gy)
+    // ...and drag it to col 2 of the next row.
+    const [dx, dy] = at(2, 2)
+    expect(touch(end, 'touchmove', dx, dy).defaultPrevented).toBe(true)
+    expect(raw.getSelection()).toBe('hello wor')
+    // Back onto the same row, one cell shorter than the word.
+    const [bx, by] = at(7, 1)
+    touch(end, 'touchmove', bx, by)
+    expect(raw.getSelection()).toBe('hell')
+    expect(touch(end, 'touchend', bx, by).defaultPrevented).toBe(true)
   })
 
-  it('resets when the selection is cleared out from under it (onSelectionChange)', () => {
-    const { term, selectLines, touchAtRow, clearSelection } = makeTouchTerm(['a', 'b', 'c'])
-    const { result } = renderHook(() => useTerminalTouchSelection(term, true))
-
-    act(() => { result.current.onTouchStart(touchAtRow(1)) })
-    act(() => { vi.advanceTimersByTime(500) })
-    expect(result.current.status).toBe('range_anchor')
-
-    act(() => { clearSelection() }) // ESC / viewport tap
-    expect(result.current.status).toBeNull()
-
-    // Next tap starts a fresh anchor, not a span from the cleared row.
-    act(() => { result.current.onTouchStart(touchAtRow(2)) })
-    act(() => { vi.advanceTimersByTime(500) })
-    expect(selectLines).toHaveBeenLastCalledWith(2, 2)
+  it('drops a handle drag when new output trims scrollback under it, but not on a pan', () => {
+    const { raw, knob } = selectHello()
+    const end = knob('end')
+    const [gx, gy] = at(8, 1)
+    touch(end, 'touchstart', gx, gy)
+    raw.pan()
+    const [dx, dy] = at(2, 2)
+    touch(end, 'touchmove', dx, dy)
+    expect(raw.getSelection()).toBe('hello wor')
+    raw.trim()
+    expect(raw.getSelection()).toBe('')
+    // The next move no longer drives a selection from the stale rows.
+    const [bx, by] = at(7, 1)
+    expect(touch(end, 'touchmove', bx, by).defaultPrevented).toBe(false)
+    expect(raw.getSelection()).toBe('')
   })
 
-  it('does not mutate a hidden pane (offsetParent null — staleness gate)', () => {
-    const { term, selectLines, touchAtRow, element } = makeTouchTerm(['a', 'b', 'c'])
-    const { result } = renderHook(() => useTerminalTouchSelection(term, true))
-
-    element.offsetParent = null // tab/instance switch hid the pane
-    act(() => { result.current.onTouchStart(touchAtRow(1)) })
-    act(() => { vi.advanceTimersByTime(500) })
-
-    expect(selectLines).not.toHaveBeenCalled()
-    expect(result.current.status).toBeNull()
+  it('drops a handle drag when a refit changes the column count, but not on a height change', () => {
+    const { raw, knob } = selectHello()
+    const end = knob('end')
+    const [gx, gy] = at(8, 1)
+    touch(end, 'touchstart', gx, gy)
+    // Only the height changes: every saved cell index still names the same text.
+    raw.resize(COLS, ROWS + 1)
+    const [dx, dy] = at(2, 2)
+    touch(end, 'touchmove', dx, dy)
+    expect(raw.getSelection()).toBe('hello wor')
+    // The columns change: indices built from the old width now decode elsewhere.
+    raw.resize(COLS - 2, ROWS + 1)
+    expect(raw.getSelection()).toBe('')
+    const [bx, by] = at(7, 1)
+    expect(touch(end, 'touchmove', bx, by).defaultPrevented).toBe(false)
+    expect(raw.select).toHaveBeenCalledTimes(2)
   })
 
-  it('ignores multi-touch (pinch-zoom is never an endpoint gesture)', () => {
-    const { term, selectLines, touchAtRow } = makeTouchTerm(['a', 'b', 'c'])
-    const { result } = renderHook(() => useTerminalTouchSelection(term, true))
-
-    act(() => { result.current.onTouchStart(touchAtRow(1, 2)) }) // 2 touches
+  it('drops a pending press when a refit changes the column count before it fires', () => {
+    const { screenEl, raw } = mount(['', 'say hello', '', ''])
+    const [x, y] = at(5, 1)
+    touch(screenEl, 'touchstart', x, y)
+    act(() => { raw.resize(COLS - 2, ROWS) })
     act(() => { vi.advanceTimersByTime(500) })
-
-    expect(selectLines).not.toHaveBeenCalled()
+    expect(raw.select).not.toHaveBeenCalled()
   })
 
-  it('is inert on a mouse device (enabled=false)', () => {
-    const { term, selectLines, touchAtRow } = makeTouchTerm(['a', 'b', 'c'])
-    const { result } = renderHook(() => useTerminalTouchSelection(term, false))
+  it('lets the lift of a selection drag reach an ancestor, so its own gesture can reset', () => {
+    const { screenEl, raw, knob } = selectHello()
+    // The shell's drawer swipe listens in the bubble phase above the grid and
+    // resets only on touchend: a swallowed lift would leave it armed.
+    const lifts: string[] = []
+    const ancestor = (e: Event) => { lifts.push(e.type) }
+    document.body.addEventListener('touchend', ancestor)
+    document.body.addEventListener('touchcancel', ancestor)
+    try {
+      const [x, y] = at(5, 1)
+      touch(screenEl, 'touchstart', x, y)
+      act(() => { vi.advanceTimersByTime(500) })
+      const [dx, dy] = at(7, 2)
+      touch(screenEl, 'touchmove', dx, dy)
+      expect(touch(screenEl, 'touchend', dx, dy).defaultPrevented).toBe(true)
+      const end = knob('end')
+      const [gx, gy] = at(8, 2)
+      touch(end, 'touchstart', gx, gy)
+      touch(end, 'touchmove', gx + 10, gy)
+      touch(end, 'touchcancel', gx + 10, gy)
+    } finally {
+      document.body.removeEventListener('touchend', ancestor)
+      document.body.removeEventListener('touchcancel', ancestor)
+    }
+    expect(lifts).toEqual(['touchend', 'touchcancel'])
+    expect(raw.getSelection()).not.toBe('')
+  })
 
-    act(() => { result.current.onTouchStart(touchAtRow(1)) })
-    act(() => { vi.advanceTimersByTime(500) })
+  it('dragging the start handle keeps the end fixed', () => {
+    const { raw, knob } = selectHello()
+    const start = knob('start')
+    const [gx, gy] = at(4, 1)
+    touch(start, 'touchstart', gx, gy)
+    const [dx, dy] = at(0, 1)
+    touch(start, 'touchmove', dx, dy)
+    expect(raw.getSelection()).toBe('say hello')
+  })
 
-    expect(selectLines).not.toHaveBeenCalled()
-    expect(result.current.status).toBeNull()
+  it('the key bar Copy writes exactly the touch selection', async () => {
+    const { term, raw } = selectHello()
+    const writeText = vi.fn(() => Promise.resolve())
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    onTestFinished(() => {
+      if (original) Object.defineProperty(navigator, 'clipboard', original)
+      else delete (navigator as unknown as Record<string, unknown>).clipboard
+    })
+    render(<TerminalKeyBar term={term} />)
+    expect(raw.getSelection()).toBe('hello')
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    await act(async () => { await Promise.resolve() })
+    expect(writeText).toHaveBeenCalledWith('hello')
+  })
+})
+
+describe('mouse devices', () => {
+  it('binds nothing when the device is not touch: the mouse path is untouched', () => {
+    const { screenEl, viewport, raw, hook } = mount(['', 'say hello', '', ''], false)
+    const [x, y] = at(5, 1)
+    expect(touch(screenEl, 'touchstart', x, y).defaultPrevented).toBe(false)
+    act(() => { vi.advanceTimersByTime(600) })
+    flick(screenEl, 70, 10, 5)
+    frames(10)
+    expect(raw.select).not.toHaveBeenCalled()
+    expect(viewport.scrollTop).toBe(0)
+    expect(hook.result.current.handles).toBeNull()
+  })
+
+  it('leaves mouse events alone on a touch device too', () => {
+    const { screenEl, raw } = mount(['', 'say hello', '', ''])
+    const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 50, clientY: 30 })
+    const up = new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: 80, clientY: 30 })
+    screenEl.dispatchEvent(down)
+    act(() => { vi.advanceTimersByTime(600) })
+    screenEl.dispatchEvent(up)
+    expect(down.defaultPrevented).toBe(false)
+    expect(up.defaultPrevented).toBe(false)
+    expect(raw.select).not.toHaveBeenCalled()
+    expect(raw.clearSelection).not.toHaveBeenCalled()
   })
 })

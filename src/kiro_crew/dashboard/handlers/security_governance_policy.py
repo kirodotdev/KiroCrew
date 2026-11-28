@@ -391,4 +391,9 @@ async def build_governance_policy_snapshot_async() -> dict:
 
 async def api_governance_policy(request: web.Request) -> web.Response:
     """GET /api/governance/policy — effective ceiling across all scopes (read)."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    denied = await require_owner_for_dashboard_caller(request, "governance.policy")
+    if denied is not None:
+        return denied
     return web.json_response(await build_governance_policy_snapshot_async())

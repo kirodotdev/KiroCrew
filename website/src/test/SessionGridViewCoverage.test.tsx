@@ -48,6 +48,7 @@ vi.mock('../components/ChatPane', () => ({
     leading,
     onFileOpen,
     onFolderOpen,
+    noSignIn,
   }: {
     slotKey: string
     focused?: boolean
@@ -60,8 +61,9 @@ vi.mock('../components/ChatPane', () => ({
     leading?: { inset?: boolean; control?: React.ReactNode }
     onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
     onFolderOpen?: (path: string) => void
+    noSignIn?: boolean
   }) => (
-    <div data-testid={`pane-${slotKey}`} data-focused={focused ? 'yes' : 'no'} data-ptt={pushToTalk ? 'yes' : 'no'} data-leading={leading ? (leading.inset ? 'inset' : 'control') : 'none'}>
+    <div data-testid={`pane-${slotKey}`} data-no-sign-in={noSignIn ? 'yes' : 'no'} data-focused={focused ? 'yes' : 'no'} data-ptt={pushToTalk ? 'yes' : 'no'} data-leading={leading ? (leading.inset ? 'inset' : 'control') : 'none'}>
       {leading?.control}
       {focused !== undefined && <PaneDim dimmed={!focused} />}
       <button type="button" aria-label={`focus ${slotKey}`} onClick={onFocus} />
@@ -806,6 +808,18 @@ describe('SessionGridView — picker controls', () => {
     expect(pickers()).toHaveLength(1)
   })
 
+  it('says why when the create is refused, instead of only stopping the spinner', async () => {
+    const m = seedApi([{ key: 'a' }])
+    m.createChatSlot = vi.fn().mockRejectedValue(new Error('Memory is still starting'))
+    renderGrid('a')
+
+    fireEvent.click(within(onlyPicker()).getByRole('button', { name: 'New session' }))
+
+    expect((await screen.findByTestId('grid-create-error')).textContent).toContain('Memory is still starting')
+    // The person's own New session asks for their stored start mode.
+    expect(m.createChatSlot.mock.calls[0][13]).toBe(true)
+  })
+
   it('disables the create button and shows a spinner while creating', async () => {
     const m = seedApi([{ key: 'a' }])
     let release: (v: { key?: string }) => void = () => {}
@@ -1000,6 +1014,11 @@ describe('SessionGridView — picker controls', () => {
     await waitFor(() => expect(pickers()).toHaveLength(3))
   })
 
+  it('names the split chord the keyboard has in the split-right hover text', () => {
+    renderGrid('a')
+    expect(within(onlyPicker()).getByRole('button', { name: 'Split right' }).getAttribute('title')).toBe('Split right (Ctrl+D)')
+  })
+
   it('focuses the picker cell it is pressed in', async () => {
     renderGrid('a')
     await screen.findByTestId('pane-a')
@@ -1023,5 +1042,42 @@ describe('SessionGridView — Crew Mode workers (edge review R2 F4)', () => {
     await waitFor(() => expect(rowsOf(onlyPicker())).toHaveLength(1))
     expect(rowsOf(onlyPicker())[0].textContent).toContain('Conductor')
     expect(within(onlyPicker()).queryByText('Worker')).toBeNull()
+  })
+})
+
+describe('SessionGridView — a session dropped on a pane (#36883)', () => {
+  it('shows the session in that pane and focuses it, keeping every other pane and the tree', async () => {
+    seedStore('a', splitOf([leaf('l-a', 'a'), leaf('l-b'), leaf('l-c', 'c')]))
+    seedApi([{ key: 'a' }, { key: 'c' }, { key: 'd' }, { key: 'e' }])
+    const paneDropRef: { current: ((leafId: string, slot: string) => void) | null } = { current: null }
+    const { container } = renderWithProviders(
+      <SessionGridView onClose={vi.fn()} onCollapse={vi.fn()} seedSlot="a" paneDropRef={paneDropRef} />,
+    )
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    await screen.findByTestId('pane-a')
+    const layout = () => Array.from(container.querySelectorAll<HTMLElement>('[data-split-leaf]'),
+      (el) => [el.dataset.splitLeaf, el.dataset.splitSlot ?? null])
+
+    act(() => paneDropRef.current?.('l-b', 'd'))
+    expect(layout()).toEqual([['l-a', 'a'], ['l-b', 'd'], ['l-c', 'c']])
+    expect(pickers()).toHaveLength(0)
+
+    act(() => paneDropRef.current?.('l-a', 'e'))
+    expect(layout()).toEqual([['l-a', 'e'], ['l-b', 'd'], ['l-c', 'c']])
+    expect(screen.queryByTestId('pane-a')).toBeNull()
+    expect(screen.getByTestId('pane-e').dataset.focused).toBe('yes')
+    expect(screen.getByTestId('pane-c').dataset.focused).toBe('no')
+  })
+})
+
+describe('SessionGridView — Kiro sign-in on a signed-out row', () => {
+  it('lets every pane offer Sign in unless the host withholds it (embedded or popout)', async () => {
+    renderGrid('a')
+    expect((await screen.findByTestId('pane-a')).getAttribute('data-no-sign-in')).toBe('no')
+  })
+
+  it('hands the host\u2019s noSignIn to every pane', async () => {
+    renderWithProviders(<SessionGridView onClose={vi.fn()} onCollapse={vi.fn()} seedSlot="a" noSignIn />)
+    expect((await screen.findByTestId('pane-a')).getAttribute('data-no-sign-in')).toBe('yes')
   })
 })

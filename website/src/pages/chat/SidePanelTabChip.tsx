@@ -12,7 +12,8 @@ import { useLongPressReorder } from '../../hooks/useLongPressReorder'
 import { Reorder } from 'framer-motion'
 import { X } from 'lucide-react'
 import type { PanelTab } from '../../hooks/usePanelTabs'
-import { usePanelTabDescriptors } from '../../hooks/panelTabRegistry'
+import { isPanelTabKind, usePanelTabDescriptors } from '../../hooks/panelTabRegistry'
+import { appRegistryPrefetchHandlers } from '../../components/appRegistryPrefetch'
 import { i18nT } from '../../i18n/t'
 import { forwardUiLocation } from '../../uiLocations/uiLocation'
 import { iconForKind } from './SidePanelTabIcons'
@@ -106,6 +107,8 @@ function TabChip({ chipId, tab, active, onSelect, onClose, closable = true, pinn
       {...forwardUiLocation<HTMLDivElement>(uiLocationId)}
       aria-selected={active}
       tabIndex={0}
+      // An app's own tab mounts its bundle, which needs the app registry.
+      {...(tab.kind && isPanelTabKind(tab.kind) ? appRegistryPrefetchHandlers : undefined)}
       onClick={onSelect}
       // Guard on e.target so Enter/Space on the nested transfer/close buttons
       // activates them natively instead of also selecting the tab.

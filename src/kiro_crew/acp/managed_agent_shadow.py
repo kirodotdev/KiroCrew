@@ -62,18 +62,6 @@ SHADOW_REFUSED_AGENT_NAMES: frozenset[str] = frozenset(
 _RESERVED_FOLDED = frozenset(name.casefold() for name in SHADOW_REFUSED_AGENT_NAMES)
 
 
-def _is_installed_agents_dir(project_agents: Path) -> bool:
-    """Is the checkout's agents directory the one Kiro Crew installs into?
-
-    A session whose cwd is the home directory has ``<cwd>/.kiro/agents`` equal to
-    ``~/.kiro/agents``, so the installed spec would read as its own shadow.
-    """
-    try:
-        return os.path.samefile(project_agents, agent_mod.kiro_agents_dir_path())
-    except OSError:
-        return False
-
-
 #: How many spec files, and how many directories, one scan examines. A checkout's
 #: agents tree is small; the caps keep a pathological one (or a linked directory
 #: that reaches a large tree) from stalling the spawn, and hitting either refuses.
@@ -351,7 +339,7 @@ def _project_agent_claim_refusal(
     # linked ``.kiro`` or ``agents`` to wherever it points.
     if _screened_target(project_agents) is None:
         return _link_refusal(project_agents)
-    if _is_installed_agents_dir(project_agents):
+    if agent_mod.is_installed_agents_dir(project_agents):
         return None
     try:
         files = _project_spec_files(project_agents)

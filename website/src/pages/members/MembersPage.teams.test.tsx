@@ -211,8 +211,10 @@ vi.mock('../../components/WebPreviewPanel', () => ({
   ),
 }))
 vi.mock('../../components/McpAppFrame', () => ({ default: () => null }))
-vi.mock('../../components/CliPanel', () => ({
+vi.mock('../../components/LazyCliPanel', () => ({
   default: () => null,
+}))
+vi.mock('../../components/terminalSessions', () => ({
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
 }))
@@ -431,7 +433,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(within(card).getByTestId('team-inbox-option')).toHaveTextContent('Merge as is')
     expect(within(card).getByTestId('team-inbox-option-more')).toBeInTheDocument()
     // The chip's effect is written where the reader looks, not only in a tooltip.
-    expect(within(card).getByTestId('team-inbox-option-lead')).toHaveTextContent(/drafts a reply in oncall's chat; nothing is sent until you do/i)
+    expect(within(card).getByTestId('team-inbox-option-lead')).toHaveTextContent(/^drafts a reply in oncall's chat\.$/i)
     writePaneDraft('member-oncall', { text: 'Find the race', files: ['/workspace/note.txt'], pastes: [] })
     fireEvent.click(within(card).getByTestId('team-inbox-option'))
     expect(readPaneDraft('member-oncall')).toEqual({

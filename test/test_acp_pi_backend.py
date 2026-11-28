@@ -19,6 +19,7 @@ import re
 import stat
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import acp_pi_backend_helpers
 import pytest
@@ -283,13 +284,23 @@ class TestATooOldPiIsRefusedByName:
         pi_bin = self._linked_bin(tmp_path, acp_client.PI_NPM_PKG, "0.80.5")
         _inject_pi_resolvers(monkeypatch, pi_bin)
 
-        async def no_child(*_a, **_kw):
+        # The sandbox floor runs first and passes; the version refusal must still
+        # come before the first child this spawn prepares (the Node probe).
+        floor_calls: list[str] = []
+
+        async def floor_passes(_preflight, backend, _mode):
+            floor_calls.append(backend)
+            return ()
+
+        def no_child(*_a, **_kw):
             raise AssertionError("a child was prepared for a pi the adapter cannot drive")
 
-        monkeypatch.setattr(launch_mod, "_run_preflight_bounded", no_child)
+        monkeypatch.setattr(launch_mod, "_run_preflight_bounded", floor_passes)
+        monkeypatch.setattr(pi_mod, "_pi_node_choice", no_child)
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
         with pytest.raises(acp_client.AcpError, match="too old"):
             asyncio.run(client._spawn())
+        assert floor_calls == [ACP_BACKEND_PI]
 
     def test_a_current_pi_reaches_the_rest_of_the_spawn(
         self, tmp_path, monkeypatch, fresh_pi_resolution
@@ -300,10 +311,13 @@ class TestATooOldPiIsRefusedByName:
         class Reached(Exception):
             pass
 
-        async def reached(*_a, **_kw):
+        def reached(*_a, **_kw):
             raise Reached
 
-        monkeypatch.setattr(launch_mod, "_run_preflight_bounded", reached)
+        # The marker is the first step after the version gate, so reaching it proves
+        # the gate let a current pi through.
+        monkeypatch.setattr(launch_mod, "_run_preflight_bounded", AsyncMock(return_value=()))
+        monkeypatch.setattr(pi_mod, "_pi_node_choice", reached)
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
         with pytest.raises(Reached):
             asyncio.run(client._spawn())

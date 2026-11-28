@@ -1,0 +1,8 @@
++77
+In a `gh pr create`/`git commit -m` message value the floor reads each backtick
+through bash's own quote/escape machine (`_iter_shell_chars`): a bare backtick
+inside double quotes opens a live `kirocrew restart`, which it denies, while an
+escaped or single-quoted one stays literal and allowed. Every non-message or
+executable payload (`echo`, `bash -c`, `sh -c`, `ruby -e`) keeps the
+over-approximating continuation fold, so a split `kiro\<newline>crew restart`
+that a shell rejoins stays denied.

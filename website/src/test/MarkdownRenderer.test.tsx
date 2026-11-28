@@ -5,16 +5,20 @@
  * softBreaks are pinned in MarkdownRenderer.textPasses.test.tsx, and the
  * LaTeX-native delimiters in MarkdownRenderer.latexDelimiters.test.tsx.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { beforeAll, describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, fireEvent, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import MarkdownRenderer, { Lightbox, dispatchLightbox, isPathCandidate, splitLineRef } from '../components/MarkdownRenderer'
+import { loadKatex } from '../components/markdown/lazyKatex'
 import { __resetPathKindCache } from '../hooks/usePathKind'
 import { kindsRequestCount, kindsRequestPaths, kindsResponse, probedPaths, stubPathKinds } from './pathKindStub'
 import { api } from '../api/client'
 import { setHostElectronReader } from '../lib/hostRelay'
 import { i18nT } from '../i18n/t'
 import { resolveSourcePos } from '../components/markdownPanelSourcePos'
+
+// KaTeX loads on demand (lazyKatex.ts); these assertions expect it rendered.
+beforeAll(() => loadKatex())
 
 // The chip's reveal hint is gated on the shared reveal gate (branding.directLocal
 // AND branding.desktopLauncher): where no reveal can land, shift+click copies the

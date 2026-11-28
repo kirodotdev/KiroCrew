@@ -63,6 +63,7 @@ from kiro_crew.platform import current_context
 from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
 from kiro_crew.session_allocation import SessionClosingError
+from kiro_crew.slack import thread_trust
 from kiro_crew.slack.agent_sessions.fence import fenced_turn
 from kiro_crew.slack.channel_crew import context_template, resolve_channel_crew
 from kiro_crew.slack.channel_policy import channel_refusal
@@ -521,7 +522,9 @@ async def handle_message_transport(
         )
         await slack.post_message(channel, SHARED_OWNER_ONLY_TEXT, reply_ts)
         return
-    if await maybe_route_linked_thread(text, session_key, user_id, channel, slack, reply_ts):
+    if await maybe_route_linked_thread(
+        text, session_key, user_id, channel, slack, reply_ts, had_voice_input=had_voice_input
+    ):
         return
 
     # ── Hook: auto-reply before touching the LLM (mirrors native) ──
@@ -770,13 +773,16 @@ async def handle_message_transport(
         # kiro_agent as the mode, its name as crew_agent, its workspace as cwd
         # (slack/channel_crew.py). Only when the selected agent IS the channel's
         # binding -- a thread value equal to it is that binding restored from the
-        # transcript header by ``_hydrate_thread_overrides`` -- and the session is
-        # Slack's own: a dashboard-linked session keeps its slot's project.
+        # transcript header by ``_hydrate_thread_overrides`` -- or the thread's own
+        # agent (``!bot`` puts a thread on a Crew Bot; a name that is no
+        # ``config.agents`` key resolves to nothing and passes through), and the
+        # session is Slack's own: a dashboard-linked session keeps its slot's project.
         # ``_agent`` stays the record's name for the transcript header; the
         # context builder takes the record's template (``context_template``).
         _channel_crew = (
-            await asyncio.to_thread(resolve_channel_crew, agent_override)
-            if agent_override and _agent == agent_override and is_slack_born(session_key)
+            await asyncio.to_thread(resolve_channel_crew, _agent)
+            if _agent in (_thread_agents.get(session_key), agent_override)
+            and is_slack_born(session_key)
             else None
         )
         _context_agent = await asyncio.to_thread(context_template, _agent, _channel_crew)
@@ -997,6 +1003,12 @@ async def handle_message_transport(
                 )
             if _logged_user_turn:
                 await _refresh_dashboard_tab(session_key)
+        if _logged_user_turn or not conversation_log or _is_slack_restricted(session_key):
+            # The question is on disk, or this turn keeps no transcript: a message
+            # steered in from here on is written after it (``slack/midturn.py``).
+            from kiro_crew.slack import midturn
+
+            midturn.open_transcript(session_key if _logged_user_turn else "")
 
         # ── Build message with context ──
         if context_builder:
@@ -1097,8 +1109,17 @@ async def handle_message_transport(
             # Per-session Trust (set via the Trust button) auto-approves all
             # subsequent tools for THIS session, mirroring native. Checked per
             # permission request so a mid-turn Trust click takes effect for the
-            # remaining tools in the same turn.
-            auto_approve_session=lambda: is_slack_session_trusted(session_key),
+            # remaining tools in the same turn. The grant is the owner's: a shared
+            # user's turn in a trusted thread still asks.
+            auto_approve_session=lambda: (
+                not is_shared_listed(user_id) and is_slack_session_trusted(session_key)
+            ),
+            # A shared user's own grant on this session: it takes the event,
+            # since it never answers a helper agent's call.
+            auto_approve_sender=lambda event: (
+                is_shared_listed(user_id)
+                and thread_trust.sender_trusted(sessions, session_key, user_id, event)
+            ),
             # PreToolUse deny/auto gate (runs before the ladder in TurnDriver;
             # a DENY is un-overridable by auto/trust/YOLO).
             tool_gate=_tool_gate,

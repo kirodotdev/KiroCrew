@@ -461,12 +461,30 @@ export function pointerOnScrollbar(target: EventTarget, e: { clientX?: number })
 
 export function scrollCurrentMatchIntoView(
   root?: Element | null,
-  opts: { maxMs?: number; now?: () => number; raf?: (cb: () => void) => number } = {},
+  opts: {
+    maxMs?: number
+    now?: () => number
+    raf?: (cb: () => void) => number
+    /** Called once, when this request is done moving the reader: the poll
+     *  settled on the match or reached its backstop, the reader scrolled, or a
+     *  newer scroll took over. Not called when the caller cancels first (its
+     *  row unmounted, or its effect ran again): the request has not finished,
+     *  and the row's next one finishes the move. The row of a far jump is one,
+     *  swapped out and back in by the virtualizer right after the first scroll. */
+    onSpent?: () => void
+  } = {},
 ): () => void {
-  const { maxMs = CONVERGE_MAX_MS, now = defaultNow, raf = defaultRaf } = opts
+  const { maxMs = CONVERGE_MAX_MS, now = defaultNow, raf = defaultRaf, onSpent } = opts
   const target: EventTarget | undefined =
     typeof window !== 'undefined' ? window : undefined
   let match: Range | null = null
+  let spent = false
+  const spend = () => {
+    if (spent) return
+    spent = true
+    onSpent?.()
+  }
+  let cancelledByCaller = false
   // Hoisted so `cleanup` (referenced by pollRowSettled's onEnd) can name it.
   function onUser() { stop() }
   let detachUser: () => void = () => {}
@@ -491,10 +509,12 @@ export function scrollCurrentMatchIntoView(
     raf,
     now,
     maxMs,
-    onEnd: cleanup,
+    // Every end but the caller's own cancel spends the request: the settle,
+    // the backstop, the reader's scroll (onUser) and a newer poll taking over.
+    onEnd: () => { cleanup(); if (!cancelledByCaller) spend() },
   })
   detachUser = attachUserScrollIntent(target, onUser)
-  return () => { stop(); cleanup() }
+  return () => { cancelledByCaller = true; stop(); cleanup() }
 }
 
 /**

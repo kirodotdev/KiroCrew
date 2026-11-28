@@ -43,6 +43,7 @@ from kiro_crew.dashboard.slot_ownership import (
 from kiro_crew.dashboard.state import TURN_OPENING_INJECT_KINDS, DashboardState, _ChatSlot
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.dashboard.wire_rows import WireRows
+from kiro_crew.messaging.alternation_echo import is_stored_echo_row
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -224,6 +225,7 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         # Rows as the dashboard receives them, projected only where the scan reads.
         wire = WireRows(msgs)
         ai_idx = -1
+        echo_idx = -1
         # The newest reply the dashboard draws as nothing. With no drawn reply in
         # the turn it stands in for the target until the refusals below have run,
         # so each answers exactly as it did before this skip existed.
@@ -248,6 +250,12 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             # frontend's Regenerate scan runs the same skip.
             if is_system_notice("assistant", msgs[i].get("meta")):
                 continue
+            # A stored alternation placeholder is the target only when its turn has
+            # no other reply, so that turn re-runs (the dashboard offers no press there).
+            # Checked before the hidden skip: the wire sends it as the say-nothing reply.
+            if is_stored_echo_row(msgs[i]):
+                echo_idx = i if echo_idx < 0 else echo_idx
+                continue
             # A row the dashboard draws as nothing (``isHiddenReplyAt``: an
             # invisible-only reply, or a [STEERING …] note in a policy-block turn)
             # does not carry the Regenerate button; the row above it does. Taking
@@ -259,6 +267,8 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
                 continue
             ai_idx = i
             break
+        if ai_idx < 0:
+            ai_idx = echo_idx
         anchor = ai_idx if ai_idx >= 0 else hidden_idx
         if anchor < 0:
             return _no_assistant_message()
@@ -312,7 +322,10 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         _rv = ai_msg.get("variants")
         variants: list[dict] = list(_rv) if isinstance(_rv, list) else []  # type: ignore[arg-type]
         current_entry = variant_from_row(ai_msg)
-        if not any(v.get("content") == current_entry["content"] for v in variants):
+        # The placeholder is not a reply, so it is not kept as a variant.
+        if not is_stored_echo_row(ai_msg) and not any(
+            v.get("content") == current_entry["content"] for v in variants
+        ):
             variants.append(current_entry)
         if len(variants) > _MAX_VARIANTS:
             variants = _cap_keeping_shown(

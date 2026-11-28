@@ -457,7 +457,7 @@ is what this guide is about.
 A destination is also allowed to receive only PART of that. `OtlpDestination`
 carries three optional fields. An `otlp_endpoints` entry sets them with the keys
 of the same names, and a build that assembles its own destination can set them
-too:
+too (a build can also set a fourth, `named_entity_namespaces`, below):
 
 - `allow` -- only metrics whose name is in this set are sent. Unset means
   everything, which is what your endpoint gets.
@@ -466,6 +466,12 @@ too:
 - `resource_allow` -- that destination's batches carry a resource reduced to these
   keys, so a destination that may see only `service.name` and `service.version`
   does not receive `service.instance.id`.
+
+A build can name the apps of a registry it ships, as `<namespace>.<name>` in `Entity`.
+A destination receives those values only when it lists the namespace in
+`named_entity_namespaces`; a destination that says nothing is sent `private`. Your
+`otlp_endpoints` entries and the local JSONL sink see every name. Nothing is named
+unless the build declares the registry.
 
 Three things to take from this if you operate a collector:
 
@@ -491,7 +497,7 @@ every attribute value on it comes from a closed set. Histograms,
 | Sessions and turns | `session.started`, `session.idle_expired`, `subagent.spawned`, `subagent.completed`, `context.compactions`, `turn.completed`, `turn.timeout.cause` |
 | Crew sessions | `crew.session.started`, `crew.turn.started`, `crew.session.tree.depth`, `crew.session.tree.child`, `crew.session_control.calls` |
 | Work ledger and conductor mode | `work.created`, `work.item_closed`, `work.dispatches`, `work.reports`, `crew_mode.turned_on`, `crew_mode.new_chats`, `crew_mode.runs_finished`, `crew_mode.steers_per_run`, `crew_mode.worker_waits` |
-| Features | `cron.fires`, `artifact.created`, `workflow.runs`, `approval.decisions`, `autonudge.loops.started`, `autonudge.loops.stopped`, `autonudge.ticks`, `monitor.decisions`, `webhook.requests`, `memory.recalled`, `lesson.injected`, `skill.lazy_load.count`, `app.installed`, `app.updated`, `app.uninstalled`, `app.session_started`, `app.run_time`, `app.present`, `app.opened`, `app.foreground_time`, `channel.message.received`, `ui.control.clicked` |
+| Features | `cron.fires`, `artifact.created`, `workflow.runs`, `approval.decisions`, `autonudge.loops.started`, `autonudge.loops.stopped`, `autonudge.ticks`, `monitor.decisions`, `webhook.requests`, `memory.recalled`, `lesson.injected`, `skill.lazy_load.count`, `app.installed`, `app.updated`, `app.uninstalled`, `app.session_started`, `app.run_time`, `app.credits`, `app.present`, `app.opened`, `app.foreground_time`, `channel.message.received`, `ui.control.clicked` |
 | Inventory (gauges) | `inventory.crons.active`, `inventory.monitor_loops.active`, `inventory.skills.installed`, `inventory.memory.migrated`, `inventory.knowledge.documents`, `inventory.lessons`, `inventory.mcp.servers`, `inventory.config.toggle`, `inventory.probe.failures`, `inventory.members`, `inventory.voice.provider` |
 | Voice | `voice.stt.started`, `voice.stt.ended`, `voice.stt.errors`, `voice.unavailable`, `voice.tts.replies` |
 | Recommendations | `tips.feedback`, `feature_video.status`, `milestone.panel_opened`, `milestone.starter_clicked`, `milestone.reached`, `milestone.skipped`, `milestone.mark_all_done`, `milestone.notice_shown`, `milestone.features_completed` |
@@ -506,18 +512,18 @@ in-product recommendations (feature tips, the Explore panel, feature videos):
 
 | Metric | Attributes |
 |---|---|
-| `kirocrew.tips.feedback` | `Feature` = `tips`, `Activity` (the action: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`), `Entity` (a shipped curated tip id, an edition tip id the edition lists in `TipsPool.metric_tip_ids`, a shipped feature doc name, or `other`), `source` (`curated` / `catalog` / `generated` / `other`) |
+| `kirocrew.tips.feedback` | `Feature` = `tips`, `Activity` (the action: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`), `Entity` (a shipped curated or exploratory tip id, an edition tip id the edition lists in `TipsPool.metric_tip_ids`, a shipped feature doc name, or `other`), `source` (`curated` / `catalog` / `generated` / `exploratory` / `other`) |
 | `kirocrew.feature_video.status` | `Feature` = `feature_video`, `Activity` (the status: `seen` / `dismissed` / `other`), `Entity` (a shipped feature key or `other`) |
 | `kirocrew.milestone.starter_clicked`, `.skipped` | `Feature` = `milestone`, `Activity` = the last name segment, `Entity` (a catalog milestone id, `all` or `other`), `surface`, and `send` on `starter_clicked` |
 | `kirocrew.milestone.reached` | `Feature` = `milestone`, `Activity` = `reached`, `Entity` (a catalog milestone id), `group`, `via`, `recommended_by` (`tip` / `explore` / `video` / `several` / `none`) |
 | `kirocrew.milestone.panel_opened`, `.mark_all_done`, `.notice_shown`, `.features_completed` | `Feature` = `milestone`, `Activity` = the last name segment, plus `group` on `notice_shown` and `via` on `features_completed` |
 
 These nine are the behavioral metrics (`BEHAVIORAL_METRICS` in
-`src/kiro_crew/metrics/behavioral_metrics.py`), with eight more from the features
+`src/kiro_crew/metrics/behavioral_metrics.py`), with nine more from the features
 group, `kirocrew.app.installed`, `kirocrew.app.updated`,
 `kirocrew.app.uninstalled`, `kirocrew.app.session_started`, `kirocrew.app.run_time`,
-`kirocrew.app.present`, `kirocrew.app.opened` and `kirocrew.app.foreground_time`: `Feature` = `app`, `Activity` = the last name segment,
-`Entity` (a shipped built-in's or a store app's name, else `private`),
+`kirocrew.app.credits`, `kirocrew.app.present`, `kirocrew.app.opened` and `kirocrew.app.foreground_time`: `Feature` = `app`, `Activity` = the last name segment,
+`Entity` (a shipped built-in's or a store app's name, `<namespace>.<name>` for an app from a registry the build names, else `private`),
 `entity_version` (that app's version when it is `N.N.N`, `other` for a pre-release
 or build suffix, `private` for a private app), and `via` (`store` / `default` /
 `other`) on `installed` and `updated`, `keep_data` (`true` / `false`) on
@@ -526,14 +532,18 @@ beside `kirocrew.session.started` when the session's provider is owned by an app
 `run_time` (unit `s`) adds each finished turn's wall seconds,
 rounded up, in a session an app owns, with `duration`, that turn's bucket
 (`le_10s` / `le_1m` / `le_5m` / `le_15m` / `le_1h` / `le_4h` / `gt_4h` /
-`other`); a turn with no duration adds nothing. `present` counts each installed
+`other`); a turn with no duration adds nothing. `credits` (unit `credit`) adds
+each finished turn's credits in a session an app owns, with no other
+attribute; a turn that billed no credits (zero, or a backend that bills in
+dollars) adds nothing. `present` counts each installed
 app once per UTC day, with `status` (`enabled` / `disabled` / `other`) and
-`backend` (`none` / `running` / `stopped` / `other`). `opened` carries `surface` (`page` / `popout` / `desktop` / `other`), and
+`backend` (`none` / `running` / `stopped` / `other`). `opened` carries `surface` (`page` / `popout` / `desktop` / `shortcut` / `other`), and
 `surface` (`page` / `popout` / `other`) and `duration` (`le_10s`, `le_1m`, `le_5m`,
 `le_15m`, `le_1h`, `le_4h`, `gt_4h`, `other`) on `foreground_time`, whose value is
 the seconds an app page was visible (unit `s`, spans under 1 s not counted, one
 span cut to 24 h). `opened` and `foreground_time` count **owner views only**: the
-dashboard sends them through the owner-only `POST /api/telemetry/app-view`, so a
+dashboard sends them (and the desktop app sends `opened` for a press of an app's
+desktop shortcut) through the owner-only `POST /api/telemetry/app-view`, so a
 non-owner's or a Shared Crew teammate's tabs add nothing, while `session.started` and the turn metrics count
 every session. Do not divide one population by the other. Each records one thing a person
 or an app did. They are exported under the instrumentation scope `kiro.crew`, so a

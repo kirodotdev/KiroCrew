@@ -2,12 +2,17 @@
 """Miss ledger for diff-based test selection: shadow verdicts joined with full-run failures.
 
 Reads only: `gh` (completed pull_request `CI` runs, each run's verdict artifact,
-its Linux `Backend Tests` jobs and their logs, the open main-red issue). Appends
-to a JSONL ledger, writes proposed tier rates as JSON and a markdown summary. It
-never edits the checked-in rates file: a person moves the proposal in by PR.
+its Linux `Backend Tests` jobs, their annotations and, where those may not be the
+whole answer, their logs; the main-red issues, in one call). Appends to a JSONL ledger,
+writes proposed tier rates as JSON and a markdown summary. It never edits the
+checked-in rates file: a person moves the proposal in by PR.
+
+A verdict is uploaded by the pull request's own run, so its numbers are evidence
+for a person and never a switch: nothing may turn selection on, or make a tier
+skippable, from this ledger alone. Turning selection off on it is safe.
 
 A verdict is the scorer's JSON for one PR run (`schema` 1: `verdict`, `tiers`,
-`would_skip`), read from the run's `--artifact`, or from `<--verdict-dir>/<run
+`would_skip`, and `covered` when the scorer wrote it), read from the run's `--artifact`, or from `<--verdict-dir>/<run
 id>.json` when it was scored offline. A failing test file the verdict lists in
 `would_skip` is a MISS.
 
@@ -16,14 +21,53 @@ ended in success or failure, ran the full suite (the reduced and leaf scopes
 skip the `FULL_SUITE_STEP` step), and every failed shard names a failing test.
 Any other run is recorded as excluded, with the reason, and fits nothing.
 
+What a failed shard failed is read from the annotations of its check run, which
+the Actions token can read; it cannot read a job log in this repository
+(`.github/workflows/main-red-watch.yml`). The suite writes
+`ANNOTATED_FAILURES_MAX` failure annotations for a job at most (a test may take
+two, its call and its teardown) and none for a collection error, so a job with
+none, or with that many, is not taken to be answered whole: its log is read
+too. When GitHub refuses the log, the run is excluded (`UNREAD_FAILURES`) rather
+than recorded with failures missing.
+
+A run is recorded, and so never asked for again, only on what will not change:
+what GitHub answered, or refused. A read that failed (an error, a spent limit, a
+download cut short, a page of a listing that did not arrive) records nothing and
+leaves the run for a later pass, and so does a run whose conclusion is not final.
+A run's conclusion speaks for its last attempt alone, so nothing is decided from
+it on a rerun: every attempt of a rerun is read.
+
+What a pass costs. The requests are REST ones from the pool every job of the
+repository shares, so a run costs as few as say what is needed: none when the
+ledger holds it or when, on its first attempt, it was cancelled or never ran its
+jobs; its verdict alone when, on its first attempt, it is green and its verdicts
+are `full` on both systems (it can show no miss and no shard of it failed);
+otherwise one download for its verdict (the artifacts are listed a hundred to a
+call, and a run that listing does not name exactly one artifact of is asked for
+its own), the jobs of each attempt, and one read for each failed backend shard. `--max-calls` ends a pass at a number of calls and
+`--reserve` keeps the pass from starting, and stops it, when the pool is under
+that many requests; rows are kept every `KEEP_EVERY_RUNS` runs and when a pass
+ends, however it ends, so a later pass reads only the rest. A window of more
+runs than GitHub lists for one query (1,000) is read in parts.
+
 Ledger rows, one JSON object per line, keyed on run id and attempt. A pass
 appends only what the ledger does not hold; a rerun appends a fresh observation
 of the whole run, and the report reads each run's newest attempt only:
 
     {"kind": "run", "run", "attempt", "source", "fork", "pr", "head", "date",
-     "verdict", "tiers": {tier: files}}
+     "verdict", "tiers": {tier: files}, "covered": {cause: rows}}
     {"kind": "failure", <the same seven>, "file", "tier", "miss", "rerun_green", "main_red"}
     {"kind": "skip", <the same seven>, "reason"}
+
+`covered` is the verdict's own: what let the diff be narrowed where a rule
+would else fall back. A git status letter (`A`, `D`, `M`, `R`) counts the
+changed docs and frontend paths whose readers took the place of a fall-back
+(`scripts/ci_test_data_readers.py`); `added_test` counts the test files the
+diff adds. Any key of letters and underscores is kept as written, so a cause
+the scorer names later needs no change here. A verdict written before the
+scorer had the field reads as none, and so does a run row without it. The
+summary splits the `select` runs and every miss by it, so a cause that lets
+misses through shows before selection is turned on.
 
 Rows are joined and deduplicated only on values every later pass reads the same:
 the run id and attempt, the run's creation `date`, and `source`, which is `<head
@@ -40,8 +84,18 @@ a rerun (`rerun_green`), the watcher's open main-red issue named its file when
 the row was recorded and the run is no older than the first red run on main
 (`main_red`), or the same file failed under another `source` within
 `--window-days` (`shared`, decided over the ledger at report time). Those rows
-stay in the ledger and are reported apart. An issue that closed before the pass
-ran clears nothing, so its failures count as caused by the diff.
+stay in the ledger and are reported apart.
+
+Two more reasons are decided at report time
+(`scripts/ci_test_selection_ledger_causes.py`). `flake`: another `source`
+failed the file and passed it on a rerun within 14 days. A Windows miss that
+stays caused by the diff, was never rerun and is its file's only failure in
+14 days carries the note `one_off`, which changes no count. `from_main`, with
+`--notes`: a main-red issue the watcher wrote named the file while the run was
+created, whether the issue was still open when the pass ran or not. Each pass
+writes the spans of the issues it listed, and whether it left a listed run
+unread, to the notes file. Without `--notes` an issue that closed before the
+pass ran clears nothing, so its failures count as caused by the diff.
 
 Each tier's rate is its diff-caused failing files over the files `select`
 verdicts placed in it, with the upper bound of the two-sided 95% Wilson
@@ -62,8 +116,38 @@ interrupted pass leaves the old ledger whole. A
 failing file a `select` verdict gave no tier cannot be fitted: the summary lists
 it first and no rates are written.
 
-Exit codes: 0 the proposal was written; 2 nothing was recorded (a ledger line of
-the wrong shape, or `gh` failed before the first row); 3 the rates are withheld.
+Windows, on unless `--no-windows`: a run with a verdict is read again for its
+`Backend Tests (Windows)` shards, under the same full-suite rule, and the failed
+push runs on `main` are listed for them alone: a push selects nothing, so it can
+show no miss, and a failed one says which files failed elsewhere than on a pull
+request. The Linux shards need not
+have run the full suite (once Linux selection is enforced they will not), only
+ended in a pass or a fail naming each failing test; a file a selected Linux run
+skipped then counts as not failing on Linux, which keeps a Windows rate up,
+never down. A file that failed on Windows and not on Linux in the same run is a
+Windows-only failure,
+labelled `os`, `timing` or `unclear` from its messages; outside the verdict's
+`windows.run` while `windows.verdict` is `select`, it is a Windows MISS:
+
+    {"kind": "windows_run", <the same seven>, "os": "windows", "verdict", "trial", "files"}
+    {"kind": "windows_failure", <the same seven>, "os": "windows", "file", "in_run",
+     "label", "miss", "rerun_green", "main_red"}
+    {"kind": "windows_skip", <the same seven>, "os": "windows", "reason"}
+
+`trial` is `push` for a push run, else the block's `source` (`shadow` when it
+names none). `shared` reads Linux and Windows failures alike; every Windows
+number is reported apart from the Linux ones, ending in one JSON status line
+(`windows_status`) that turns Windows selection off. Only a trial under a
+`select` Windows verdict can show a miss, so the status counts those apart
+(`trials_that_can_miss`) and holds them to the same minimum. With `--notes` the
+line says whether the pass was `settled`; an unsettled pass holds the answer
+of the newest settled one of the last 36 hours (`held_from`), and is judged on
+its own rows when there is none. A `windows` block
+of the wrong shape excludes the Windows half alone; the Linux half still counts.
+
+Exit codes: 0 the proposal was written; 2 the pass ended on a ledger line of the
+wrong shape or a failed `gh` call (the rows read before it are kept); 3 the
+rates are withheld; 4 the pass did not start, the pool being under `--reserve`.
 1 is left to the interpreter, so an error this script did not foresee is never
 read as one of those.
 
@@ -74,16 +158,21 @@ size-capped, and every table cell is cut to a fixed character set.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import functools
+import heapq
+import io
 import json
 import math
 import os
 import re
 import subprocess
 import sys
-import tempfile
+import zipfile
+import zlib
 from collections import Counter
 from collections.abc import Callable, Iterator
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -91,23 +180,88 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 import ci_main_red_skip as red_skip  # noqa: E402  (path set immediately above)
 import ci_test_map_shadow as shadow  # noqa: E402
+import ci_test_selection_ledger_causes as causes  # noqa: E402
 
 # ci.yml's `backend-test` job runs this step only when `steps.scope.outputs.reduced`
 # is 'false'; `test_the_full_suite_step_is_the_one_ci_gates_on_scope` pins that.
 FULL_SUITE_STEP = "Prewarm assertion rewrites"
 VERDICT_SCHEMA = 1
 MAX_VERDICT_BYTES = 8 * 1024 * 1024
-# GitHub lists at most 1,000 runs for one query; `--since` narrows the query.
+# A verdict's archive is its one JSON file, compressed, and a zip's own headers.
+MAX_ARCHIVE_BYTES = MAX_VERDICT_BYTES + 64 * 1024
+# GitHub lists at most 1,000 runs for one query: a window that holds more is
+# read as two halves, each listed for itself, down to `MIN_LISTING_SECS`.
 MAX_RUN_PAGES = 10
+MAX_LISTED_RUNS = 1000
+MIN_LISTING_SECS = 60
+# The suite writes one failure annotation for each of a job's first failing tests
+# and only counts the rest (`test/conftest_floor_reporting.py`,
+# `_MAX_ANNOTATED_FAILURES`); a page of annotations holds this many rows at most.
+ANNOTATED_FAILURES_MAX = 10
+ANNOTATION_PAGE = 100
+UNREAD_FAILURES = "the failing tests of a failed backend shard could not all be read"
+# `gh api` ends a refused request with its status: `gh: Not Found (HTTP 404)`.
+_REFUSED = re.compile(r"\(HTTP (?:403|404|410)\)")
 Z95 = 1.959964
 NO_VERDICT = "no verdict artifact"
 BAD_VERDICT = "invalid verdict"
 NO_SOURCE = "its head repository no longer exists"
 BAD_ROW = "its rows would not read back from the ledger"
+RUN_CANCELLED = "the run was cancelled"
+# A run conclusion that is final and says no backend shard can be an observation.
+_NOT_RUN = ("cancelled", "skipped", "startup_failure")
+# One that may still change under the same run id and attempt (a fork run
+# waiting for approval): such a run is neither read nor recorded.
+_NOT_YET = ("action_required", "stale")
+NEVER_RAN = "the run did not run its jobs"
+FULL_GREEN = "a full verdict on a green run: nothing to learn"
+# Linux exclusions decided before any job is read: the run has no Windows half either.
+_NO_WINDOWS_HALF = (
+    NO_VERDICT,
+    BAD_VERDICT,
+    NO_SOURCE,
+    BAD_ROW,
+    RUN_CANCELLED,
+    NEVER_RAN,
+    FULL_GREEN,
+)
 EXIT_NOT_RECORDED = 2
 EXIT_WITHHELD = 3
+EXIT_REFUSED = 4
+# Rows are kept in the ledger every this many runs, so a pass that ends badly
+# loses at most that many; and the pool is read again every this many calls.
+KEEP_EVERY_RUNS = 25
+RECHECK_CALLS = 100
+# ci.yml's `backend-test-windows` matrix job, `Backend Tests (Windows) (3)`.
+WINDOWS_BACKEND_JOB = re.compile(r"Backend Tests \(Windows\)(?: \(\d+\))?")
+LANES = {"Linux": shadow.LINUX_BACKEND_JOB, "Windows": WINDOWS_BACKEND_JOB}
+NO_WINDOWS_BLOCK = "the verdict has no windows block"
+BAD_WINDOWS_BLOCK = "the verdict's windows block is invalid"
+# A push runs the full Windows suite and selects nothing: a trial that cannot miss.
+PUSH_BLOCK = {"verdict": "full", "run": frozenset(), "source": "push"}
+TRIAL_SOURCES = ("shadow", "sample", "label", "push")
+WINDOWS_LABELS = ("os", "timing", "unclear")
+# Windows selection stays on while fewer than WINDOWS_MISS_BAR diff-caused
+# Windows misses fall in the last WINDOWS_STATUS_DAYS days, and only with at
+# least WINDOWS_MIN_TRIALS full-Windows trials there to say so, as many of
+# them under a `select` Windows verdict: no other trial can show a miss.
+WINDOWS_STATUS_DAYS = 14
+WINDOWS_MISS_BAR = 2
+WINDOWS_MIN_TRIALS = 20
+_OS_FAILURE = re.compile(
+    r"WinError|PermissionError|\b[A-Za-z]:[\\/]|\w\\{1,2}[\w.-]+\\|\\r\\n|\bCRLF\b|\.cmd\b"
+    r"|has no attribute '(?:getuid|geteuid|getgid|getegid|getpgid|setsid|setpgrp|fork"
+    r"|killpg|chown|uname|sync|getloadavg|SIGKILL|SIGHUP|SIGALRM)'",
+    re.IGNORECASE,
+)
+_TIMING_FAILURE = re.compile(
+    r"timeout|timed out|still false after|node down|not properly terminated"
+    r"|worker .{0,40}crashed",
+    re.IGNORECASE,
+)
 
 _TIER = re.compile(r"[A-Za-z0-9_-]{1,20}")
+_STATUS = re.compile(r"[A-Za-z_]{1,20}")
 _FILE = re.compile(r"[A-Za-z0-9_./-]{1,300}\.py")
 _SHA = re.compile(r"[0-9a-f]{40}")
 _DAY = re.compile(r"\d{4}-\d\d-\d\d")
@@ -131,8 +285,24 @@ def _files(value: object) -> set[str] | None:
     return set(value)
 
 
+def _covered(value: object) -> dict[str, int] | None:
+    """A `covered` table, `{cause: rows}` with every count above zero, else None."""
+    if not isinstance(value, dict):
+        return None
+    for status, rows in value.items():
+        if not isinstance(status, str) or not _STATUS.fullmatch(status):
+            return None
+        if not _is_int(rows) or rows < 1:
+            return None
+    return dict(sorted(value.items()))
+
+
 def parse_verdict(text: str) -> Row | None:
-    """A verdict's `verdict`, `tiers` and `would_skip`, None unless each has its fixed shape."""
+    """A verdict's `verdict`, `tiers` and `would_skip`, None unless each has its fixed shape.
+
+    `windows` is the parsed block, or the reason the run has no Windows half.
+    `covered` is the verdict's table, empty for a verdict that has none.
+    """
     try:
         doc = json.loads(text)
     except (ValueError, RecursionError):
@@ -142,13 +312,36 @@ def parse_verdict(text: str) -> Row | None:
     raw, skip = doc.get("tiers"), _files(doc.get("would_skip"))
     if doc.get("verdict") not in ("select", "full") or not isinstance(raw, dict) or skip is None:
         return None
+    covered = _covered(doc.get("covered", {}))
+    if covered is None:
+        return None
     tiers: dict[str, set[str]] = {}
     for tier, listed in raw.items():
         files = _files(listed)
         if not isinstance(tier, str) or not _TIER.fullmatch(tier) or files is None:
             return None
         tiers[tier] = files
-    return {"verdict": doc["verdict"], "tiers": tiers, "would_skip": skip}
+    windows: Row | str = NO_WINDOWS_BLOCK
+    if doc.get("windows") is not None:
+        windows = parse_windows(doc["windows"]) or BAD_WINDOWS_BLOCK
+    return {
+        "verdict": doc["verdict"],
+        "tiers": tiers,
+        "would_skip": skip,
+        "windows": windows,
+        "covered": covered,
+    }
+
+
+def parse_windows(block: object) -> Row | None:
+    """A verdict's `windows` block: `verdict`, `run` (may be absent under `full`), `source`."""
+    if not isinstance(block, dict) or block.get("verdict") not in ("select", "full"):
+        return None
+    listed = block.get("run", [] if block["verdict"] == "full" else None)
+    run, source = _files(listed), block.get("source", "shadow")
+    if run is None or source not in TRIAL_SOURCES or source == "push":
+        return None
+    return {"verdict": block["verdict"], "run": run, "source": source}
 
 
 def _capped_text(path: Path) -> str:
@@ -161,49 +354,188 @@ def _capped_text(path: Path) -> str:
         return ""
 
 
-def verdict_text(run_id: int, args: argparse.Namespace, root: Path) -> str | None:
-    """The run's verdict JSON text, None when the run has none. Raises when `gh` fails."""
-    if args.verdict_dir:
-        path = Path(args.verdict_dir) / f"{run_id}.json"
-        return _capped_text(path) if path.exists() else None
-    listed = shadow._gh_json(
-        [
-            "api",
-            f"repos/{shadow.REPO}/actions/runs/{run_id}/artifacts?name={args.artifact}",
-            "--jq",
-            ".artifacts",
-        ],
-        root,
-    )
-    if not any(isinstance(a, dict) and not a.get("expired") for a in listed):
+def _unexpired(listed: object, name: str, run_id: int | None = None) -> dict[int, dict[int, int]]:
+    """`{run id: {its unexpired artifact named `name`: the size GitHub lists for it}}`.
+
+    A size that is not listed as a whole number is 0: the download is then held
+    to the limit by the stream alone.
+    """
+    found: dict[int, dict[int, int]] = {}
+    for item in listed if isinstance(listed, list) else []:
+        item = _dict(item)
+        of_run = _int(_dict(item.get("workflow_run")).get("id")) if run_id is None else run_id
+        held = _int(item.get("id"))
+        if item.get("name") == name and of_run is not None and held is not None:
+            if not item.get("expired"):
+                found.setdefault(of_run, {})[held] = _int(item.get("size_in_bytes")) or 0
+    return found
+
+
+class Verdicts:
+    """The verdict artifact of each run, from the repository's artifact listing.
+
+    One page names a hundred runs' artifacts, where asking each run for its own
+    costs a call a run. The listing is newest first, like the runs, so it is read
+    only as far back as the run asked for: an artifact is never older than its run.
+
+    The listing is paged by position while artifacts are uploaded and deleted, so
+    a page may show an artifact a second time or never show it. It is therefore
+    trusted only for a run it names exactly one artifact of. For any other run
+    the run's own, short listing is asked, which is the answer that is recorded.
+    A page that could not be read is asked for again, never passed over.
+    """
+
+    def __init__(self, root: Path, name: str) -> None:
+        self.root, self.name = root, name
+        self.found: dict[int, dict[int, int]] = {}
+        self.read = 0  # pages read whole
+        self.oldest = "9"  # later than any date read
+        self.ended = False
+
+    def _more(self) -> None:
+        page = self.read + 1
+        url = f"repos/{shadow.REPO}/actions/artifacts?name={self.name}&per_page=100&page={page}"
+        listed = _dict(shadow._gh_json(["api", url], self.root)).get("artifacts")
+        if not isinstance(listed, list):
+            raise ValueError("the artifact listing is not a page of artifacts")
+        for run_id, held in _unexpired(listed, self.name).items():
+            self.found.setdefault(run_id, {}).update(held)
+        for item in listed:
+            self.oldest = min(self.oldest, str(_dict(item).get("created_at")))
+        self.read, self.ended = page, not listed
+
+    def of(self, run: Row) -> dict[int, int]:
+        """The run's unexpired verdict artifacts, each with its listed size. Raises when `gh` fails."""
+        run_id = run["id"]
+        while (
+            run_id not in self.found
+            and not self.ended
+            and self.oldest >= str(run.get("created_at"))
+        ):
+            self._more()
+        held = self.found.get(run_id, {})
+        if len(held) != 1:
+            url = (
+                f"repos/{shadow.REPO}/actions/runs/{run_id}/artifacts?name={self.name}&per_page=100"
+            )
+            own = _dict(shadow._gh_json(["api", url], self.root)).get("artifacts")
+            if not isinstance(own, list):
+                raise ValueError("a run's artifact listing is not a page of artifacts")
+            held = _unexpired(own, self.name, run_id).get(run_id, {})
+        return held
+
+
+def _only_json(archive: bytes) -> str | None:
+    """The text of the JSON file an archive holds and nothing else; "" for any other
+    archive (never a valid verdict), None for bytes that are no archive or whose
+    member does not unpack.
+
+    Nothing is unpacked on the archive's word for its size: the one member is
+    read through to `MAX_VERDICT_BYTES` and no further.
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as held:
+            members = held.infolist()
+            if len(members) != 1 or not members[0].filename.endswith(".json"):
+                return ""
+            if members[0].file_size > MAX_VERDICT_BYTES:
+                return ""
+            with held.open(members[0]) as member:
+                text = shadow.capped(member, MAX_VERDICT_BYTES)
+            return "" if text is None else text.decode("utf-8", errors="replace")
+    except (zipfile.BadZipFile, zlib.error, EOFError):
+        # Damaged on the way or in the making: what it held cannot be known.
         return None
-    with tempfile.TemporaryDirectory() as tmp:
-        shadow._run(
-            ["gh", "run", "download", str(run_id), "-R", shadow.REPO]
-            + ["-n", args.artifact, "-D", tmp],
-            root,
-        )
-        found = sorted(Path(tmp).rglob("*.json"))
-        return _capped_text(found[0]) if len(found) == 1 else ""
+    except (OSError, ValueError, RuntimeError):
+        return ""
 
 
-def list_runs(root: Path, since: str | None) -> Iterator[Row]:
-    """Completed pull_request `CI` runs, newest first, a page at a time until the listing ends."""
-    created = f"&created=%3E%3D{since}" if since else ""
-    for page in range(1, MAX_RUN_PAGES + 1):
-        runs = shadow._gh_json(
-            [
-                "api",
-                f"repos/{shadow.REPO}/actions/workflows/ci.yml/runs?event=pull_request"
-                f"&status=completed&per_page=100&page={page}{created}",
-                "--jq",
-                ".workflow_runs",
-            ],
-            root,
-        )
-        if not runs:
+def verdict_text(run: Row, args: argparse.Namespace, root: Path, verdicts: Verdicts) -> str | None:
+    """The run's verdict JSON text, None when the run has none. Raises when `gh` fails.
+
+    An artifact is whatever the pull request's run uploaded, so it is held to
+    `MAX_ARCHIVE_BYTES` before a byte of it is kept: one GitHub lists as larger
+    is not downloaded, and a download is cut off at the limit. Either is an
+    invalid verdict, for good: the artifact will not shrink. A download that is
+    not an archive at all is a failed read: it raises, so the run is asked for again.
+    """
+    if args.verdict_dir:
+        path = Path(args.verdict_dir) / f"{run['id']}.json"
+        return _capped_text(path) if path.exists() else None
+    held = verdicts.of(run)
+    if not held:
+        return None
+    if len(held) != 1:
+        return ""
+    ((artifact, listed),) = held.items()
+    if listed > MAX_ARCHIVE_BYTES:
+        return ""
+    argv = ["gh", "api", f"repos/{shadow.REPO}/actions/artifacts/{artifact}/zip"]
+    archive = shadow._gh_bytes(argv, root, MAX_ARCHIVE_BYTES)
+    if archive is None:
+        return ""
+    text = _only_json(archive)
+    if text is None:
+        raise subprocess.CalledProcessError(1, argv)
+    return text
+
+
+def _stamp(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _listed(
+    root: Path, query: str, start: datetime | None, end: datetime, cut: list[str] | None = None
+) -> Iterator[Row]:
+    """The runs `query` names that were created from `start` to `end`, newest first.
+
+    A window GitHub will not list whole is read as its later half, then its
+    earlier half: the halves share no second and leave none out. A window that
+    cannot be halved further (one minute, or no `start`) is listed as far as
+    GitHub goes, and the runs past that are named on stderr and in `cut`, never
+    dropped in silence.
+    """
+    created = f"&created={_stamp(start)}..{_stamp(end)}" if start else ""
+    url = f"repos/{shadow.REPO}/actions/workflows/ci.yml/runs?{query}&per_page=100"
+    first = _dict(shadow._gh_json(["api", f"{url}&page=1{created}"], root))
+    total = _int(first.get("total_count"))
+    runs = first.get("workflow_runs")
+    if not isinstance(runs, list) or total is None:
+        raise ValueError("the run listing is not a page of runs")
+    if total > MAX_LISTED_RUNS:
+        if start and (end - start).total_seconds() > MIN_LISTING_SECS:
+            middle = start + (end - start) / 2
+            middle = middle.replace(microsecond=0)
+            yield from _listed(root, query, middle + timedelta(seconds=1), end, cut)
+            yield from _listed(root, query, start, middle, cut)
             return
+        short = (
+            f"the listing holds {total} runs and GitHub gives {MAX_LISTED_RUNS}: "
+            f"the {total - MAX_LISTED_RUNS} oldest are not read"
+        )
+        if cut is not None:
+            cut.append(short)
+        print(f"{short}; narrow it with --since", file=sys.stderr)
+    page = 1
+    while runs:
         yield from runs
+        page += 1
+        if page > MAX_RUN_PAGES:
+            return
+        runs = _dict(shadow._gh_json(["api", f"{url}&page={page}{created}"], root)).get(
+            "workflow_runs"
+        )
+        if not isinstance(runs, list):
+            raise ValueError("the run listing is not a page of runs")
+
+
+def list_runs(
+    root: Path, since: str | None, query: str = "event=pull_request", cut: list[str] | None = None
+) -> Iterator[Row]:
+    """Completed `CI` runs that `query` names, newest first, since the UTC day `since`."""
+    start = datetime.fromisoformat(since).replace(tzinfo=timezone.utc) if since else None
+    end = datetime.now(timezone.utc).replace(microsecond=0)
+    yield from _listed(root, f"{query}&status=completed", start, end, cut)
 
 
 def ran_full_suite(job: Row) -> bool:
@@ -215,37 +547,108 @@ def ran_full_suite(job: Row) -> bool:
     )
 
 
-def read_run(
-    run: Row, root: Path, parse: Callable[[str], dict[str, str]]
-) -> dict[str, bool] | str | None:
-    """`{failing file: its shard ended green on a rerun}` for a full-suite run.
+Listing = Callable[[int], list[Row] | None]
 
-    A string says why the run is not an observation; None means `gh` could not
-    read it, so a later pass tries again.
+
+# The watcher's own readers of a job's annotations and log, loaded once.
+_watch = functools.cache(shadow.watch_module)
+
+
+def job_failing(
+    job: Row, root: Path, parse: Callable[[str], dict[str, str]]
+) -> dict[str, str] | str | None:
+    """`{node id: message}` for the tests one failed job names, its annotations first.
+
+    The annotations of the job's check run are one read the Actions token can
+    make; its log is one it cannot make in this repository
+    (`.github/workflows/main-red-watch.yml`). The annotations are the whole
+    answer when they name a test and fewer than the suite writes at most. When
+    they name none (a collection error, a shard that died early), reach the
+    suite's limit or fill their page, the log is read too. A log that cannot be
+    read then leaves the job's failing tests unknown: `UNREAD_FAILURES`, which
+    excludes the run. None is an unreadable annotation list, left for a later pass.
+    """
+    try:
+        rows = shadow._gh_json(
+            [
+                "api",
+                f"repos/{shadow.REPO}/check-runs/{job['id']}/annotations"
+                f"?per_page={ANNOTATION_PAGE}",
+            ],
+            root,
+        )
+    except subprocess.CalledProcessError:
+        return None
+    watch = _watch()
+    named: dict[str, str] = watch.parse_annotations(rows)
+    listed = rows if isinstance(rows, list) else []
+    # The suite's limit is on the annotations it writes, and one test may take
+    # two (its call and its teardown): count the records, not the tests named.
+    written = sum(1 for row in listed if watch.annotation_entry(row) is not None)
+    if 0 < written < ANNOTATED_FAILURES_MAX and len(listed) < ANNOTATION_PAGE:
+        return named
+    try:
+        log = shadow.job_log(job, root)
+    except subprocess.CalledProcessError as error:
+        # Refused or gone is an answer that will not change; anything else
+        # (a rate limit, a server error, a time-out) is a read to make again.
+        return UNREAD_FAILURES if _refused(error) else None
+    if log is None:
+        # Larger than is ever held: it will not shrink, so this is an answer too.
+        return UNREAD_FAILURES
+    return {**parse(log), **named}
+
+
+def _refused(error: subprocess.CalledProcessError) -> bool:
+    """Whether `gh` said the resource may not be read or is gone, and not a spent limit."""
+    said = f"{error.stderr or ''} {error.output or ''}"
+    return bool(_REFUSED.search(said)) and "rate limit" not in said.lower()
+
+
+def read_run(
+    run: Row,
+    root: Path,
+    parse: Callable[[str], dict[str, str]],
+    listing: Listing,
+    lane: str = "Linux",
+    full: bool = True,
+    notes: dict[str, list[str]] | None = None,
+) -> dict[str, bool] | str | None:
+    """`{failing file: its shard ended green on a rerun}` for a full-suite run of one lane.
+
+    `listing` gives an attempt's jobs. A string says why the run is not an
+    observation; None means `gh` could not read it, so a later pass tries again.
+    `full=False` drops the full-suite rule alone: what a selected run failed.
+    `notes` takes each failing file's messages.
     """
     final: dict[str, Row] = {}
     named: dict[int, set[str]] = {}
     failed: dict[str, set[str]] = {}
     for attempt in range(1, int(run.get("run_attempt") or 1) + 1):
-        jobs = shadow.backend_jobs(run["id"], attempt, root)
+        jobs = listing(attempt)
         if jobs is None:
             return None
         for job in jobs:
+            if not LANES[lane].fullmatch(str(job.get("name"))):
+                continue
             final[job["name"]] = job
             if job["conclusion"] != "failure":
                 continue
             if job["id"] not in named:
-                failures = shadow.job_failures(job, root, parse)
-                if failures is None:
-                    return None
+                failures = job_failing(job, root, parse)
+                if failures is None or isinstance(failures, str):
+                    return failures
+                for nodeid, message in failures.items():
+                    if notes is not None:
+                        notes.setdefault(nodeid.split("::", 1)[0], []).append(message)
                 named[job["id"]] = set(shadow.failing_test_files(failures))
             failed.setdefault(job["name"], set()).update(named[job["id"]])
     if not final:
-        return "no Linux backend shard ran"
+        return f"no {lane} backend shard ran"
     for job in final.values():
         if job["conclusion"] not in ("success", "failure"):
             return "a backend shard neither passed nor failed"
-        if not ran_full_suite(job):
+        if full and not ran_full_suite(job):
             return "a backend shard did not run the full suite"
         if job["conclusion"] == "failure" and not named[job["id"]]:
             return "a failed backend shard names no failing test"
@@ -257,16 +660,22 @@ def read_run(
     return failing
 
 
-def main_red_files(root: Path) -> tuple[int, set[str]]:
+def main_red_issues(root: Path) -> object:
+    """The main-red issues, open and closed, most recently updated first: one call.
+
+    Not narrowed by date: an open issue no run of `main` has touched for days
+    still says `main` is red.
+    """
+    query = f"state=all&labels={red_skip.LABEL}&sort=updated&direction=desc&per_page=100"
+    return shadow._gh_json(["api", f"repos/{shadow.REPO}/issues?{query}"], root)
+
+
+def main_red_files(issues: object) -> tuple[int, set[str]]:
     """`(first red run on main, the test files named)` from the watcher's open main-red issue.
 
     Read with the watcher's own `pick_issue` and `parse_state`. With no such issue
     the set is empty.
     """
-    issues = shadow._gh_json(
-        ["api", f"repos/{shadow.REPO}/issues?state=open&labels={red_skip.LABEL}&per_page=100"],
-        root,
-    )
     watch = shadow.watch_module()
     issue = watch.pick_issue(red_skip.as_watcher_rows(issues if isinstance(issues, list) else []))
     state = watch.parse_state(str(issue.get("body") or "")) if issue else None
@@ -307,6 +716,7 @@ def run_rows(key: Row, verdict: Row, failing: dict[str, bool], main_red: set[str
             **key,
             "verdict": verdict["verdict"],
             "tiers": {tier: len(files) for tier, files in sorted(tiers.items())},
+            "covered": verdict.get("covered", {}),
         }
     ]
     for test_file in sorted(failing):
@@ -324,12 +734,83 @@ def run_rows(key: Row, verdict: Row, failing: dict[str, bool], main_red: set[str
     return rows
 
 
+def windows_label(messages: list[str]) -> str:
+    """`os` when a message is a Windows trait, `timing` when one is a timeout or a worker crash."""
+    if any(_OS_FAILURE.search(message) for message in messages):
+        return "os"
+    if any(_TIMING_FAILURE.search(message) for message in messages):
+        return "timing"
+    return "unclear"
+
+
+def windows_rows(
+    run: Row,
+    key: Row,
+    block: Row | str,
+    linux: dict[str, bool] | str,
+    read: tuple[Path, Callable[[str], dict[str, str]], Listing],
+    main_red: set[str],
+) -> list[Row] | None:
+    """The Windows rows of one run attempt; None when `gh` could not read its Windows shards."""
+    base = {**key, "os": "windows"}
+    if isinstance(linux, str):
+        reason = RUN_CANCELLED if run.get("conclusion") == "cancelled" else f"Linux: {linux}"
+        return [{"kind": "windows_skip", **base, "reason": reason}]
+    if isinstance(block, str):
+        return [{"kind": "windows_skip", **base, "reason": block}]
+    root, parse, listing = read
+    notes: dict[str, list[str]] = {}
+    seen = read_run(run, root, parse, listing, "Windows", notes=notes)
+    if seen is None:
+        return None
+    if isinstance(seen, str):
+        return [{"kind": "windows_skip", **base, "reason": seen}]
+    rows: list[Row] = [
+        {
+            "kind": "windows_run",
+            **base,
+            "verdict": block["verdict"],
+            "trial": block["source"],
+            "files": len(block["run"]),
+        }
+    ]
+    for test_file in sorted(set(seen) - set(linux)):
+        in_run = test_file in block["run"]
+        rows.append(
+            {
+                "kind": "windows_failure",
+                **base,
+                "file": test_file,
+                "in_run": in_run,
+                "label": windows_label(notes.get(test_file, [])),
+                "miss": block["verdict"] == "select" and not in_run,
+                "rerun_green": seen[test_file],
+                "main_red": test_file in main_red,
+            }
+        )
+    return rows
+
+
 def examine(
-    run: Row, args: argparse.Namespace, root: Path, parse: Callable[[str], dict[str, str]]
+    run: Row,
+    args: argparse.Namespace,
+    root: Path,
+    parse: Callable[[str], dict[str, str]],
+    listing: Listing,
+    verdicts: Verdicts,
 ) -> tuple[Row | None, dict[str, bool] | str | None]:
     """`(verdict, what the run showed)`: a string excludes the run, None leaves it for later."""
+    # A conclusion speaks for a run's last attempt alone. What it decides is
+    # decided on a first attempt only: a later one may sit on top of an attempt
+    # whose shards failed, and that evidence is read, never skipped.
+    first = int(run.get("run_attempt") or 1) == 1
+    if first and run.get("conclusion") in _NOT_RUN:
+        # Decided from the listing: no job, log or artifact of such a run is read.
+        return None, RUN_CANCELLED if run["conclusion"] == "cancelled" else NEVER_RAN
+    if run.get("event") == "push":
+        return {"windows": PUSH_BLOCK}, read_run(run, root, parse, listing)
     try:
-        text = verdict_text(run["id"], args, root)
+        text = verdict_text(run, args, root, verdicts)
     except subprocess.CalledProcessError:
         return None, None
     if text is None:
@@ -339,44 +820,269 @@ def examine(
         return None, BAD_VERDICT
     if run_key(run)["source"] is None:
         return None, NO_SOURCE
-    return verdict, read_run(run, root, parse)
+    block = verdict["windows"]
+    selects = verdict["verdict"] == "select" or (
+        isinstance(block, dict) and block["verdict"] == "select"
+    )
+    if first and run.get("conclusion") == "success" and not selects:
+        # It can show no miss on either system and no shard of it failed: its
+        # jobs would be read to learn nothing.
+        return None, FULL_GREEN
+    return verdict, read_run(run, root, parse, listing)
 
 
-def collect(args: argparse.Namespace, recorded: dict[int, int], root: Path) -> list[Row]:
-    """Rows for up to `--limit` run attempts the ledger does not hold, newest run first.
+def runs_to_read(
+    root: Path, args: argparse.Namespace, cut: list[str] | None = None
+) -> Iterator[Row]:
+    """The pull_request runs and (with Windows on) the failed push runs on `main`.
 
-    Every row returned passes `valid_row`, so the ledger never holds a line a
-    later pass refuses.
+    A push run selects nothing, so it can never show a miss: only a failed one
+    is read, for the files it says failed elsewhere than on a pull request.
+    Merged newest first, so a backlog of one event never keeps the other out of a pass.
+    `cut` takes a line for each listing GitHub would not give whole.
     """
+    prs = list_runs(root, args.since, cut=cut)
+    if not args.windows:
+        yield from prs
+        return
+    # GitHub filters a listing by one status: a failed run is a completed one.
+    pushes = (
+        run
+        for run in _listed(
+            root,
+            "event=push&branch=main&status=failure",
+            datetime.fromisoformat(args.since).replace(tzinfo=timezone.utc) if args.since else None,
+            datetime.now(timezone.utc).replace(microsecond=0),
+            cut,
+        )
+        if _dict(run).get("head_branch") == "main"
+    )
+    yield from heapq.merge(
+        prs, pushes, key=lambda run: str(_dict(run).get("created_at")), reverse=True
+    )
+
+
+def recorded_lanes(rows: list[Row]) -> tuple[dict[int, int], dict[int, int]]:
+    """`(Linux, Windows)`: per run, the newest attempt each lane's rows hold.
+
+    A Linux exclusion no verdict could pass leaves no Windows half to collect.
+    """
+    linux: dict[int, int] = {}
+    windows: dict[int, int] = {}
+    for row in rows:
+        lanes = [windows] if _on_windows(row) else [linux]
+        if row["kind"] == "skip" and row["reason"] in _NO_WINDOWS_HALF:
+            lanes.append(windows)
+        for lane in lanes:
+            lane[row["run"]] = max(lane.get(row["run"], 0), row["attempt"])
+    return linux, windows
+
+
+class Seen:
+    """What a pass saw beside its rows: the main-red issues, and why a run was left unread."""
+
+    def __init__(self) -> None:
+        self.issues: object = None
+        self.left: list[str] = []
+
+
+class BudgetSpent(Exception):
+    """A pass is at a limit of its budget: the call it was about to make is not made."""
+
+
+class Budget:
+    """What one pass may spend of the REST requests every job of the repository shares.
+
+    `most` is the calls this pass makes at most (0: no limit) and `reserve` what
+    the pool must keep (0: not checked). The pool is read from `/rate_limit`,
+    which costs nothing, before the pass and again every `RECHECK_CALLS` calls.
+    Both are checked before each call, so a pass never makes a call past either;
+    the run it was reading is then left whole for a later pass.
+    """
+
+    def __init__(self, most: int, reserve: int, root: Path) -> None:
+        self.most, self.reserve, self.root = most, reserve, root
+        self.spent = 0
+        self._checked = 0
+        self._read = shadow._gh_json  # the uncounted reader, for `/rate_limit`
+
+    def left(self) -> int:
+        """The REST requests the pool has left this hour."""
+        doc = _dict(self._read(["api", "rate_limit"], self.root))
+        left = _int(_dict(_dict(doc.get("resources")).get("core")).get("remaining"))
+        if left is None:
+            raise ValueError("the rate limit could not be read")
+        return left
+
+    def refusal(self) -> str | None:
+        """Why the pass may not start, None when it may."""
+        if not self.reserve:
+            return None
+        left, needs = self.left(), self.reserve + self.most
+        if left < needs:
+            return (
+                f"the REST pool has {left} requests left this hour; this pass keeps "
+                f"{self.reserve} and may spend {self.most}, so it needs {needs}"
+            )
+        return None
+
+    def ended(self) -> str | None:
+        """Why the pass makes no further call, None while it may."""
+        if self.most and self.spent >= self.most:
+            return f"this pass has made its {self.most} calls ({self.spent})"
+        if self.reserve and self.spent - self._checked >= RECHECK_CALLS:
+            self._checked = self.spent
+            left = self.left()
+            if left < self.reserve:
+                return f"the REST pool is down to {left} requests, under the {self.reserve} kept"
+        return None
+
+    @contextlib.contextmanager
+    def counting(self) -> Iterator[None]:
+        """Count every `gh` call the pass makes, through whichever reader makes it."""
+        readers = {name: shadow for name in ("_gh_json", "_run", "_gh_bytes")}
+        originals = {name: getattr(owner, name) for name, owner in readers.items()}
+
+        inside = [False]
+
+        def counted(call: Callable[..., Any]) -> Callable[..., Any]:
+            def made(*args: Any, **kwargs: Any) -> Any:
+                # One reader may go through another: the outermost is the call.
+                if inside[0]:
+                    return call(*args, **kwargs)
+                ended = self.ended()
+                if ended:
+                    raise BudgetSpent(ended)
+                self.spent += 1
+                inside[0] = True
+                try:
+                    return call(*args, **kwargs)
+                finally:
+                    inside[0] = False
+
+            return made
+
+        for name, owner in readers.items():
+            setattr(owner, name, counted(originals[name]))
+        try:
+            yield
+        finally:
+            for name, owner in readers.items():
+                setattr(owner, name, originals[name])
+
+
+def collect(
+    args: argparse.Namespace,
+    recorded: tuple[dict[int, int], dict[int, int]],
+    root: Path,
+    budget: Budget,
+    saw: Seen | None = None,
+) -> Iterator[list[Row]]:
+    """The rows of each run attempt a lane of the ledger lacks, newest run first.
+
+    Up to `--limit` attempts, and no further one once `budget` has ended. Only
+    the lanes the ledger lacks are written: a Windows half is collected for an
+    attempt whose Linux half an earlier pass recorded, without repeating it.
+    Every row passes `valid_row`, so the ledger never holds a line a later pass
+    refuses. A run the ledger holds costs no call beyond the listing. A run the
+    budget ends in the middle of yields nothing: no part of it is recorded.
+    `saw` takes the issues listed and a line for each run left unread.
+    """
+    saw = saw or Seen()
+    try:
+        yield from _each_run(args, recorded, root, budget, saw)
+    except BudgetSpent as spent:
+        saw.left.append(str(spent))
+        print(f"stopped early: {spent}; a later pass reads the rest", file=sys.stderr)
+
+
+def _each_run(
+    args: argparse.Namespace,
+    recorded: tuple[dict[int, int], dict[int, int]],
+    root: Path,
+    budget: Budget,
+    saw: Seen,
+) -> Iterator[list[Row]]:
+    """`collect`, without the end a spent budget puts to it."""
     parse = shadow._nodeid_parser()
-    red_since, red_files = main_red_files(root)
-    rows: list[Row] = []
+    saw.issues = main_red_issues(root)
+    red_since, red_files = main_red_files(saw.issues)
+    verdicts = Verdicts(root, args.artifact)
     taken = 0
-    for run in list_runs(root, args.since):
-        if taken >= args.limit:
-            break
+    on_linux, on_windows = recorded
+    for run in runs_to_read(root, args, saw.left):
+        if _dict(run).get("conclusion") in _NOT_YET:
+            continue  # not final: it costs no call, and is listed again when it is
         key = run_key(_dict(run))
-        excluded = {"kind": "skip", **key, "reason": BAD_ROW}
+        push = _dict(run).get("event") == "push"
+        win_excluded = {"kind": "windows_skip", **key, "os": "windows", "reason": BAD_ROW}
+        excluded = win_excluded if push else {"kind": "skip", **key, "reason": BAD_ROW}
         if not valid_row(excluded):
             print(f"run {cell(key['run'])}: its listing is unusable; not recorded", file=sys.stderr)
             continue
-        if key["attempt"] <= recorded.get(key["run"], 0):
+        need_linux = not push and key["attempt"] > on_linux.get(key["run"], 0)
+        need_windows = args.windows and key["attempt"] > on_windows.get(key["run"], 0)
+        if not (need_linux or need_windows):
             continue
-        verdict, seen = examine(run, args, root, parse)
+        # Only a run that still needs reading is left unread by the limit or the budget.
+        if taken >= args.limit:
+            saw.left.append(f"the pass recorded its {args.limit} run attempts")
+            break
+        ended = budget.ended()
+        if ended:
+            saw.left.append(ended)
+            print(f"stopped early: {ended}; a later pass reads the rest", file=sys.stderr)
+            break
+        listing = functools.cache(functools.partial(shadow.run_jobs, key["run"], root=root))
+        verdict, seen = examine(run, args, root, parse, listing, verdicts)
         if seen == NO_VERDICT and args.verdict_dir:
             continue  # not scored offline: nothing was fetched, so nothing is recorded
-        if seen is None:
+        named = red_files if key["run"] >= red_since else set()
+        fresh: list[Row] = []
+        if isinstance(seen, str) and not push:
+            fresh = [{**excluded, "reason": seen}]
+        elif isinstance(seen, dict) and verdict is not None and not push:
+            fresh = run_rows(key, verdict, seen, named)
+        if args.windows and seen is not None and verdict is not None:
+            # A Linux run that selected its tests still says which files failed on Linux.
+            linux = (
+                read_run(run, root, parse, listing, full=False) if isinstance(seen, str) else seen
+            )
+            more = None
+            if linux is not None:
+                more = windows_rows(
+                    run, key, verdict["windows"], linux, (root, parse, listing), named
+                )
+            win_unread = more is None
+            if more is not None:
+                fresh += more
+        else:
+            win_unread = False
+        if seen is None or win_unread:
+            saw.left.append(f"run {key['run']} could not be read")
+        if seen is None or (win_unread and not need_linux):
             print(f"run {key['run']}: gh could not read it; a later pass will", file=sys.stderr)
             continue
-        recorded[key["run"]] = key["attempt"]
+        if win_unread:
+            # The Linux half is recorded; the unread Windows half stays for a later pass.
+            print(f"run {key['run']}: gh could not read its Windows shards", file=sys.stderr)
+        fresh = [r for r in fresh if (need_windows if _on_windows(r) else need_linux)]
+        if not need_linux and not any(_on_windows(r) for r in fresh):
+            # The Windows half alone was wanted and nothing let it be read.
+            fresh = [{**win_excluded, "reason": seen if isinstance(seen, str) else BAD_ROW}]
+        on_linux[key["run"]] = key["attempt"]
+        if not win_unread:
+            on_windows[key["run"]] = key["attempt"]
         taken += 1
-        if isinstance(seen, str) or verdict is None:
-            fresh = [{**excluded, "reason": seen}]
-        else:
-            named = red_files if key["run"] >= red_since else set()
-            fresh = run_rows(key, verdict, seen, named)
-        rows += fresh if all(valid_row(row) for row in fresh) else [excluded]
-    return rows
+        yield (
+            fresh
+            if all(valid_row(row) for row in fresh)
+            else [excluded if need_linux else win_excluded]
+        )
+
+
+def _on_windows(row: Row) -> bool:
+    return str(row["kind"]).startswith("windows_")
 
 
 def append_rows(path: Path, rows: list[Row]) -> None:
@@ -400,6 +1106,11 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _int(value: object) -> int | None:
+    """`value` when it is a whole number, else None."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def valid_row(row: object) -> bool:
     """Whether one parsed ledger line has the shape this script writes."""
     if not isinstance(row, dict) or not _is_int(row.get("run")) or not _is_int(row.get("attempt")):
@@ -407,7 +1118,9 @@ def valid_row(row: object) -> bool:
     if row["attempt"] < 1:
         return False
     kind, source = row.get("kind"), row.get("source")
-    if not (isinstance(source, str) or (source is None and kind == "skip")):
+    if not (isinstance(source, str) or (source is None and kind in ("skip", "windows_skip"))):
+        return False
+    if str(kind).startswith("windows_") and row.get("os") != "windows":
         return False
     if not (row.get("pr") is None or _is_int(row.get("pr"))) or not isinstance(
         row.get("fork"), bool
@@ -421,8 +1134,24 @@ def valid_row(row: object) -> bool:
         _when(row)
     except ValueError:
         return False
-    if kind == "skip":
+    if kind in ("skip", "windows_skip"):
         return isinstance(row.get("reason"), str)
+    if kind == "windows_run":
+        return (
+            row.get("verdict") in ("select", "full")
+            and row.get("trial") in TRIAL_SOURCES
+            and _is_int(row.get("files"))
+            and row["files"] >= 0
+        )
+    if kind == "windows_failure":
+        return (
+            isinstance(row.get("file"), str)
+            and _FILE.fullmatch(row["file"]) is not None
+            and row.get("label") in WINDOWS_LABELS
+            and all(
+                isinstance(row.get(k), bool) for k in ("in_run", "miss", "rerun_green", "main_red")
+            )
+        )
     if kind == "run":
         tiers = row.get("tiers")
         return (
@@ -430,6 +1159,7 @@ def valid_row(row: object) -> bool:
             and isinstance(tiers, dict)
             and all(isinstance(t, str) and _TIER.fullmatch(t) for t in tiers)
             and all(_is_int(n) and n >= 0 for n in tiers.values())
+            and _covered(row.get("covered", {})) is not None
         )
     if kind == "failure":
         tier = row.get("tier")
@@ -460,45 +1190,65 @@ def read_ledger(path: Path) -> list[Row]:
     return rows
 
 
-def recorded_attempts(rows: list[Row]) -> dict[int, int]:
-    newest: dict[int, int] = {}
-    for row in rows:
-        newest[row["run"]] = max(newest.get(row["run"], 0), row["attempt"])
-    return newest
-
-
 def current(rows: list[Row], since: str | None) -> list[Row]:
-    """Each run's newest attempt only, and only runs created on or after `since`."""
-    newest = recorded_attempts(rows)
+    """Each run's newest attempt per lane only, and only runs created on or after `since`.
+
+    A Linux rerun whose Windows half is still unread keeps the older Windows rows.
+    """
+    linux, windows = recorded_lanes(rows)
     return [
         row
         for row in rows
-        if row["attempt"] == newest[row["run"]] and (not since or str(row["date"])[:10] >= since)
+        if row["attempt"] == (windows if _on_windows(row) else linux)[row["run"]]
+        and (not since or str(row["date"])[:10] >= since)
     ]
 
 
-def classify(rows: list[Row], window_days: float) -> list[Row]:
-    """The failure rows of `select` runs, each with `shared` and `diff_caused` set.
+def classify(rows: list[Row], window_days: float, notes: list[Row] | None = None) -> list[Row]:
+    """The failure rows of `select` runs, each with its reasons and `diff_caused` set.
 
     Only a same-repository failure is evidence that a file fails elsewhere; under
     a `full` verdict it has no tier to fit, but it is evidence all the same.
     """
     select = {row["run"] for row in rows if row["kind"] == "run" and row["verdict"] == "select"}
+    picked = [r for r in rows if r["kind"] == "failure" and r["run"] in select]
+    return _marked(picked, rows, ("failure",), window_days, notes or [])
+
+
+def classify_windows(
+    rows: list[Row], window_days: float, notes: list[Row] | None = None
+) -> list[Row]:
+    """The Windows-only failure rows, marked as `classify` marks Linux ones.
+
+    A same-repository failure of the file on either OS under another `source` is
+    evidence it fails elsewhere.
+    """
+    picked = [r for r in rows if r["kind"] == "windows_failure"]
+    return _marked(picked, rows, ("failure", "windows_failure"), window_days, notes or [])
+
+
+def _marked(
+    picked: list[Row], rows: list[Row], kinds: tuple[str, ...], days: float, notes: list[Row]
+) -> list[Row]:
     by_file: dict[str, list[Row]] = {}
     for row in rows:
-        if row["kind"] == "failure" and not row["fork"]:
+        if row["kind"] in kinds and not row["fork"]:
             by_file.setdefault(row["file"], []).append(row)
     out = []
-    for row in rows:
-        if row["kind"] != "failure" or row["run"] not in select:
-            continue
+    for row in picked:
         shared = any(
             other["source"] != row["source"]
-            and abs((_when(other) - _when(row)).total_seconds()) <= window_days * 86400
+            and abs((_when(other) - _when(row)).total_seconds()) <= days * 86400
             for other in by_file.get(row["file"], ())
         )
-        caused = not (shared or row["rerun_green"] or row["main_red"])
-        out.append({**row, "shared": shared, "diff_caused": caused})
+        marks = {
+            "shared": shared,
+            "flake": causes.flake(row, by_file.get(row["file"], [])),
+            "from_main": causes.from_main(row, notes),
+        }
+        caused = not (row["rerun_green"] or row["main_red"] or any(marks.values()))
+        one_off = caused and causes.one_off(row, by_file.get(row["file"], []))
+        out.append({**row, **marks, "diff_caused": caused, "one_off": one_off})
     return out
 
 
@@ -565,6 +1315,10 @@ def _where(row: Row) -> list[object]:
     return [pr, row["head"][:12], row["run"], row["file"]]
 
 
+def _covered_cell(covered: dict[str, int]) -> str:
+    return " ".join(f"{cause}:{rows}" for cause, rows in sorted(covered.items()))
+
+
 def summarize(rows: list[Row], failures: list[Row], tiers: dict[str, Row]) -> str:
     runs = [row for row in rows if row["kind"] == "run"]
     select = [row for row in runs if row["verdict"] == "select"]
@@ -572,12 +1326,18 @@ def summarize(rows: list[Row], failures: list[Row], tiers: dict[str, Row]) -> st
     days = [_when(row) for row in fitted]
     span = (max(days) - min(days)).total_seconds() / 86400 if days else 0.0
     skipped = Counter(row["reason"] for row in rows if row["kind"] == "skip")
+    covered = {(row["run"], row["attempt"]): row.get("covered", {}) for row in runs}
+    by_status = Counter(status for row in fitted for status in row.get("covered", {}))
     lines = [
         f"Runs fitted: {len(fitted)} with a `select` verdict; {len(runs) - len(select)} more "
         f"had a `full` verdict. Days of data: {span:.1f}. "
         f"Fork runs, reported but not fitted: {len(select) - len(fitted)}.",
         f"Runs excluded: {sum(skipped.values())}"
         + "".join(f"; {cell(reason)}: {n}" for reason, n in sorted(skipped.items()))
+        + ".",
+        "Fitted runs by what their verdict covered, a status of a docs or frontend path "
+        f"or an added test file (a run counts under each it has): none {sum(1 for r in fitted if not r.get('covered'))}"
+        + "".join(f"; {cell(status)}: {n}" for status, n in sorted(by_status.items()))
         + ".",
         "",
     ]
@@ -610,12 +1370,89 @@ def summarize(rows: list[Row], failures: list[Row], tiers: dict[str, Row]) -> st
                 [
                     *_where(row),
                     row["tier"],
-                    ", ".join(k for k in ("rerun_green", "main_red", "shared") if row[k]),
+                    causes.reasons(row),
+                    _covered_cell(covered.get((row["run"], row["attempt"]), {})),
                 ]
                 for row in picked
             ]
-            lines += ["", *_table(["PR", "Head", "Run", "File", "Tier", "Not diff-caused"], body)]
+            head = ["PR", "Head", "Run", "File", "Tier", "Not diff-caused", "Covered paths"]
+            lines += ["", *_table(head, body)]
     return "\n".join(lines)
+
+
+def windows_status(rows: list[Row], failures: list[Row], now: datetime) -> Row:
+    """The auto-off line: same-repository trials and diff-caused misses in the last window."""
+
+    def recent(row: Row) -> bool:
+        return (now - _when(row)).total_seconds() <= WINDOWS_STATUS_DAYS * 86400
+
+    trials = [r for r in rows if r["kind"] == "windows_run" and not r["fork"] and recent(r)]
+    can_miss = sum(1 for r in trials if r["verdict"] == "select")
+    misses = sum(
+        1 for r in failures if r["miss"] and r["diff_caused"] and not r["fork"] and recent(r)
+    )
+    return {
+        "windows_selection_ok": misses < WINDOWS_MISS_BAR and can_miss >= WINDOWS_MIN_TRIALS,
+        "window_days": WINDOWS_STATUS_DAYS,
+        "diff_caused_windows_misses": misses,
+        "trials": len(trials),
+        "trials_that_can_miss": can_miss,
+        "bar": WINDOWS_MISS_BAR,
+    }
+
+
+def summarize_windows(rows: list[Row], failures: list[Row], status: Row) -> str:
+    """The Windows section: its own trials, misses and days, never mixed into a Linux number."""
+    trials = [row for row in rows if row["kind"] == "windows_run" and not row["fork"]]
+    days = [_when(row) for row in trials]
+    span = (max(days) - min(days)).total_seconds() / 86400 if days else 0.0
+    sources = Counter(row["trial"] for row in trials)
+    can_miss = sum(1 for row in trials if row["verdict"] == "select")
+    source_of = {row["run"]: row["trial"] for row in rows if row["kind"] == "windows_run"}
+    skipped = Counter(row["reason"] for row in rows if row["kind"] == "windows_skip")
+    labels = Counter(row["label"] for row in failures if not row["fork"])
+    lines = [
+        "## Windows",
+        "",
+        f"Windows trials: {len(trials)}"
+        + "".join(f"; {source}: {sources[source]}" for source in TRIAL_SOURCES)
+        + f". Days of data: {span:.1f}.",
+        f"Windows trials that can show a miss (a `select` Windows verdict): {can_miss}.",
+        "Not read, so not a trial: a green push, and a green run whose verdicts are both `full`.",
+        f"Windows runs excluded: {sum(skipped.values())}"
+        + "".join(f"; {cell(reason)}: {n}" for reason, n in sorted(skipped.items()))
+        + ".",
+        f"Windows-only failures: {sum(labels.values())}"
+        + "".join(f"; {label}: {labels[label]}" for label in WINDOWS_LABELS)
+        + ".",
+    ]
+    misses = [row for row in failures if row["miss"]]
+    groups = [
+        ("Windows misses caused by the diff", [r for r in misses if r["diff_caused"]]),
+        ("Windows misses not caused by it", [r for r in misses if not r["diff_caused"]]),
+    ]
+    for title, picked in groups:
+        same = [row for row in picked if not row["fork"]]
+        lines += [
+            "",
+            f"{title}: {len(same)}; on fork runs, not counted: {len(picked) - len(same)}.",
+        ]
+        if picked:
+            body = [
+                [
+                    *_where(row),
+                    row["label"],
+                    source_of.get(row["run"], ""),
+                    "fork" if row["fork"] else "",
+                    causes.reasons(row),
+                    "one_off" if row["one_off"] else "",
+                ]
+                for row in picked
+            ]
+            head = ["PR", "Head", "Run", "File", "Label", "Source", "Fork", "Not diff-caused"]
+            head.append("Note")
+            lines += ["", *_table(head, body)]
+    return "\n".join(lines + ["", json.dumps(status, sort_keys=True)])
 
 
 def _day(value: str) -> str:
@@ -630,7 +1467,26 @@ def _artifact(value: str) -> str:
     return value
 
 
-def main(argv: list[str] | None = None) -> int:
+def _with_spans(path: Path | None, notes: list[Row], saw: Seen, now: datetime) -> list[Row]:
+    """`notes` with the spans of the issues this pass listed; unchanged when no notes are kept."""
+    if path is None:
+        return notes
+    spans = causes.issue_spans(saw.issues, shadow.watch_module(), red_skip.LABEL, now)
+    return causes.merge_notes(notes, spans, now)
+
+
+def _keep_notes(
+    path: Path | None, notes: list[Row], now: datetime, settled: bool, ok: bool | None
+) -> list[Row]:
+    """`notes` with this pass's own note, written to `path`: what a later pass starts from."""
+    if path is None:
+        return notes
+    notes = causes.merge_notes(notes, [causes.pass_note(now, settled, ok)], now)
+    causes.write_notes(path, notes)
+    return notes
+
+
+def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 1)[0])
     parser.add_argument("--ledger", required=True, help="JSONL ledger to read and append to")
     parser.add_argument("--rates-out", required=True, help="where the proposed tier rates go")
@@ -641,19 +1497,85 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--artifact", type=_artifact, default="test-selection-verdict")
     parser.add_argument("--verdict-dir", help="verdicts scored offline, <run id>.json each")
     parser.add_argument("--root", default=str(REPO_ROOT))
+    parser.add_argument(
+        "--no-windows", dest="windows", action="store_false", help="read no Windows shard"
+    )
+    parser.add_argument("--windows-status-out", help="where the Windows auto-off JSON goes")
+    parser.add_argument(
+        "--notes",
+        help="JSONL of main-red spans and settled passes, read and kept beside the ledger",
+    )
+    parser.add_argument(
+        "--max-calls", type=int, default=0, help="gh calls this pass makes at most; 0: no limit"
+    )
+    parser.add_argument(
+        "--reserve",
+        type=int,
+        default=0,
+        help="REST requests the hour's pool must keep; the pass does not start, and stops, "
+        "under it; 0: not checked",
+    )
     args = parser.parse_args(argv)
     ledger_path = Path(args.ledger)
+    root = Path(args.root)
+    budget = Budget(args.max_calls, args.reserve, root)
+    now = now or datetime.now(timezone.utc)
+    notes_path = Path(args.notes) if args.notes else None
+    notes = causes.read_notes(notes_path) if notes_path else []
+    saw = Seen()
+    new: list[Row] = []
+    kept = 0
     try:
         ledger = read_ledger(ledger_path)
-        new = collect(args, recorded_attempts(ledger), Path(args.root)) if args.limit > 0 else []
+        refused = budget.refusal() if args.limit > 0 else None
+        if refused:
+            print(f"not started: {refused}", file=sys.stderr)
+            return EXIT_REFUSED
+        with budget.counting():
+            try:
+                for number, fresh in enumerate(
+                    (
+                        collect(args, recorded_lanes(ledger), root, budget, saw)
+                        if args.limit > 0
+                        else []
+                    ),
+                    1,
+                ):
+                    new += fresh
+                    if number % KEEP_EVERY_RUNS == 0:
+                        append_rows(ledger_path, new[kept:])
+                        kept = len(new)
+            finally:
+                # What was read is kept, whatever ended the pass.
+                append_rows(ledger_path, new[kept:])
     except (ValueError, subprocess.CalledProcessError) as error:
-        print(f"nothing recorded: {error}", file=sys.stderr)
+        print(f"stopped after {budget.spent} calls, {len(new)} rows kept: {error}", file=sys.stderr)
+        if args.limit > 0:
+            _keep_notes(notes_path, _with_spans(notes_path, notes, saw, now), now, False, None)
         return EXIT_NOT_RECORDED
-    append_rows(ledger_path, new)
+    print(f"gh calls this pass: {budget.spent}", file=sys.stderr)
     rows = current(ledger + new, args.since)
-    failures = classify(rows, args.window_days)
+    if args.limit > 0:
+        notes = _with_spans(notes_path, notes, saw, now)
+    failures = classify(rows, args.window_days, notes)
     tiers = fit(rows, failures)
     text = summarize(rows, failures, tiers)
+    if args.windows:
+        on_windows = classify_windows(rows, args.window_days, notes)
+        status = windows_status(rows, on_windows, now)
+        if args.limit > 0 and notes_path:
+            # `--since` narrows this report; the answer a later pass may hold is of
+            # the whole ledger, like the report that reads the notes.
+            whole = current(ledger + new, None)
+            kept = windows_status(whole, classify_windows(whole, args.window_days, notes), now)
+            notes = _keep_notes(notes_path, notes, now, not saw.left, kept["windows_selection_ok"])
+        if notes_path:
+            status = causes.settle(status, notes, now)
+        text += "\n\n" + summarize_windows(rows, on_windows, status)
+        if args.windows_status_out:
+            Path(args.windows_status_out).write_text(json.dumps(status) + "\n", encoding="utf-8")
+    elif args.limit > 0:
+        _keep_notes(notes_path, notes, now, not saw.left, None)
     if args.summary_out:
         Path(args.summary_out).write_text(text + "\n", encoding="utf-8")
     print(text)

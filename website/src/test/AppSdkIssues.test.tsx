@@ -56,6 +56,18 @@ const PROVIDERS: IssueSummary[] = [
   issue({ provider: 'gitlab', url: 'https://gitlab.com/acme/w/-/issues/7', key: '#7', number: 7, project: 'acme/w', statusLabel: 'opened' }),
   issue({ provider: 'jira', url: 'https://acme.atlassian.net/browse/CREW-142', key: 'CREW-142', number: null, project: 'CREW', statusLabel: 'In Progress' }),
   issue({ provider: 'linear', url: 'https://linear.app/acme/issue/ENG-77', key: 'ENG-77', number: null, project: 'ENG', statusLabel: 'Todo', state: 'open' }),
+  issue({
+    provider: 'servicenow',
+    url: 'https://acme.service-now.com/incident.do?sys_id=a1b2c3d4e5f60718293a4b5c6d7e8f90',
+    key: 'INC0010001',
+    number: 10001,
+    project: 'incident',
+    statusLabel: 'In Progress',
+    labels: [],
+    priority: '1 - Critical',
+    assignees: [{ login: 'Alice Admin', name: 'Alice Admin', avatarUrl: '' }],
+    author: { login: 'Bob Caller', name: 'Bob Caller', avatarUrl: '' },
+  }),
 ]
 
 const QUERY: IssueSearchRequest = { provider: 'github', scope: 'acme/widgets' }
@@ -263,6 +275,23 @@ describe('IssueList', () => {
     }
   })
 
+  it('leaves the labels box out for ServiceNow, which has no labels', async () => {
+    const serviceNow: IssueSearchRequest = { provider: 'servicenow', scope: 'incident', host: 'acme.service-now.com', assignee: 'me' }
+    render(externalApp([ISSUES_PATH], <IssueList query={serviceNow} showFilters />))
+    await screen.findByText('Crash when the list is empty', {}, LAZY)
+    expect(screen.getByLabelText('Search issues')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Assigned to me' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByLabelText('Labels')).toBeNull()
+    expect(bodies()).toEqual([{ ...serviceNow, cursor: null }])
+  })
+
+  it('keeps the filter bar for a ServiceNow raw query, which the route ANDs with the filters', async () => {
+    const serviceNow: IssueSearchRequest = { provider: 'servicenow', scope: 'incident', host: 'acme.service-now.com', raw: 'priority<=2' }
+    render(externalApp([ISSUES_PATH], <IssueList query={serviceNow} showFilters />))
+    await screen.findByText('Crash when the list is empty', {}, LAZY)
+    expect(screen.getByRole('search')).toBeInTheDocument()
+  })
+
   it('hides the filter bar while a raw query replaces the structured filters', async () => {
     render(externalApp([ISSUES_PATH], <IssueList query={{ ...QUERY, raw: 'is:open label:bug' }} showFilters />))
     await screen.findByText('Crash when the list is empty', {}, LAZY)
@@ -280,7 +309,7 @@ describe('IssueList', () => {
 })
 
 describe('IssueCard', () => {
-  it.each(['condensed', 'expanded'] as const)('draws all four providers in the %s view', async view => {
+  it.each(['condensed', 'expanded'] as const)('draws all five providers in the %s view', async view => {
     render(<div>{PROVIDERS.map(i => <IssueCard key={i.key} issue={i} view={view} />)}</div>)
     for (const i of PROVIDERS) {
       expect(await screen.findByText(i.key, {}, LAZY)).toBeInTheDocument()
@@ -290,8 +319,12 @@ describe('IssueCard', () => {
     expect(document.querySelector('[data-provider-mark="gitlab"]')).not.toBeNull()
     expect(screen.getByTestId('jira-provider-mark')).toBeInTheDocument()
     expect(screen.getByTestId('linear-provider-mark')).toBeInTheDocument()
+    // ServiceNow has no bundled logo: it wears the shared neutral mark, and its name says which it is.
+    const serviceNow = within(screen.getByRole(view === 'expanded' ? 'article' : 'link', { name: /^ServiceNow INC0010001/ }))
+    expect(serviceNow.getByText('INC0010001').parentElement?.querySelector('[data-provider-mark="neutral"]')).not.toBeNull()
     if (view === 'expanded') {
-      for (const name of ['GitHub', 'GitLab', 'Jira', 'Linear']) {
+      expect(serviceNow.getByText('ServiceNow')).toBeInTheDocument()
+      for (const name of ['GitHub', 'GitLab', 'Jira', 'Linear', 'ServiceNow']) {
         const link = screen.getByRole('link', { name: `Open in ${name}` })
         expect(link).toHaveAttribute('target', '_blank')
         expect(link).toHaveAttribute('rel', 'noopener noreferrer')
@@ -314,8 +347,8 @@ describe('IssueCard', () => {
     }
   })
 
-  it('hides the comment count on Jira and Linear cards, whose search sends no count', async () => {
-    for (const noCount of [PROVIDERS[2], PROVIDERS[3]]) {
+  it('hides the comment count on Jira, Linear and ServiceNow cards, whose search sends no count', async () => {
+    for (const noCount of [PROVIDERS[2], PROVIDERS[3], PROVIDERS[4]]) {
       const { unmount } = render(<IssueCard issue={{ ...noCount, commentCount: 0 }} view="expanded" />)
       await screen.findByText(noCount.key, {}, LAZY)
       expect(screen.queryByTitle(/comments?$/)).toBeNull()

@@ -20,6 +20,7 @@ import functools
 import importlib.util
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -27,6 +28,8 @@ from unittest import mock
 
 import pytest
 import source_corpus
+
+from kiro_crew.testing.wait import default_timeout
 
 # One xdist worker for the whole module: every test here derives from ONE module-cached
 # scan of src/ (rglob + ast.parse, ~30s). Under `--dist loadgroup` an unmarked module is
@@ -498,7 +501,7 @@ class TestLaunchdRedirect:
         self._assert_under(launchd_live_program(), _xdg_config_root)
 
     def test_install_writes_the_launcher_into_tmp_not_the_real_home(
-        self, _xdg_config_root
+        self, _xdg_config_root, monkeypatch
     ) -> None:
         """The exact leak raised in review: install() ignores the PLIST_* pins.
 
@@ -508,8 +511,11 @@ class TestLaunchdRedirect:
         constant. Subprocess is stubbed here because ``launchctl load`` is a
         mutating verb the execution guard would (correctly) refuse.
         """
+        from service_helpers import pin_posix_installer_path
+
         from kiro_crew.service import macos
 
+        pin_posix_installer_path(monkeypatch)
         with mock.patch.object(macos, "_launchctl", return_value=SimpleNamespace(
             returncode=0, stdout="", stderr=""
         )), mock.patch.object(macos, "kirocrew_bin", return_value="/usr/bin/true"), \
@@ -569,6 +575,38 @@ class TestRepositoryRootResidueGuard:
 
         assert root._not_ignored({".pytest_cache"}) == []
 
+    def test_an_ignored_name_round_trips_whatever_its_spelling(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Git's answer is matched against the name the root listing produced.
+
+        In its line-oriented output git quotes a path that carries a byte outside
+        printable ASCII (``core.quotePath``, on by default), so the printed spelling
+        of an ignored name never equals the one ``iterdir`` returned and a correctly
+        ignored artifact is reported as residue. The guard asks in NUL-delimited
+        mode, where the name comes back byte for byte. The ASCII name goes through
+        the same channel, and the unignored one proves the verdict still reads.
+        """
+        git = shutil.which("git")
+        if git is None:
+            pytest.skip("git is unavailable")
+        for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(
+            [git, "init", "-q", str(repo)], check=True, timeout=default_timeout(), cwd=str(repo)
+        )
+        (repo / ".gitignore").write_text("*.scratch\n", encoding="utf-8")
+        root = _load_root_conftest()
+        monkeypatch.setattr(root, "_REPO_ROOT", repo)
+
+        residue = root._not_ignored({"測試.scratch", "plain.scratch", "kept.txt"})
+
+        assert residue == ["kept.txt"]
+
     def test_an_empty_set_needs_no_subprocess(self) -> None:
         root = _load_root_conftest()
 
@@ -599,7 +637,7 @@ class TestRepositoryRootResidueGuard:
         residue and fail the whole suite on such a host.
         """
         root = _load_root_conftest()
-        fatal = subprocess.CompletedProcess(args=[], returncode=128, stdout="", stderr="fatal")
+        fatal = subprocess.CompletedProcess(args=[], returncode=128, stdout=b"", stderr=b"fatal")
 
         with mock.patch.object(root.subprocess, "run", return_value=fatal):
             assert root._not_ignored({"INJECTED", ".pytest_cache"}) is None
@@ -607,7 +645,7 @@ class TestRepositoryRootResidueGuard:
     def test_nothing_ignored_is_distinguished_from_cannot_look(self) -> None:
         """Exit 1 with the same empty stdout means every name IS residue."""
         root = _load_root_conftest()
-        none_ignored = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
+        none_ignored = subprocess.CompletedProcess(args=[], returncode=1, stdout=b"", stderr=b"")
 
         with mock.patch.object(root.subprocess, "run", return_value=none_ignored):
             assert root._not_ignored({"INJECTED"}) == ["INJECTED"]
@@ -752,3 +790,36 @@ class TestRepositoryRootResidueGuard:
         root.pytest_sessionfinish(session, pytest.ExitCode.OK)
 
         assert session.exitstatus == pytest.ExitCode.OK
+
+    def test_a_residue_folder_is_shown_by_its_leaves_and_their_times(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """A bare ``tmp`` names no writer; the leaf inside it names the test that made it."""
+        root = _load_root_conftest()
+        leaf = tmp_path / "tmp" / "pytest-of-ci" / "test_the_writer0" / "probe.pyc"
+        leaf.parent.mkdir(parents=True)
+        leaf.write_bytes(b"")
+        os.utime(leaf, (1_700_000_000, 1_700_000_000))
+
+        shown = os.path.join("tmp", "pytest-of-ci", "test_the_writer0", "probe.pyc")
+        assert root._root_residue_leaves(tmp_path / "tmp") == [f"{shown}  2023-11-14T22:13:20Z"]
+
+    def test_the_report_prints_each_entrys_leaves_under_its_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = _load_root_conftest()
+        monkeypatch.setattr(root, "_ROOT_BASELINE", set())
+        monkeypatch.setattr(root, "_root_entries", lambda: {"INJECTED"})
+        monkeypatch.setattr(root, "_not_ignored", lambda names: sorted(names))
+        monkeypatch.setattr(root, "_root_residue_leaves", lambda entry: [f"{entry.name}/leaf  T"])
+        lines: list[str] = []
+        reporter = SimpleNamespace(write_sep=lambda *_a, **_k: None, write_line=lines.append)
+        session = SimpleNamespace(
+            config=SimpleNamespace(pluginmanager=SimpleNamespace(get_plugin=lambda _n: reporter)),
+            exitstatus=pytest.ExitCode.OK,
+        )
+
+        root.pytest_sessionfinish(session, pytest.ExitCode.OK)
+
+        named = lines.index("    INJECTED")
+        assert lines[named + 1] == "        INJECTED/leaf  T", lines

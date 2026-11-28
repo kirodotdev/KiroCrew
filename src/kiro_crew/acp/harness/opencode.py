@@ -89,6 +89,13 @@ _OPENCODE_READBACK_TIMEOUT_S = 30.0
 # writes each deny rule as ``{"*": "deny"}``.
 _OPENCODE_MASKED_VALUE = "***"
 
+# opencode's own sub-agent tool, which the seed always denies. opencode 1.x never
+# forwards a CHILD session's permission requests over ACP, so while every tool asks,
+# a sub-agent's first tool call waits forever and the chat hangs. A deny
+# removes the tool from the model's tool list (measured on 1.18.18, 1.19.1 and
+# 1.19.5). v2 forwards the child's requests, so the v2 move drops this deny.
+_OPENCODE_TASK_TOOL = "task"
+
 
 def _opencode_readback_remedy() -> str:
     """What an operator does when the harness's config cannot be read back at all."""
@@ -501,7 +508,8 @@ def _opencode_seeded_deny_rules(config_content: str, setting_key: str) -> tuple[
     """The deny rules Crew wrote into *config_content*, in seed order.
 
     Read back out of the seed itself rather than handed in separately, so the
-    read-back judges exactly what the harness was given.
+    read-back judges exactly what the harness was given. The builtin
+    :data:`_OPENCODE_TASK_TOOL` deny is among them, last.
     """
     try:
         seed = json.loads(config_content)
@@ -521,7 +529,10 @@ def _opencode_routing_config(backend: str, deny_rules: Collection[str] = ()) -> 
     """The inline harness config that makes this session ask, as one env value.
 
     *deny_rules* are the tool ids the session's projection asks the harness itself to
-    deny (``SessionProjection.harness_deny_rules``).
+    deny (``SessionProjection.harness_deny_rules``). The asking value is always
+    written as a rule map, ``{"*": "ask", <each rule>: {"*": "deny"}, "task": {"*":
+    "deny"}}``: opencode's own ``task`` tool is denied on every session
+    (:data:`_OPENCODE_TASK_TOOL`).
 
     MERGED over an ambient value rather than replacing it: an operator who set
     the variable themselves keeps every key they chose, and only the permission
@@ -552,13 +563,17 @@ def _opencode_routing_config(backend: str, deny_rules: Collection[str] = ()) -> 
                     _ENV_OPENCODE_CONFIG_CONTENT,
                 )
     rules = tuple(deny_rules)
-    if rules and value == "ask":
+    if value == "ask":
         # Each switched-off tool AFTER the "*", because the harness lets the last
         # matching rule win; the read-back checks that order survived the merge.
         # The map form, not the bare string the harness reads the same way, because
         # ``debug config`` masks a string under a sensitive-looking key and the
         # read-back could then never see the deny in force.
-        merged[setting_key] = {"*": value, **{rule: {"*": "deny"} for rule in rules}}
+        merged[setting_key] = {
+            "*": value,
+            **{rule: {"*": "deny"} for rule in rules},
+            _OPENCODE_TASK_TOOL: {"*": "deny"},
+        }
     else:
         merged[setting_key] = value
     return json.dumps(merged)
@@ -703,9 +718,17 @@ def _verify_opencode_routing(
         return _native_mount_refusal(session, native)
     top_level = resolved.get(setting_key)
     if seeded_denies and isinstance(top_level, dict):
-        # Crew's own deny rules are judged above, so the routing check sees the value
-        # the operator's sources and the seed's "*" leave behind.
-        top_level = {k: v for k, v in top_level.items() if k not in seeded_denies}
+        # Crew's own MCP deny rules are judged above, so the routing check sees the
+        # value the operator's sources and the seed's "*" leave behind. The builtin
+        # task deny is stripped only when the top-level rules put it in force: no
+        # server can be withheld for a builtin, so a task rule that does not hold is
+        # judged like the operator's own.
+        strip = set(seeded_denies) - {_OPENCODE_TASK_TOOL}
+        if _OPENCODE_TASK_TOOL in seeded_denies and _opencode_denied_in(
+            _OPENCODE_TASK_TOOL, _opencode_rules(top_level)
+        ):
+            strip.add(_OPENCODE_TASK_TOOL)
+        top_level = {k: v for k, v in top_level.items() if k not in strip}
     observed = _opencode_uniform_permission(top_level)
     issue = acp_tool_gate.seeded_setting_issue(backend, session._scrub_observed(observed))
     if issue:
@@ -724,11 +747,37 @@ def _verify_opencode_routing(
                 f"agent {session._scrub_observed(agent_name)!r} overrides it: {issue}",
                 _opencode_routing_remedy(backend, raw),
             )
+    if _OPENCODE_TASK_TOOL in read_back.denies_unenforced:
+        logger.warning(
+            "opencode: its own %r tool is still offered on this session, because a %r "
+            "key or an agent permission override in the opencode config outranks Kiro "
+            "Crew's deny of it; on opencode 1.x a sub-agent it starts can hang the chat. "
+            "Remove the %r key or the agent override from the opencode config to hide it.",
+            _OPENCODE_TASK_TOOL,
+            _OPENCODE_TASK_TOOL,
+            _OPENCODE_TASK_TOOL,
+        )
     return "", ""
 
 
+def _opencode_task_drives_refusal(backend: str, raw: object) -> bool:
+    """Whether a resolved permission map is refused only because of its ``task`` key.
+
+    The key is still there only when Crew's deny of :data:`_OPENCODE_TASK_TOOL` is not
+    in force, and then the map without it either passes the routing check or names
+    nothing else.
+    """
+    if not isinstance(raw, dict) or _OPENCODE_TASK_TOOL not in raw:
+        return False
+    rest = {k: v for k, v in raw.items() if k != _OPENCODE_TASK_TOOL}
+    return not rest or not acp_tool_gate.seeded_setting_issue(
+        backend, _opencode_uniform_permission(rest)
+    )
+
+
 def _opencode_routing_remedy(backend: str, raw: object) -> str:
-    """The gate's remedy, or the redaction's when *raw* holds a masked rule."""
+    """The gate's remedy, the redaction's when *raw* holds a masked rule, or the
+    ``task`` key's when that key alone keeps Crew's deny of it from holding."""
     masked = raw == _OPENCODE_MASKED_VALUE or (
         isinstance(raw, dict)
         and any(
@@ -737,6 +786,16 @@ def _opencode_routing_remedy(backend: str, raw: object) -> str:
             for value in raw.values()
         )
     )
+    if not masked and _opencode_task_drives_refusal(backend, raw):
+        # The gate's own remedy would print the clean seed's shape and send the
+        # operator looking for a higher-precedence source, the wrong direction.
+        return (
+            f"Kiro Crew denies opencode's own {_OPENCODE_TASK_TOOL!r} tool on the opencode "
+            f"1.x line, and a {_OPENCODE_TASK_TOOL!r} key in the opencode config (any "
+            "source: the global or project opencode.json, a legacy 'tools' entry, "
+            f"OPENCODE_PERMISSION) keeps that deny from holding. Remove the "
+            f"{_OPENCODE_TASK_TOOL!r} key and start a new session."
+        )
     if not masked:
         return acp_tool_gate.remediation_for(backend)
     return (
@@ -807,9 +866,22 @@ class OpencodeLaunch(ProcessAdapter):
         self._config_content = ""
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
-        """Resolve the binary, warm the session's MCP array, then establish the routing."""
+        """Refuse or mask first, then resolve the binary, warm MCP, establish the routing."""
         session = ctx.session
         assert session is not None, "opencode is launched for one session"
+        # The refuse-then-mask preflight, keyed on the routing question rather than
+        # on this harness's identity: it is ENFORCED, so the OS credential mask is
+        # the compensating control for the passive reads ACP v1 cannot make it ask
+        # about, and several wrap_argv paths return without applying it.
+        #
+        # FIRST, before the binary lookup and the read-back below: on a host where
+        # the mask cannot be applied the session is refused anyway, so refusing here
+        # means the operator is not told to install a binary this host cannot run,
+        # and no foreign binary starts at all.
+        hidden = await launch_mod._run_preflight_bounded(
+            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
+        )
+        expose = acp_tool_gate.adapter_expose_files(self.backend, hidden)
         opencode_bin, argv, spawn_label, stderr_label = await launch_mod.resolve_self_served_launch(
             self.backend
         )
@@ -823,19 +895,6 @@ class OpencodeLaunch(ProcessAdapter):
         # and then read back out of the harness itself below, so a session that
         # cannot establish the asking posture is refused rather than run.
         await session._prepare_session_mcp()
-        # The refuse-then-mask preflight, keyed on the routing question rather than
-        # on this harness's identity: it is ENFORCED, so the OS credential mask is
-        # the compensating control for the passive reads ACP v1 cannot make it ask
-        # about, and several wrap_argv paths return without applying it.
-        #
-        # FIRST, before the read-back below: that read-back runs a child of this
-        # harness, and on a host where the mask cannot be applied the session is
-        # refused anyway -- so refusing here means no foreign binary starts at all,
-        # rather than one starting and then being told the session is off.
-        hidden = await launch_mod._run_preflight_bounded(
-            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
-        )
-        expose = acp_tool_gate.adapter_expose_files(self.backend, hidden)
         # The version gate, BEFORE the read-back: every child below this line is
         # this harness's own binary doing work only its tested major's shapes are
         # measured against. A binary outside that line is refused here, so the

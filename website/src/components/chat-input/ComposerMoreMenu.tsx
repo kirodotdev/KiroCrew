@@ -7,11 +7,11 @@ import type { useMenuOpensDialog } from '../../hooks/useMenuOpensDialog'
 import { i18nT } from '../../i18n/t'
 
 /** The composer's ⋯ overflow: Sketch and the collapse on the collapsible touch
- *  host, mid-turn Optimize, and the prompt-stash rows wherever "+" cannot hold
+ *  host, plus Optimize and the prompt-stash rows wherever "+" cannot hold
  *  them. The caller decides whether it mounts. */
 export function ComposerMoreMenu({
   directFilePicker, stashInOverflow, hasUpload, uploading, moreMenuLayer, setSketchOpen,
-  collapseMenuRow, busyOptimizeOffered, optimizeBlocked, optimizeUnlessLocked, optimizeRowLabel,
+  collapseMenuRow, optimizeOffered, optimizeBlocked, optimizeUnlessLocked, optimizeRowLabel, optimizeRowTitle,
   promptStash, promptStashChord, touch, appActionItems,
 }: {
   directFilePicker: boolean
@@ -22,10 +22,12 @@ export function ComposerMoreMenu({
   moreMenuLayer: ReturnType<typeof useMenuOpensDialog>
   setSketchOpen: (open: boolean) => void
   collapseMenuRow?: ReactNode
-  busyOptimizeOffered: boolean
+  /** Optimize lives here, not in "+" (the caller's `optimizeInOverflow`). */
+  optimizeOffered: boolean
   optimizeBlocked: boolean
   optimizeUnlessLocked: () => void
   optimizeRowLabel: ReactNode
+  optimizeRowTitle?: string
   promptStash: PromptStashState
   promptStashChord: string
   touch: boolean
@@ -98,10 +100,10 @@ export function ComposerMoreMenu({
             </DropdownMenuItem>
           )}
           {appActionItems}
-          {/* Mid-turn Optimize, as in the "+" menu (`busyOptimizeRow`). */}
-          {busyOptimizeOffered && (
+          {/* Optimize, as in the "+" menu (`plusOptimizeRow`). */}
+          {optimizeOffered && (
             <DropdownMenuItem asChild disabled={optimizeBlocked} onSelect={() => optimizeUnlessLocked()}>
-              <div data-testid="composer-more-optimize" className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg cursor-pointer text-left data-[disabled]:opacity-40 data-[disabled]:cursor-not-allowed">
+              <div data-testid="composer-more-optimize" title={optimizeRowTitle} className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg cursor-pointer text-left data-[disabled]:opacity-40 data-[disabled]:cursor-not-allowed">
                 <Sparkles size={14} className="w-4 shrink-0 text-muted lucide-inline" />
                 <div className="min-w-0 text-[12px] font-medium text-text">{optimizeRowLabel}</div>
               </div>
@@ -114,7 +116,7 @@ export function ComposerMoreMenu({
             <PromptStashMenuItems
               host="dropdown"
               touch={touch}
-              divider={(hasUpload && directFilePicker) || !!collapseMenuRow}
+              divider={(hasUpload && directFilePicker) || !!collapseMenuRow || optimizeOffered}
               stash={promptStash}
               chordLabel={promptStashChord}
               onPicked={() => {}}

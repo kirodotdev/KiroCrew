@@ -287,6 +287,7 @@ class TestOpencodeReadBack:
         assert list(seed["permission"].items()) == [
             ("*", "ask"),
             ("probe_secret", {"*": "deny"}),
+            ("task", {"*": "deny"}),
         ]
 
     def test_a_deny_under_a_sensitive_key_survives_the_masked_read_back(self, client, monkeypatch):
@@ -298,20 +299,18 @@ class TestOpencodeReadBack:
         seed = oc_harness._opencode_routing_config(ACP_BACKEND_OPENCODE, rules)
         resolved = {"permission": _mask_like_opencode(json.loads(seed)["permission"])}
         seeded = oc_harness._opencode_seeded_deny_rules(seed, "permission")
-        assert seeded == rules
+        assert seeded == (*rules, "task")
         assert oc_harness._opencode_unenforced_denies(resolved, "permission", seeded) == frozenset()
 
     def test_no_rules_keeps_the_plain_ask(self, tmp_path, monkeypatch):
+        """No MCP deny rules: every tool asks, and opencode's own ``task`` tool is
+        denied AFTER the ``"*"``, so the last match hides it."""
         monkeypatch.delenv("OPENCODE_CONFIG_CONTENT", raising=False)
         c = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
-        assert (
-            json.loads(
-                oc_harness._opencode_routing_config(
-                    ACP_BACKEND_OPENCODE, c._session_harness_deny_rules
-                )
-            )["permission"]
-            == "ask"
-        )
+        permission = json.loads(
+            oc_harness._opencode_routing_config(ACP_BACKEND_OPENCODE, c._session_harness_deny_rules)
+        )["permission"]
+        assert list(permission.items()) == [("*", "ask"), ("task", {"*": "deny"})]
 
     def _read_back(self, client, monkeypatch, resolved: dict) -> tuple[str, str]:
         monkeypatch.setattr(
@@ -417,6 +416,87 @@ class TestOpencodeReadBack:
             {"permission": {"bash": {"pwd": "deny"}, "*": "ask", "probe_secret": "deny"}},
         )
         assert issue and "deny" in issue
+
+
+class TestOpencodeTaskDeny:
+    """The seed's deny of opencode's own ``task`` tool, through the read-back.
+
+    Stripped from the routing check only when the top-level rules put it in force;
+    otherwise the resolved ``task`` entry is judged like any operator rule.
+    """
+
+    @pytest.fixture
+    def client(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("OPENCODE_CONFIG_CONTENT", raising=False)
+        c = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        c._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
+        return c
+
+    def _read_back(self, client, monkeypatch, resolved: dict) -> tuple[str, str]:
+        monkeypatch.setattr(
+            oc_harness.subprocess_mod, "run", lambda *a, **k: _completed(json.dumps(resolved))
+        )
+        seed = oc_harness._opencode_routing_config(ACP_BACKEND_OPENCODE, ())
+        return oc_harness._verify_opencode_routing(
+            client, ACP_BACKEND_OPENCODE, ["opencode", "debug", "config"], seed
+        )
+
+    def test_the_deny_in_force_is_accepted_and_not_judged(self, client, monkeypatch, caplog):
+        with caplog.at_level("WARNING", logger=oc_harness.logger.name):
+            issue = self._read_back(
+                client, monkeypatch, {"permission": {"*": "ask", "task": {"*": "deny"}}}
+            )
+        assert issue == ("", "")
+        assert client._harness_read_back().denies_unenforced == frozenset()
+        assert "still offered" not in caplog.text
+
+    def test_a_higher_source_allow_after_the_star_is_refused(self, client, monkeypatch):
+        issue, remedy = self._read_back(
+            client, monkeypatch, {"permission": {"*": "ask", "task": "allow"}}
+        )
+        assert issue and "allow" in issue
+        assert "'task' key" in remedy
+
+    def test_a_higher_source_deny_is_accepted(self, client, monkeypatch):
+        """The tool is hidden either way, as a higher source's MCP-id deny is."""
+        issue = self._read_back(client, monkeypatch, {"permission": {"*": "ask", "task": "deny"}})
+        assert issue == ("", "")
+        assert client._harness_read_back().denies_unenforced == frozenset()
+
+    def test_a_lower_source_entry_ahead_of_the_star_is_refused_naming_task(
+        self, client, monkeypatch
+    ):
+        """A global ``task`` key keeps its earlier place in the merge, so the seed's
+        deny lands ahead of ``"*"`` and does not hold. Whatever the operator wrote
+        there (allow, ask or deny), the resolved map reads the same."""
+        issue, remedy = self._read_back(
+            client, monkeypatch, {"permission": {"task": {"*": "deny"}, "*": "ask"}}
+        )
+        assert issue and "deny" in issue
+        assert "'task' key" in remedy and "opencode.json" in remedy
+        assert remedy != acp_tool_gate.remediation_for(ACP_BACKEND_OPENCODE)
+        assert client._harness_read_back().denies_unenforced == frozenset({"task"})
+
+    def test_a_refusal_not_driven_by_task_keeps_the_gates_remedy(self, client, monkeypatch):
+        issue, remedy = self._read_back(
+            client,
+            monkeypatch,
+            {"permission": {"bash": "deny", "task": {"*": "deny"}, "*": "ask"}},
+        )
+        assert issue
+        assert remedy == acp_tool_gate.remediation_for(ACP_BACKEND_OPENCODE)
+
+    def test_an_agent_ask_override_is_accepted_and_warned(self, client, monkeypatch, caplog):
+        resolved = {
+            "permission": {"*": "ask", "task": {"*": "deny"}},
+            "agent": {"build": {"permission": {"*": "ask"}}},
+        }
+        with caplog.at_level("WARNING", logger=oc_harness.logger.name):
+            issue = self._read_back(client, monkeypatch, resolved)
+        assert issue == ("", "")
+        assert client._harness_read_back().denies_unenforced == frozenset({"task"})
+        warned = [r for r in caplog.records if "still offered" in r.getMessage()]
+        assert len(warned) == 1, caplog.text
 
 
 class TestOpencodeDeniesInForce:
@@ -896,6 +976,7 @@ def test_real_opencode_hides_a_denied_tool_and_keeps_its_sibling(agents_dir, tmp
     offered = {name for request in model.offered for name in request}
     assert "probe_public" in offered, model.offered
     assert "probe_secret" not in offered, model.offered
+    assert "task" not in offered, "opencode's own task tool hangs a 1.x session (#35458)"
     assert log.read_text(encoding="utf-8").split() == ["public"]
     assert asked == ["probe_public"], "the sibling tool must still ask per call"
 

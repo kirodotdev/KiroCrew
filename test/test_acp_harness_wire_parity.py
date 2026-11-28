@@ -402,6 +402,8 @@ def test_handshake_params_come_from_the_shared_constants() -> None:
                 "settings": {"codeIntelligence": {"enabled": True}},
                 "openExternalUrl": True,
                 "userInput": True,
+                "approveForMeOption": True,
+                "sessionScopedMcpStatus": True,
             }
         },
     }

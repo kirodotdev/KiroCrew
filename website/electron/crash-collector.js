@@ -36,7 +36,8 @@
 //
 //   * The dump's FIRST module must be ours (Crashpad writes the crashing
 //     executable first). This rejects the inherited-handler children.
-//   * The exception code must be non-zero. This rejects `DumpWithoutCrashing`
+//   * The exception code must not be a snapshot's: 0, or `0x517a7ed` on Windows
+//     (Crashpad's `kSimulatedExceptionCode`). This rejects `DumpWithoutCrashing`
 //     snapshots, including our own.
 //
 // Reading the module list means parsing the minidump, which is why there is a
@@ -112,28 +113,41 @@ const {
   MAX_INSPECT_PER_RUN,
   MAX_PENDING_ATTEMPTS,
 } = require("./runtime/crash/scan");
+const { NATIVE_LOG_OFF_CAUSES } = require("./native-logging");
 
 /**
- * The renderer-facing view of a scan.
- *
- * Deliberately narrow: ONE number. No paths, filenames, module names, exception
- * codes, timestamps, or logs directory — all of which describe the machine (down
- * to the account name in a home directory) and none of which the notice needs.
- * A connection window pointed at a remote gateway shares this preload, so the
- * smaller this payload is, the less the sender gate has to carry. The detail
- * lives in `crashes.log`, which the user reveals and hands over deliberately.
- *
- * It carried `lastCrashAt` and `hasLog` too, until a review pointed out that no
- * consumer read either one: the banner's text is a count, and the reveal button
- * renders whenever the count is non-zero. `hasLog` in particular looked
- * load-bearing and was not — `newCount > 0` already implies a ledger line,
- * because a crash is only counted once its line is durably on disk. Fields the
- * UI does not read are not free here: every one is another thing crossing the
- * boundary this channel's three gates exist to protect.
+ * The renderer-facing view of a scan: the count of new crashes and, as one ISO
+ * 8601 UTC string (or `null`), when the newest of them happened, so a weeks-old
+ * crash does not read like one that just occurred; plus `nativeLogOff` on a
+ * launch whose Chromium file log is off (a cause code from a closed set, read by
+ * the banner). A path, file name, module name, exception code or the logs
+ * directory never crosses: they describe the machine (down to the account name
+ * in a home directory), and a connection window pointed at a remote gateway
+ * shares this preload. That detail lives in `crashes.log`, which the user
+ * reveals and hands over deliberately; the time shown here is the same `at=`
+ * that file already records.
  */
-function crashNoticeSummary(scan) {
+function crashNoticeSummary(scan, nativeLogging = null) {
   const newCrashes = (scan && scan.newCrashes) || [];
-  return { newCount: newCrashes.length };
+  let newest = null;
+  for (const crash of newCrashes) {
+    const ms = Date.parse(crash.at);
+    if (Number.isFinite(ms) && (newest === null || ms > newest)) newest = ms;
+  }
+  const summary = {
+    newCount: newCrashes.length,
+    lastCrashAt: newest === null ? null : new Date(newest).toISOString(),
+  };
+  // Present only when Chromium's file log is off this launch (see
+  // `initNativeLogging`'s `fileLogOffCause`): then the chromium.log the banner
+  // asks the user to attach is from an earlier session, and the notice says so.
+  // Only a code from the closed set crosses; anything else is dropped, so no
+  // free text can ride this channel.
+  const cause = nativeLogging && nativeLogging.fileLogOffCause;
+  if (typeof cause === "string" && NATIVE_LOG_OFF_CAUSES.includes(cause)) {
+    summary.nativeLogOff = cause;
+  }
+  return summary;
 }
 
 module.exports = {

@@ -186,15 +186,225 @@ describe('SkillPickerMenu', () => {
     expect(onClose).toHaveBeenCalled()
   })
 
-  it('dedupes skills that share a leaf name', async () => {
+  // #42694: nested group folders carry a short leaf while the SKILL.md `name:`
+  // carries the full name. The picker used to match the leaf only.
+  describe('nested skills (#42694)', () => {
+    const NESTED = [
+      { key: 'finance/reports/quarterly-close', name: 'finance-reports-quarterly-close', description: 'Close the quarter', source: 'kirocrew' },
+      { key: 'ops/oncall/handoff-summary', name: 'ops-oncall-handoff-summary', description: 'Summarize the handoff', source: 'kirocrew' },
+      { key: 'data/warehouse/query-lineage', name: 'data-warehouse-query-lineage', description: 'Trace a query', source: 'kirocrew' },
+      { key: 'data/warehouse/freshness-check', name: 'data-warehouse-freshness-check', description: 'Check freshness', source: 'kirocrew' },
+      { key: 'support/triage/escalation', name: 'support-triage-escalation', description: 'Escalate a case', source: 'kirocrew' },
+    ]
+    beforeEach(() => { mockApi.skills.mockResolvedValue(NESTED) })
+
+    // The bold label is the token a pick inserts, so the row never promises a
+    // `$name` the backend cannot resolve; name and path go on the second line.
+    it('$ops finds the skill under ops/, labelled by its token with name and path below', async () => {
+      render(<Harness query="ops" open />)
+      expect(await screen.findByText('$handoff-summary')).toBeInTheDocument()
+      expect(screen.getByTestId('skill-name')).toHaveTextContent('ops-oncall-handoff-summary')
+      expect(screen.getByTestId('skill-path')).toHaveTextContent('ops/oncall/handoff-summary')
+      expect(screen.getByText('Summarize the handoff')).toBeInTheDocument()
+      expect(screen.getAllByRole('option')).toHaveLength(1)
+    })
+
+    it('$oncall finds the skill by a middle path segment', async () => {
+      render(<Harness query="oncall" open />)
+      expect(await screen.findByText('$handoff-summary')).toBeInTheDocument()
+      expect(screen.getAllByRole('option')).toHaveLength(1)
+    })
+
+    it('$data-warehouse lists both skills whose names start with it, in catalog order', async () => {
+      render(<Harness query="data-warehouse" open />)
+      await screen.findByText('$query-lineage')
+      const rows = screen.getAllByText(/^\$/).map((el) => el.textContent)
+      expect(rows).toEqual(['$query-lineage', '$freshness-check'])
+    })
+
+    it('$escalation still finds the skill by its last folder', async () => {
+      render(<Harness query="escalation" open />)
+      expect(await screen.findByText('$escalation')).toBeInTheDocument()
+      expect(screen.getByTestId('skill-name')).toHaveTextContent('support-triage-escalation')
+      expect(screen.getByTestId('skill-path')).toHaveTextContent('support/triage/escalation')
+    })
+
+    it('a name match inserts exactly the token the bold label shows', async () => {
+      const onSelect = vi.fn()
+      render(<Harness query="data-warehouse-fresh" open onSelect={onSelect} />)
+      fireEvent.mouseDown(await screen.findByText('$freshness-check'))
+      expect(onSelect).toHaveBeenCalledWith({ leaf: 'freshness-check', key: 'data/warehouse/freshness-check' })
+    })
+
+    it('lets name, path and description each shrink and truncate, so a 320px row never scrolls sideways', async () => {
+      render(<Harness query="quarterly" open />)
+      await screen.findByText('$quarterly-close')
+      const name = screen.getByTestId('skill-name')
+      const path = screen.getByTestId('skill-path')
+      for (const el of [name, path, screen.getByText('Close the quarter')]) {
+        expect(el).toHaveClass('min-w-0', 'truncate')
+        expect(el).not.toHaveClass('shrink-0')
+      }
+    })
+
+    it('shows neither a name nor a path line when the key already is the name', async () => {
+      mockApi.skills.mockResolvedValue(SKILLS)
+      render(<Harness query="grill" open />)
+      await screen.findByText('$grill')
+      expect(screen.queryByTestId('skill-name')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('skill-path')).not.toBeInTheDocument()
+    })
+  })
+
+  // Two groups ending in the same leaf used to collapse to one row, and a bare
+  // `$escalation` for either resolves to nothing on the backend (ambiguous leaf).
+  // Both now list, told apart by the path line, and each inserts its full key.
+  it('lists skills that share a leaf and inserts the full key for each', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'ops/oncall/escalation', name: 'ops-oncall-escalation', description: 'Page the on-call', source: 'kirocrew' },
+      { key: 'support/triage/escalation', name: 'support-triage-escalation', description: 'Escalate a case', source: 'kirocrew' },
+    ])
+    const onSelect = vi.fn()
+    render(<Harness query="escalation" open onSelect={onSelect} />)
+    await screen.findByText('$ops/oncall/escalation')
+    expect(screen.getAllByRole('option')).toHaveLength(2)
+    // The bold label is the full-key token; the path line is redundant with it
+    // and stays off, the name still tells the two apart.
+    expect(screen.getAllByTestId('skill-name').map(el => el.textContent))
+      .toEqual(['ops-oncall-escalation', 'support-triage-escalation'])
+    expect(screen.queryByTestId('skill-path')).not.toBeInTheDocument()
+    fireEvent.mouseDown(screen.getByText('$support/triage/escalation'))
+    expect(onSelect).toHaveBeenCalledWith({ leaf: 'support/triage/escalation', key: 'support/triage/escalation' })
+    fireEvent.keyDown(document, { key: 'Enter' })
+    expect(onSelect).toHaveBeenLastCalledWith({ leaf: 'ops/oncall/escalation', key: 'ops/oncall/escalation' })
+  })
+
+  it('a project skill sharing a leaf inserts its loader key (the key minus kiro-workspace/), which needs no alias', async () => {
+    // /api/skills never sends aliases on project rows.
+    mockApi.skills.mockResolvedValue([
+      { key: 'kiro-workspace/foo', name: 'foo', description: 'project foo', source: 'kiro-workspace', trusted: true },
+      { key: 'group/foo', name: 'foo', description: 'global foo', source: 'kirocrew' },
+    ])
+    const onSelect = vi.fn()
+    render(<Harness query="foo" open onSelect={onSelect} />)
+    fireEvent.mouseDown(await screen.findByText('$foo'))
+    expect(onSelect).toHaveBeenCalledWith({ leaf: 'foo', key: 'kiro-workspace/foo' })
+    fireEvent.mouseDown(screen.getByText('$group/foo'))
+    expect(onSelect).toHaveBeenLastCalledWith({ leaf: 'group/foo', key: 'group/foo' })
+  })
+
+  it('hides a shared-leaf row the loader does not hold, so no pick loads the wrong body', async () => {
+    // Global `foo` shadows the project copy in the loader; the native row is
+    // not walked; `Ops/foo` cannot be spelled as a `$` token. Only `foo` lists.
+    mockApi.skills.mockResolvedValue([
+      { key: 'foo', name: 'foo', description: 'global body', source: 'kirocrew' },
+      { key: 'kiro-workspace/foo', name: 'foo', description: 'project body', source: 'kiro-workspace', trusted: true },
+      { key: 'kiro-user/foo', name: 'foo', description: 'native body', source: 'kiro-user' },
+      { key: 'Ops/foo', name: 'foo', description: 'ops body', source: 'kirocrew' },
+    ])
+    const onSelect = vi.fn()
+    render(<Harness query="foo" open onSelect={onSelect} />)
+    fireEvent.mouseDown(await screen.findByText('$foo'))
+    expect(screen.getAllByRole('option')).toHaveLength(1)
+    expect(screen.getByText('global body')).toBeInTheDocument()
+    expect(screen.queryByText('project body')).not.toBeInTheDocument()
+    expect(screen.queryByText('ops body')).not.toBeInTheDocument()
+    expect(onSelect).toHaveBeenCalledWith({ leaf: 'foo', key: 'foo' })
+  })
+
+  it('a bare native row does not hide a loader-backed project row with the same leaf', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'kiro-workspace/foo', name: 'foo', description: 'project body', source: 'kiro-workspace', trusted: true },
+      { key: 'kiro-user/foo', name: 'foo', description: 'native body', source: 'kiro-user' },
+    ])
+    const onSelect = vi.fn()
+    render(<Harness query="foo" open onSelect={onSelect} />)
+    fireEvent.mouseDown(await screen.findByText('$foo'))
+    expect(screen.getAllByRole('option')).toHaveLength(1)
+    expect(screen.getByText('project body')).toBeInTheDocument()
+    expect(onSelect).toHaveBeenCalledWith({ leaf: 'foo', key: 'kiro-workspace/foo' })
+  })
+
+  it('a project copy behind a global skill kept under its kiro-user/ spelling is hidden; the global inserts $foo', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'kiro-user/foo', name: 'foo', description: 'global body', source: 'kiro-user', aliases: ['foo'] },
+      { key: 'kiro-workspace/foo', name: 'foo', description: 'project body', source: 'kiro-workspace', trusted: true },
+    ])
+    const onSelect = vi.fn()
+    render(<Harness query="foo" open onSelect={onSelect} />)
+    fireEvent.mouseDown(await screen.findByText('$foo'))
+    expect(screen.getAllByRole('option')).toHaveLength(1)
+    expect(screen.getByText('global body')).toBeInTheDocument()
+    expect(onSelect).toHaveBeenCalledWith({ leaf: 'foo', key: 'kiro-user/foo' })
+  })
+
+  it('two qualified package copies of one skill keep a single $shared row (never zero rows)', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'package/0123456789abcdef:shared', name: 'shared', description: 'copy one', source: 'package' },
+      { key: 'package/fedcba9876543210:shared', name: 'shared', description: 'copy two', source: 'package' },
+    ])
+    const onSelect = vi.fn()
+    render(<Harness query="shared" open onSelect={onSelect} />)
+    fireEvent.mouseDown(await screen.findByText('$shared'))
+    expect(screen.getAllByRole('option')).toHaveLength(1)
+    expect(onSelect).toHaveBeenCalledWith({ leaf: 'shared', key: 'package/0123456789abcdef:shared' })
+  })
+
+  it('an edition skill sharing a leaf inserts its alias loader key, not $package/foo', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'package/foo', name: 'foo', description: 'edition foo', source: 'package', aliases: ['foo'] },
+      { key: 'group/foo', name: 'foo', description: 'crew foo', source: 'kirocrew' },
+    ])
+    const onSelect = vi.fn()
+    render(<Harness query="foo" open onSelect={onSelect} />)
+    fireEvent.mouseDown(await screen.findByText('$foo'))
+    expect(onSelect).toHaveBeenCalledWith({ leaf: 'foo', key: 'package/foo' })
+  })
+
+  it('an unaliased native skill with a unique leaf still lists under $leaf', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'kiro-user/foo', name: 'foo', description: 'native foo', source: 'kiro-user' },
+      { key: 'grill', name: 'grill', description: 'd', source: 'kirocrew' },
+    ])
+    const onSelect = vi.fn()
+    render(<Harness query="foo" open onSelect={onSelect} />)
+    fireEvent.mouseDown(await screen.findByText('$foo'))
+    expect(onSelect).toHaveBeenCalledWith({ leaf: 'foo', key: 'kiro-user/foo' })
+  })
+
+  it('two untrusted project skills sharing a leaf both list and both reach the consent step', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'kiro-workspace/ops/escalation', name: 'ops-escalation', description: 'ops', source: 'kiro-workspace', trusted: false },
+      { key: 'kiro-workspace/support/escalation', name: 'support-escalation', description: 'support', source: 'kiro-workspace', trusted: false },
+    ])
+    const onSelect = vi.fn(); const onTrustRequest = vi.fn()
+    render(<Harness query="escalation" open onSelect={onSelect} onTrustRequest={onTrustRequest} />)
+    await screen.findByText('$ops/escalation')
+    expect(screen.getAllByRole('option')).toHaveLength(2)
+    fireEvent.mouseDown(screen.getByText('$support/escalation'))
+    expect(onTrustRequest).toHaveBeenCalledWith({ leaf: 'support/escalation', key: 'kiro-workspace/support/escalation' })
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('a native kiro-user/ skill sharing a leaf inserts the loader key its alias carries', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'kiro-user/foo', name: 'foo', description: 'native foo', source: 'kiro-user', aliases: ['foo'] },
+      { key: 'group/foo', name: 'foo', description: 'crew foo', source: 'kirocrew' },
+    ])
+    const onSelect = vi.fn()
+    render(<Harness query="foo" open onSelect={onSelect} />)
+    fireEvent.mouseDown(await screen.findByText('$foo'))
+    expect(onSelect).toHaveBeenCalledWith({ leaf: 'foo', key: 'kiro-user/foo' })
+  })
+
+  it('still collapses the same key listed twice to one row', async () => {
     mockApi.skills.mockResolvedValue([
       { key: 'kirocrew/grill', name: 'grill', description: 'local grill', source: 'kirocrew' },
-      { key: 'AIMPkg/grill', name: 'grill', description: 'aim grill', source: 'package' },
+      { key: 'kirocrew/grill', name: 'grill', description: 'local grill', source: 'kirocrew' },
     ])
     render(<Harness query="grill" open />)
     await waitFor(() => expect(mockApi.skills).toHaveBeenCalled())
-    const matches = await screen.findAllByText('$grill')
-    expect(matches).toHaveLength(1)
+    expect(await screen.findAllByText('$grill')).toHaveLength(1)
   })
 
   it('inserts a qualified package copy by its bare name, since the $ token stops at ":"', async () => {
@@ -209,7 +419,7 @@ describe('SkillPickerMenu', () => {
   it('keeps a colon in a name that is not a 16-hex package qualifier', async () => {
     mockApi.skills.mockResolvedValue([
       { key: 'package/a:b', name: 'a:b', description: 'colon', source: 'package' },
-      { key: 'package/0123456789ABCDEF:up', name: 'up', description: 'upper', source: 'package' },
+      { key: 'package/0123456789ABCDEF:up', name: '0123456789ABCDEF:up', description: 'upper', source: 'package' },
     ])
     render(<Harness query="" open />)
     expect(await screen.findByText('$a:b')).toBeInTheDocument()
@@ -447,8 +657,8 @@ describe('SkillPickerMenu — project-skills trust', () => {
 
   it('refetches when the same slot switches projects', async () => {
     mockApi.skills
-      .mockResolvedValueOnce([{ ...TRUSTED[0], key: 'kiro-workspace/project-a' }])
-      .mockResolvedValueOnce([{ ...TRUSTED[0], key: 'kiro-workspace/project-b' }])
+      .mockResolvedValueOnce([{ ...TRUSTED[0], key: 'kiro-workspace/project-a', name: 'project-a' }])
+      .mockResolvedValueOnce([{ ...TRUSTED[0], key: 'kiro-workspace/project-b', name: 'project-b' }])
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
     const view = render(
       <Harness
@@ -477,8 +687,8 @@ describe('SkillPickerMenu — project-skills trust', () => {
 
   it('refetches on reopen when the caller cannot provide project identity', async () => {
     mockApi.skills
-      .mockResolvedValueOnce([{ ...TRUSTED[0], key: 'kiro-workspace/project-a' }])
-      .mockResolvedValueOnce([{ ...TRUSTED[0], key: 'kiro-workspace/project-b' }])
+      .mockResolvedValueOnce([{ ...TRUSTED[0], key: 'kiro-workspace/project-a', name: 'project-a' }])
+      .mockResolvedValueOnce([{ ...TRUSTED[0], key: 'kiro-workspace/project-b', name: 'project-b' }])
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
     const view = render(
       <Harness query="" open slotKey="dashboard:chat-7" client={client} />,

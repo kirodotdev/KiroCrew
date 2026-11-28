@@ -6,12 +6,13 @@ The run path is the real one (``SubagentManager.spawn`` -> ``_run`` ->
 classified by its terminal, not by the promotion, and that the model the engine
 ran is what the panel shows and what ``state.json`` keeps, on every ending.
 The model is persisted when the engine's notice arrives, while the run is live.
+A refusal hop's refused text leaves the delivered result unless nothing answered.
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from subagent_stop_reason_helpers import (
@@ -25,13 +26,16 @@ from subagent_stop_reason_helpers import (
     _text,
 )
 
+import kiro_crew.subagent_persistence as sp
 from kiro_crew.acp.types import (
     EVENT_MODEL_FALLBACK,
+    EVENT_TOOL_CALL,
     STOP_CLASS_FAILED,
     STOP_CLASS_SUCCEEDED,
     STOP_REASON_END_TURN,
     STOP_REASON_REFUSAL,
 )
+from kiro_crew.subagent import _TRANSIENT_CONTINUE_MSG
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory", "close_subagent_managers")
 
@@ -144,3 +148,122 @@ async def test_the_engine_model_is_persisted_while_the_run_is_live(
     assert (info.outcome == "completed") is completed
     assert info.resolved_model == "model-b"
     assert seen == [(False, {"resolved_model": "model-b"})]
+
+
+_REFUSED = "I can't help with that."
+
+
+def _refusal_hop_turn(*after):
+    """The refused model's text, the V2 refusal hop, then *after* (the wire order of
+    ``test/fixtures/acp_frames/kiro/refusal-fallback-live.jsonl``)."""
+    from kiro_crew.acp.engine_fallback import ModelFallbackNotice
+
+    hop = ModelFallbackNotice("model-a", "model-b", "refused", engine="v2")
+
+    def stream_factory(msg: str, *a, **kw):
+        async def _gen():
+            yield _text(_REFUSED)
+            yield SimpleNamespace(
+                kind=EVENT_MODEL_FALLBACK, model_fallback=hop, runtime_global=False
+            )
+            for event in after:
+                yield event
+
+        return _gen()
+
+    return stream_factory
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_hop_drops_the_refused_text_from_the_result():
+    # The text before the hop is the refused model's, not the run's answer: the
+    # parent receives the fallback's answer alone, as the dashboard and Slack show.
+    sessions = _mock_sessions(
+        _refusal_hop_turn(_text("Here is the answer."), _complete(STOP_REASON_END_TURN))
+    )
+    info = await _spawn_and_wait(_manager(sessions))
+    assert info.outcome == "completed"
+    assert "Here is the answer." in info.result
+    assert _REFUSED not in info.result
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_the_fallback_did_not_recover_keeps_the_providers_words():
+    sessions = _mock_sessions(_refusal_hop_turn(_complete(STOP_REASON_REFUSAL)))
+    info = await _spawn_and_wait(_manager(sessions))
+    assert info.outcome != "completed"
+    assert _REFUSED in info.result
+    # What spawn_status reads for a done run, which the hop had cut.
+    assert (sp._agent_dir(info.id) / "result.txt").read_text(encoding="utf-8") == _REFUSED
+
+
+class _TransientError(Exception):
+    """Duck-typed AcpError carrying the structured transient verdict. No adapter
+    classifies it as a dependency condition, so it takes the in-turn continue."""
+
+    transient = True
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_hop_on_a_continue_prompt_keeps_the_preserved_partial():
+    # The continue after a post-token transient error is refused, then the hop: only
+    # the continue's refused text leaves, never the partial the continue preserved.
+    from kiro_crew.acp.engine_fallback import ModelFallbackNotice
+
+    hop = ModelFallbackNotice("model-a", "model-b", "refused", engine="v2")
+    calls: list[str] = []
+
+    def stream_factory(msg: str, *a, **kw):
+        calls.append(msg)
+
+        async def _gen():
+            if len(calls) == 1:
+                yield _text("Partial answer. ")
+                raise _TransientError("backend hiccup")
+            yield _text(_REFUSED)
+            yield SimpleNamespace(
+                kind=EVENT_MODEL_FALLBACK, model_fallback=hop, runtime_global=False
+            )
+            yield _text("the rest.")
+            yield _complete(STOP_REASON_END_TURN)
+
+        return _gen()
+
+    mgr = _manager(_mock_sessions(stream_factory))
+    with patch("kiro_crew.subagent.transient_retry_delay", return_value=0.0):
+        info = await _spawn_and_wait(mgr)
+    assert calls[1] == _TRANSIENT_CONTINUE_MSG
+    assert info.outcome == "completed"
+    assert "Partial answer." in info.result and "the rest." in info.result
+    assert _REFUSED not in info.result
+
+
+def _tool_call() -> SimpleNamespace:
+    return SimpleNamespace(
+        kind=EVENT_TOOL_CALL,
+        title="read",
+        tool_kind="read",
+        tool_call_id="t1",
+        tool_input="{}",
+        text="",
+        runtime_global=False,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "after_hop, stop_reason",
+    [
+        # The fallback wrote, called a tool, then its next call was refused bare.
+        ((_text("Let me check the file."), _tool_call()), STOP_REASON_REFUSAL),
+        # The fallback answered with tool work alone.
+        ((_tool_call(),), STOP_REASON_END_TURN),
+    ],
+    ids=["answered_then_refused", "tool_only_answer"],
+)
+async def test_a_refusal_hop_the_fallback_answered_does_not_put_the_refused_text_back(
+    after_hop: tuple, stop_reason: str
+):
+    sessions = _mock_sessions(_refusal_hop_turn(*after_hop, _complete(stop_reason)))
+    info = await _spawn_and_wait(_manager(sessions))
+    assert _REFUSED not in info.result

@@ -47,7 +47,10 @@ export const Trigger = React.forwardRef<HTMLButtonElement, any>(({ children, asC
     if (typeof ref === 'function') ref(node)
     else if (ref) (ref as React.MutableRefObject<HTMLElement | null>).current = node
   }
-  const handleClick = (e: any) => { setOpen(!open); props.onClick?.(e) }
+  // Real Radix never toggles on `click`; this mock does. It marks the click as
+  // taken, so the shared `DropdownMenuTrigger` does not toggle a second time
+  // for a click with no pointer event.
+  const handleClick = (e: any) => { setOpen(!open); e.preventDefault?.(); props.onClick?.(e) }
   if (asChild && React.isValidElement(children)) {
     return React.cloneElement(children as React.ReactElement<any>, { ...props, ref: setRefs, onClick: handleClick, 'data-state': open ? 'open' : 'closed' })
   }

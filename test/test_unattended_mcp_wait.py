@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,21 +23,30 @@ from acp_runtime_helpers import _bounded, _make_runtime, _register
 from kiro_crew import webhooks
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import runtime as runtime_mod
+from kiro_crew.acp import runtime_session_load
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime import AcpSessionHandle
+from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     EVENT_COMPLETE,
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
     EVENT_TEXT_CHUNK,
+    METHOD_KAS_MCP_STATUS,
     AcpEvent,
     JsonRpcMessage,
 )
 from kiro_crew.agent_sdk import mcp_problems
 from kiro_crew.dashboard.handlers import hooks as H
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import (
+    DEFAULT_PROGRESS_WINDOW_SECS,
+    FALLBACK_TIMEOUT_SECS,
+    async_wait_until,
+    await_until,
+    finished,
+)
 
 _SPEC = {"mcpServers": {"atlassian": {"url": "x"}, "azure-devops": {"command": "node"}}}
 
@@ -372,6 +383,98 @@ async def test_handle_wait_repoisons_a_dead_runtime():
     assert q["sA"].get_nowait() is None, "the next consumer must still see the death"
 
 
+# ── A server the host's MCP registry dropped ────────────────────────────────
+
+#: A spec entry for a catalog server. KAS gets it in the active agent's block as
+#: a registry pointer (``kas_engine_features.registry_pointer``), in either mode.
+_POINTER = {"type": "registry", "command": "npx"}
+_GOVERNED_SPEC = {"mcpServers": {"kirocrew-core": {}, "users-hung": _POINTER, "slow": _POINTER}}
+
+
+def _governed_status(**states: str) -> JsonRpcMessage:
+    """The captured snapshot of a registry-governed host: what it dropped, by name."""
+    return JsonRpcMessage(
+        method=METHOD_KAS_MCP_STATUS,
+        params={
+            "sessionId": "sA",
+            "servers": [{"name": name, "status": status} for name, status in states.items()],
+            "accessMode": "registry",
+            "accessModeFilteredServers": [{"name": "kirocrew-core"}, {"name": "users-hung"}],
+            "unresolvedRegistryServers": [],
+        },
+    )
+
+
+def _governed_session(tmp_path: Path, *own: str) -> tuple[AcpSessionHandle, dict]:
+    """A KAS session set up as its start sets it up, *own* in the agent's block.
+
+    The report opens with the wire roster and the spec guard declares what KAS
+    was handed: Crew's server on the session, the spec's own in the block.
+    """
+    from kiro_crew.acp.runtime import AcpRuntime
+    from kiro_crew.acp.types import ACP_BACKEND_KAS
+
+    rt = AcpRuntime(work_dir=tmp_path, sandbox_mode="off", acp_backend=ACP_BACKEND_KAS)
+    agents = [{"id": "reporter", "mcpServers": {name: _POINTER for name in own}}]
+    wire = [{"name": "kirocrew-core"}]
+    params = {"sessionId": "sA", "mcpServers": wire, "_meta": {"kiro": {"customAgents": agents}}}
+    queue: asyncio.Queue = asyncio.Queue()
+    handle = AcpSessionHandle("sA", queue, rt, mcp_report=rt._open_mcp_report("sA", wire))
+    rt._session_queues["sA"] = queue
+    handle.kas_registered_agents, handle.kas_projected_agent = agents, "reporter"
+    rt._guard_unresolved_mcp_refs(handle, _GOVERNED_SPEC, "reporter", wire)
+    return handle, params
+
+
+def _arrive(handle: AcpSessionHandle, frame: JsonRpcMessage) -> None:
+    """As the runtime's reader hands a frame on: its own fold, then the queue."""
+    handle._runtime._fold_mcp_frame(handle.session_id, frame)
+    handle._queue.put_nowait(frame)
+
+
+@pytest.mark.asyncio
+async def test_a_start_nobody_waits_on_does_not_wait_for_a_server_the_registry_dropped(
+    tmp_path, monkeypatch
+):
+    # Registry mode declared: the host dropped Crew's server and a catalog server.
+    monkeypatch.setattr(runtime_session_load, "_declared_governed", lambda: True)
+    # A cap past the bound below: only the report can end the wait in time.
+    monkeypatch.setattr(runtime_session_load, "MOUNTED_MCP_WAIT_SECS", FALLBACK_TIMEOUT_SECS)
+    handle, params = _governed_session(tmp_path, "users-hung")
+    _arrive(handle, _governed_status())
+
+    start = handle._runtime._wait_managed_mcp(handle, params, "reporter", 3600.0, 0)
+    await finished(start, "the start's brief wait", timeout=DEFAULT_PROGRESS_WINDOW_SECS)
+
+    report = handle.mcp_session_report()
+    assert report.not_ready() == {"registry_dropped": ("kirocrew-core", "users-hung")}
+
+
+@pytest.mark.asyncio
+async def test_an_unattended_run_does_not_wait_for_a_server_the_registry_dropped(tmp_path, caplog):
+    handle, _ = _governed_session(tmp_path, "users-hung", "slow")
+    _arrive(handle, _governed_status(slow="connecting"))
+    # The governed start gives up Crew's own dropped server and goes on.
+    await _bounded(
+        handle.wait_mcp_ready(("kirocrew-core",), 3600.0, governed=True), what="the start"
+    )
+    caplog.set_level(logging.WARNING, logger=mcp_problems.__name__)
+
+    waiter = asyncio.ensure_future(mcp_problems.wait_for_declared_mcp(handle, 3600.0))
+    # Parked on the queue: the server still connecting keeps the wait.
+    await async_wait_until(lambda: bool(handle._queue._getters))
+    assert not waiter.done()
+    _arrive(handle, _governed_status(slow="connected"))
+    await _bounded(waiter, what="the unattended wait once the last server connected")
+
+    assert handle.mcp_session_report().declared_not_ready() == ("kirocrew-core", "users-hung")
+    lines = [r.getMessage() for r in caplog.records if r.name == mcp_problems.__name__]
+    assert len(lines) == 1 and lines[0].endswith(": kirocrew-core, users-hung"), lines
+    # The line says how long the run waited, not the bound it was given.
+    waited = re.search(r"after a ([\d.]+)s wait", lines[0])
+    assert waited and float(waited.group(1)) < 3600.0, lines[0]
+
+
 # ── The dedicated-transport client ──────────────────────────────────────────
 
 
@@ -408,6 +511,26 @@ async def test_client_wait_is_bounded(tmp_path):
     missing = await _bounded(client.wait_for_declared_mcp(0.05), what="the bounded client wait")
 
     assert missing == ("azure-devops",)
+
+
+@pytest.mark.asyncio
+async def test_client_wait_ends_once_the_hosts_registry_dropped_the_server(tmp_path):
+    client = AcpClient(work_dir=tmp_path)
+    client._mcp_notifications = []
+    client._mcp_ref_spec = {"mcpServers": {"users-hung": {"command": "npx"}}}
+    client._mcp_report.begin_session([])
+    client._guard_unresolved_mcp_refs([])
+    dropped = JsonRpcMessage(
+        method=METHOD_KAS_MCP_STATUS,
+        params={"servers": [], "accessModeFilteredServers": [{"name": "users-hung"}]},
+    )
+    # Quiet after the drop; a wait that reads on stops at the fourth read.
+    client._read_message = AsyncMock(side_effect=[dropped, None, None, AcpError("read on")])
+
+    missing = await _bounded(client.wait_for_declared_mcp(3600.0), what="the client wait")
+
+    assert missing == ("users-hung",)
+    assert client._read_message.await_count == 1, "the wait should end on the drop"
 
 
 # ── A webhook run ───────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { ArrowRight } from 'lucide-react'
 
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
@@ -13,7 +13,7 @@ import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
 import { useSharedCrewCapabilities } from '../../hooks/sharedCrew/useSharedCrew'
-import { PREVIEW_APP_BROWSER_SDK, PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CONNECTED_COMPUTERS, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_VISUAL_REFRESH, PREVIEW_WEBHOOKS, PREVIEW_WIDGETS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_APP_BROWSER_SDK, PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BOT_CHAT_APP_TOOLS, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CONNECTED_COMPUTERS, PREVIEW_CREW_CLIENT, PREVIEW_CREW_OAUTH, PREVIEW_CREW_REPLY_STATUS, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_KAS_SUBAGENTS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_VISUAL_REFRESH, PREVIEW_WEBHOOKS, PREVIEW_WIDGETS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { DecisionsCard } from './DecisionsCard'
 import { RemoteDispatchCard } from './RemoteDispatchCard'
@@ -125,6 +125,7 @@ function webhooksIntro(): FeaturePreviewIntro {
 function previewFlagLabel(flag: string): string {
   switch (flag) {
     case PREVIEW_ARTIFACT_DEPLOY: return i18nT('pages.developer.featurePreviewsTab.artifact_deploy')
+    case PREVIEW_BOT_CHAT_APP_TOOLS: return i18nT('pages.developer.featurePreviewsTab.bot_chat_app_tools')
     case PREVIEW_WEBHOOKS: return i18nT('pages.developer.featurePreviewsTab.webhooks')
     case PREVIEW_EXPLORE: return i18nT('pages.developer.featurePreviewsTab.explore')
     case PREVIEW_CREW_OAUTH: return i18nT('pages.developer.featurePreviewsTab.crew_oauth')
@@ -134,7 +135,10 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_DASHBOARD_STALE_WAKE: return i18nT('pages.developer.featurePreviewsTab.dashboard_stale_wake')
     case PREVIEW_BRIDGE_APPROVALS: return i18nT('pages.developer.featurePreviewsTab.bridge_approvals')
     case PREVIEW_CHAT_RUNTIME_SHARING: return i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing')
+    case PREVIEW_KAS_SUBAGENTS: return i18nT('pages.developer.featurePreviewsTab.kas_subagents')
     case PREVIEW_WORKER_GRILL: return i18nT('pages.developer.featurePreviewsTab.worker_grill')
+    case PREVIEW_CREW_REPLY_STATUS: return i18nT('pages.developer.featurePreviewsTab.crew_reply_status')
+    case PREVIEW_CREW_CLIENT: return i18nT('pages.developer.featurePreviewsTab.crew_client')
     case PREVIEW_APP_BROWSER_SDK: return i18nT('pages.developer.featurePreviewsTab.app_browser_sdk')
     case PREVIEW_WIDGETS: return i18nT('pages.developer.featurePreviewsTab.widgets')
     case PREVIEW_SESSION_ENVIRONMENTS: return i18nT('sessionEnvironments.title')
@@ -196,12 +200,24 @@ export function FeaturePreviewsSection() {
   const dashboardStaleWake = usePreviewFlag(PREVIEW_DASHBOARD_STALE_WAKE)
   const bridgeApprovals = usePreviewFlag(PREVIEW_BRIDGE_APPROVALS)
   const chatRuntimeSharing = usePreviewFlag(PREVIEW_CHAT_RUNTIME_SHARING)
+  const kasSubagents = usePreviewFlag(PREVIEW_KAS_SUBAGENTS)
   const workerGrill = usePreviewFlag(PREVIEW_WORKER_GRILL)
+  const crewReplyStatus = usePreviewFlag(PREVIEW_CREW_REPLY_STATUS)
+  const crewClient = usePreviewFlag(PREVIEW_CREW_CLIENT)
+  // Kiro Managed Environments needs sign-in values a plain install does not hold, so
+  // its row shows where the gateway says they are set (`managed_env_available`) OR
+  // the stored switch is already on: the gateway still offers the lane then, and
+  // this row is the only way to turn it off. Never under the LTS lock.
+  const managedEnvAvailable = useQuery<{ managed_env_available?: boolean }>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+  }).data?.managed_env_available === true
   const appBrowserSdk = usePreviewFlag(PREVIEW_APP_BROWSER_SDK)
   const widgets = usePreviewFlag(PREVIEW_WIDGETS)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   const sessionHarness = usePreviewFlag(PREVIEW_SESSION_HARNESS)
   const connectedComputers = usePreviewFlag(PREVIEW_CONNECTED_COMPUTERS)
+  const botChatAppTools = usePreviewFlag(PREVIEW_BOT_CHAT_APP_TOOLS)
   const explore = usePreviewFlag(PREVIEW_EXPLORE)
   const crewOauth = usePreviewFlag(PREVIEW_CREW_OAUTH)
   const visualRefresh = usePreviewFlag(PREVIEW_VISUAL_REFRESH)
@@ -390,6 +406,29 @@ export function FeaturePreviewsSection() {
             onChange={v => setPreviewFlag(PREVIEW_WORKER_GRILL, v)}
           />
         )}
+        {/* Worker status under the reply (`crew_reply_status`): dashboard-only.
+            NO ingress button: the line appears under a conductor's latest reply. */}
+        {!previewsOff && (
+          <SettingsToggle
+            label={i18nT('pages.developer.featurePreviewsTab.crew_reply_status')}
+            description={i18nT('pages.developer.featurePreviewsTab.crew_reply_status_desc_summary')}
+            hint={i18nT('pages.developer.featurePreviewsTab.crew_reply_status_desc')}
+            checked={crewReplyStatus}
+            onChange={v => setPreviewFlag(PREVIEW_CREW_REPLY_STATUS, v)}
+          />
+        )}
+        {/* Kiro Managed Environments (`crew_client`): a gateway switch read by the
+            launch lane and at each sign-in (`managed_env/`, `auth/login/endpoints.py`).
+            NO ingress button: the lane appears in the existing launch form. */}
+        {!previewsOff && (managedEnvAvailable || crewClient) && (
+          <SettingsToggle
+            label={i18nT('pages.developer.featurePreviewsTab.crew_client')}
+            description={i18nT('pages.developer.featurePreviewsTab.crew_client_desc_summary')}
+            hint={i18nT('pages.developer.featurePreviewsTab.crew_client_desc')}
+            checked={crewClient}
+            onChange={v => setPreviewFlag(PREVIEW_CREW_CLIENT, v)}
+          />
+        )}
         {/* Reply threads on Bot chat messages (`dashboard.crewmate_threads`): a
             server setting, not a preview flag, so the LTS lock leaves it. Its own
             file because it owns its config read, write and their notices. */}
@@ -526,6 +565,31 @@ export function FeaturePreviewsSection() {
             {chatRuntimeSharing && <ChatRuntimeSharingHarnessRows />}
           </div>
         )}
+        {/* KAS sub-agents (`kas_subagents`): a gateway switch read at each KAS
+            session start (`acp/kas_engine_subagents.kas_subagents_preview_on`). A
+            title, one line and the switch, with the row's info tip: NO ingress
+            button and NO intro, since the change shows only inside a chat's replies. */}
+        {!previewsOff && (
+          <SettingsToggle
+            label={i18nT('pages.developer.featurePreviewsTab.kas_subagents')}
+            description={i18nT('pages.developer.featurePreviewsTab.kas_subagents_desc_summary')}
+            hint={i18nT('pages.developer.featurePreviewsTab.kas_subagents_desc')}
+            checked={kasSubagents}
+            onChange={v => setPreviewFlag(PREVIEW_KAS_SUBAGENTS, v)}
+          />
+        )}
+        {/* App tools in a Bot's chat (`bot_chat_app_tools`): a gateway switch read at
+            each Bot chat's session start (`kiro_crew.bot_chat_app_tools.preview_on`).
+            NO ingress button: the per-app part lives on the app's own page. */}
+        {!previewsOff && (
+          <SettingsToggle
+            label={i18nT('pages.developer.featurePreviewsTab.bot_chat_app_tools')}
+            description={i18nT('pages.developer.featurePreviewsTab.bot_chat_app_tools_desc_summary')}
+            hint={i18nT('pages.developer.featurePreviewsTab.bot_chat_app_tools_desc')}
+            checked={botChatAppTools}
+            onChange={v => setPreviewFlag(PREVIEW_BOT_CHAT_APP_TOOLS, v)}
+          />
+        )}
         {/* Connected computers (`connected_computers`): read by this gateway's
             backend too (`kiro_crew.connected_computers.flag`): off refuses sharing,
             connects and starts, and ends live connections. */}
@@ -637,10 +701,9 @@ export function FeaturePreviewsSection() {
             writes the KEYSTONE `decisions_consent.json`, not a config path. It lives in
             `DecisionsCard.tsx` because it is a list and a detail rather than one row,
             and that file's own doc comment carries why. */}
-        {/* Mounted SYNCHRONOUSLY. Settings search highlights a control by probing the
-            DOM for it and gives up after 100 ms, so a card behind a chunk boundary was a
-            deep link that rang nothing. The card's own per-point detail panel is the part
-            that is lazy -- see `DecisionsCard.tsx`. */}
+        {/* Mounted SYNCHRONOUSLY, so a settings search deep link finds its rows as soon
+            as the tab opens rather than once a chunk arrives. The card's own per-point
+            detail panel is the part that is lazy -- see `DecisionsCard.tsx`. */}
         <DecisionsCard />
       </PreviewGroup>
     </div>

@@ -139,9 +139,10 @@ and — because every Kiro Crew server lives behind one package — a
 derives `uvx <identifier> <packageArguments>`, so an entry without the argument
 launches `uvx kirocrew` with no subcommand, which prints CLI help instead of
 speaking MCP and fails the handshake. Kiro Crew releases are not published to
-the public Python Package Index; the `pypi` example below therefore launches
-only once `uvx` is pointed at an index that hosts the matching `kirocrew` wheel,
-as the steps after it show:
+the public Python Package Index, and a different project named `kirocrew` is
+there; the `pypi` example below therefore launches Kiro Crew only once `uvx` is
+pointed at an index that hosts the matching `kirocrew` wheel, as the steps
+after it show:
 
 ```json
 {
@@ -295,17 +296,18 @@ as the steps after it show:
 
 Set `version` to the Kiro Crew version your fleet runs.
 
-> **Without that index, the servers are accepted but do not start.**
-> `kiro-cli mcp list` shows each entry, kiro-cli starts it as
-> `uvx kirocrew@<version> <subcommand>`, and `uvx` fails with
-> `kirocrew was not found in the package registry`, so the session has none of
-> the Kiro Crew tools those entries serve.
+> **Without that index, `uvx` looks for `kirocrew` on public PyPI.**
+> `kiro-cli mcp list` shows each entry, and kiro-cli starts it as
+> `uvx kirocrew@<version> <subcommand>`. Kiro Crew is not on PyPI, and a
+> different project named `kirocrew` is, so `uvx` does not get Kiro Crew and the
+> session has none of the Kiro Crew tools those entries serve. Configure the
+> index on every client machine before you publish these entries.
 
 Point `uvx` at the index through uv's own configuration on every client
 machine, for example in the user's `uv.toml` (`~/.config/uv/uv.toml` on macOS
 and Linux, `%APPDATA%\uv\uv.toml` on Windows). Kiro Crew's release CDN serves
-one index per release channel, and each version is listed only on the channel
-that released it (see
+one index per release channel, and each version is listed on the channel that
+released it (the insider index also lists stable releases; see
 [Installing a published wheel with pip](install.md#installing-a-published-wheel-with-pip)),
 so clients that can reach the CDN can put that index directly in `url`. Pick
 the channel in the URL by your fleet's version: `stable` (as below) for a

@@ -26,7 +26,6 @@ if TYPE_CHECKING:
         _GATE_TIER_KINDS,
         _HOST_SEARCH_BUILTIN_TOOLS,
         _READ_ONLY_TOOL_KINDS,
-        KIRO_TOOL_ALIASES,
         GateRule,
         GateTier,
         HookManager,
@@ -52,6 +51,7 @@ if TYPE_CHECKING:
         _search_deny_target,
         _tool_matches,
         audit_bash_exfiltration,
+        builtin_names,
         command_invokes_git,
         current_context,
         deepseek_policy_alias,
@@ -128,8 +128,8 @@ class GateFacts:
         #: hook held (``ToolCall.spec_hook_held``); no deny tier consults it.
         self.pre_tool_hooks_fire = pre_tool_hooks_fire
         #: Why this call will ask when no row decides it, for the person who
-        #: answers the prompt. Set only by :func:`grant_spec_builtin`; the gate's
-        #: fall-through ``allow`` carries it as its reason. Never read to decide.
+        #: answers the prompt. Set by :func:`grant_spec_builtin` and the parent-limits
+        #: row; the fall-through ``allow`` carries it as its reason. Never read to decide.
         self.ask_note = ""
         self._memo: dict[str, Any] = {}
 
@@ -605,11 +605,12 @@ def _rule_sensitive_path(facts: GateFacts, target: str) -> str | None:
     tool, not a file, so resolving it as a path is a category error that under a
     resolver stall refused the call fail-closed with a "Path:" wording naming no
     path. Only an exact verified-identity match is spared; any other title, and
-    every argument, stays gated.
+    every argument, stays gated. A proven fetch's URL title is spared too (``names_fetch_url``).
     """
     return (
         sensitive_path_refusal(target)
         if target not in (facts.exempt_command, facts.exempt_identity)
+        and not (target == facts.judged_normalized and facts.call.names_fetch_url(target))
         else None
     )
 
@@ -1160,6 +1161,9 @@ def _operator_confirms(facts: GateFacts, grant_targets: tuple[str, ...]) -> bool
     if patterns:
         call = facts.call
         targets = [*grant_targets, call.title, facts.normalized]
+        if not call.mcp_server and call.mcp_tool:
+            # A built-in answers to its aliases too (``run_command`` -> ``execute_bash``).
+            targets += builtin_names(call.mcp_tool)
         if call.mcp_server:
             tool_ref = mcp_identity_ref(call.mcp_server, call.mcp_tool)
             targets += [tool_ref, f"Running: {tool_ref}", mcp_identity_ref(call.mcp_server, "")]
@@ -1249,22 +1253,8 @@ def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
 
 
 def _spec_builtin_names(call: ToolCall) -> tuple[str, ...]:
-    """Every name a KAS built-in call answers to on the grant plane.
-
-    Its stamped id, kiro-cli's spelling of that id (``shell`` -> ``execute_bash``),
-    the kiro-cli policy names that are the SAME work (``read_file`` -> ``fs_read``),
-    and for a shell call both of KAS's shell tools. A deny-only alias is left out: ``delete_file`` is governed under
-    ``fs_write`` but a ``fs_write`` grant never mounted it, so it never approves it.
-    """
-    raw = call.mcp_tool
-    names = [raw, KIRO_TOOL_ALIASES.get(raw, raw)]
-    may_admit, _deny_only = policy_alias_split(raw)
-    names.extend(may_admit)
-    if "execute_bash" in names:
-        # KAS's one built-in alias pair: both shell tools reach the permission
-        # frame as ``run_command``, so a grant of either names this call.
-        names.append("execute_pwsh")
-    return tuple(dict.fromkeys(n for n in names if n))
+    """Every name a KAS built-in call answers to on the grant plane (``tool_names.builtin_names``)."""
+    return builtin_names(call.mcp_tool)
 
 
 def _spec_command_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
@@ -1372,8 +1362,8 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
     Crew cannot read, which matches nothing and which the refusal names) on their
     own agent's permission requests
     (``AcpEvent.spec_shell_allowlist``; ``None`` when the spec does not set it, a
-    sub-session's or native KAS sub-agent's request carries ``None`` too, a native
-    claude sub-agent's the parent's), and this row
+    sub-session's request carries ``None`` too, a native KAS or claude
+    sub-agent's the parent's), and this row
     refuses a shell call (kiro-cli's ``execute_bash`` among its names, no MCP
     server behind it) unless its recovered command passes the same match the
     ``spec-builtin-grant`` row grants by (:func:`_spec_command_granted`: plain, or
@@ -1398,7 +1388,7 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
         return None
     if _spec_command_composed(call, ("execute_bash",), allowlist):
         return ToolHookResult.deny_policy(
-            "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
+            "Blocked by this agent's spec: its shell settings set denyByDefault "
             "and this command matches allowedCommands, but a chain (&&, ||, ;, |) matches only "
             "when every command in it does and it holds no quote, backslash, non-ASCII "
             "character or --%, and $(), backticks or a redirect before the command never "
@@ -1410,7 +1400,7 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
     # The projection carries each entry Kiro Crew cannot read; it matched nothing
     # above, and naming it is all an unattended run's record can show of it.
     return ToolHookResult.deny_policy(
-        "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
+        "Blocked by this agent's spec: its shell settings set denyByDefault "
         "and the command matches none of its allowedCommands"
         + allowed_commands.unreadable_note(tuple(allowlist))
     )
@@ -1508,8 +1498,8 @@ def _tier_spec_write_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
     cover, instead of asking. KAS and claude have no rule for it, so the KAS session
     handle and the claude direct client stamp the spec's usable entries, anchored
     at the session's directory, on their own agent's permission requests (``AcpEvent.spec_write_allowlist``; ``None`` when
-    the spec does not set it, and on a sub-session's or native KAS sub-agent's
-    request; a native claude sub-agent's carries the parent's), and this row refuses a file write (:func:`_is_spec_write_call`, no
+    the spec does not set it, and on a sub-session's request; a native KAS or
+    claude sub-agent's carries the parent's), and this row refuses a file write (:func:`_is_spec_write_call`, no
     MCP server behind it) unless every target it names is covered
     (:func:`_write_target_uncovered`, matched by
     :mod:`kiro_crew.platform.allowed_paths`). A write whose targets cannot all be
@@ -1524,7 +1514,7 @@ def _tier_spec_write_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
     allowlist = call.spec_write_allowlist
     if allowlist is None or call.mcp_server or not _is_spec_write_call(call):
         return None
-    prefix = "Blocked by this agent's spec: toolsSettings.fs_write.fallbackAction is deny and "
+    prefix = "Blocked by this agent's spec: its write settings set fallbackAction to deny and "
     candidates = edit_target_candidates(call.raw_params, call.diff_path, tool_kind=call.kind)
     if candidates.truncated or candidates.unanchored or not candidates:
         return ToolHookResult.deny_policy(prefix + "the write's target path could not be read")
@@ -1551,8 +1541,9 @@ def _tier_spec_unjudged_denies(facts: GateFacts, tier: GateTier) -> ToolHookResu
 
     The KAS projection records them for a Bot's worker only
     (``kas_spec_denies.with_unjudged_denies``), and the session handle stamps them
-    on its own agent's requests (``AcpEvent.spec_unjudged_denies``; empty on every
-    other session and on a sub-agent's request). A worker runs under its Bot's
+    on its own agent's requests and a native KAS sub-agent's
+    (``AcpEvent.spec_unjudged_denies``; empty on every other session and on a
+    sub-session's request). A worker runs under its Bot's
     Permissions, and under Trust an ask is answered for the person, so an entry
     nobody can check must not reach an ask: this row refuses a shell call (kiro-cli's
     ``execute_bash`` among its names, no MCP server behind it) unless its recovered

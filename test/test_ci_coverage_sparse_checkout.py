@@ -6,9 +6,9 @@ make that hold, and both are pinned here:
 
 * Coverage Combine: ``coverage xml`` and ``coverage report`` stop with "No
   source for code" on a measured file that is not on disk, unless errors are
-  ignored. So the report commands must not ignore errors, and every root a shard
+  ignored. So nothing in the step may ignore errors, and every root a shard
   measures (each ``--cov`` target, each ``[coverage:paths]`` canonical root)
-  must be inside the sparse list.
+  must be inside the sparse list, with the script that runs the two commands.
 * Coverage Gate: a path the job runs or reads that is missing from the list
   either exits non-zero (the script) or reads as an empty baseline, which is
   the strictest one. So every repository path its steps name, and every module
@@ -140,10 +140,10 @@ def _hashed_paths(job: str) -> list[str]:
     return [entry for entry in entries if not set("*?[") & set(entry)]
 
 
-def _gate_paths() -> set[str]:
-    """Every ``scripts/`` or ``.github/`` path the gate's run steps name."""
+def _named_paths(job: str) -> set[str]:
+    """Every ``scripts/`` or ``.github/`` path the job's run steps name."""
     pattern = r"(?<![\w./-])((?:scripts|\.github)/[\w./-]+)"
-    return set(re.findall(pattern, _run_text("coverage-gate")))
+    return set(re.findall(pattern, _run_text(job)))
 
 
 @pytest.mark.parametrize("job", SPARSE_JOBS)
@@ -199,30 +199,32 @@ def test_combine_holds_the_coverage_configuration() -> None:
 
 def test_combine_reports_a_missing_source_file_as_an_error() -> None:
     run = _run_text("coverage-combine")
-    commands = [line.split() for line in run.splitlines() if line.strip().startswith("coverage ")]
-    operations = [command[1] for command in commands]
-    assert {"combine", "xml", "report"} <= set(operations)
-    reports = [i for i, operation in enumerate(operations) if operation != "combine"]
-    assert operations.index("combine") < min(reports)
-    for command in commands:
+    code = [line.split() for line in run.splitlines() if not line.lstrip().startswith("#")]
+    for command in code:
         assert not {"-i", "--ignore-errors"} & set(command), " ".join(command)
     assert not _coverage_config().has_option("coverage:report", "ignore_errors")
+    scripts = [path for path in _named_paths("coverage-combine") if path.endswith(".py")]
+    assert scripts, "the combine step runs no report script; this test measures nothing"
+    combine = run.index("coverage combine")
+    assert all(combine < run.index(script) for script in scripts)
     guard = re.search(r"(?:test|\[)\s+-[efs]\s+setup\.cfg\b", run)
-    assert guard and guard.start() < run.index("coverage combine")
+    assert guard and guard.start() < combine
 
 
-def test_gate_holds_every_repository_path_its_steps_name() -> None:
-    patterns = _patterns("coverage-gate")
-    named = _gate_paths()
-    assert named, "the gate names no repository path; this test measures nothing"
+@pytest.mark.parametrize("job", SPARSE_JOBS)
+def test_the_checkout_holds_every_repository_path_the_steps_name(job: str) -> None:
+    patterns = _patterns(job)
+    named = _named_paths(job)
+    assert named, f"{job} names no repository path; this test measures nothing"
     assert {path for path in named if not _covers(patterns, path)} == set()
     assert {path for path in named if not (ROOT / path).is_file()} == set()
 
 
-def test_gate_holds_every_module_its_scripts_import_from_the_tree() -> None:
-    patterns = _patterns("coverage-gate")
-    scripts = {path for path in _gate_paths() if path.endswith(".py")}
-    assert scripts, "the gate runs no script; this test measures nothing"
+@pytest.mark.parametrize("job", SPARSE_JOBS)
+def test_the_checkout_holds_every_module_its_scripts_import_from_the_tree(job: str) -> None:
+    patterns = _patterns(job)
+    scripts = {path for path in _named_paths(job) if path.endswith(".py")}
+    assert scripts, f"{job} runs no script; this test measures nothing"
     imported = {path for script in scripts for path in _local_imports(script)}
     assert {path for path in imported if not _covers(patterns, path)} == set()
 

@@ -2,12 +2,13 @@ import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-q
 import { Undo2, Archive } from 'lucide-react'
 import { api } from '../../api/client'
 import { sliceCodePoints } from '../../utils/codePoints'
-import { Card, CardTitle, Btn, Badge, EmptyState } from '../../components/ui'
-import { fmtNumber, fmtDateTimeNumeric } from '../../i18n/format'
+import { Card, CardTitle, Btn, EmptyState } from '../../components/ui'
+import { fmtNumber, fmtDateTimeNumeric, fmtDate } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
-import { MemoryScopeNotice, memoryQueryRetry } from './MemoryStoreCard'
+import { MEMORY_QUERY_PREFIXES, MemoryScopeNotice, memoryQueryRetry } from './MemoryStoreCard'
 import { queryReadFailed } from '../../utils/queryReadFailed'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
+import { MemoryRowList, fieldValue, useMemoryRowLayout } from './memoryPage/MemoryRowList'
 
 /**
  * Episodes a semantic write superseded, with a way to put one back.
@@ -28,6 +29,7 @@ const TEXT_PREVIEW_CHARS = 240
 
 export default function MemoryRetiredCard({ store }: { store: string; privateMemory?: boolean }) {
   const queryClient = useQueryClient()
+  const [measure, list] = useMemoryRowLayout()
   const [attachScroller, edges, , attachTable] = useScrollEdges<HTMLDivElement>()
   const retired = useInfiniteQuery({
     queryKey: ['memory-retired', store],
@@ -41,14 +43,14 @@ export default function MemoryRetiredCard({ store }: { store: string; privateMem
     onSuccess: () => {
       // The row leaves this list and rejoins the live episodes, so the store's
       // counts move too.
-      queryClient.invalidateQueries({ queryKey: ['memory-retired', store] })
-      queryClient.invalidateQueries({ queryKey: ['memory-stores'] })
-      queryClient.invalidateQueries({ queryKey: ['member-memory', store || 'default'] })
-      queryClient.invalidateQueries({ queryKey: ['memory-records', store || 'default'] })
+      for (const prefix of MEMORY_QUERY_PREFIXES) void queryClient.invalidateQueries({ queryKey: prefix })
     },
   })
 
   const rows = retired.data?.pages.flatMap(page => page.retired) ?? []
+  // The global (V1) store records no superseding key for what it retires; only a
+  // bot's V2 store does. A column that would be blank on every row is left out.
+  const showReplacedBy = rows.some(row => row.superseded_by)
   // With no rows the table holds nothing focusable, so while it hides columns
   // its scroller is the named Tab stop; a row brings its own Restore button.
   const emptyClipped = (edges.left || edges.right) && rows.length === 0
@@ -59,11 +61,27 @@ export default function MemoryRetiredCard({ store }: { store: string; privateMem
       <p className="text-[12px] leading-relaxed text-muted mb-2">
         {i18nT('memoryV2.replaced_experiences_hint')}
       </p>
+      {/* Under the title and hint, so a grouped Settings frame still lifts both out of the box. */}
+      <div ref={measure}>
       <MemoryScopeNotice error={retired.error} />
       {queryReadFailed(retired) && store && <Btn className="mb-3 min-h-11 aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={retired.isFetching || undefined} onClick={() => { if (!retired.isFetching) void retired.refetch() }}>{i18nT('memoryV2.retry_read')}</Btn>}
       {restore.error && <MemoryScopeNotice error={restore.error} />}
       {retired.isPending && <p role="status" className="text-[13px] text-muted">{i18nT('pages.overview.memoryTab.loading')}</p>}
-      {!retired.error && !retired.isPending && (
+      {!retired.error && !retired.isPending && list && (rows.length === 0
+        ? <EmptyState icon={<Archive className="lucide-inline" />} title={i18nT('memoryV2.no_replaced_experiences')} subtitle={i18nT('memoryV2.replaced_experience_empty_hint')} />
+        // A phone or a narrow card reads a list: the memory, Restore, then one line of what is known.
+        : <MemoryRowList rows={rows.map(row => ({
+          id: row.id,
+          title: <>{sliceCodePoints(row.text, 0, TEXT_PREVIEW_CHARS)}{row.text.length > TEXT_PREVIEW_CHARS && <span className="text-muted">…</span>}</>,
+          body: row.text.length > TEXT_PREVIEW_CHARS && <details><summary className="cursor-pointer text-[13px] text-muted">{i18nT('memoryV2.view_details')}</summary><p className="mt-2 whitespace-pre-wrap break-words text-sm">{row.text}</p></details>,
+          action: { label: i18nT('memoryV2.restore_experience'), icon: Undo2, disabled: restore.isPending, onClick: () => restore.mutate(row.id) },
+          meta: [
+            row.ts && <time key="at" dateTime={row.ts} title={fmtDateTimeNumeric(row.ts)}>{i18nT('memoryPage.replaced_on', { date: fmtDate(row.ts) })}</time>,
+            row.superseded_by && fieldValue(i18nT('memoryV2.replaced_by'), row.superseded_by),
+            fieldValue(i18nT('memoryV2.times_replaced'), fmtNumber(row.retired_times ?? 1)),
+          ],
+        }))} />)}
+      {!retired.error && !retired.isPending && !list && (
         <div
           ref={attachScroller}
           className="overflow-x-auto"
@@ -71,20 +89,20 @@ export default function MemoryRetiredCard({ store }: { store: string; privateMem
           tabIndex={emptyClipped ? 0 : undefined}
           role={emptyClipped ? 'region' : undefined}
           aria-label={emptyClipped ? i18nT('memoryV2.replaced_experiences') : undefined}
-        ><table ref={attachTable} className="w-full border-collapse table-striped">
+        ><table ref={attachTable} className="w-full table-fixed border-collapse table-striped">
           <thead>
             <tr>
               <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.memoryRetiredCard.memory')}</th>
-              <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('memoryV2.replaced_by')}</th>
-              <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('memoryV2.times_replaced')}</th>
-              <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('memoryV2.replaced_at')}</th>
-              <th aria-label={i18nT('pages.overview.memoryRetiredCard.actions')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th>
+              {showReplacedBy && <th className="w-[18%] text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('memoryV2.replaced_by')}</th>}
+              <th className="w-20 text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('memoryV2.times_replaced')}</th>
+              <th className="w-28 text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('memoryV2.replaced_at')}</th>
+              <th aria-label={i18nT('pages.overview.memoryRetiredCard.actions')} className="w-44 text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={5}>
+                <td colSpan={showReplacedBy ? 5 : 4}>
                   <EmptyState
                     icon={<Archive className="lucide-inline" />}
                     title={i18nT('memoryV2.no_replaced_experiences')}
@@ -101,26 +119,21 @@ export default function MemoryRetiredCard({ store }: { store: string; privateMem
                   {sliceCodePoints(row.text, 0, TEXT_PREVIEW_CHARS)}
                   {row.text.length > TEXT_PREVIEW_CHARS && <><span className="text-muted">…</span><details className="mt-2"><summary className="cursor-pointer text-muted">{i18nT('memoryV2.view_details')}</summary><p className="mt-2 whitespace-pre-wrap break-words">{row.text}</p></details></>}
                 </td>
-                <td className="px-2.5 py-2 border-b border-border text-sm">
-                  {row.superseded_by
-                    ? row.superseded_by
-                    : <span className="text-muted">{i18nT('pages.overview.memoryRetiredCard.not_recorded')}</span>}
-                </td>
+                {showReplacedBy && <td className="px-2.5 py-2 border-b border-border text-sm break-words [overflow-wrap:anywhere]">
+                  {row.superseded_by}
+                </td>}
                 {/* Retirements, not rows: the event log is append-only, so an
                     episode retired, restored and retired again counts more than
                     once here while still being one row. */}
                 <td className="px-2.5 py-2 border-b border-border text-sm">
-                  {(row.retired_times ?? 0) > 1
-                    ? <Badge variant="warn">{fmtNumber(row.retired_times ?? 0)}</Badge>
-                    : fmtNumber(row.retired_times ?? 1)}
+                  {fmtNumber(row.retired_times ?? 1)}
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">
-                  {row.ts
-                    ? fmtDateTimeNumeric(row.ts)
-                    : <span className="text-muted">{i18nT('pages.overview.memoryRetiredCard.unknown')}</span>}
+                  {row.ts && <time className="whitespace-nowrap" dateTime={row.ts} title={fmtDateTimeNumeric(row.ts)}>{fmtDate(row.ts)}</time>}
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">
                   <Btn
+                    className="whitespace-nowrap"
                     disabled={restore.isPending}
                     onClick={() => restore.mutate(row.id)}
                   >
@@ -133,6 +146,7 @@ export default function MemoryRetiredCard({ store }: { store: string; privateMem
         </table></div>
       )}
       {retired.hasNextPage && <Btn className="mt-3 min-h-11 aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={retired.isFetchingNextPage || undefined} onClick={() => { if (!retired.isFetchingNextPage) void retired.fetchNextPage() }}>{i18nT('memoryV2.show_more')}</Btn>}
+      </div>
     </Card>
   )
 }

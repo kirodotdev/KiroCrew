@@ -232,6 +232,9 @@ async def _judge_results(
         criteria = scenario.judge_criteria or scenario.description
         for sr in result.sessions:
             for tr in sr.turns:
+                if tr.error:
+                    # Its assertions already failed with the turn; there is no reply to judge.
+                    continue
                 for idx, (a, _) in enumerate(tr.assertion_results):
                     if a.type == AssertionType.JUDGE:
                         try:
@@ -258,8 +261,10 @@ async def _judge_results(
 async def _run_eval(args: argparse.Namespace) -> None:
     """Run multi-session evaluation scenarios.
 
-    Exits 1 when a scenario name is unknown (nothing runs) or when any scenario
-    fails (after the report is written); returns normally when every one passes.
+    Exits 1 when a scenario name is unknown (nothing runs), when a session refuses
+    the ``--model`` at start (nothing is scored or saved), or when any scenario
+    fails or checks nothing (after the report is written); returns normally when
+    every one passes.
     """
 
     scenarios = await asyncio.to_thread(_load_eval_scenarios, args)
@@ -288,18 +293,32 @@ async def _run_eval(args: argparse.Namespace) -> None:
     provider_factory = build_provider_factory(config)
 
     provider_kwargs = await _eval_provider_kwargs(args, config)
+    # Imported here, not at the top: ``kiro_crew.cli_commands`` serves this module's
+    # module-level names, and it may serve only names an owner defines.
+    from kiro_crew.config.loader import DEFAULT_MODEL
+    from kiro_crew.eval.runner import ModelNotOffered
+
+    # ``auto`` pins nothing: a default the session inherits and the backend refuses
+    # was not asked for, so only a named model is judged.
+    model = (getattr(args, "model", None) or "").strip()
     runner = EvalRunner(
         provider_factory=provider_factory,
         judge_enabled=getattr(args, "judge", False),
         provider_kwargs=provider_kwargs,
         # The gate judges each call as the agent the sessions run as, as chat does.
         gate_agent=str(provider_kwargs.get("crew_agent") or provider_kwargs.get("agent") or ""),
+        requested_model="" if model == DEFAULT_MODEL else model,
     )
     rounds: list[list[ScenarioResult]] = []
-    for run_index in range(1, repeat + 1):
-        if repeat > 1:
-            print(f"Run {run_index}/{repeat}")
-        rounds.append(await runner.run_scenarios(scenarios))
+    try:
+        for run_index in range(1, repeat + 1):
+            if repeat > 1:
+                print(f"Run {run_index}/{repeat}")
+            rounds.append(await runner.run_scenarios(scenarios))
+    except ModelNotOffered as exc:
+        # Nothing is scored or saved: the results would name a model that never ran.
+        print(f"Error: {safe_terminal_line(str(exc))}", file=sys.stderr)
+        sys.exit(1)
 
     # LLM Judge scoring
     if getattr(args, "judge", False):
@@ -336,7 +355,9 @@ async def _run_eval(args: argparse.Namespace) -> None:
             )
 
     overall = sum(1 for r in results if r.passed)
-    print(f"\nOverall: {overall}/{len(results)} scenarios passed")
+    from kiro_crew.eval.runner import not_evaluated_note
+
+    print(f"\nOverall: {overall}/{len(results)} scenarios passed{not_evaluated_note(results)}")
 
     # Save results
     results_dir = Path.cwd() / "eval_results"
@@ -372,14 +393,14 @@ async def _run_eval(args: argparse.Namespace) -> None:
             baseline.print_comparison(found, gate.max_drop)
             reasons = found.reasons
             # The gate only adds: a regression fails the run, and so does every failure.
-            failed_run = failed_run or bool(found.regressions)
+            failed_run = failed_run or bool(found.regressions or found.not_evaluated)
         if junit_path:
             await asyncio.to_thread(baseline.write_junit, junit_path, rows, reasons)
 
     if failed_run:
-        # A failed scenario, or a score below the baseline when one is given, must fail
-        # the command, so `kirocrew eval && next` stops and a script can gate on it.
-        # The report is already on disk.
+        # A failed or not evaluated scenario, or a score below the baseline when one is
+        # given, must fail the command, so `kirocrew eval && next` stops and a script
+        # can gate on it. The report is already on disk.
         sys.exit(1)
 
 

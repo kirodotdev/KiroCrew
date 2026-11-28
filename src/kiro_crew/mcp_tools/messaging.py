@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -372,7 +373,7 @@ def dismiss_notification(name: str, args: dict[str, Any]) -> str:
 def delete_message(name: str, args: dict[str, Any]) -> str:
     channel = args.get("channel", "")
     msg_ts = args.get("ts", "")
-    if len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel):
+    if len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.fullmatch(channel):
         mcp_core.sel().log_tool_invocation(
             session_key=mcp_core._resolve_session_key(),
             source="mcp",
@@ -380,7 +381,7 @@ def delete_message(name: str, args: dict[str, Any]) -> str:
             outcome="error",
         )
         return "Error: invalid channel ID format."
-    if not _SLACK_TS_RE.match(msg_ts):
+    if not _SLACK_TS_RE.fullmatch(msg_ts):
         mcp_core.sel().log_tool_invocation(
             session_key=mcp_core._resolve_session_key(),
             source="mcp",
@@ -433,10 +434,10 @@ def update_message(name: str, args: dict[str, Any]) -> str:
             outcome=outcome,
         )
 
-    if not CHANNEL_ID_RE.match(channel):
+    if not CHANNEL_ID_RE.fullmatch(channel):
         _audit("error")
         return "Error: invalid channel ID format."
-    if not _SLACK_TS_RE.match(msg_ts):
+    if not _SLACK_TS_RE.fullmatch(msg_ts):
         _audit("error")
         return "Error: invalid message timestamp format."
     if not text and not blocks:
@@ -563,7 +564,7 @@ def _describe_channel_skip(reason: str) -> str:
 
     ``channel_upload_unsupported`` gets no remedy either, for the neighbouring
     reason: it fires for any channel with no document verb wired, and that set
-    spans both capabilities. Discord and Feishu (in a DM) would honour an inline
+    spans both capabilities. Teams, Webex and WhatsApp would honour an inline
     reference (``files_outbound=True``) but Weixin and iMessage declare
     ``files_outbound=False``, so their renderers leave the reference in the text
     as literal markup. The reason string cannot tell those cases apart, and
@@ -816,6 +817,12 @@ def file_send(name: str, args: dict[str, Any]) -> str:
             "thread_ts": thread_ts,
             "channel": args.get("channel", ""),
             "description": desc,
+            # Where the outbox copy came from. Only the caller's own code channel
+            # reads it: there the file must come from the session's work dir, and
+            # the endpoint checks this path and its bytes itself.
+            # Anchored, not normalized: collapsing ``..`` lexically would name a
+            # different file than the one read when a component is a link.
+            "source_path": str(Path(os.path.expanduser(src)).absolute()),
         }
         slack_resp = mcp_core._post("/api/slack/upload-file", slack_body)
         slack_caption_note = ""

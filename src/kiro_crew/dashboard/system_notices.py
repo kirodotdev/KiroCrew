@@ -18,6 +18,7 @@ from kiro_crew.constants import (
     SUBAGENT_COMPLETION_META_KEY,
     SUBAGENT_COMPLETION_PREFIX,
 )
+from kiro_crew.messaging.alternation_echo import is_stored_echo_row
 from kiro_crew.preview_text import drop_format_chars
 
 SESSION_RELOAD_KIND = "session_reload"
@@ -215,7 +216,7 @@ def is_subagent_completion_row(content: object, meta: object) -> bool:
 SPEECH_ROLES: frozenset[str] = frozenset({"user", "assistant"})
 
 
-def is_speech_row(role: object, content: object, meta: object) -> bool:
+def is_speech_row(role: object, content: object, meta: object, *, variants: object = None) -> bool:
     """True for a row that is speech: a user or assistant row with visible text
     that is neither a system notice, nor a sub-agent completion envelope, nor
     -- under the assistant role only -- a well-formed workflow-completion
@@ -228,6 +229,9 @@ def is_speech_row(role: object, content: object, meta: object) -> bool:
     roster preview reads it so the row beside the chat quotes what the chat
     shows -- a compaction summary or a workflow envelope would otherwise
     overwrite the last thing the member said while the chat hides it.
+
+    *variants* are the row's own: a placeholder an older Regenerate kept with
+    variants stays speech, as the chat draws it.
     """
     if role not in SPEECH_ROLES:
         return False
@@ -243,6 +247,9 @@ def is_speech_row(role: object, content: object, meta: object) -> bool:
 
     visible = strip_steering_markers(content) if role == "assistant" else content
     if not drop_format_chars(visible).strip():
+        return False
+    # The backend's alternation placeholder, which the chat sends as the say-nothing reply.
+    if is_stored_echo_row({"role": role, "content": content, "meta": meta, "variants": variants}):
         return False
     if is_subagent_completion_row(content, meta):
         return False

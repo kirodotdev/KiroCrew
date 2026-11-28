@@ -49,6 +49,31 @@ function shown(value: unknown): string {
   return String(value)
 }
 
+/** How many items of a list value the "Current:" line shows before "Show all". */
+export const CURRENT_PREVIEW_ITEMS = 5
+
+/** The "Current:" line. A long list shows its first items and a toggle for the
+ *  rest, and every value wraps anywhere, so a long value never squeezes the
+ *  row's label column. */
+function CurrentValue({ value, size }: { value: unknown; size: 'sm' | 'md' }) {
+  const [open, setOpen] = useState(false)
+  const items = Array.isArray(value) ? value : null
+  const long = items !== null && items.length > CURRENT_PREVIEW_ITEMS
+  const text = long && !open ? items.slice(0, CURRENT_PREVIEW_ITEMS).join(', ') : shown(value)
+  return (
+    <div className="flex flex-col gap-0.5 min-w-0 max-w-full @2xl:items-end">
+      <code data-current-value className={`${size === 'sm' ? 'text-[12px]' : 'text-[13px]'} font-mono text-muted [overflow-wrap:anywhere]`}>
+        {i18nT('settings.advanced.current_label', { value: text })}
+      </code>
+      {long && (
+        <button type="button" aria-expanded={open} className="self-start @2xl:self-auto text-[12px] text-accent hover:underline" onClick={() => setOpen(o => !o)}>
+          {open ? i18nT('settings.advanced.show_fewer_values') : i18nT('settings.advanced.show_all_values', { count: items.length })}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function sameValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
 }
@@ -73,7 +98,7 @@ function DraftInput({ value, numeric, label, onSave, disabled, invalid }: { valu
   return (
     <Input
       aria-label={label}
-      className={`w-full sm:w-48 font-mono ${invalid ? 'border-danger' : ''}`}
+      className={`w-full @2xl:w-48 font-mono ${invalid ? 'border-danger' : ''}`}
       aria-invalid={invalid || undefined}
       inputMode={numeric ? 'decimal' : undefined}
       value={draft}
@@ -96,7 +121,7 @@ function ListEditor({ value, label, onSave, disabled, invalid }: { value: unknow
     if (items.join('\n') !== initial) onSave(items)
   }
   return (
-    <div className="flex flex-col gap-1.5 w-full sm:w-64">
+    <div className="flex flex-col gap-1.5 w-full @2xl:w-64">
       <textarea
         aria-label={label}
         aria-invalid={invalid || undefined}
@@ -186,9 +211,9 @@ function SettingRow({ row, value }: { row: Row; value: unknown }) {
   const confirmReset = () => { if (busy) return; setConfirming(false); save.mutate({ unset: true }) }
   let control: React.ReactNode = null
   if (linked) control = (
-    <div className="flex flex-col gap-0.5 sm:items-end">
+    <div className="flex flex-col gap-0.5 min-w-0 max-w-full @2xl:items-end">
       <OwnControlLink rec={rec} />
-      <code className="text-[12px] font-mono text-muted break-all">{i18nT('settings.advanced.current_label', { value: shown(value) })}</code>
+      <CurrentValue value={value} size="sm" />
     </div>
   )
   else if (editable && rec.control === 'bool') control = <Toggle checked={value === true} onChange={send} disabled={busy} label={label} />
@@ -196,13 +221,15 @@ function SettingRow({ row, value }: { row: Row; value: unknown }) {
   else if (editable && (rec.control === 'int' || rec.control === 'float' || rec.control === 'str')) control = <DraftInput key={draftKey} value={value} numeric={rec.control !== 'str'} label={label} onSave={send} disabled={busy} invalid={save.isError} />
   else if (editable && rec.control === 'str_list') control = <ListEditor key={draftKey} value={value} label={label} onSave={send} disabled={busy} invalid={save.isError} />
   // A shown-only value is labelled, so it does not read as the default printed twice.
-  else control = <code className="text-[13px] font-mono text-muted break-all">{i18nT('settings.advanced.current_label', { value: shown(value) })}</code>
+  else control = <CurrentValue value={value} size="md" />
   const changed = row.default !== undefined && !sameValue(value, row.default)
   const readOnly = rec.mode === 'readonly'
   const resettable = editable && rec.resettable === true
   return (
-    <li data-setting-key={row.path} data-setting-label={label} className="flex flex-col gap-2 py-2.5 border-b border-border sm:flex-row sm:items-start sm:justify-between">
-      <div className="min-w-0 flex-1">
+    // The label column keeps a floor and the control column a ceiling: a long
+    // value wraps inside its half instead of squeezing the label to one letter.
+    <li data-setting-key={row.path} data-setting-label={label} className="flex flex-col gap-2 py-2.5 border-b border-border @2xl:flex-row @2xl:items-start @2xl:justify-between @2xl:gap-4">
+      <div data-row-label className="min-w-0 flex-1 @2xl:min-w-[14rem]">
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-[13px] font-semibold text-text">{label}</span>
           {/* Restart only matters for a value this row can change; a linked key's
@@ -220,8 +247,8 @@ function SettingRow({ row, value }: { row: Row; value: unknown }) {
           <Btn className="mt-1" onClick={putBack}>{i18nT('settings.advanced.put_back')}</Btn>
         )}
       </div>
-      <div className="flex flex-col gap-1.5 sm:items-end">
-        <div className="flex items-center gap-2">{control}</div>
+      <div data-row-control className="flex flex-col gap-1.5 min-w-0 @2xl:items-end @2xl:max-w-[50%]">
+        <div className="flex items-center gap-2 min-w-0 max-w-full">{control}</div>
         {/* Shown before any change too, so Reset is visible on a first visit;
             disabled while the value is already the default. */}
         {editable && (
@@ -275,7 +302,7 @@ export function AllSettingsList() {
   }
   const loadError = schemaError ?? (config.error as Error | null)
   return (
-    <div className="flex flex-col gap-3">
+    <div className="@container flex flex-col gap-3">
       <p className="text-[13px] text-muted">{i18nT('settings.advanced.intro')}</p>
       <SearchInput aria-label={i18nT('settings.advanced.search_placeholder')} placeholder={i18nT('settings.advanced.search_placeholder')} value={query} onChange={e => setQuery(e.target.value)} />
       {loadError && <ErrorNotice title={i18nT('settings.advanced.load_error')} message={errorText(loadError)} askAgent />}

@@ -330,17 +330,20 @@ class SecurityEventLog:
         # sharing, EACCES) leaves the tip unknown, not genesis: construction
         # still succeeds, and the first append reads the tip again.
         self._tip_unknown: bool = False
+        # Identity of the live log as of our last observation, so a replacement
+        # by another process (its rotation) is detected before we chain off a tip
+        # that has moved into the closed segment. Read BEFORE the tip, with no lock
+        # between the two: a sibling append landing in between then leaves this
+        # identity older than the file, so the first append re-reads the tip.
+        # Read after the tip, it would already count that record while the tip
+        # does not, and the first append would chain off a stale hash.
+        self._live_seen: tuple[int, int, int] | None = self._live_identity()
         try:
             self._last_hash = self._read_last_hash()
         except OSError:
             logger.warning("SEL: failed to read chain tip from %s", self._path, exc_info=True)
             self._last_hash = ""
             self._tip_unknown = True
-        # Identity of the live log as of our last observation, so a replacement
-        # by another process (its rotation) is detected before we chain off a tip
-        # that has moved into the closed segment. Seeded here because
-        # _read_last_hash above just anchored us to THIS file.
-        self._live_seen: tuple[int, int, int] | None = self._live_identity()
         self._forward_callback: Callable[[dict], None] | None = None
         # Background writer: callers enqueue (non-blocking) and one daemon thread
         # maintains the HMAC chain + batches appends off the hot path. Lazily

@@ -359,9 +359,9 @@ class TestCIProgress(unittest.TestCase):
         # and logs both the count and the host's peak memory.
         self.assertNotIn("-n auto", command)
         self.assertIn('echo "pytest workers: $WORKERS"', command)
-        # One worker per 2 GiB after 2 GiB for the host: 6 on the 16,111 MiB
+        # One worker per 1.5 GiB after 2 GiB for the host: 8 on the 16,111 MiB
         # fleet runner. Still capped by the core count and never below 1.
-        self.assertIn("by_mem=$(( (mem_mib - 2048) / 2048 ))", command)
+        self.assertIn("by_mem=$(( (mem_mib - 2048) / 1536 ))", command)
         self.assertIn("WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))", command)
         self.assertIn('[ "$WORKERS" -ge 1 ] || WORKERS=1', command)
         peak = next(s for s in job["steps"] if s.get("name") == "Report peak memory")
@@ -382,12 +382,12 @@ class TestCIProgress(unittest.TestCase):
 
         workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
         job = workflow["jobs"]["backend-test"]
-        # 60 on CodeBuild, 70 on a non-fleet runner that shards four-wide and
-        # needs the longer per-shard budget.
+        # 65 on CodeBuild (5 of them for shard 1's measure step), 70 on a
+        # non-fleet runner that shards four-wide and needs the longer per-shard budget.
         self.assertEqual(
             job["timeout-minutes"],
             "${{ startsWith(needs.changes.outputs.linux_runner_large, "
-            "'codebuild-') && 60 || 70 }}",
+            "'codebuild-') && 65 || 70 }}",
         )
         self.assertEqual(job["env"]["SHARD_COUNT"], 8)
         step = next(s for s in job["steps"] if s.get("name", "").startswith("Run tests"))

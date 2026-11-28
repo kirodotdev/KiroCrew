@@ -56,7 +56,11 @@ class TestAGrantIsAuditedNotOnlyARefusal:
         return calls
 
     def request(self, state, caller: str, app: str = "", *, internal: bool = True):
-        values: dict[str, object] = {"app": app, "internal_auth": internal}
+        # Token auth leaves the app claim ABSENT for an internal caller acting as
+        # the person and publishes it only when an app owns the calling session.
+        values: dict[str, object] = {"internal_auth": internal}
+        if app or not internal:
+            values["app"] = app
         return SimpleNamespace(
             app={"state": state},
             headers={"X-Session-Key": caller},
@@ -284,6 +288,19 @@ class TestPersistedListingDenialsAreAudited:
             "warning",
             lambda msg, *a, **k: lines.append(str(msg) % a if a else str(msg)),
         )
+        return lines
+
+    def reports(self, monkeypatch) -> list[tuple[str, str]]:
+        """Collect the handler's WARNING, INFO and DEBUG lines, with their level."""
+        lines: list[tuple[str, str]] = []
+        for level in ("warning", "info", "debug"):
+            monkeypatch.setattr(
+                messaging.logger,
+                level,
+                lambda msg, *a, _level=level, **k: lines.append(
+                    (_level, str(msg) % a if a else str(msg))
+                ),
+            )
         return lines
 
     def request(self, state, caller: str, app: str = "", *, internal: bool = True):
@@ -526,6 +543,116 @@ class TestPersistedListingDenialsAreAudited:
         assert calls == []
         assert warned == []
 
+    def test_a_truncation_is_reported_once_per_change_not_per_listing(
+        self, agent_root, monkeypatch
+    ):
+        """The dashboard polls this listing; a steady cut tail is one report, not one a poll."""
+        moment = time.time()
+        for index in range(3):
+            write_record(
+                agent_root,
+                f"rp{index:04d}",
+                parent_session="dashboard:chat-1",
+                mtime=moment - index,
+            )
+        monkeypatch.setattr(messaging, "PERSISTED_SUBAGENT_REPLAY_KEEP", 2)
+        said = self.reports(monkeypatch)
+
+        def listing():
+            # The dashboard owner: its listing depends on the app claim alone.
+            return self.run_listing(
+                monkeypatch,
+                agent_root,
+                slot_app="",
+                caller="dashboard:owner-tab",
+                scope=None,
+                internal=False,
+            )[1]
+
+        first, second = listing(), listing()
+        truncated = [(level, line) for level, line in said if "truncated" in line]
+        assert [level for level, _line in truncated] == ["warning", "debug"]
+        assert all("1 eligible" in line for _level, line in truncated)
+        assert not any("scan window saturated" in line for _level, line in truncated)
+        # The cadence is the log's alone: the client reads the same listing.
+        assert first == second
+        # Twelve records against keep=2: the candidate window (8) fills, so the
+        # still-truncated listing becomes saturated, which is a change to report.
+        for index in range(3, 12):
+            write_record(
+                agent_root,
+                f"rp{index:04d}",
+                parent_session="dashboard:chat-1",
+                mtime=moment - index,
+            )
+        said.clear()
+        third, fourth = listing(), listing()
+        assert [level for level, _line in said] == ["warning", "debug"]
+        assert all(
+            "truncated: at least" in line and "scan window saturated" in line
+            for _level, line in said
+        )
+        assert third == fourth
+        monkeypatch.setattr(messaging, "PERSISTED_SUBAGENT_REPLAY_KEEP", 12)
+        said.clear()
+        listing()
+        assert said == [("info", "persisted spawn listing complete again")]
+        said.clear()
+        listing()
+        assert said == []
+
+    def test_another_caller_identity_neither_ends_nor_restarts_the_report(
+        self, agent_root, monkeypatch
+    ):
+        """An internal caller's listing is its own session's, so it is not remembered.
+
+        It neither ends nor restarts the owner's report, and two internal sessions
+        cannot end each other's: each truncated internal listing warns.
+        """
+        moment = time.time()
+        for index in range(3):
+            write_record(
+                agent_root,
+                f"cl{index:04d}",
+                parent_session="dashboard:chat-1",
+                mtime=moment - index,
+            )
+        monkeypatch.setattr(messaging, "PERSISTED_SUBAGENT_REPLAY_KEEP", 2)
+        said = self.reports(monkeypatch)
+
+        def owner():
+            self.run_listing(
+                monkeypatch,
+                agent_root,
+                slot_app="",
+                caller="dashboard:owner-tab",
+                scope=None,
+                internal=False,
+            )
+
+        def listing_as(caller: str):
+            # An internal session sees only its own runs.
+            self.run_listing(
+                monkeypatch,
+                agent_root,
+                slot_app="",
+                caller=caller,
+                scope=None,
+                internal=True,
+            )
+
+        owner()
+        listing_as("subagent:unrelated-run")  # session B: owns none, complete
+        listing_as("dashboard:chat-1")  # session A: its own three, truncated
+        listing_as("subagent:unrelated-run")
+        owner()
+        assert [level for level, line in said if "persisted spawn listing" in line] == [
+            "warning",
+            "warning",
+            "debug",
+        ]
+        assert not [line for level, line in said if level == "info"]
+
 
 class TestRedactionRunsBeforeClamping:
     """Clamping first cuts a credential's tail off and defeats the match.
@@ -736,14 +863,20 @@ class TestAnAppTokenCannotReadAnotherAppsRuns:
         return calls
 
     def request(self, state, *, internal: bool, app: str):
-        return SimpleNamespace(
-            app={"state": state},
-            headers={"X-Session-Key": "dashboard:chat-1"},
-            query={},
-            get=lambda key, default=None: (
-                True if key == "internal_auth" and internal else (app if key == "app" else default)
-            ),
-        )
+        class _Request(dict):
+            """The claims token auth publishes, readable with ``in`` and ``[]``."""
+
+        claims: dict[str, object] = {"app": app}
+        if internal:
+            claims["internal_auth"] = True
+        elif app == "":
+            # The owner's own dashboard session: the local owner, no owner set.
+            claims.update(user="local-app", is_dashboard_user=True)
+        request = _Request(claims)
+        request.app = {"state": state}  # type: ignore[attr-defined]
+        request.headers = {"X-Session-Key": "dashboard:chat-1"}  # type: ignore[attr-defined]
+        request.query = {}  # type: ignore[attr-defined]
+        return request
 
     def state(self, slot_app: str = ""):
         manager = SimpleNamespace(all_agents=[])

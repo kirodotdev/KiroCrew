@@ -206,8 +206,12 @@ def _killpg(pgid: int, sig: int) -> None:
         raise
 
 
-def kill_process_tree(pid: int, sig: int = SIGTERM) -> bool:
+def kill_process_tree(pid: int, sig: int = SIGTERM, *, timeout: float = 5) -> bool:
     """Kill *pid* and all descendants. Returns True on success.
+
+    *timeout* bounds the Windows ``taskkill /T`` run. It walks the whole tree,
+    so a gateway with about 1,500 descendants took 11.9 s; a caller that stops
+    one large tree on purpose passes a longer bound.
 
     POSIX: ``os.killpg(os.getpgid(pid), sig)``; **lets exceptions
     propagate** (``ProcessLookupError`` if already dead, etc.).
@@ -250,9 +254,13 @@ def kill_process_tree(pid: int, sig: int = SIGTERM) -> bool:
             [taskkill_bin, "/T", "/F", "/PID", str(pid)],
             check=False,
             capture_output=True,
-            timeout=5,
+            timeout=timeout,
             creationflags=_SUBPROCESS_NO_WINDOW,
         )
+    except subprocess.TimeoutExpired as exc:
+        # An OSError still, so every ``except OSError`` caller is unchanged; a
+        # caller that can say "still stopping" catches it first.
+        raise TimeoutError(f"taskkill /T did not finish within {timeout:g}s") from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise OSError(f"taskkill /T invocation failed: {exc}") from exc
     if r.returncode != 0:

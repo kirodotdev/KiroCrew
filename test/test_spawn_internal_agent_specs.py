@@ -232,6 +232,32 @@ class TestTheModeRefusalExplanation:
         assert "agent.default_agent" not in cause + remedy
         assert "kiro-cli agent validate" in remedy
 
+    def test_a_bots_agent_names_the_dashboard_not_setup(
+        self, registry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Bot chats on the mate conductor, which lives in ``mates/agents/``:
+        kiro-cli does not list that folder and setup does not write it, so the
+        setup remedy cannot fix a Bot."""
+        from kiro_crew.config import paths as paths_mod
+
+        mates = tmp_path / "mates" / "agents"
+        mates.mkdir(parents=True)
+        monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: registry)
+        monkeypatch.setattr(paths_mod, "_mate_agents_dir_override", lambda: mates)
+        (mates / "kirocrew-mate-conductor.json").write_text("{}", encoding="utf-8")
+        (mates / "helper.json").write_text("{}", encoding="utf-8")
+        for agent in ("kirocrew-mate-conductor", "kirocrew-mate-worker", "helper"):
+            cause, remedy = srs.unavailable_mode_explanation(agent)
+            assert cause == (
+                f"{agent!r} is a Bot's agent, which Kiro Crew keeps in "
+                f"{srs._home_relative(mates)}/, not in the agents folder kiro-cli lists, "
+                "and `kirocrew setup --agent-only` does not write it."
+            )
+            assert remedy == "Chat with the Bot from the dashboard's Bots page."
+        # A name with no Bot file keeps the ordinary answer.
+        _, remedy = srs.unavailable_mode_explanation("ops")
+        assert remedy == "Run `kirocrew setup --agent-only` to materialize the agent config."
+
     def test_a_published_spec_is_explained_and_names_its_base(self, registry: Path) -> None:
         cause, remedy = srs.unavailable_mode_explanation("scout--readonly")
         assert "kirocrew setup --agent-only" not in cause + remedy
@@ -286,6 +312,80 @@ class TestTheModeRefusalExplanation:
             f"`kiro-cli agent validate --path {srs._shell_quoted(registry / 'ops.json')}`" in remedy
         )
         assert "kirocrew setup" not in remedy
+
+    #: The reproduced shape: a narrow agent with a ``permissions`` block and no
+    #: ``allowedTools``, which kiro-cli lists as "(v3 format)" and its v2 engine skips.
+    _V3_SHAPED = {
+        "name": "narrow",
+        "tools": ["fs_read", "fs_write", "execute_bash"],
+        "permissions": {"rules": [{"capability": "read", "effect": "allow"}]},
+    }
+
+    @pytest.fixture
+    def kas_offered(self, monkeypatch):
+        from kiro_crew import kiro_on_kas_notice
+
+        offered = {"value": True}
+        monkeypatch.setattr(kiro_on_kas_notice, "kas_backend_offered", lambda: offered["value"])
+        return offered
+
+    def test_a_v3_shaped_file_with_no_kas_offered_names_no_backend(
+        self, registry: Path, kas_offered: dict
+    ) -> None:
+        """A policy that denies ``kas`` keeps the child on v2 and refuses a ``kas``
+        spawn too, so the remedy must not send the caller there."""
+        kas_offered["value"] = False
+        (registry / "narrow.json").write_text(json.dumps(self._V3_SHAPED), encoding="utf-8")
+        cause, remedy = srs.unavailable_mode_explanation("narrow", kiro_cli_engine=True)
+        assert "(v3 format)" in cause
+        assert remedy == "No backend offered on this host runs kiro-cli's v3 engine."
+        assert "'kas'" not in remedy and "allowedTools" not in remedy
+
+    @pytest.mark.parametrize(
+        "extra",
+        [{}, {"excludedTools": ["@kirocrew-core"]}, {"includePowers": True}],
+        ids=["permissions", "excludedTools", "includePowers"],
+    )
+    def test_a_v3_shaped_file_on_the_kiro_cli_engine_points_at_kas(
+        self, registry: Path, extra: dict, kas_offered: dict
+    ) -> None:
+        """``validate`` passes such a file and a new session lists it no better, so
+        the answer points at kiro-cli's own listing and at the backend that serves it."""
+        spec = {**self._V3_SHAPED, **extra}
+        if extra:
+            spec.pop("permissions")
+        (registry / "narrow.json").write_text(json.dumps(spec), encoding="utf-8")
+        cause, remedy = srs.unavailable_mode_explanation("narrow", kiro_cli_engine=True)
+        assert "`kiro-cli agent list` marks it (v3 format)" in cause
+        assert "kiro-cli's v2 engine" in cause
+        assert remedy == "Spawn it with backend 'kas', which runs kiro-cli's v3 engine."
+        assert "allowedTools" not in cause + remedy
+        assert "agent validate" not in remedy
+
+    @pytest.mark.parametrize("v2_key", ["allowedTools", "toolsSettings"])
+    def test_a_file_with_a_v2_field_keeps_the_validate_answer(
+        self, registry: Path, v2_key: str
+    ) -> None:
+        spec = {**self._V3_SHAPED, v2_key: ["fs_read"] if v2_key == "allowedTools" else {}}
+        (registry / "narrow.json").write_text(json.dumps(spec), encoding="utf-8")
+        cause, remedy = srs.unavailable_mode_explanation("narrow", kiro_cli_engine=True)
+        assert "v3 format" not in cause
+        assert "kiro-cli agent validate" in remedy
+
+    def test_the_same_file_on_another_harness_keeps_the_validate_answer(
+        self, registry: Path
+    ) -> None:
+        """Only the Kiro CLI harness runs the v2 engine, so only it names that format."""
+        (registry / "narrow.json").write_text(json.dumps(self._V3_SHAPED), encoding="utf-8")
+        cause, remedy = srs.unavailable_mode_explanation("narrow")
+        assert "v3 format" not in cause
+        assert "kiro-cli agent validate" in remedy
+
+    def test_the_alias_answer_wins_over_the_format_answer(self, registry: Path) -> None:
+        spec = {**self._V3_SHAPED, "includeMcpJson": True, "useLegacyMcpJson": True}
+        (registry / "narrow.json").write_text(json.dumps(spec), encoding="utf-8")
+        cause, _ = srs.unavailable_mode_explanation("narrow", kiro_cli_engine=True)
+        assert "deprecated alias" in cause
 
     def test_the_shown_path_is_the_probed_file(self, registry: Path, monkeypatch) -> None:
         """``KIRO_HOME`` moves the agents directory; the answer names that file."""

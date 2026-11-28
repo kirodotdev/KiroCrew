@@ -26,6 +26,7 @@ from kiro_crew.apps.builtins.spec_builder.tests.routes_facade import routes
 from kiro_crew.apps.builtins.spec_builder.tests.routes_helpers import (  # noqa: F401
     _BASE,
     _OWNER_USER,
+    _inline_sensitive_gate,
     _make_client,
     _never_touch_the_real_state,
     _redirect_state,
@@ -506,6 +507,7 @@ async def test_task_run_refuses_a_handoff_that_claims_during_slot_setup(tmp_path
 @pytest.mark.asyncio
 async def test_concurrent_task_runs_dispatch_only_once(tmp_path, monkeypatch):
     """Two requests may pass the early status check before either owns the slot."""
+    _inline_sensitive_gate(monkeypatch)
     client = _make_client(monkeypatch, tmp_path)
     _seed_spec(tmp_path, files={"tasks.md": "- [ ] add the tests\n"})
     state, slots = _state_for("live")

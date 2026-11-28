@@ -55,6 +55,7 @@ from kiro_crew.messaging.renderer import (
     _default_redactor,
     apply_options_cap,
     count_redaction_tags,
+    mcp_identity_line,
     new_approval_nonce,
     redaction_notice,
     split_options_trailer,
@@ -142,6 +143,15 @@ def _persisted_upload_root(session_key: str) -> str:
 
     root = SessionMap().get_cwd(session_key)
     return root if root and os.path.isabs(root) else ""
+
+
+def _identity_code_span(name: str) -> str:
+    """One MCP identity name in backticks, as the card writes the tool title.
+
+    A backtick in the name is swapped for the look-alike ``ˋ`` (U+02CB) and its
+    whitespace collapsed, so the name cannot end its span or the line early.
+    """
+    return "`" + " ".join(name.split()).replace("`", "\u02cb") + "`"
 
 
 def _display_safe(text: str) -> str:
@@ -354,7 +364,12 @@ class TeamsRenderer(Renderer):
         purpose = await asyncio.to_thread(_display_safe, purpose) if purpose else ""
         nonce = new_approval_nonce()
         self._decider.arm(rid, nonce)
-        card = approval_card(title=title, purpose=purpose, request_id=rid, nonce=nonce)
+        # The trusted server and tool, in backticks like the title. Not model text,
+        # so no display-form scan.
+        identity = mcp_identity_line(*self.prompt_mcp_identity, fmt=_identity_code_span)
+        card = approval_card(
+            title=title, purpose=purpose, request_id=rid, nonce=nonce, identity=identity
+        )
         activity_id = await self._post_card(card)
         if not activity_id and not self._card_posted:
             # The card never reached the conversation, so nobody can click it. Refuse
@@ -799,7 +814,7 @@ class TeamsRenderer(Renderer):
         # ``_IMAGE_MARKER`` is the cheapest sound pre-check: extraction only ever
         # acts on ``![…](…)``, so a reply without the marker needs neither the root
         # lookup nor the scan. Wrong only in the safe direction.
-        if body and self.capabilities.files_outbound and _IMAGE_MARKER in body:
+        if self.capabilities.files_outbound and _IMAGE_MARKER in body:
             body, files = await self._extract_uploads(body)
         safe, redacted = await asyncio.to_thread(redact_for_display, body, _default_redactor)
         safe_choices: list[str] = []

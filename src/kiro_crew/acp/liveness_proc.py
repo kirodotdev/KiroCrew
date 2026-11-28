@@ -22,6 +22,12 @@ from typing import Protocol
 from kiro_crew import platform_compat
 from kiro_crew.acp.liveness_evidence import _READ_SYSCALL_NRS
 
+#: The kernel serves ``/proc/<pid>/net/tcp{,6}`` a page per ``read()`` and resumes each
+#: page by position inside a hash bucket, so a socket closing between two reads can make
+#: one pass skip a row that was live the whole time. A caller that acts on "none found"
+#: reads again, up to this many passes in all.
+_NET_TCP_PASSES = 3
+
 # ── /proc helpers (pure, best-effort — return None/empty on any error) ──
 
 

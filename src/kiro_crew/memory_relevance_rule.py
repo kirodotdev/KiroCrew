@@ -18,17 +18,16 @@ topic. Preferences and episodes keep their own gates.
 
 ``memory.relevance_rule`` picks the mode:
 
-* ``off`` (default) -- every block is today's, byte for byte.
-* ``shadow`` -- every block is today's; the injection receipt records the ids the
-  new rule would add to a block and drop from it.
-* ``enforce`` -- the blocks use the new rule.
+* ``enforce`` (default) -- the blocks use the shared rule.
+* ``off`` -- every block uses its old test, byte for byte.
+
+``shadow`` is not one of these modes, so a stored one reads as the default.
 
 Selection only: no stored row is written or changed.
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from collections.abc import Iterable
 from typing import Final
@@ -40,17 +39,7 @@ from kiro_crew.vector_memory_runtime.text_scoring import _is_selective_keyword
 logger = logging.getLogger(__name__)
 
 MODE_OFF: Final = "off"
-MODE_SHADOW: Final = "shadow"
 MODE_ENFORCE: Final = "enforce"
-
-#: Bump when the token rule, the fact evidence or the section split changes, so
-#: receipts taken under the old policy can be told from the new.
-POLICY_VERSION: Final = 1
-
-#: Receipt parts, one per block the rule gates.
-PART_FINDINGS: Final = "findings"
-PART_FACTS: Final = "facts"
-PART_ACTIVITY: Final = "activity"
 
 
 def configured_mode() -> str:
@@ -100,9 +89,16 @@ def fact_text(label: str, value_json: str) -> str:
     return f"{label.replace('.', ' ').replace('_', ' ')} {memory_v2.visible_json(value_json)}"
 
 
-def fact_admitted(query_terms: Iterable[str], text: str, cosine: float | None) -> bool:
-    """Whether a task fact has the private store's relevance evidence for the request."""
-    return bool(memory_v2.relevance_evidence(query_terms, text, cosine)["admitted"])
+def fact_admitted(
+    query_terms: Iterable[str], text: str, cosine: float | None, *, instructed: bool = False
+) -> bool:
+    """Whether a task fact has the private store's relevance evidence for the request.
+
+    *instructed* says the cosine came from a query embedded with the model's
+    query instruction, which has its own floors.
+    """
+    evidence = memory_v2.relevance_evidence(query_terms, text, cosine, instructed=instructed)
+    return bool(evidence["admitted"])
 
 
 def _heading_level(line: str) -> int:
@@ -133,33 +129,12 @@ def _sections(text: str) -> list[tuple[int, str]]:
     return pieces
 
 
-def _section_id(name: str, piece: str) -> str:
-    digest = hashlib.sha256(piece.strip().encode("utf-8", "surrogatepass")).hexdigest()[:12]
-    return f"{name}:{digest}"
-
-
-def _visible(pieces: list[str], ids: list[str], limit: int) -> set[str]:
-    """The ids of *pieces* that start inside the first *limit* characters of their join."""
-    seen: set[str] = set()
-    offset = 0
-    for piece, sid in zip(pieces, ids):
-        if offset >= limit:
-            break
-        seen.add(sid)
-        offset += len(piece)
-    return seen
-
-
-def gate_document(
-    name: str, text: str, tokens: frozenset[str], limit: int
-) -> tuple[str, list[str], list[str]]:
-    """Gate one activity document by section; ``(kept text, would add, would drop)``.
+def gate_document(text: str, tokens: frozenset[str]) -> str:
+    """One activity document with only the sections that share a token with the request.
 
     A section (a heading and its body) is kept when it shares a token with the
     request, or when a section under it is kept, so a kept entry keeps its day
-    or project heading. The add and drop ids compare what each text shows
-    within *limit* characters, the cut the block applies next. Ids are
-    ``<name>:<hash of the section>``, never its text.
+    or project heading.
     """
     pieces = _sections(text)
     keep = [shares_token(tokens, piece) for _, piece in pieces]
@@ -171,10 +146,4 @@ def gate_document(
             if keep[j]:
                 keep[i] = True
                 break
-    texts = [piece for _, piece in pieces]
-    ids = [_section_id(name, piece) for piece in texts]
-    kept = [(piece, sid) for piece, sid, k in zip(texts, ids, keep) if k]
-    kept_text = "".join(piece for piece, _ in kept)
-    before = _visible(texts, ids, limit)
-    after = _visible([p for p, _ in kept], [s for _, s in kept], limit)
-    return kept_text, sorted(after - before), sorted(before - after)
+    return "".join(piece for (_, piece), k in zip(pieces, keep) if k)

@@ -21,6 +21,9 @@ import { relayOpenStarted } from '../store/instancesSlice'
 import { openRelayPane, relayPaneBridge } from '../lib/relayCrewPanes'
 import { forgetRelayCrewsOpened } from '../lib/crewWarmSet'
 
+/** The dev setting a relay domain mismatch names (`offDomain`); a key, so never translated. */
+export const RELAY_DOMAIN_SETTING = 'tunnel.relay_viewer_relay_domain'
+
 export type RelayCrewOpenResult = { ok: boolean; error?: string }
 type RelayCrewBridge = { open: (endpointId: string) => Promise<RelayCrewOpenResult> }
 
@@ -251,6 +254,9 @@ export function useRelayViewerCrews(enabled = true): {
   account: RelayViewerAccount | null
   /** The latest read failed (a network or server failure, or a throttle); the list shown is the last one loaded, if any. */
   failed: boolean
+  /** The loaded list left Crews out only because `tunnel.relay_viewer_relay_domain`
+   *  does not match their addresses, so that setting is wrong for this relay. */
+  offDomain: boolean
   /** Read a loaded list again unless the last read is under OPEN_FRESH_MS old (the menu opened). */
   refreshOnOpen: () => void
 } {
@@ -276,7 +282,8 @@ export function useRelayViewerCrews(enabled = true): {
   }, [queryClient])
   // A failed read keeps the list it had, unless it was a refusal or the route is off.
   if (isOffError(q.error) || isRefusal(q.error) || (!q.data && !q.error)) {
-    return { hidden: true, crews: [], account: null, failed: false, refreshOnOpen }
+    return { hidden: true, crews: [], account: null, failed: false, offDomain: false, refreshOnOpen }
   }
-  return { hidden: false, crews: q.data?.crews ?? [], account: q.data?.account ?? null, failed: !!q.error, refreshOnOpen }
+  const offDomain = typeof q.data?.offDomain === 'number' && q.data.offDomain > 0
+  return { hidden: false, crews: q.data?.crews ?? [], account: q.data?.account ?? null, failed: !!q.error, offDomain, refreshOnOpen }
 }

@@ -12,8 +12,13 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from cloud_staging_walk_helpers import (  # noqa: F401 -- the fixture registers by import
+    host_directories_out_of_the_staging_walk,
+)
 
 from kiro_crew.cloud import aws, source
+
+pytestmark = pytest.mark.usefixtures("host_directories_out_of_the_staging_walk")
 
 
 @pytest.fixture(autouse=True)
@@ -740,8 +745,12 @@ class TestEnsureInstanceBoundary:
         monkeypatch.setattr(
             aws, "checked_json", lambda args, *a, **k: _boundary_verify_json(args, permissive)
         )
-        with pytest.raises(aws.AWSError, match="does NOT match"):
+        with pytest.raises(aws.AWSError, match="its contents differ from what this version") as exc:
             source.ensure_instance_boundary("dev", "us-east-1")
+        # Re-running the admin step alone meets this same refusal, so the message must
+        # not offer it as a fix of its own; it names the delete and who can do it.
+        assert "kirocrew cloud iam-boundary" not in str(exc.value)
+        assert "Delete that policy (or ask your AWS admin to)" in str(exc.value)
 
     def test_existing_boundary_match_is_dict_key_order_insensitive(self, monkeypatch):
         # The compare is canonical JSON (sort_keys), so the same document with its
@@ -956,7 +965,7 @@ class TestEnsureCrewBoundary:
         monkeypatch.setattr(
             aws, "checked_json", lambda args, *a, **k: _boundary_verify_json(args, permissive)
         )
-        with pytest.raises(aws.AWSError, match="does NOT match"):
+        with pytest.raises(aws.AWSError, match="its contents differ from what this version"):
             source.ensure_crew_boundary("dev", "us-east-1")
 
     def test_the_ec2_ceiling_is_not_accepted_as_this_ones_content(self, monkeypatch):
@@ -978,7 +987,7 @@ class TestEnsureCrewBoundary:
                 args, iam.boundary_policy_document(_ACCT12)
             ),
         )
-        with pytest.raises(aws.AWSError, match="does NOT match"):
+        with pytest.raises(aws.AWSError, match="its contents differ from what this version"):
             source.ensure_crew_boundary("dev", "us-east-1")
 
     def test_a_lost_create_race_is_verified_before_it_counts_as_success(self, monkeypatch):
@@ -1015,7 +1024,7 @@ class TestEnsureCrewBoundary:
             aws, "checked_json", lambda args, *a, **k: _boundary_verify_json(args, permissive)
         )
         monkeypatch.setattr(aws, "run_aws", fake_run)
-        with pytest.raises(aws.AWSError, match="does NOT match"):
+        with pytest.raises(aws.AWSError, match="its contents differ from what this version"):
             source.ensure_crew_boundary("dev", "us-east-1")
 
     def test_it_refuses_before_touching_iam_without_an_account_id(self, monkeypatch):

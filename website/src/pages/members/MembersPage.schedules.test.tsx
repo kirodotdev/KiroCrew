@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../../components/NavigationLeaveGuard'
@@ -95,8 +96,10 @@ vi.mock('../../components/MarkdownPanel', () => ({ default: () => null }))
 vi.mock('../../components/ArtifactPanel', () => ({ default: () => null }))
 vi.mock('../../components/WebPreviewPanel', () => ({ default: () => null }))
 vi.mock('../../components/McpAppFrame', () => ({ default: () => null }))
-vi.mock('../../components/CliPanel', () => ({
+vi.mock('../../components/LazyCliPanel', () => ({
   default: () => null,
+}))
+vi.mock('../../components/terminalSessions', () => ({
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
 }))
@@ -180,6 +183,7 @@ async function openCrewmate(name = 'oncall', alsoRoster: string[] = []) {
     <NavigationLeaveGuardProvider>
       <MembersPage />
       <LeaveProbe />
+      <MenuProfileProbe />
     </NavigationLeaveGuardProvider>,
   )
   fireEvent.click(await screen.findByText(name))
@@ -240,6 +244,17 @@ function LeaveProbe() {
       {answer}
     </button>
   )
+}
+/** Stands in for the sidebar bot row menu's Profile on an address that differs from
+ *  the one on screen: asks the page's guards, then pushes the carrier marked
+ *  `leaveGranted` (mateRowMenu.tsx). */
+function MenuProfileProbe() {
+  const mayLeave = useMayLeaveForNavigation()
+  const [, setSearchParams] = useSearchParams()
+  const open = () => {
+    if (mayLeave()) setSearchParams({ member: 'oncall', via: 'menu' }, { state: { openMateSessions: true, tab: 'profile', leaveGranted: true } })
+  }
+  return <button type="button" data-testid="menu-profile-probe" aria-label="Menu profile probe" onClick={open} />
 }
 /** Does the page hold the document open right now? The `beforeunload` listener and the
  *  published navigation stake are armed off ONE flag on adjacent lines, and this is the
@@ -719,6 +734,19 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     }
   })
 
+  it('opens Profile from the sidebar bot row menu with one question, not two, when the menu asked', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    try {
+      await openDraft()
+      fireEvent.click(screen.getByTestId('menu-profile-probe'))
+      expect(confirmSpy).toHaveBeenCalledTimes(1)
+      await waitFor(() => expect(screen.getByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'profile'))
+      expect(screen.queryByRole('dialog')).toBeNull()
+    } finally {
+      confirmSpy.mockRestore()
+    }
+  })
+
   it('panel-only actions keep a dirty Profile draft mounted without asking to discard it', async () => {
     await openDraft()
     expect(screen.getByTestId('side-panel-root')).toBeInTheDocument()
@@ -929,7 +957,7 @@ describe('MembersPage Profile card — Memory tile', () => {
     })
     navigateSpy.mockClear()
     fireEvent.click(tile)
-    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/settings/overview?view=memory&store=member-radar'))
+    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/settings/memory?store=member-radar'))
   })
 
   it('stays a readout for a mate on the shared store', async () => {

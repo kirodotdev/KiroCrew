@@ -608,6 +608,11 @@ def _bracket_fixture(tmp_path, monkeypatch, on_read, after_read=lambda n, path: 
     monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", tmp_path / "absent-global.json")
     monkeypatch.setattr(session_mcp, "_global_settings", lambda **kw: {})
     monkeypatch.setattr(session_mcp, "_read_mcp_settings", workspace_reader)
+    # Every file here was written moments ago; a clock far ahead makes each one
+    # settled, so a test sees only the identity rule unless it pins the clock.
+    # Not raising, so a build without the clock still reaches the assertions;
+    # a renamed clock leaves every fixture file fresh and moves the read counts.
+    monkeypatch.setattr(session_mcp, "_wall_ns", lambda: 2**62, raising=False)
     return session_mcp, reads
 
 
@@ -643,18 +648,24 @@ def test_native_settings_sources_repeated_permissive_reads_do_not_hide_a_restric
     permissive = json.dumps({"mcpServers": {}}).encode("utf-8")
     saved = {}
 
+    def save_later(path, data):
+        # Two replaces inside one pass can land on a recycled inode number and
+        # one coarse timestamp tick, so each save is stamped a second after the
+        # file it replaces, as a writer saving at a later moment would be.
+        staged = path.with_name("mcp.json.tmp")
+        staged.write_bytes(data)
+        later = path.stat().st_mtime_ns + 1_000_000_000
+        os.utime(staged, ns=(later, later))
+        os.replace(staged, path)
+
     def swap_in_permissive(n, path):
         if n <= 2:
             saved["restrictive"] = path.read_bytes()
-            staged = path.with_name("mcp.json.tmp")
-            staged.write_bytes(permissive)
-            os.replace(staged, path)
+            save_later(path, permissive)
 
     def swap_back(n, path):
         if n <= 2:
-            staged = path.with_name("mcp.json.tmp")
-            staged.write_bytes(saved["restrictive"])
-            os.replace(staged, path)
+            save_later(path, saved["restrictive"])
 
     session_mcp, reads = _bracket_fixture(
         tmp_path, monkeypatch, swap_in_permissive, after_read=swap_back
@@ -664,6 +675,156 @@ def test_native_settings_sources_repeated_permissive_reads_do_not_hide_a_restric
 
     assert len(reads) == 3
     assert sources[1].servers["kirocrew-core"]["disabledTools"] == ["workflow_run"]
+
+
+def _open_descriptors_on(inode):
+    """Descriptors this process holds on ``(st_dev, st_ino)`` *inode*."""
+    held = []
+    for name in os.listdir("/dev/fd"):
+        try:
+            st = os.fstat(int(name))
+        except OSError:
+            continue
+        if (st.st_dev, st.st_ino) == inode:
+            held.append(int(name))
+    return held
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows file ids are not reused; nothing is held")
+def test_native_settings_sources_pins_the_sampled_inode_across_a_pass(tmp_path, monkeypatch):
+    """The file sampled before a pass stays open until the sample after it.
+
+    A freed inode's number may go to the next file created, and a swap-back in the
+    same timestamp tick with the same size would then sample EQUAL to the file the
+    pass started on, keeping a pass that read the swapped-in copy. Holding the
+    first sample's descriptor keeps the replaced inode allocated, so its number
+    cannot come back while the pass runs.
+    """
+    replaced = []
+    pinned = []
+
+    def replace_first(n, path):
+        if n != 1:
+            return
+        st = path.stat()
+        replaced.append((st.st_dev, st.st_ino))
+        _replace_with_same_content(path)
+        pinned.append(bool(_open_descriptors_on(replaced[0])))
+
+    session_mcp, reads = _bracket_fixture(tmp_path, monkeypatch, replace_first)
+
+    sources = session_mcp.native_settings_sources(tmp_path)
+
+    assert pinned == [True]
+    assert len(reads) == 2
+    assert sources[1].servers["kirocrew-core"]["disabledTools"] == ["workflow_run"]
+    # The held descriptor is released once its pass is judged.
+    assert _open_descriptors_on(replaced[0]) == []
+
+
+def _rewrite_in_place_within_the_tick(path, data):
+    """An in-place write of same-size *data* that leaves the identity as it was.
+
+    The descriptor and inode are the file's own, the size does not move, and the
+    mtime is put back: what a write landing in the same coarse timestamp tick as
+    the file's last change looks like to ``(st_dev, st_ino, st_mtime_ns, st_size)``.
+    """
+    st = path.stat()
+    assert len(data) == st.st_size
+    with open(path, "r+b") as handle:
+        handle.write(data)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+
+def _fresh_clock(session_mcp, monkeypatch, path):
+    """Pin the bracket's wall clock to just after *path*'s last change: one tick old."""
+    monkeypatch.setattr(
+        session_mcp, "_wall_ns", lambda: path.stat().st_mtime_ns + 1_000_000, raising=False
+    )
+
+
+def test_native_settings_sources_discards_a_pass_over_an_in_place_rewrite(tmp_path, monkeypatch):
+    """A same-size rewrite and rewrite-back inside one tick voids the pass that read it.
+
+    Both identity samples are equal, so only the settle rule can tell: the file
+    changed less than a tick ago, the pass is re-read once, and the re-read sees
+    the restriction the first read missed.
+    """
+    saved = {}
+
+    def rewrite_permissive(n, path):
+        if n == 1:
+            saved["restrictive"] = path.read_bytes()
+            permissive = json.dumps({"mcpServers": {"kirocrew-core": {"disabledTools": []}}})
+            padded = permissive.encode("utf-8").ljust(len(saved["restrictive"]), b" ")
+            _rewrite_in_place_within_the_tick(path, padded)
+
+    def rewrite_back(n, path):
+        if n == 1:
+            _rewrite_in_place_within_the_tick(path, saved["restrictive"])
+
+    session_mcp, reads = _bracket_fixture(
+        tmp_path, monkeypatch, rewrite_permissive, after_read=rewrite_back
+    )
+    path = tmp_path / ".kiro" / "settings" / "mcp.json"
+    # One tick old when the first pass samples it; settled by every later reading,
+    # so an age taken after the pass instead of at its first sample would keep it.
+    ages = iter([1_000_000])
+    monkeypatch.setattr(
+        session_mcp,
+        "_wall_ns",
+        lambda: path.stat().st_mtime_ns + next(ages, 10**10),
+        raising=False,
+    )
+
+    sources = session_mcp.native_settings_sources(tmp_path)
+
+    assert sources[1].servers["kirocrew-core"]["disabledTools"] == ["workflow_run"]
+    # Pass 1: the read that saw the permissive copy, then its re-read; pass 2: one read.
+    assert len(reads) == 3
+
+
+def test_native_settings_sources_keeps_an_unchanged_fresh_file_after_one_re_read(
+    tmp_path, monkeypatch
+):
+    """A file changed within the last tick but not during the pass keeps its first pass."""
+    session_mcp, reads = _bracket_fixture(tmp_path, monkeypatch, lambda n, path: None)
+    _fresh_clock(session_mcp, monkeypatch, tmp_path / ".kiro" / "settings" / "mcp.json")
+
+    sources = session_mcp.native_settings_sources(tmp_path)
+
+    assert len(reads) == 2
+    assert sources[1].servers["kirocrew-core"]["disabledTools"] == ["workflow_run"]
+
+
+def test_native_settings_sources_samples_again_after_the_re_read(tmp_path, monkeypatch):
+    """A file replaced while the re-read runs voids the pass, even when both reads agree.
+
+    The re-read can pause for a retry like any read, so a restriction saved during
+    it would otherwise be missed: both reads saw the permissive file and agree.
+    """
+    path = tmp_path / ".kiro" / "settings" / "mcp.json"
+
+    def save_restriction(n, path):
+        if n == 2:
+            staged = path.with_name("mcp.json.tmp")
+            staged.write_text(
+                json.dumps({"mcpServers": {"kirocrew-core": {"disabledTools": ["workflow_run"]}}}),
+                encoding="utf-8",
+            )
+            os.replace(staged, path)
+
+    session_mcp, reads = _bracket_fixture(
+        tmp_path, monkeypatch, lambda n, path: None, after_read=save_restriction
+    )
+    path.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
+    _fresh_clock(session_mcp, monkeypatch, path)
+
+    sources = session_mcp.native_settings_sources(tmp_path)
+
+    assert sources[1].servers["kirocrew-core"]["disabledTools"] == ["workflow_run"]
+    # Pass 1: read and the re-read the save landed in; pass 2: read and re-read.
+    assert len(reads) == 4
 
 
 def test_native_settings_sources_refuses_files_that_never_hold_still(tmp_path, monkeypatch):
@@ -743,7 +904,7 @@ def test_native_settings_sources_refuses_when_no_identity_can_be_taken(tmp_path,
 
     session_mcp, reads = _bracket_fixture(tmp_path, monkeypatch, lambda n, path: None)
 
-    def refuse(raw):
+    def refuse(raw, **_kw):
         raise PermissionError("Blocked: file path was refused")
 
     monkeypatch.setattr(hooks, "safe_file_identity", refuse)

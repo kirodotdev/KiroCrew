@@ -1,4 +1,4 @@
-"""Bounded re-attempt of an MCP server that failed to start for want of credentials.
+"""Bounded re-attempt of an MCP server that lacked credentials, started too slowly, or dropped.
 
 A stdio MCP server whose signer resolves credentials lazily (``mcp-proxy-for-aws``
 is the reported case) fails its first ``initialize`` when the session starts
@@ -8,18 +8,25 @@ again on its own, so its tools stay missing for the whole session.
 
 On a host that takes ``_kiro/mcp/resetServer`` (KAS), Crew asks the engine to
 connect the server again at a turn start, at most :data:`MAX_ATTEMPTS` times per
-server per session. :func:`is_recoverable_auth_failure` decides which failures
-qualify: an error that reads as a missing or rejected credential, the one
-failure a later credential can cure. Any other failure (a bad command, a crash,
-a protocol error) is left alone: re-running it costs a process spawn and cannot
-succeed. A kiro-cli session is not re-attempted: that engine exposes no client
-request that re-initializes one server, so the session's MCP report names the
-server for a restart instead.
+server per session. Two readings decide which failures qualify:
+:func:`is_recoverable_auth_failure`, an error that reads as a missing or rejected
+credential, which a later credential can cure; and :func:`is_start_timeout_failure`,
+a start that ran out of time (a slow credential or cache warm-up), which a later
+attempt can finish. Any other start failure (a bad command, a crash, a protocol
+error) is left alone: re-running it costs a process spawn and cannot succeed. A
+kiro-cli session is not re-attempted: that engine exposes no client request that
+re-initializes one server, so the session's MCP report names a credential failure
+for a restart instead.
 
-A managed server that only ran out of time starting is the other failure a second
-attempt can cure: :func:`is_start_timeout_failure` reads it, and the KAS readiness
-barrier (``session_handle_mcp.wait_mcp_ready``) re-attempts such a server once,
-while the session start is still waiting for it.
+A required managed server that ran out of time starting is also re-attempted
+earlier: the KAS readiness barrier (``session_handle_mcp.wait_mcp_ready``)
+re-attempts it once, while the session start is still waiting for it.
+
+A connected server that loses its connection mid-session (a stdio server whose
+process exited) is the third: KAS keeps it ``connected`` and fails each later
+call with :data:`MCP_NOT_CONNECTED`. Such a failed call
+(``session_handle_mcp._note_mcp_call_disconnected``) queues the server for the
+same turn-start re-attempt, from the same per-server budget.
 
 :func:`is_sse_fallback_failure` reads the one failure KAS reports for a remote OAuth
 server it holds no grant for, the error its legacy SSE fallback gets back; the
@@ -34,9 +41,12 @@ from kiro_crew.acp.transport_errors import is_auth_failure_output
 from kiro_crew.mcp_gateway.backend_handshake import INITIALIZE_DEADLINE_REASON
 
 #: Re-attempts per server per session. Each is one connect attempt of a server
-#: that is already failed, so a server that never recovers costs at most this
-#: many spawns over the session's life.
+#: that is already failed or dropped, so a server that never recovers costs at
+#: most this many spawns over the session's life.
 MAX_ATTEMPTS = 3
+
+#: KAS's ``rawOutput.message`` for a call to a server whose transport closed.
+MCP_NOT_CONNECTED = "MCP tool call failed: Not connected"
 
 # Wording of a credential that is absent, the case a later vend cures. Word-
 # bounded so that an error naming an "author" or a port "4013" is not read as

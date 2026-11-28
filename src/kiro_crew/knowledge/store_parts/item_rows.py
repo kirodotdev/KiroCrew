@@ -254,6 +254,58 @@ def delete_items_batch_in_txn(
     self._prune_orphan_entities()
 
 
+def items_updated_at(self: KnowledgeStore, item_ids: list[str]) -> dict[str, str]:
+    """``updated_at`` of each of *item_ids* still stored, in their order."""
+    stamps: dict[str, str] = {}
+    for item_id in item_ids:
+        row = self.db.execute("SELECT updated_at FROM items WHERE id = ?", (item_id,)).fetchone()
+        if row:
+            stamps[item_id] = row["updated_at"]
+    return stamps
+
+
+def delete_group_unless_edited(
+    self: KnowledgeStore,
+    old_stamps: dict[str, str],
+    new_item_ids: list[str],
+    owner_source_id: str,
+) -> tuple[list[str], bool]:
+    """Replace a document's old group with *new_item_ids*, unless an old item was edited.
+
+    *old_stamps* is :meth:`items_updated_at` of the old group, read before the new
+    group was written. ``update_item`` is the only writer that moves ``updated_at``
+    after insert, so a changed stamp is an edit or archive made in between: then the
+    old group is kept and the new one leaves this source. A duplicate gate that
+    attached another source to part of the new group claimed the whole document, so
+    that source is given every new item and inherits them; an unclaimed new group is
+    destroyed. The re-read and the delete share one write lock, so no edit lands
+    between them. Returns the group that now holds the document and whether it is
+    the old one.
+    """
+    self.db.execute("BEGIN IMMEDIATE")
+    try:
+        current = self.items_updated_at(list(old_stamps))
+        kept = any(stamp != old_stamps[item_id] for item_id, stamp in current.items())
+        if kept:
+            claimants = {
+                other
+                for item_id in new_item_ids
+                for other in self._reassignment_candidates(item_id, owner_source_id)
+            }
+            for claimant in sorted(claimants):
+                for item_id in new_item_ids:
+                    self.add_source_location_in_txn(item_id, claimant)
+            self.delete_items_batch_in_txn(new_item_ids, owner_source_id)
+        else:
+            self.delete_items_batch_in_txn(list(old_stamps), owner_source_id)
+        self.db.execute("COMMIT")
+    except BaseException:
+        self.db.execute("ROLLBACK")
+        raise
+    self.reload_graph()
+    return (list(current) if kept else list(new_item_ids)), kept
+
+
 def delete_source_cascade(self: KnowledgeStore, source_id):
     """Delete a source and all its items in a single transaction (batch SQL).
 

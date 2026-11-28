@@ -1,10 +1,10 @@
 ---
 title: "Kiro BFF calls for apps: the gateway calls approved operations with the user's Kiro sign-in"
-status: draft
+status: partial
 author: buluoray, with kirocrew-worker
 created: 2026-11-19
-last-audited: 2026-11-19
-audited-at: 62a48d2381
+last-audited: 2026-11-23
+audited-at: d597493a9b5
 doc-pr: 39709
 implementation-prs: [39731]
 tracking-issues: []
@@ -14,9 +14,14 @@ superseded-by: []
 
 # RFC: Kiro BFF Calls for Apps
 
-> **Status:** `draft`. Nothing in this document is built, and it changes no
-> code. Acceptance is requested from a maintainer. The baseline was verified
-> at `62a48d2381`: no App Kit seam reaches the Kiro sign-in. The gateway's
+> **Status:** `partial`. Accepted 2026-11-20 when maintainer bolichen97
+> approved and merged [#39709](https://github.com/kirodotdev/KiroCrew/pull/39709).
+> Phase 1 shipped in [#39731](https://github.com/kirodotdev/KiroCrew/pull/39731)
+> (merged 2026-11-20): `permissions.kiroOperations`, the route, `ctx.kiro_call`
+> (`src/kiro_crew/apps/kiro_calls.py`) and App Kit seam level 12. Phase 2, the
+> `agentTools` handler example in `docs/app-kit/api-reference.md`, is not done.
+> Re-audited 2026-11-23 at `d597493a9b5`. The baseline below, from before
+> phase 1, was verified at `62a48d2381`: no App Kit seam reaches the Kiro sign-in. The gateway's
 > vault is read only by core code (`kiro_crew.auth.bridge.default_token_store`,
 > `kiro_crew.auth.provider.KasAuthProvider`), and no grant family for Kiro
 > operations is registered in `src/kiro_crew/apps/point_grants.py`.

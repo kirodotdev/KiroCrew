@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 import pytest
+from kas_agents_helpers import without_own_agents_deny
 
 import kiro_crew.agent as agent_mod
 import kiro_crew.config.paths as paths_mod
@@ -90,9 +91,14 @@ async def test_a_project_spec_grants_nothing(layout):
 
     for key in ("mcpServers", "includeMcpJson", "includePowers", "resources"):
         assert key not in entry, key
-    # The one rule this spec gets is Crew's own skill scope, and it only takes away:
-    # a ``tools: ["*"]`` agent with no mapping loads no skill on kiro-cli either.
-    assert entry["permissions"] == {"rules": [{"capability": "skill", "effect": "deny"}]}
+    # The rules this spec gets are Crew's own and only take away: its skill scope
+    # (a ``tools: ["*"]`` agent with no mapping loads no skill on kiro-cli either),
+    # and the deny on Kiro Crew's own agents every sub-agent tool carries.
+    rules = entry["permissions"]["rules"]
+    assert [r for r in rules if r["capability"] != "subagent"] == [
+        {"capability": "skill", "effect": "deny"}
+    ]
+    assert [r["effect"] for r in rules if r["capability"] == "subagent"] == ["deny"]
     assert "planted" not in json.dumps(entry)
     spec, _ = resolve_projected_spec(paths_mod.kiro_agents_dir(), "proj", checkout)
     assert set(spec) == {"name", "prompt", "tools"}
@@ -137,7 +143,7 @@ async def test_a_shadowing_project_spec_only_switches_user_servers_off(layout):
     # The checkout's mute reaches the user's server; its new server does not.
     assert "/usr/bin/muted-server" not in wire
     assert "planted" not in wire
-    assert "permissions" not in entry
+    assert "permissions" not in without_own_agents_deny(entry)
 
 
 @pytest.mark.asyncio

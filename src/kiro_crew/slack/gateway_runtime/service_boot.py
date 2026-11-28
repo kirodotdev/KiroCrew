@@ -5,7 +5,8 @@ dashboard or API-only server; ``run`` itself, which brings everything up in orde
 and blocks until shutdown; and the post-bind session-start sizing log.
 
 Orchestrator fields read: ``_approval_mode``, ``_background_tasks``, ``_bot_token``,
-``_cfg``, ``_cron_injecting``, ``_json_ready``, ``_no_crons``, ``_no_dashboard``, ``_no_open``,
+``_cfg``, ``_cron_injecting``, ``_headless``, ``_json_ready``, ``_no_crons``, ``_no_dashboard``,
+``_no_open``,
 ``_owner_id``, ``_port_override``, ``_runner_admission_adopted``, ``_slack_enabled``,
 ``_test_mode``,
 ``_tracking_channels``, ``autonudge_svc``, ``cron_svc``, ``subagent_mgr``.
@@ -150,12 +151,32 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     would trade a blocking bug for a thread-affinity one. The session map,
     which holds no asyncio primitives, is the exception: it is built in a
     worker thread so its startup read can retry a Windows sharing violation.
+    So is the skills loader, which holds none either and resolves every
+    ``skills.extra_paths`` root while it is built.
     (Other sync
     filesystem steps — e.g. agent-config install — remain on the loop;
     they are bounded small-file work, not usage-scaled. The builtin-skills
     sync verifies user-owned trees before replacing them, so it runs as a
     tracked background task in a worker thread and never gates readiness.)
     """
+    from kiro_crew.project_mcp_approvals import begin_boot_migration
+
+    # The folder list is read here, before any project pick can add to it; the
+    # scan of those folders scales with them, so it runs on a tracked task. A
+    # session check waits briefly for it and otherwise holds.
+    migration_scan = await asyncio.to_thread(begin_boot_migration)
+    if migration_scan is not None:
+        # Handed to the executor now, so a check that waits for it is never left
+        # waiting on a scan that did not start.
+        scan_done = asyncio.get_running_loop().run_in_executor(None, migration_scan)
+
+        async def _await_migration() -> None:
+            await scan_done
+
+        migration_task = asyncio.create_task(_await_migration())
+        self._background_tasks.add(migration_task)
+        migration_task.add_done_callback(self._background_tasks.discard)
+
     if not self._slack_enabled:
         logger.info("Slack not configured — starting without the Slack gateway")
 
@@ -309,7 +330,7 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     # it may replace them, so its cost scales with what users put in the
     # skills dir — it must gate neither the event loop nor the dashboard
     # socket. Listings pick the synced skills up as soon as it completes.
-    skills = SkillsLoader(install_builtins=False)
+    skills = await asyncio.to_thread(lambda: SkillsLoader(install_builtins=False))
     # The in-place restarts end in os.execv, which kills the usage ledger's
     # daemon flush thread with up to 60 s of hits still in memory. The pre-exec
     # seam runs this before both of them; _shutdown_and_exit flushes on its own.
@@ -726,7 +747,7 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         dashboard_port = int(self._port_override)
     self._dashboard_port = dashboard_port
     self._configured_host = configured_host
-    self._local_only = is_local_only(configured_host, self._slack_enabled)
+    self._local_only = self._headless or is_local_only(configured_host, self._slack_enabled)
     self._dashboard_runner, self.dashboard_state = await start_dashboard(
         sessions=self.sessions,
         crons=self.cron_svc,
@@ -748,13 +769,20 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         defer_channel_agent_resume=True,
         schedule_memory_preparation=self._schedule_memory_preparation,
         approval_mode=self._approval_mode,
+        headless=self._headless,
     )
     # When --port auto was requested, read the OS-assigned ephemeral port
     # back from the runner so subsequent URL building and the READY line
-    # use the real bound port.
+    # use the real bound port. It is the port the gateway reserved
+    # (``served_port``), not the runner's first address: the runner holds other
+    # listeners too, in an order a rebind changes.
     if dashboard_port == 0 and self._dashboard_runner is not None:
+        app = getattr(self._dashboard_runner, "app", None)
+        served = app.get("served_port") if app is not None else None
         addresses = self._dashboard_runner.addresses
-        if addresses:
+        if isinstance(served, int) and served:
+            self._dashboard_port = served
+        elif addresses:
             self._dashboard_port = addresses[0][1]
     if self.slack and self.dashboard_state:
         self.dashboard_state.slack_client = self.slack
@@ -841,6 +869,10 @@ async def _init_api_server(self: GatewayOrchestrator) -> None:
             self._dashboard_port = addresses[0][1]
     if self.dashboard_state:
         self.dashboard_state.no_crons = self._no_crons  # API-only mode
+        # The same restart admission and quiescence census the dashboard start wires.
+        from kiro_crew import restart_admission
+
+        restart_admission.wire(self.dashboard_state, self)
 
 
 async def run(self: GatewayOrchestrator) -> None:
@@ -1242,7 +1274,7 @@ async def run(self: GatewayOrchestrator) -> None:
     if not self._test_mode:
         from kiro_crew.apps.session_consent import reconcile_after_ready
 
-        _consent_task = asyncio.create_task(reconcile_after_ready())
+        _consent_task = asyncio.create_task(reconcile_after_ready(self.dashboard_state))
         self._background_tasks.add(_consent_task)
         _consent_task.add_done_callback(self._background_tasks.discard)
 
@@ -1395,7 +1427,9 @@ async def run(self: GatewayOrchestrator) -> None:
                 prime_ceiling_projection,
                 reproject_for_ceiling_change,
             )
+            from kiro_crew.dashboard.bind_refresh import restart_if_bind_refused
             from kiro_crew.dashboard.origin import withdraw_refused_origins
+            from kiro_crew.dashboard.tailnet import running_tailnet_https_port
             from kiro_crew.dashboard.tailnet_serve import (
                 revoke_if_governance_now_pins_off,
             )
@@ -1407,14 +1441,22 @@ async def run(self: GatewayOrchestrator) -> None:
             # Hooks are registered BEFORE the poller starts, so the first installed
             # ceiling already re-derives what was materialised from the previous one.
             # Most governed controls are live evaluations and need nothing here. These
-            # three are the exceptions: a published tailnet origin, whose gate fires when
+            # four are the exceptions: a published tailnet origin, whose gate fires when
             # publish is CALLED and so does not retract what is already serving; the
-            # server's origin set, whose extras are asked only when added; and the agent
+            # server's origin set, whose extras are asked only when added; the address
+            # the server is bound to, asked only when it binds; and the agent
             # config's ``allowedTools``, which kiro-cli reads from the FILE — so a list
             # written under a looser ceiling keeps auto-approving what the fleet has
             # since forbidden.
             _tailnet_port = self._dashboard_port
-            register_post_install_hook(lambda: revoke_if_governance_now_pins_off(_tailnet_port))
+            _https_port = self._cfg.dashboard.tailscale.https_port
+            if self._dashboard_runner is not None:
+                _https_port = running_tailnet_https_port(self._dashboard_runner.app)
+            register_post_install_hook(
+                lambda: revoke_if_governance_now_pins_off(
+                    _tailnet_port, startup_https_port=_https_port
+                )
+            )
             if self._dashboard_runner is not None:
                 _app, _loop = self._dashboard_runner.app, asyncio.get_running_loop()
                 register_post_install_hook(lambda: withdraw_refused_origins(_app, _loop))
@@ -1424,6 +1466,9 @@ async def run(self: GatewayOrchestrator) -> None:
                 )
 
                 register_post_install_hook(lambda: end_shells_if_policy_refuses(_app, _loop))
+                _state = self.dashboard_state
+                if _state is not None:
+                    register_post_install_hook(lambda: restart_if_bind_refused(_state, _loop))
                 # A policy that withdraws the redaction opt-in must purge open dashboards.
                 from kiro_crew.dashboard.handlers import credential_redaction as _redaction
 
@@ -1551,7 +1596,17 @@ async def run(self: GatewayOrchestrator) -> None:
     # ~mcp_probe_timeout_secs+15 of "no URL on screen" from every boot, and
     # all of it from the timed-out path.
     dashboard_url = ""
-    if not self._no_dashboard:
+    if self._headless:
+        # No page to open and no sign-in link to print: the address and how to get
+        # a credential, which is never printed here.
+        from kiro_crew.dashboard.entry_gate import bound_port
+        from kiro_crew.dashboard.headless import print_client_access
+
+        # The port the gateway bound, not a second read of the config.
+        print_client_access(
+            self._dashboard_port, bound_port(getattr(self._dashboard_runner, "app", None))
+        )
+    elif not self._no_dashboard:
         try:
             host = resolve_dashboard_host(self._local_only, self._configured_host)
             _cfg_url = self._cfg.dashboard.url
@@ -1627,7 +1682,7 @@ async def run(self: GatewayOrchestrator) -> None:
     # would pay a deepcopy plus a full nested-dataclass rebuild for one scalar.
     _probe_t = self._cfg.dashboard.mcp_probe_timeout_secs + 15
     try:
-        await asyncio.wait_for(_bg_mcp_probe(self.sessions), timeout=_probe_t)
+        await asyncio.wait_for(_bg_mcp_probe(self.dashboard_state), timeout=_probe_t)
     except asyncio.TimeoutError:
         print("👻 MCP probe timed out — continuing without full probe")
 
@@ -1720,9 +1775,10 @@ async def run(self: GatewayOrchestrator) -> None:
         # that boot's init_socket_mode then replaces without closing; until
         # then the route answers 503 slack_reconnect_unavailable. The
         # API-only server leaves it None.
-        from kiro_crew.slack.reconnect import reconnect_slack
+        from kiro_crew.slack.reconnect import reconnect_slack, wait_for_reconnect
 
         self.dashboard_state.slack_reconnect = lambda: reconnect_slack(self)
+        self.dashboard_state.slack_reconnect_wait = lambda: wait_for_reconnect(self)
         from kiro_crew.slack.owner_claim import OwnerClaim
 
         self.dashboard_state.slack_owner_claim = OwnerClaim(self)

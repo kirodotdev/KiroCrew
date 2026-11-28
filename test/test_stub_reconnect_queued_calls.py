@@ -26,7 +26,12 @@ from typing import NamedTuple
 import pytest
 
 from kiro_crew.mcp_gateway import stub as stub_mod
-from kiro_crew.testing.wait import await_until, finished
+from kiro_crew.testing.wait import (
+    FALLBACK_TIMEOUT_SECS,
+    async_wait_until,
+    await_until,
+    finished,
+)
 
 #: Small enough to keep these tests fast, and the drain takes it as a parameter
 #: for exactly that reason. Every timing assertion below is relative to it.
@@ -255,7 +260,9 @@ async def test_a_call_is_not_failed_when_the_reattach_beats_grace(
 
 
 @pytest.mark.asyncio
-async def test_only_the_frames_past_grace_are_failed(answers: _Answers) -> None:
+async def test_only_the_frames_past_grace_are_failed(
+    answers: _Answers, monkeypatch
+) -> None:  # noqa: ANN001
     """Each frame carries its OWN deadline, measured from when it arrived."""
     session = _session(_request(1))
     stop = asyncio.Event()
@@ -267,6 +274,10 @@ async def test_only_the_frames_past_grace_are_failed(answers: _Answers) -> None:
     # id=1 expires; id=2 arrives afterwards and still has its full grace left.
     while not answers.ids:
         await asyncio.sleep(_GRACE / 5)
+    # The drain's clock stops here, so id=2's grace cannot run out before the stop
+    # however late the loop gets to it.
+    frozen = stub_mod._reconnect_now()
+    monkeypatch.setattr(stub_mod, "_reconnect_now", lambda: frozen)
     session._line_q.put_nowait(_request(2))
     while session._line_q.qsize():
         await asyncio.sleep(_GRACE / 5)
@@ -782,15 +793,17 @@ async def test_the_drain_runs_while_the_reconnect_runs(
 ) -> None:  # noqa: ANN001
     """The call site, tested by behaviour rather than by reading the source.
 
-    A reconnect that spends longer than the grace window must see the queued call
-    answered by the time it returns. This is the assertion that fails if the
+    A reconnect still running when the grace window passes must see the queued
+    call answered while it runs. This is the assertion that fails if the
     reconnect is ever called on its own, with nothing reading kiro-cli's stream.
     """
     reconnect_ran = asyncio.Event()
 
     async def _slow_reconnect(*_args, **_kwargs):  # noqa: ANN202
         reconnect_ran.set()
-        await asyncio.sleep(_GRACE * 4)
+        # Runs until the drain answers, not for a fixed time: a stalled loop can pass
+        # any fixed sleep before the drain sets its deadline, and the stop lands first.
+        await async_wait_until(lambda: answers.ids, describe=lambda: "no answer from the drain")
         return None
 
     monkeypatch.setattr(stub_mod, "_reconnect", _slow_reconnect)
@@ -815,14 +828,28 @@ async def test_the_drain_runs_while_the_reconnect_runs(
 async def test_a_reconnect_that_beats_grace_leaves_the_call_to_the_new_bridge(
     answers: _Answers, monkeypatch
 ) -> None:  # noqa: ANN001
-    """The other half of the same pairing: a quick reattach answers nothing."""
+    """The other half of the same pairing: a quick reattach answers nothing.
+
+    The pairing must also ask the drain to stop, not leave it to the bounded
+    wait's cancel.
+    """
+    stopped: list[bool] = []
+    real_drain = stub_mod._drain_while_disconnected
 
     async def _quick_reconnect(*_args, **_kwargs):  # noqa: ANN202
         await asyncio.sleep(_GRACE / 5)
         return (asyncio.StreamReader(), _CaptureWriter(), {}, "uuid")
 
+    async def _drain(*args, stop, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        try:
+            await real_drain(*args, stop=stop, **kwargs)
+        finally:
+            stopped.append(stop.is_set())
+
     monkeypatch.setattr(stub_mod, "_reconnect", _quick_reconnect)
-    monkeypatch.setattr(stub_mod, "_QUEUED_GRACE_SECS", _GRACE)
+    monkeypatch.setattr(stub_mod, "_drain_while_disconnected", _drain)
+    # Long enough that a stalled loop cannot expire the call before the reattach.
+    monkeypatch.setattr(stub_mod, "_QUEUED_GRACE_SECS", FALLBACK_TIMEOUT_SECS)
     session = _session(_request(41))
 
     attached = await stub_mod._reconnect_while_draining(
@@ -837,6 +864,7 @@ async def test_a_reconnect_that_beats_grace_leaves_the_call_to_the_new_bridge(
     assert attached is not None
     assert answers.ids == []
     assert _held(session) == [_request(41)], "handed back for the new bridge"
+    assert stopped == [True], "the pairing must ask the drain to stop"
 
 
 def test_the_serve_loop_reconnects_only_through_the_paired_function() -> None:

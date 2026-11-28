@@ -7,7 +7,7 @@ const path = require("path");
 // injected window and is testable with a fake.
 //
 // PROBLEM: the post-handoff liveness monitor fires onUnresponsive whenever
-// /api/status stops answering. main.js used to react ONE way — assume a wedged
+// /api/live stops answering. main.js used to react ONE way — assume a wedged
 // local backend and force-kill the port + respawn. That is correct only when WE
 // spawned the gateway. On the reuse path the port-holder is someone else's
 // process, and in the remote-tunnel setup (localhost:<port> is an SSH forward to

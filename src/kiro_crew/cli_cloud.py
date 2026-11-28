@@ -447,6 +447,12 @@ def _cloud_destroy(args: argparse.Namespace) -> int:
             ui.info("Aborted — nothing was deleted.")
             return 0
 
+    ui.detail(
+        "Deleting usually takes a few minutes. AWS keeps going even if you close this terminal."
+    )
+    ui.detail(
+        "Wait here anyway: this command's own cleanup runs only after AWS confirms the delete."
+    )
     try:
         with ui.Spinner("Deleting the CloudFormation stack…"):
             res = ec2.destroy(tag, profile, region)
@@ -623,7 +629,9 @@ def _cloud_iam_boundary(args: argparse.Namespace) -> int:
     if failed:
         ui.detail(
             "Keep the iam:CreatePolicy action in the IamInstanceBoundaryCreateOnce "
-            "statement until every boundary above is ready, then re-run this step."
+            "statement in the applied launcher policy (the one `kirocrew cloud "
+            "iam-policy` prints) until every boundary above is ready, then re-run "
+            "this step."
         )
         return 1
     ui.detail(

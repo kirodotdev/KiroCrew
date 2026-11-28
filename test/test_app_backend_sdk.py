@@ -50,6 +50,12 @@ def test_the_package_reports_this_build_level_and_is_published_at_seven() -> Non
     assert sdk.SDK_LEVEL >= sdk.BACKEND_SDK_LEVEL
 
 
+def test_every_later_name_is_exported_above_the_package_level() -> None:
+    for name, level in sdk._EXPORT_LEVELS.items():
+        assert name in sdk._LAZY_EXPORTS and name in sdk.__all__, name
+        assert sdk.BACKEND_SDK_LEVEL < level <= sdk.SDK_LEVEL, name
+
+
 def test_a_spawned_child_imports_it_without_loading_unused_controls(tmp_path) -> None:
     probe = (
         "import sys\n"
@@ -220,6 +226,30 @@ def test_audit_log_takes_an_explicit_name(monkeypatch, sink) -> None:
     assert sink.calls[0]["caller"] == "app:other"
 
 
+def test_audit_log_writes_a_fail_closed_row_under_the_spawned_name(monkeypatch, sink) -> None:
+    monkeypatch.setenv("KIROCREW_APP_NAME", "doc-store")
+    sdk.audit_log().record_or_raise("launch", "auto_approved")
+    sdk.audit_log("doc-store").record_or_raise("launch", "auto_approved")
+    assert [c["caller"] for c in sink.calls] == ["app:doc-store", "app:doc-store"]
+    assert all(c["critical"] is True and c["source"] == "app" for c in sink.calls)
+
+
+@pytest.mark.parametrize("spawned_as", [None, "doc-store"])
+def test_audit_log_refuses_a_fail_closed_row_under_a_chosen_name(
+    monkeypatch, sink, spawned_as
+) -> None:
+    if spawned_as is None:
+        monkeypatch.delenv("KIROCREW_APP_NAME", raising=False)
+    else:
+        monkeypatch.setenv("KIROCREW_APP_NAME", spawned_as)
+    writer = sdk.audit_log("other-app")
+    with pytest.raises(LookupError):
+        writer.record_or_raise("launch", "auto_approved")
+    assert sink.calls == []
+    writer.record("pull", "denied")
+    assert sink.calls[0]["caller"] == "app:other-app"
+
+
 @pytest.mark.parametrize("value", [None, "", "   "])
 def test_audit_log_refuses_a_writer_with_no_app_name(monkeypatch, value) -> None:
     if value is None:
@@ -264,7 +294,6 @@ def test_sandboxed_argv_refuses_any_other_tier_before_preparing(monkeypatch, mod
 @pytest.mark.parametrize(
     "knob",
     [
-        "extra_hidden_dirs",
         "extra_visible_dirs",
         "extra_private_dirs",
         "extra_writable_dirs",
@@ -273,6 +302,7 @@ def test_sandboxed_argv_refuses_any_other_tier_before_preparing(monkeypatch, mod
     ],
 )
 def test_sandboxed_argv_offers_no_widening_knob(knob) -> None:
+    # ``extra_hidden_dirs`` (level 18) only adds masks: test_app_backend_sdk_hidden_dirs.
     import inspect
 
     for fn in (sdk.sandboxed_argv, sdk.sandboxed_argv_async):
@@ -542,6 +572,36 @@ def test_run_sandboxed_async_kills_the_child_past_its_timeout(monkeypatch, tmp_p
         asyncio.run(asyncio.wait_for(expiring, timeout=FALLBACK_TIMEOUT_SECS))
     assert len(killed) == 1
     assert not cleanup.exists()
+
+
+def test_minimal_env_is_listed_at_seam_level_seventeen() -> None:
+    assert sdk._LAZY_EXPORTS["minimal_env"] == "spawn"
+    assert sdk._EXPORT_LEVELS["minimal_env"] == 17
+
+
+def test_minimal_env_keeps_location_hints_and_drops_secrets(monkeypatch) -> None:
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("KIROCREW_PROBE_TOKEN", _FAKE_KEY)
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "probe")
+    env = sdk.minimal_env(PORT="1234")
+    assert env["PATH"] == "/usr/bin"
+    assert env["PORT"] == "1234"
+    assert "KIROCREW_PROBE_TOKEN" not in env
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert set(env) <= set(os.environ) | {"PORT"}
+
+
+def test_minimal_env_delegates_at_call_time(monkeypatch) -> None:
+    seen: list[dict] = []
+
+    def recorder(**extra: str) -> dict[str, str]:
+        seen.append(extra)
+        return {"FROM": "owner"}
+
+    # A write through the registry facade reaches the owner the SDK reads.
+    monkeypatch.setattr("kiro_crew.apps.registry.minimal_env", recorder)
+    assert sdk.minimal_env(A="b") == {"FROM": "owner"}
+    assert seen == [{"A": "b"}]
 
 
 # ── process helpers ─────────────────────────────────────────────────────────

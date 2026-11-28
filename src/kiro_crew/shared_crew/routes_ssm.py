@@ -29,6 +29,7 @@ INVITE_PATH = "/api/shared-crew/ssm/invites/{invite_id}"
 
 CODE_NOT_ACTIVE = "ssm_not_active"
 CODE_LIMIT = "ssm_invite_limit"
+CODE_UNREADABLE = "ssm_invites_unreadable"
 
 
 def _audit(operation: str, outcome: str, actor: str, invite_id: str = "") -> None:
@@ -129,6 +130,10 @@ async def api_create(request: web.Request) -> web.Response:
     except ssm_invites.InviteLimitError:
         await asyncio.to_thread(_audit, "create", "denied", actor)
         return _error(409, CODE_LIMIT)
+    except ssm_invites.InvitesUnreadableError as exc:
+        logger.warning("ssm invite not made: %s", exc)
+        await asyncio.to_thread(_audit, "create", "error", actor)
+        return _error(503, CODE_UNREADABLE)
     await asyncio.to_thread(_audit, "create", "ok", actor, invite_id)
     # The command resolves the local AWS CLI (a PATH walk and a trust check), and the rows
     # read the store: neither belongs on the event loop.

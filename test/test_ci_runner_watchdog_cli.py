@@ -700,6 +700,108 @@ def test_a_chain_of_stood_down_kicks_does_not_debounce_the_next_one() -> None:
     assert _redundant(_TickListing(rows)) is not None
 
 
+class _PagedTickListing(_TickListing):
+    """A tick listing that serves only as many rows as the request's `per_page` asks for."""
+
+    def get(self, path: str) -> Any:
+        rows = super().get(path)["workflow_runs"]
+        asked = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query).get("per_page")
+        # The API's own default page when the request names none.
+        return {"workflow_runs": rows[: int(asked[0]) if asked else 30]}
+
+
+def _stood_down_kicks_ahead_of_a_tick(kicks: int, tick_minutes_ago: float) -> list[dict[str, Any]]:
+    """Newest first, as the API lists: `kicks` stood-down rows, then the tick that ran."""
+    step = tick_minutes_ago / (kicks + 1)
+    rows = [_tick_row(1000 + i, step * (i + 1), conclusion="cancelled") for i in range(kicks)]
+    return [*rows, _tick_row(1, tick_minutes_ago)]
+
+
+def test_a_tick_inside_the_interval_is_found_behind_every_kick_that_stood_down_since() -> None:
+    """Each completed Fast Gate adds a stood-down row ahead of the tick that ran.
+
+    The debounce reads one page. A page shorter than the rows one interval produces
+    ends before the tick, reads "no tick", and the kick runs a full tick inside the
+    interval -- once per page of Fast Gates rather than once per interval. Every
+    count of stood-down rows that one API page can carry beside the tick must leave
+    it found, and so must the rows of a whole interval at one Fast Gate a minute.
+    """
+    inside = _INTERVAL.total_seconds() / 60 / 2
+    for kicks in range(wd.PAGE_SIZE):
+        api = _PagedTickListing(_stood_down_kicks_ahead_of_a_tick(kicks, inside))
+        assert _redundant(api) is not None, f"{kicks} stood-down kick(s) hid the tick"
+        assert api.calls == 1
+    # The API serves no larger page, so the one call cannot read deeper.
+    assert wd.KICK_DEBOUNCE_ROWS == wd.PAGE_SIZE
+    # Past the interval the same rows still let the kick run: depth finds the tick,
+    # it does not make an old one count.
+    late = _INTERVAL.total_seconds() / 60 + 1
+    for kicks in (0, wd.PAGE_SIZE // 2, wd.PAGE_SIZE - 1):
+        assert _redundant(_PagedTickListing(_stood_down_kicks_ahead_of_a_tick(kicks, late))) is None
+
+
+def _blind_lines(rows: list[dict[str, Any]]) -> tuple[str | None, list[str]]:
+    logged: list[str] = []
+    reason = wd.kick_is_redundant(
+        _PagedTickListing(rows),
+        REPO,
+        now=NOW,
+        self_run_id=99,
+        interval=_INTERVAL,
+        log=logged.append,
+    )
+    return reason, [line for line in logged if "debounce blind" in line]
+
+
+def test_a_page_that_cannot_see_back_one_interval_runs_the_tick_and_says_so() -> None:
+    """A full page of stood-down kicks, all younger than the interval, hides whatever
+    lies behind it. That is "cannot tell", and the two ways to be wrong are not equal:
+    a tick too many costs its reads, a tick too few leaves an orphan unseen for as
+    long as the kicks keep outrunning the page. So the kick runs, and the log line
+    is what makes the case countable.
+    """
+    inside = _INTERVAL.total_seconds() / 60 / 2
+    # One row more than the page: the tick that ran is the row the page drops.
+    rows = _stood_down_kicks_ahead_of_a_tick(wd.KICK_DEBOUNCE_ROWS, inside)
+    reason, blind = _blind_lines(rows)
+    assert reason is None
+    assert len(blind) == 1 and blind[0].startswith("::warning::"), blind
+    assert str(wd.KICK_DEBOUNCE_ROWS) in blind[0]
+
+
+def test_a_page_that_sees_back_one_interval_and_holds_no_tick_is_not_blind() -> None:
+    """The other side of the boundary: the page is just as full, but its oldest row
+    is older than the interval, so "no tick inside the interval" is an answer. The
+    kick runs for the reason it exists -- the schedule is late -- with no warning.
+    A page that is not full has listed everything, however young its rows.
+    """
+    late = _INTERVAL.total_seconds() / 60 + 1
+    full_and_deep = _stood_down_kicks_ahead_of_a_tick(wd.KICK_DEBOUNCE_ROWS - 1, late)
+    assert len(full_and_deep) == wd.KICK_DEBOUNCE_ROWS
+    full_and_deep[-1]["conclusion"] = "cancelled"  # the oldest row is no tick either
+    assert _blind_lines(full_and_deep) == (None, [])
+
+    inside = _INTERVAL.total_seconds() / 60 / 2
+    short = _stood_down_kicks_ahead_of_a_tick(wd.KICK_DEBOUNCE_ROWS - 2, inside)
+    short[-1]["conclusion"] = "cancelled"
+    assert len(short) < wd.KICK_DEBOUNCE_ROWS
+    assert _blind_lines(short) == (None, [])
+
+
+def test_the_page_is_outrun_only_by_more_rows_than_it_holds_inside_one_interval() -> None:
+    """The depth is sound up to a stated rate, not merely larger.
+
+    The page hides a tick only when at least ``KICK_DEBOUNCE_ROWS`` rows are newer
+    than it. For a tick inside the interval that takes that many kicks inside one
+    interval; one row fewer and the tick is found.
+    """
+    just_inside = _INTERVAL.total_seconds() / 60 - 0.5
+    found = _stood_down_kicks_ahead_of_a_tick(wd.KICK_DEBOUNCE_ROWS - 1, just_inside)
+    assert _redundant(_PagedTickListing(found)) is not None
+    buried = _stood_down_kicks_ahead_of_a_tick(wd.KICK_DEBOUNCE_ROWS, just_inside)
+    assert _blind_lines(buried)[0] is None and len(_blind_lines(buried)[1]) == 1
+
+
 def test_the_debounce_measures_from_run_start_not_queue_time() -> None:
     """A tick that sat queued 20 minutes behind a saturated hosted pool and started
     3 minutes ago covers this moment; its `created_at` alone would say it did not."""

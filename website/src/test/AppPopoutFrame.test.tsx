@@ -258,7 +258,7 @@ describe('AppPopoutFrame', () => {
 
   it('registers as the live pop-out for its route and unregisters on unmount', () => {
     const { unmount } = renderFrame('/dev-fleet', '/dev-fleet')
-    expect(popout.registerPopout).toHaveBeenCalledWith('/dev-fleet')
+    expect(popout.registerPopout).toHaveBeenCalledWith('/dev-fleet', expect.any(Function))
     unmount()
     expect(popout.unregister).toHaveBeenCalled()
   })
@@ -622,7 +622,7 @@ describe('AppPopoutFrame', () => {
       expect(screen.getByTestId('location')).toHaveAttribute('data-key', 'default')
       expect(popout.forwardToMain).not.toHaveBeenCalled()
       expect(popout.registerPopout).toHaveBeenCalledTimes(1)
-      expect(popout.registerPopout).toHaveBeenCalledWith(route)
+      expect(popout.registerPopout).toHaveBeenCalledWith(route, expect.any(Function))
       // The frame's own shell, not the hand-off (which renders nothing).
       expect(screen.getByRole('button', { name: RETURN })).toBeInTheDocument()
     })

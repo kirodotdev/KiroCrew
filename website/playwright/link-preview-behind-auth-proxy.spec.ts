@@ -88,6 +88,9 @@ async function hoverProbeLink(page: Page) {
     Object.assign(a.style, { position: 'fixed', left: '200px', top: '200px', zIndex: '2147483646' })
     scope.append(a)
   }, PROBE_LINK)
+  // The layer listens only once it has loaded and the app list has resolved; a
+  // hover before that is never seen (link-preview-frame-sandbox.spec.ts).
+  await expect(page.locator('html')).toHaveAttribute('data-link-preview-listening', '', { timeout: 10_000 })
   await page.locator('#lp-probe-link').hover()
 }
 

@@ -18,23 +18,42 @@ stdin (JSON):
         {"id": "item-1", "accept": {"kind": "pr_checks", "pr": 123,
                                      "repo": "owner/name"}},
         {"id": "item-2", "accept": {"kind": "pr_merged", "pr": 123,
-                                     "repo": "owner/name"}},
+                                     "repo": "owner/name", "head": "<sha>"}},
         {"id": "item-3", "accept": {"kind": "file", "path": "/abs/path",
-                                     "exists": true}},
+                                     "exists": true, "min_bytes": 1}},
         {"id": "item-4", "accept": {"kind": "human_approval"}},
         {"id": "item-5", "accept": {"kind": "edition_check",
-                                     "check": "name", "ref": "ID-1"}}
+                                     "check": "name", "ref": "ID-1"}},
+        {"id": "item-6", "accept": {"kind": "git_commit", "repo": "/abs/repo",
+                                     "branch": "feat/x", "base": "<sha>"}}
     ]}
 
 Kinds:
     pr_checks       every check on a GitHub pull request is green
-                    (``gh pr checks``).
+                    (``gh pr checks``). A pass names the head commit it
+                    judged; a head that moved while the checks were read is
+                    pending.
     pr_merged       a GitHub pull request is merged (``gh pr view``; an open
                     one is pending, a closed-unmerged one fails). ``repo`` is
-                    required here.
+                    required here. A pass names the merged head and merge
+                    commit. Optional ``head`` (a hex commit id, such as the
+                    one a ``pr_checks`` pass names): a PR merged at another
+                    head fails.
     file            a path exists (or, with ``"exists": false``, does not).
+                    The evidence names its size and modification time.
+                    Optional, only with ``exists`` true: ``min_bytes`` (a
+                    regular file at least that large) and ``newer_than`` (an
+                    ISO-8601 time with a zone the file was modified after).
     human_approval  never machine-evaluated; always ``pending``.
     edition_check   an installed edition answers a named check (below).
+    git_commit      a local branch carries at least one commit that its base
+                    commit does not (``git rev-list --count``); none yet, or no
+                    such branch yet, is pending. ``repo`` must be an absolute
+                    path (a relative one is refused), ``branch`` a branch name,
+                    ``base`` the commit's hex id. Read-only and offline: only
+                    ``rev-parse`` and ``rev-list``, in an environment that
+                    refuses every transport, so a partial clone's missing
+                    object is an error, never a fetch.
 
 ``edition_check`` asks an installed edition. It runs
 ``kirocrew acceptance-check --json <check> <ref>``, which the public build
@@ -109,20 +128,24 @@ Stdlib-only, Python 3.8+.
 """
 
 import json
+import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 #: Binaries this script itself invokes, from argv it builds. NOT a spec-facing
 #: allowlist - nothing in a spec can name a command at all. This exists so a
 #: handler that ever passes spec input into `_exec` fails closed instead of
 #: executing it, which is the regression the `cmd` kind's removal prevents.
-#: `gh` serves `pr_checks`, its draft probe and `pr_merged`'s `pr view`;
+#: `gh` serves `pr_checks`, its head and draft probes and `pr_merged`'s `pr view`;
 #: `kirocrew` serves `edition_check` and runs exactly one fixed subcommand,
-#: `acceptance-check --json <check> <ref>`.
-_SELF_BUILT_COMMANDS = {"gh", "kirocrew"}
+#: `acceptance-check --json <check> <ref>`; `git` serves `git_commit` and runs
+#: only `rev-parse --verify` and `rev-list --count`.
+_SELF_BUILT_COMMANDS = {"gh", "kirocrew", "git"}
 
 TIMEOUT_SECS = 300
 EVIDENCE_TAIL_CHARS = 500
@@ -140,6 +163,46 @@ _GH_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
 #: start with a letter or digit, so neither can ever read as a flag.
 _CHECK_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
 _CHECK_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+#: ``git_commit``'s ``branch`` and ``base``, applied with ``fullmatch``. A branch
+#: starts with a letter or digit and holds no ``..``, so it can never read as a
+#: flag or a revision range; ``base`` is a lower-case hex commit id (SHA-1 or
+#: SHA-256, abbreviated to no fewer than 7).
+_GIT_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
+_GIT_BASE = re.compile(r"[0-9a-f]{7,64}")
+
+#: ``file``'s optional pins. Each tightens a presence check, so none may ride on
+#: ``"exists": false``.
+_FILE_PINS = ("min_bytes", "newer_than")
+
+
+def _git_env():
+    """The environment every ``git`` call runs in: offline, whatever the repo says.
+
+    The repository is one an agent wrote, and this evaluator runs on the trusted
+    side, so its own ``.git/config`` must not choose a program to run. A partial
+    clone fetches a missing object on demand from inside a plain read
+    (``rev-parse``, ``rev-list``), through the repo's ``remote.<name>.uploadpack``
+    or a ``<helper>::`` transport. ``GIT_NO_LAZY_FETCH`` stops that on git 2.45+;
+    an empty ``GIT_ALLOW_PROTOCOL`` refuses every transport on any git, so a
+    missing object is an ``error`` instead. Inherited ``GIT_*`` variables go
+    first, so none can point git at another repository or config.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    env.update(
+        {
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_ALLOW_PROTOCOL": "",
+            "GIT_PROXY_COMMAND": "",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.fsmonitor",
+            "GIT_CONFIG_VALUE_0": "false",
+        }
+    )
+    return env
+
 
 #: ``kirocrew acceptance-check`` exit codes and the report verdict each must
 #: carry. The report has to agree with the exit code before either is
@@ -188,6 +251,7 @@ def _exec(argv, cwd=None):
         proc = subprocess.run(  # noqa: S603 - argv array, no shell, script-built
             [str(a) for a in argv],
             cwd=cwd or None,
+            env=_git_env() if raw == "git" else None,
             capture_output=True,
             text=True,
             # Pin the decode instead of inheriting the locale: on Windows the
@@ -243,6 +307,24 @@ def _pr_is_draft(pr, repo=None):
     return proc.stdout.strip().lower() == "true"
 
 
+def _pr_head(pr, repo=None):
+    """The pull request's head commit id, or ``None`` when ``gh`` cannot say.
+
+    Read before and after ``gh pr checks`` so a pass can name the one head it
+    judged. Like the draft probe it is one-sided: a probe that cannot answer
+    leaves the check's verdict standing and the evidence says the head is unknown.
+    """
+    argv = ["gh", "pr", "view", str(pr)]
+    if repo:
+        argv += ["--repo", str(repo)]
+    argv += ["--json", "headRefOid", "-q", ".headRefOid"]
+    problem, proc = _exec(argv)
+    if problem is not None or proc is None or proc.returncode != 0:
+        return None
+    head = proc.stdout.strip().lower()
+    return head if _GIT_BASE.fullmatch(head) else None
+
+
 def _pr_merged(accept):
     """Has this GitHub pull request merged? ``MERGED`` passes.
 
@@ -253,6 +335,12 @@ def _pr_merged(accept):
 
     ``repo`` is required, unlike ``pr_checks``: without it ``gh`` resolves the
     number against whatever checkout the evaluator runs in.
+
+    The evidence names the PR's final head and its merge commit, so a pass says
+    which code merged. With ``head`` set, ``MERGED`` passes only when the final head
+    is that commit: a push after the check that ``head`` came from merged code no
+    check judged, so it fails. A squash or rebase merge writes a new commit, which
+    is why the PR's own head, not the merge commit's ancestry, is compared.
     """
     pr = accept.get("pr")
     # bool is an int subclass; a non-positive number would reach gh as a flag.
@@ -261,18 +349,41 @@ def _pr_merged(accept):
     repo = accept.get("repo")
     if not isinstance(repo, str) or not _GH_REPO.fullmatch(repo):
         return ("error", "pr_merged spec needs a repo of the form owner/name")
-    argv = ["gh", "pr", "view", str(pr), "--repo", repo, "--json", "state", "-q", ".state"]
+    want = accept.get("head")
+    if want is not None and (not isinstance(want, str) or not _GIT_BASE.fullmatch(want)):
+        return ("error", "pr_merged head must be a lower-case hex commit id, 7-64 chars")
+    argv = ["gh", "pr", "view", str(pr), "--repo", repo, "--json", "state,headRefOid,mergeCommit"]
     problem, proc = _exec(argv)
     if proc is None:
         return problem or ("error", "could not run")
     output = _tail(proc.stdout + "\n" + proc.stderr)
     if proc.returncode != 0:
         return ("error", f"could not read PR #{pr} in {repo}: exit {proc.returncode}: {output}")
-    state = proc.stdout.strip().upper()
+    try:
+        view = json.loads(proc.stdout)
+    except (ValueError, RecursionError):
+        view = None
+    if not isinstance(view, dict):
+        return ("error", f"PR #{pr} in {repo} reported an unreadable view: {output}")
+    state = str(view.get("state") or "").upper()
+    head = str(view.get("headRefOid") or "").lower()
+    merge = view.get("mergeCommit")
+    merge = str(merge.get("oid") or "") if isinstance(merge, dict) else ""
+    if want is not None and not head and state in ("MERGED", "OPEN"):
+        return ("error", f"PR #{pr} in {repo} reported no head commit to compare with {want}")
     if state == "MERGED":
-        return ("pass", f"PR #{pr} in {repo} is merged")
+        if want is not None and not head.startswith(want):
+            return (
+                "fail",
+                f"PR #{pr} in {repo} merged at head {head}, not the checked head {want}: "
+                "commits landed after that check",
+            )
+        return ("pass", f"PR #{pr} in {repo} is merged; head {head}, merge commit {merge}")
     if state == "OPEN":
-        return ("pending", f"PR #{pr} in {repo} is open and not merged yet")
+        moved = ""
+        if want is not None and not head.startswith(want):
+            moved = f"; its head is now {head}, not {want}, so merging it there fails"
+        return ("pending", f"PR #{pr} in {repo} is open and not merged yet{moved}")
     if state == "CLOSED":
         return ("fail", f"PR #{pr} in {repo} was closed without merging")
     return ("error", f"PR #{pr} in {repo} reported an unknown state: {output}")
@@ -363,6 +474,168 @@ def _edition_check(accept):
     return (expected, summary)
 
 
+def _git_commit(accept):
+    """Does a local branch carry a commit its base does not?
+
+    For work that ends in a local commit rather than a pull request. Passes when
+    ``git rev-list --count refs/heads/<branch> --not <base>`` is at least 1; a
+    branch that does not exist yet, or holds nothing past its base, is
+    ``pending``. A base that is not a commit in the repository, or a path that is
+    not a repository, is ``error``: neither says anything about the work.
+
+    ``repo`` must be absolute: a relative one would resolve against whatever
+    directory the evaluator runs in, so it is ``refused`` rather than guessed.
+    Every argv is built here; ``branch`` is read only as ``refs/heads/<branch>``,
+    so it cannot name a tag, a remote ref or a revision expression.
+    """
+    repo = accept.get("repo")
+    if not isinstance(repo, str) or not repo or "\x00" in repo:
+        return ("error", "git_commit spec needs a repo path")
+    if not os.path.isabs(repo):
+        return (
+            "refused",
+            f"git_commit repo {repo!r} is not an absolute path; the evaluator will not "
+            "guess which checkout a relative path means -- name the repository's "
+            "absolute path",
+        )
+    branch = accept.get("branch")
+    if not isinstance(branch, str) or not _GIT_BRANCH.fullmatch(branch) or ".." in branch:
+        return (
+            "error",
+            "git_commit spec needs a branch: a letter or digit, then up to 199 letters, "
+            "digits, dots, slashes, underscores or hyphens, with no '..'",
+        )
+    base = accept.get("base")
+    if not isinstance(base, str) or not _GIT_BASE.fullmatch(base):
+        return ("error", "git_commit spec needs a base: a lower-case hex commit id, 7-64 chars")
+    ref = f"refs/heads/{branch}"
+
+    problem, proc = _exec(
+        ["git", "-C", repo, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"]
+    )
+    if proc is None:
+        return problem or ("error", "could not run")
+    if proc.returncode != 0:
+        output = _tail(proc.stdout + "\n" + proc.stderr)
+        return ("error", f"base {base} is not a commit in {repo}: exit {proc.returncode}: {output}")
+
+    problem, proc = _exec(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref])
+    if proc is None:
+        return problem or ("error", "could not run")
+    if proc.returncode == 1:
+        return ("pending", f"branch {branch} does not exist in {repo} yet")
+    if proc.returncode != 0:
+        output = _tail(proc.stdout + "\n" + proc.stderr)
+        return (
+            "error",
+            f"could not read branch {branch} in {repo}: exit {proc.returncode}: {output}",
+        )
+    head = proc.stdout.strip()
+
+    problem, proc = _exec(["git", "-C", repo, "rev-list", "--count", ref, "--not", base])
+    if proc is None:
+        return problem or ("error", "could not run")
+    output = _tail(proc.stdout + "\n" + proc.stderr)
+    if proc.returncode != 0:
+        return (
+            "error",
+            f"could not count commits on {branch} in {repo}: exit {proc.returncode}: {output}",
+        )
+    try:
+        count = int(proc.stdout.strip())
+    except ValueError:
+        return ("error", f"git rev-list gave no count for {branch} in {repo}: {output}")
+    if count > 0:
+        return ("pass", f"{branch} in {repo} has {count} commit(s) past {base}; head {head}")
+    return ("pending", f"{branch} in {repo} has no commit past {base} yet")
+
+
+def _parse_instant(value):
+    """An ISO-8601 time that carries a zone, or ``None``.
+
+    A trailing ``Z`` is read as UTC, which ``fromisoformat`` accepts only from
+    Python 3.11. A time with no zone is refused rather than read as local time,
+    which would move with the evaluator's host.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text[-1:] in ("Z", "z"):
+        text = text[:-1] + "+00:00"
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return moment if moment.utcoffset() is not None else None
+
+
+def _file(accept):
+    """Does a path exist (or not), and, when pinned, is it the file the work made?
+
+    Presence alone passes an empty stub or a file left from an earlier round, so
+    the evidence names the size and modification time it saw, and the optional
+    pins hold the file to a floor (``min_bytes``) or a time (``newer_than``). A
+    pin with ``"exists": false`` is an ``error``: a path that must be gone has
+    nothing to pin.
+
+    Only metadata is read, never content, and through ``lstat``: the
+    ``accept_eval`` tool screens and resolves a path before this runs, so a
+    symbolic link found here was put in place afterwards, and its target's size
+    and time are not reported or judged.
+    """
+    path = accept.get("path")
+    if not isinstance(path, str) or not path:
+        return ("error", "file spec needs a path")
+    # bool() would coerce, and a truthy `{"exists": "false"}` must not
+    # invert an absence check into a presence check; reject non-booleans
+    # (including 1/0 — the pr guard already refuses bool as an int).
+    exists = accept.get("exists", True)
+    if not isinstance(exists, bool):
+        return ("error", "file spec needs a boolean exists")
+    pins = [name for name in _FILE_PINS if accept.get(name) is not None]
+    if pins and not exists:
+        return (
+            "error",
+            "file min_bytes and newer_than apply only to a path that must exist",
+        )
+    min_bytes = accept.get("min_bytes")
+    if min_bytes is not None and (
+        not isinstance(min_bytes, int) or isinstance(min_bytes, bool) or min_bytes < 0
+    ):
+        return ("error", "file min_bytes must be a non-negative integer")
+    newer_than = accept.get("newer_than")
+    since = _parse_instant(newer_than) if newer_than is not None else None
+    if newer_than is not None and since is None:
+        return ("error", "file newer_than must be an ISO-8601 time with a zone")
+
+    target = Path(path)
+    have = target.exists()
+    if not have:
+        return ("pass" if not exists else "fail", f"{path} does not exist")
+    if not exists:
+        return ("fail", f"{path} exists")
+    try:
+        info = os.lstat(path)
+    except OSError as exc:
+        return ("error", f"{path} exists but could not be read: {exc}")
+    if stat.S_ISLNK(info.st_mode):
+        seen = f"{path} exists (a symbolic link)"
+        if pins:
+            return ("fail", f"{seen}; min_bytes and newer_than judge the file itself, not a link")
+        return ("pass", seen)
+    modified = datetime.fromtimestamp(info.st_mtime, timezone.utc)
+    regular = stat.S_ISREG(info.st_mode)
+    seen = f"{info.st_size} bytes" if regular else "not a regular file"
+    seen = f"{path} exists ({seen}, modified {modified.isoformat(timespec='seconds')})"
+    if not regular and min_bytes is not None:
+        return ("fail", f"{seen}; min_bytes needs a regular file")
+    if min_bytes is not None and info.st_size < min_bytes:
+        return ("fail", f"{seen}; under min_bytes {min_bytes}")
+    if since is not None and modified <= since:
+        return ("fail", f"{seen}; not modified after {newer_than}")
+    return ("pass", seen)
+
+
 def _evaluate(item):
     accept = item.get("accept") or {}
     kind = accept.get("kind")
@@ -376,7 +649,22 @@ def _evaluate(item):
         argv = ["gh", "pr", "checks", str(pr)]
         if repo:
             argv += ["--repo", str(repo)]
+        before = _pr_head(pr, repo)
         verdict, evidence = _run(argv)
+        if verdict == "pass":
+            # ``gh pr checks`` judges whatever head the PR has when it runs and
+            # does not say which, so the head is read on both sides of it: only
+            # an unchanged one is the head this pass is about.
+            after = _pr_head(pr, repo)
+            if before and after and before != after:
+                return (
+                    "pending",
+                    f"PR #{pr}'s head moved from {before} to {after} while its checks "
+                    "were read; evaluate it again",
+                )
+            if before and before == after:
+                return ("pass", f"head {before}: {evidence}")
+            return ("pass", f"head unknown (gh could not read it): {evidence}")
         # The draft probe runs only behind a pending verdict. A draft's checks
         # can still pass in repos with no check gated on the draft flag, so the
         # probe must not pre-empt `gh pr checks`, and skipping it on pass/fail
@@ -400,20 +688,10 @@ def _evaluate(item):
         return _pr_merged(accept)
     if kind == "edition_check":
         return _edition_check(accept)
+    if kind == "git_commit":
+        return _git_commit(accept)
     if kind == "file":
-        path = accept.get("path")
-        if not isinstance(path, str) or not path:
-            return ("error", "file spec needs a path")
-        # bool() would coerce, and a truthy `{"exists": "false"}` must not
-        # invert an absence check into a presence check; reject non-booleans
-        # (including 1/0 — the pr guard already refuses bool as an int).
-        exists = accept.get("exists", True)
-        if not isinstance(exists, bool):
-            return ("error", "file spec needs a boolean exists")
-        want = exists
-        have = Path(path).exists()
-        verdict = "pass" if have == want else "fail"
-        return (verdict, f"{path} {'exists' if have else 'does not exist'}")
+        return _file(accept)
     if kind == "human_approval":
         # Never machine-evaluated; the conductor asks the person.
         return ("pending", "awaiting human approval - not machine-checkable")

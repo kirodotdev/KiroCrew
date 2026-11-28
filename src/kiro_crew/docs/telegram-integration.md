@@ -61,7 +61,7 @@ log.
 At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setMyCommands`, so typing `/` in Telegram offers autocomplete. `COMMAND_SPEC` also drives `/help`; commands that need an argument appear in the help footer instead of the menu.
 
 - `/new` (or `/start`) — start a fresh conversation
-- `/compact` — free up room when the context fills
+- `/compact` — free up room when the context fills. Text after it (`/compact keep the API decisions`) is passed to the compaction; the KAS backend's compaction takes no instructions, so there the text is ignored
 - `/model` (or `/models`) — pick the model from an inline-button list. Button-only on purpose:
   the choices are what this account's backend actually advertised, so there is
   no model name to guess and no typo to reject mid-conversation. The pick is
@@ -78,7 +78,9 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
   is global by nature, and an operator who turns auto-approve off expects it off
   everywhere rather than off in whichever surface they happened to type it in. It
   does not weaken the PreToolUse gate: sensitive-path, governance-ceiling and
-  deny-list blocks still refuse a tool.
+  deny-list blocks still refuse a tool. Only the owner can change it: the ID in
+  `telegram.owner_user_id`, or, when that is unset, the one ID in
+  `allowed_user_ids`. Anyone else can read the status.
 - `/link` / `/unlink` — resume or stop mirroring dashboard replies here; a
   conversation is its own mirror by default, so `/link` only withdraws an
   earlier `/unlink`
@@ -89,7 +91,8 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
   it after the current turn (overrides `queue_mode` for this message)
 - `/agent` (or `/agents`) — pick the agent from an inline-button list of the specs installed on
   this machine, except Kiro Crew's own internal agents and app-installed
-  (`<app>--<agent>`) agents. It shows at most 24; a final inert
+  (`<app>--<agent>`) agents. A Bot's own copy of a template is labelled with the
+  Bot's name as the Bots page shows it. It shows at most 24; a final inert
   "… and N more not shown" row counts the rest. Button-only for the same reason `/model` is. Unlike a model, an
   agent cannot be swapped inside a running session — the spec decides which MCP
   servers and skills that process loaded at spawn — so a pick opens a fresh
@@ -120,7 +123,9 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
 - `/spawn <task>` (or `/bg`) — run a task in a background subagent.
   `/spawn list` shows what is running.
 - `/task` (or `/tasks`) `run <spec> | status | cancel` — drive the unattended task runner.
-- `/kirocrew dashboard [<N>h|<N>m]` — get a dashboard login link (DM only).
+- `/kirocrew dashboard [<N>h|<N>m]` — get a dashboard login link (DM only). The
+  link opens your own dashboard session, chat included, only when your ID is
+  `telegram.owner_user_id`; anyone else's link cannot chat in your sessions.
 - `/temporary` — this conversation reads and saves no memory: no memories or
   lessons are added to the prompt, and nothing is written to the transcript. A bare
   `/temporary` just marks the conversation; `/temporary <question>` marks it and
@@ -168,6 +173,10 @@ Each prompt's buttons carry a one-time value, so a button left in your scrollbac
 cannot approve a later tool even if the agent restarts and reuses the same
 internal request number: pressing an old one reports that it expired.
 Neither weakens the security gate — a denied-by-policy tool is still refused.
+
+Only the owner (the same person `/yolo` names) answers these prompts. A turn
+someone else on `allowed_user_ids` started gets no prompt, so a tool that needs
+approval is denied, and their press on Approve or Trust counts as Deny.
 
 Answer-choice buttons are tied to the conversation that created them. If you
 start a new conversation, switch agents, or press an old button after that
@@ -220,6 +229,13 @@ topics that have a conversation open on the dashboard: create the topic in
 Telegram, send one message there, and it appears. A job has one destination, so
 picking one empties its Slack **Channel ID**, and filling in a Channel ID turns
 the Telegram destination off.
+
+To point several jobs at one topic, check them on the **Schedule** page and pick
+**Actions** → **Set Telegram destination**, then the chat or topic. The menu row
+shows how many of the checked jobs it changes, and after you pick, a line says
+how many jobs now report to that chat or topic. A job with a Slack
+**Channel ID** keeps it; it is listed as not updated, with any job whose update
+failed, and those jobs stay checked.
 
 Proactive messages (a cron's report, an agent's `send_message`) are plain text by
 default, so `**bold**` arrives with its asterisks. Pass `format="markdown"` to

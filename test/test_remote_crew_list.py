@@ -198,14 +198,13 @@ def test_a_long_tag_list_stops_at_the_cap(monkeypatch):
     from kiro_crew import work_vocab
 
     seen = []
-    real = work_vocab.DISPATCH_TAG_RE
+    real = work_vocab.is_dispatch_tag
 
-    class _Counting:
-        def fullmatch(self, tag):
-            seen.append(tag)
-            return real.fullmatch(tag)
+    def _counting(tag):
+        seen.append(tag)
+        return real(tag)
 
-    monkeypatch.setattr(work_vocab, "DISPATCH_TAG_RE", _Counting())
+    monkeypatch.setattr(work_vocab, "is_dispatch_tag", _counting)
     tags = [f"tag{i:06d}" for i in range(65_536)]
     assert crew_list._tags({"tags": tags}) == tags[: work_vocab.MAX_DISPATCH_TAGS]
     assert len(seen) == work_vocab.MAX_DISPATCH_TAGS  # the tail is never scanned
@@ -230,12 +229,12 @@ def test_a_disconnected_crew_is_listed_but_never_probed():
     assert crews.paths == []
 
 
-def test_a_version_mismatch_skips_the_headroom_read():
+def test_a_version_mismatch_is_flagged_but_the_crew_is_still_read():
     crews = Crews()
     crews.add("c", version="0.0.1")
     row = _list(crews)["c"]
-    assert row["version_match"] is False and row["headroom"] is None
-    assert ("c", "api/chat/headroom") not in crews.paths
+    assert row["version_match"] is False and row["headroom"] is not None
+    assert ("c", "api/chat/headroom") in crews.paths
 
 
 def test_a_hostile_headroom_is_retyped():

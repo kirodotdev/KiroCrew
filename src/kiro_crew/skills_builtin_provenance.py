@@ -1,11 +1,14 @@
 """Whether an installed builtin skill is an unchanged copy the sync installed, and whether it
 still matches the package: the tree fingerprint, the provenance marker, the ownership check,
-the doctor's currency verdicts, and deployed cron scripts judged against their skill assets.
+the doctor's currency verdicts, the app a packaged copy belongs to (kept after the copy
+leaves the package), and deployed cron scripts judged against their skill assets.
 """
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import json
 import logging
 import os
 import stat
@@ -24,6 +27,7 @@ from kiro_crew.skills_discovery import (
     _BUILTIN_SKILLS_DIR,
     _iter_skill_files,
     _project_skills_dir,
+    _recorded_bytes_match,
     skills_dir,
 )
 
@@ -239,7 +243,16 @@ def _skill_tree_fingerprint(
     inodes, non-regular files, sensitive paths, and any resolved path outside
     the root — so a component swapped between the walk and the open (or a
     hardlink planted at a walked name) reads as unprovable instead of leaking
-    outside bytes (e.g. credentials) into the hash.
+    outside bytes (e.g. credentials) into the hash. The packaged side admits a
+    hardlinked file only when its bytes match the installer's RECORD digest for
+    that exact path (:func:`kiro_crew.skills_discovery._recorded_bytes_match`),
+    which is how a hardlinking installer such as uv lays out the package; the
+    installed side never admits one.
+
+    ``assume_owner_rwx_dirs`` is set only when hashing the PACKAGED SOURCE: it
+    ORs owner rwx into every directory mode, so the fingerprint describes the
+    copy as it will exist after ``ensure_owner_rwx_dirs``, and it turns on the
+    RECORD admission of a hardlinked file above.
 
     ``strip_carried_opt_out`` hashes the tree as it was before the sync carried
     the user's Context-budget opt-out onto it: the top-level ``SKILL.md`` bytes
@@ -284,7 +297,10 @@ def _skill_tree_fingerprint(
             continue
         try:
             data = safe_read_file_bytes_nolink(
-                str(root / rel), within_root=str(root), max_bytes=budget
+                str(root / rel),
+                within_root=str(root),
+                max_bytes=budget,
+                admit_hardlinked=_recorded_bytes_match if assume_owner_rwx_dirs else None,
             )
         except FileTooLargeError:
             # Over the remaining byte budget: the tree costs more to prove
@@ -493,6 +509,39 @@ def _packaged_skill_app(src_file: Path) -> str:
     except (OSError, ValueError, FileTooLargeError):
         return ""
     return meta.get("app", "").strip()
+
+
+#: ``{"skills": {key: app}}``: every flat key ``builtin_skills/`` ships, or has shipped, with
+#: an ``app:`` line, and that app. Shipped data, so a key keeps its app after its copy is
+#: deleted from the package. ``test_released_builtin_skill_copies.py`` holds it to every
+#: packaged skill naming an app and every app it names to a pin row.
+_SKILL_APPS_PATH = Path(__file__).resolve().parent / "data" / "packaged_skill_apps.json"
+
+
+def _is_flat_name(value: object) -> bool:
+    return isinstance(value, str) and bool(value) and value == value.strip() and "/" not in value
+
+
+@functools.lru_cache(maxsize=1)
+def _recorded_skill_apps() -> dict[str, str]:
+    """``{key: app}`` from :data:`_SKILL_APPS_PATH`, read once: the file ships in the wheel.
+
+    The packaged tree names a key's app only while the copy still ships there; this
+    table still names it once the copy is deleted, so the catalog keeps withholding a
+    host's installed copy of a released app's skill. An unreadable or malformed file
+    is an empty table and a malformed entry is dropped: that key then reads as one no
+    packaged copy claims.
+    """
+    try:
+        document = json.loads(_SKILL_APPS_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        logger.warning("packaged skill app table unreadable: %s", _SKILL_APPS_PATH, exc_info=True)
+        return {}
+    skills = document.get("skills") if isinstance(document, dict) else None
+    if not isinstance(skills, dict):
+        logger.warning("packaged skill app table has no 'skills' object: %s", _SKILL_APPS_PATH)
+        return {}
+    return {key: app for key, app in skills.items() if _is_flat_name(key) and _is_flat_name(app)}
 
 
 def _ships_for_released_app(src_file: Path, released: frozenset[str]) -> bool:

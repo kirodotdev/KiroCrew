@@ -31,6 +31,7 @@ import { namedCeiling } from './namedCeiling'
 import { composerDraftStoreFor } from '../utils/composerDraftStore'
 import { Routes, Route, useNavigate } from 'react-router-dom'
 import RemoteArtifactDetailPage from '../pages/RemoteArtifactDetailPage'
+import { FRAME_PING_MESSAGE_TYPE } from '../lib/widgetSrcdoc'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import type { ArtifactComment } from '../types'
@@ -986,9 +987,10 @@ describe('RemoteArtifactDetailPage', async () => {
       Object.defineProperty(frame, 'contentWindow', { value: { postMessage: post }, configurable: true })
       fireEvent.click(await screen.findByText('anchored note'))
       // The HTML body lives in a null-origin sandbox, so the scroll request can
-      // only travel by postMessage.
-      await waitFor(() => expect(post).toHaveBeenCalled())
-      expect(post.mock.calls[0][0]).toMatchObject({ id: anchored.id })
+      // only travel by postMessage. The frame's alive ping can reach it first.
+      const sent = () => post.mock.calls.map(([m]) => m).filter((m) => m.type !== FRAME_PING_MESSAGE_TYPE)
+      await waitFor(() => expect(sent()).not.toHaveLength(0))
+      expect(sent()[0]).toMatchObject({ id: anchored.id })
       expect(screen.queryByPlaceholderText('Reply…')).not.toBeInTheDocument()
     })
   })

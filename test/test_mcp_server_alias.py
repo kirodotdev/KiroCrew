@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 from kiro_crew.agent import _normalize_mcp_server_keys
+from kiro_crew.mcp_provenance import COPIED_KEY
 from kiro_crew.mcp_utils import mcp_server_alias
 
 
@@ -412,6 +413,28 @@ class TestNormalizeMcpServerKeys:
         # Equivalent-sibling refs redirect to the surviving alias; distinct kept.
         assert cfg["tools"] == ["@playwright-mcp", "@playwright-mcp-4"]
         assert cfg["allowedTools"] == ["@playwright-mcp"]
+
+    def test_a_user_duplicate_merged_away_keeps_the_survivor_the_users(self):
+        """A collapse that deletes an unstamped equal entry leaves the survivor unstamped.
+
+        The home picked is the stamped ``ns-foo``, and the user's own equal ``ns-foo-2``
+        is merged away onto it. A stamp kept there would let removing ``ns/foo`` from the
+        Kiro global later delete the server the user wrote.
+        """
+        cfg = {
+            "mcpServers": {
+                "ns-foo": {"command": "x", COPIED_KEY: True},
+                "ns-foo-2": {"command": "x"},
+                "ns/foo": {"command": "x", COPIED_KEY: True},
+            },
+            "tools": ["@ns-foo", "@ns-foo-2", "@ns/foo"],
+        }
+        _normalize_mcp_server_keys(cfg)
+        servers = cfg["mcpServers"]
+        assert len(servers) == 1
+        ((survivor, spec),) = servers.items()
+        assert COPIED_KEY not in spec
+        assert cfg["tools"] == [f"@{survivor}"]
 
     def test_missing_mcpservers_noop(self):
         cfg = {"tools": []}

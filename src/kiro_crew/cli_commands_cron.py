@@ -60,6 +60,13 @@ from kiro_crew.validation import (
     MAX_SHORT_STRING,
 )
 
+# CHANNEL_ID_RE in plain words, for a refusal a person reads.
+_CHANNEL_ID_HINT = (
+    "a Slack channel ID starts with C, D, G or W followed by capital letters or "
+    "digits, like C0123ABC; in Slack, open the channel's details and copy the "
+    "Channel ID at the bottom"
+)
+
 
 def _format_schedule(schedule: object, *, tz_name: str = "") -> str:
     """Human-readable schedule description (CLI shows full date for 'at' jobs)."""
@@ -385,8 +392,8 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             _cron_add_fail("--at is outside the supported timestamp range")
 
     # ── Fields validated up front so an invalid value never strands a job ──
-    if channel and (len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel)):
-        _cron_add_fail(f"invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})")
+    if channel and (len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.fullmatch(channel)):
+        _cron_add_fail(f"invalid channel ID format: {_CHANNEL_ID_HINT}")
     try:
         model = _cron_model(model)
     except ValueError as e:
@@ -653,15 +660,7 @@ def _running_since() -> dict[str, float]:
     """Start time of each job whose run is in flight, keyed by job id."""
     from kiro_crew import cron_inflight
 
-    since: dict[str, float] = {}
-    try:
-        markers = cron_inflight.read_markers(config_dir())
-    except Exception:  # noqa: BLE001 - an unreadable marker dir marks nothing
-        return since
-    for m in markers:
-        if m.owner_alive() is True:
-            since[m.job_id] = max(m.started_at, since.get(m.job_id, 0.0))
-    return since
+    return cron_inflight.running_since_by_job(config_dir())
 
 
 def _cron_dispatch(args: argparse.Namespace) -> None:
@@ -712,6 +711,8 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         if not jobs:
             print("No cron jobs." if want_folder is None else "No cron jobs in that folder.")
             return
+        from kiro_crew.cron_inflight import running_note
+
         running = _running_since()
         for j in jobs:
             status = "✅" if j.enabled else "⏸️"
@@ -721,9 +722,7 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             name = safe_terminal_line(j.name)
             message = safe_terminal_line(j.message)[:60]
             started = running.get(j.id)
-            run_note = ""
-            if started:
-                run_note = f"  [running since {_time.strftime('%H:%M UTC', _time.gmtime(started))}]"
+            run_note = f"  {running_note(started)}" if started else ""
             print(f"  {status} {j.id}  {name}  ({sched})  [folder: {folder}]{run_note}  {message}")
             # Ownership is printed because it decides which surfaces can manage
             # the job at all: a job with no owning session is outside every chat
@@ -873,9 +872,9 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                         kwargs[field] = ""
                         kwargs["thread_ts"] = ""
                         continue
-                    if len(val) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(val):
+                    if len(val) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.fullmatch(val):
                         print(
-                            f"Error: invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})",
+                            f"Error: invalid channel ID format: {_CHANNEL_ID_HINT}",
                             file=sys.stderr,
                         )
                         sys.exit(1)

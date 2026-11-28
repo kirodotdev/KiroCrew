@@ -150,6 +150,7 @@ class _Slot:
         self._pending_synthesis = False
         self._deferred_notes: list[dict] = []
         self.queued: list[str] = []
+        self.tags: list[str] = []
 
     def queue_append(self, message: str, *, meta=None, directive_user_origin: bool) -> None:
         assert directive_user_origin is False

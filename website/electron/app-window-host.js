@@ -72,7 +72,9 @@ const {
 const { boundShortcuts, createMachinePrefs } = require("./app-window-prefs");
 const { WORK_AREA_MARGIN, placeBesideAnchor } = require("./app-window-placement");
 const { SPAN_CHANNELS, createDisplayMemory, createSpans, spanKey } = require("./app-window-span");
+const { APP_VIEW_PATH, reportShortcutOpen } = require("./app-window-telemetry");
 const { shellShortcutReservations } = require("./shell-shortcut-reservations");
+const { loadDashboardWithToken } = require("./token-retry");
 
 /** Document-path prefix of a hosted window. Keep in sync with website/src/desktopWindow/. */
 const DESKTOP_WINDOW_PREFIX = "/popout/desktop";
@@ -190,7 +192,7 @@ function pointInRegions(regions, x, y) {
  *   now?: () => number,
  *   reservations?: {isReserved: (a: string) => boolean, onChange: (fn: () => void) => () => void},
  *   displayMemoryPath?: string,
- *   showDashboardSession?: (slotKey: string) => boolean,
+ *   showDashboardSession?: (slotKey: string, crewId: string) => boolean,
  *   openExternal?: (url: string) => void,
  *   timers?: {setInterval?: Function, clearInterval?: Function, setTimeout?: Function, clearTimeout?: Function},
  *   registerCaptureSurface?: (wc: object, url: string) => boolean,
@@ -338,6 +340,16 @@ function createAppWindowHost(deps) {
     }
   }
 
+  /** A shortcut press, reported to this shell's own gateway only (`app-window-telemetry.js`). */
+  function reportShortcut(app) {
+    if (!backendOrigin || targetOf(app).instanceId !== SELF_GATEWAY) return;
+    const request = async () => {
+      const auth = await authFor(false);
+      return auth.value ? withAuth(APP_VIEW_PATH, auth) : null;
+    };
+    reportShortcutOpen({ app, fetchImpl, request, timeoutMs: PROBE_TIMEOUT_MS });
+  }
+
   /** @returns {Promise<{state: "ok"|"unauthorized"|"unknown", body?: unknown}>} */
   async function probe(auth) {
     if (!backendOrigin || typeof fetchImpl !== "function") return { state: "unknown" };
@@ -384,14 +396,15 @@ function createAppWindowHost(deps) {
     return local.filter((cap) => there.includes(cap));
   }
 
-  function pageUrl(rec) {
+  /** Load *rec*'s page signed in; its link token never enters the page's address. */
+  function showPage(rec, mayLoad) {
     const url = `${baseOf(rec.target)}${desktopWindowPath(rec.app, rec.id)}`;
     // A remote's first load carries the link token core minted for it; self the shell's own.
     // A refreshed token for the SAME crew is used; never another gateway's.
     const current = targetOf(rec.app);
     const token = !rec.target.baseUrl ? pageToken
       : sameTarget(current, rec.target) ? current.token : rec.target.token;
-    return token ? `${url}?token=${encodeURIComponent(token)}` : url;
+    return loadDashboardWithToken(rec.win.webContents, url, token, mayLoad);
   }
 
   function sameTarget(a, b) {
@@ -399,31 +412,28 @@ function createAppWindowHost(deps) {
   }
 
   /**
-   * Load (or reload) *rec*'s page. A window on a crew loads only once core's
-   * registry still shows that crew connected on the port it was resolved to: a
-   * disconnect frees the port for the next crew to connect, which must never be
-   * sent this crew's credential. Otherwise the window closes; on a definite no its
-   * app's target is dropped and re-resolved at once, and a non-answer leaves the
+   * Load (or reload) *rec*'s page. A window on a crew signs in, and then loads, only once
+   * core's registry, re-read before each, still shows that crew connected on the port it
+   * was resolved to: a disconnect frees the port for the next crew to connect, which must
+   * never be sent this crew's credential. Otherwise the window closes; on a definite no
+   * its app's target is dropped and re-resolved at once, and a non-answer leaves the
    * target for the next tick to try again. A tick waits for the loads it started.
    */
   function loadPage(rec) {
-    if (!rec.target.baseUrl) {
-      rec.win.loadURL(pageUrl(rec));
-      return;
-    }
-    const loading = gateways.confirm(rec.target).catch(() => ({ known: false })).then((check) => {
-      if (records.get(rec.key) !== rec || !isLive(rec) || rec.closing) return;
-      if (check.known && check.ok) {
-        rec.win.loadURL(pageUrl(rec));
-        return;
-      }
+    const onItsCrew = async () => {
+      if (!rec.target.baseUrl) return true;
+      const check = await gateways.confirm(rec.target).catch(() => ({ known: false }));
+      if (records.get(rec.key) !== rec || !isLive(rec) || rec.closing) return false;
+      if (check.known && check.ok) return true;
       log(`app-window-host: ${rec.key}: its crew is no longer on that port; not loaded`);
       closeRecord(rec);
       if (check.known && sameTarget(targets.get(rec.app), rec.target)) {
         targets.delete(rec.app);
         void reconcileOnce();
       }
-    }).finally(() => pendingLoads.delete(loading));
+      return false;
+    };
+    const loading = onItsCrew().then((ok) => ok && showPage(rec, onItsCrew)).finally(() => pendingLoads.delete(loading));
     pendingLoads.add(loading);
   }
 
@@ -525,6 +535,11 @@ function createAppWindowHost(deps) {
     const background = decl.kind === "background";
     return {
       ...bounds,
+      // macOS shows a window on another app's full-screen Space only when it is a
+      // non-activating panel, so an overlay or panel is one there (as Mochi's pet and
+      // chat panel are). `type` values are per platform: "panel" is not a legal value
+      // on Windows or Linux, and a background window is never shown.
+      ...(platform === "darwin" && !background ? { type: "panel" } : {}),
       frame: false,
       transparent: overlay || decl.transparent === true,
       alwaysOnTop: !background,
@@ -675,6 +690,9 @@ function createAppWindowHost(deps) {
       // Not in the user's screenshots, recordings or screen shares.
       win.setContentProtection(true);
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      // Above a full-screen app and ordinary always-on-top windows on macOS, where
+      // the default "floating" level sits beneath them.
+      if (platform === "darwin") win.setAlwaysOnTop(true, "screen-saver");
     } else if (decl.kind === "panel") {
       win.setAlwaysOnTop(true, "floating");
       // A panel opened beside a box belongs to it, and the box (an avatar on an
@@ -952,6 +970,7 @@ function createAppWindowHost(deps) {
   function deliverShortcut(app, shortcut) {
     const decl = declared(app, shortcut.window);
     if (!decl || suspended) return;
+    reportShortcut(app);
     if (isSpanning(decl)) {
       if (openWindow(app, decl, { focus: true })) spans.deliver(app, decl.id, CHANNELS.shortcut, shortcut.id);
       return;
@@ -1432,7 +1451,8 @@ function createAppWindowHost(deps) {
       if (!rec || suspended || typeof slotKey !== "string" || slotKey.length > MAX_SLOT_KEY_LENGTH) return false;
       if (!deps.showDashboardSession) return false;
       try {
-        return deps.showDashboardSession(slotKey) === true;
+        const crewId = rec.target.instanceId === SELF_GATEWAY ? "" : rec.target.instanceId;
+        return deps.showDashboardSession(slotKey, crewId) === true;
       } catch {
         return false;
       }

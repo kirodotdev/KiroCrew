@@ -675,7 +675,7 @@ def test_MUTATION_credential_filename(tmp_path):
     """Disable refused_by_name; nothing then blocks a skill carrying a .env."""
     src = make_crew(
         tmp_path / "home",
-        skills={"withenv": {"SKILL.md": "# ok", ".env": "SECRET=hunter2"}},
+        skills={"withenv": {"SKILL.md": "# ok", ".env": "SECRET=hunt2"}},
     )
     good = load_build()
     crew = good.resolve_crew("frontdesk", src)

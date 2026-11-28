@@ -67,10 +67,13 @@ _WARM_JOIN_TIMEOUT_SECS = 2.0
 # Steps of the launcher's namespace handshake, named in probe failure reasons so
 # a caller can tell the host mechanisms apart instead of seeing a bare errno: a
 # NEWNS denial is Ubuntu's AppArmor userns restriction, while NEWUSER with
-# ENOSPC/EUSERS is a hardened user.max_user_namespaces=0. ENOSPC is ALSO what
-# momentary fd/disk pressure looks like, so the cap verdict stays TRANSIENT and
-# is never cached; the remedy travels with it so a host at a cap of 0 — which is
-# reported transient forever — still gets told which sysctl to raise.
+# ENOSPC/EUSERS is the user-namespace cap. ENOSPC is ALSO what momentary fd/disk
+# pressure looks like, so the ENOSPC verdict stays TRANSIENT and is never cached.
+# The errno alone cannot say which of the two it is, so the probe parent then
+# reads user.max_user_namespaces once: 0 makes the cause certain and the remedy
+# becomes REMEDY_USERNS_CAP_ZERO, which every surface names as a disabled cap
+# rather than a momentary limit. Any other reading keeps the ambiguous
+# REMEDY_MAX_USER_NAMESPACES. Neither changes the (ok, transient) verdict.
 #
 # The third step is the launcher's FIRST mount: making propagation on ``/``
 # private inside the new mount namespace. Both unshare calls can succeed while
@@ -144,7 +147,10 @@ _SANDBOX_BACKEND_PROBE_TIMEOUT_SECS: float = 5.0
 # failure identifies no mechanism — a harness failure, a non-Linux host, or a
 # deferred on-loop probe.
 REMEDY_APPARMOR_USERNS = "apparmor_userns"  # Ubuntu >= 23.10 restricted profile
-REMEDY_MAX_USER_NAMESPACES = "max_user_namespaces"  # user.max_user_namespaces=0
+REMEDY_MAX_USER_NAMESPACES = "max_user_namespaces"  # the cap, or momentary pressure
+#: The cap read as 0: user namespaces are disabled on this host. Set only by the
+#: probe parent (``_probe_parent_sequence``), never by ``_remedy_for_step``.
+REMEDY_USERNS_CAP_ZERO = "userns_cap_zero"
 REMEDY_NO_USER_NS = "no_user_ns"  # kernel built without CONFIG_USER_NS
 REMEDY_USERNS_DENIED = "userns_denied"  # userns creation refused outright
 REMEDY_MOUNT_DENIED = "mount_denied"  # namespaces work; mount(2) refused inside them
@@ -209,6 +215,15 @@ _LINUX_REMEDY_GUIDANCE = {
         "User namespace creation hit the per-user cap, which usually means "
         "user.max_user_namespaces=0 (a CIS-hardened default). Raise that sysctl. "
     ),
+    REMEDY_USERNS_CAP_ZERO: (
+        "User namespaces are disabled on this host: user.max_user_namespaces is 0, "
+        "so the kernel refuses every unprivileged user namespace and Kiro Crew cannot "
+        "build its sandbox. A value of 0 is a deliberate hardening setting (CIS "
+        "benchmarks and many IT-managed images apply it), so check with whoever "
+        "manages this host before changing it. To allow user namespaces, raise it "
+        "with `sudo sysctl -w user.max_user_namespaces=15000` and make it persistent with "
+        "`echo 'user.max_user_namespaces=15000' | sudo tee /etc/sysctl.d/99-userns.conf`. "
+    ),
     REMEDY_NO_USER_NS: (
         "The kernel rejected the user namespace outright, which means it was "
         "built without CONFIG_USER_NS. There is no host-level fix short of a "
@@ -241,6 +256,29 @@ _LINUX_REMEDY_GUIDANCE = {
 def _linux_remedy_guidance(remedy: str) -> str:
     """Mechanism-specific guidance prefix for a remedy token (``""`` if none)."""
     return _LINUX_REMEDY_GUIDANCE.get(remedy, "")
+
+
+#: The kernel's per-user-namespace cap, as this process's own user namespace sees it.
+_MAX_USER_NAMESPACES_PATH = "/proc/sys/user/max_user_namespaces"
+
+
+def _read_max_user_namespaces() -> int | None:
+    """The ``user.max_user_namespaces`` value this process sees, or ``None``.
+
+    Read only by the probe parent, after a NEWUSER ENOSPC/EUSERS report: a value
+    of 0 makes the cause of that errno certain, because this process can then never
+    create a user namespace. ``None`` off Linux (checked before anything is opened)
+    and on any read, decode or parse failure. Never raises; a negative value is
+    returned as that integer, which the caller treats as "not 0".
+    """
+    if sys.platform != "linux":
+        return None
+    try:
+        with open(_MAX_USER_NAMESPACES_PATH, "rb") as handle:
+            raw = handle.read(64)
+        return int(raw.decode("ascii").strip())
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
 
 
 def _close_probe_fds(*fds: int) -> None:
@@ -641,7 +679,12 @@ def _probe_parent_sequence(
     if step != "U":
         return (False, True, f"probe child sent unexpected step {step!r}", "")
     if err:
-        return _probe_failure(_PROBE_STEP_NEWUSER, err)
+        ok, transient, reason, remedy = _probe_failure(_PROBE_STEP_NEWUSER, err)
+        # The cap token is the only one whose errno is ambiguous, so the knob is read
+        # for it alone, and the comparison runs first so no other errno reads it.
+        if remedy == REMEDY_MAX_USER_NAMESPACES and _read_max_user_namespaces() == 0:
+            remedy = REMEDY_USERNS_CAP_ZERO
+        return ok, transient, reason, remedy
 
     failed_map = _probe_write_identity_maps(pid, uid, gid)
     if failed_map is not None:
@@ -1026,14 +1069,34 @@ def is_docker_container() -> bool:
         return False
 
 
+# Why the most recent ``_probe_sandbox_exec()`` call failed, ``None`` after a pass
+# or before any darwin probe. ``detect_backend`` reports it as the probe detail on
+# macOS, where the namespace probe can only ever say "not Linux".
+_last_sandbox_exec_failure: str | None = None
+
+
+def _sandbox_exec_failed(reason: str) -> bool:
+    """Record why the sandbox-exec probe failed and return ``False``."""
+    global _last_sandbox_exec_failure
+    _last_sandbox_exec_failure = reason
+    return False
+
+
+def sandbox_exec_failure_reason() -> str:
+    """Why the last ``_probe_sandbox_exec()`` failed, or ``""`` when it did not."""
+    return _last_sandbox_exec_failure or ""
+
+
 def _probe_sandbox_exec() -> bool:
     """Return True if macOS ``sandbox-exec`` actually works.
 
     Uses a file-based profile with fixed system paths for both
     ``sandbox-exec`` and its ``/usr/bin/true`` target. The probe tests with an
     ``(allow default)`` profile to detect kernel-level rejection, not merely
-    executable presence.
+    executable presence. A failure's reason is kept for
+    :func:`sandbox_exec_failure_reason`.
     """
+    global _last_sandbox_exec_failure
     if sys.platform != "darwin":
         return False
     # Decide empirically — do NOT hard-code a macOS version cutoff. A
@@ -1050,7 +1113,7 @@ def _probe_sandbox_exec() -> bool:
     # Rather than hard-coding version checks, we probe empirically below.
     sb = "/usr/bin/sandbox-exec"
     if not os.path.exists(sb):
-        return False
+        return _sandbox_exec_failed(f"sandbox-exec probe: {sb} not found")
     # Probe with a file-based (allow default) profile against a TRUSTED, fixed
     # system binary. We deliberately do NOT probe the (user-writable) kiro-cli
     # binary: the probe runs under (allow default) with Kiro Crew's credentials,
@@ -1059,7 +1122,7 @@ def _probe_sandbox_exec() -> bool:
     # accepts sandbox_apply, which /usr/bin/true validates safely.
     target = "/usr/bin/true"
     if not os.path.exists(target):
-        return False
+        return _sandbox_exec_failed(f"sandbox-exec probe: {target} not found")
     fd, profile_path = tempfile.mkstemp(suffix=".sb", prefix="kirocrew_probe_")
     try:
         os.write(fd, b"(version 1)(allow default)")
@@ -1097,10 +1160,14 @@ def _probe_sandbox_exec() -> bool:
                     r.returncode,
                     detail,
                 )
-        return r.returncode == 0
+            return _sandbox_exec_failed(
+                f"sandbox-exec probe exited {r.returncode}: {detail or 'no stderr'}"
+            )
+        _last_sandbox_exec_failure = None
+        return True
     except Exception as exc:
-        logger.debug("sandbox-exec probe failed: %s", exc)
-        return False
+        logger.warning("sandbox-exec probe failed: %s", exc)
+        return _sandbox_exec_failed(f"sandbox-exec probe failed: {exc}")
     finally:
         try:
             os.unlink(profile_path)

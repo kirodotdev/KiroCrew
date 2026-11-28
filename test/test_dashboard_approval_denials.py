@@ -496,7 +496,13 @@ class TestDenyOnce:
 
         async def _call(action: str):
             request = MagicMock()
-            request.get = {"app": ""}.get  # the dashboard user: an empty app claim
+            # The owner's own dashboard session: an empty app claim on the local
+            # owner's subject, with no owner configured.
+            claims = {"app": "", "user": "local-app", "is_dashboard_user": True}
+            request.get = claims.get
+            request.__contains__.side_effect = claims.__contains__
+            request.__getitem__.side_effect = claims.__getitem__
+            state.owner_id = ""
             request.app = {"state": state}
             request.match_info = {"id": "req-9", "action": action}
             request.can_read_body = False

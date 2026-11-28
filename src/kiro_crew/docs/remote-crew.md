@@ -50,6 +50,9 @@ differently.
 | Needed on the remote | `sshd` | the SSM agent and an instance role for SSM |
 | Revoking access | rotate or remove the key | edit the IAM policy |
 
+On a Windows gateway the add form starts on **AWS SSM**, because the SSH tunnel is
+not supported there. A form filled in from an add link stays on SSH.
+
 Choose **SSH** for a machine you already `ssh` into — a dev host, a home server,
 anything with an `~/.ssh/config` entry. It is the shorter path: if
 `ssh <host>` works without a password prompt, so does this.
@@ -91,6 +94,17 @@ launcher registers that record for you, and the task runs no gateway to reach.
    (`ec2-user` by default — an Ubuntu image usually needs `ubuntu` here).
    Only the profile **name** is stored; credentials come from the AWS CLI's own
    chain.
+
+   For an instance that an Auto Scaling group replaces from time to time, the
+   target can say where to find the current id instead: `asg:<group name>` (the
+   group's one `InService` instance) or `param:<parameter name>` (an SSM
+   parameter whose value is the id). The hub looks it up with the crew's own
+   profile and region each time it builds the tunnel, and never saves the
+   answer, so the next reconnect reaches the replacement on its own. The lookup
+   needs `autoscaling:DescribeAutoScalingGroups` or `ssm:GetParameter`. While the
+   group has no `InService` instance, or more than one (for a moment during a
+   rolling replacement), the crew does not connect: **Connect** says why, and a
+   crew whose tunnel dropped keeps retrying on its own for up to an hour.
 3. Click **Connect**. The hub opens the tunnel and mints the token.
 
 The registry file (`~/.kiro/crew/instances.json`) holds connection coordinates
@@ -300,7 +314,9 @@ kirocrew config set tunnel.relay_viewer_relay_domain <relay domain>
 ```
 
 With the relay domain set, a Crew is listed only at exactly
-`https://<endpoint ID>.<relay domain>`. A test setup that uses
+`https://<endpoint ID>.<relay domain>`. When that leaves out Crews the control
+plane listed, the top bar's Crew switcher and Settings → Remote Crew say the setting hid
+them, so a domain one character off does not read as "no Shared Crews". A test setup that uses
 `tunnel.relay_viewer_credential` must also set the URL.
 
 `kirocrew config set` saves through the gateway's own writer, and the gateway reads
@@ -343,10 +359,10 @@ few seconds), every 15 seconds while a listed Crew isn't online, and about once
 a minute otherwise, and it never carries an access token. The control plane can
 itself take a minute or two after a host connects to report its tunnel
 connected, so a Crew can read offline for that long whatever the dashboard
-does. The group appears once your account has at least one Team Crew, or when
+does. The group appears once your relay list has at least one Crew, or when
 the gateway names the account the list was read for.
 
-With such an account and no Team Crews, the group still shows, with the empty
+With such an account and an empty list, the group still shows, with the empty
 text.
 
 **Settings → Remote Crew** shows the same list in a **Shared Crews** card, read
@@ -362,7 +378,7 @@ row opens the Crew as the switcher does. A **Set up a new Shared Crew** card
 under it links to the AWS Management Console, where an admin creates Shared
 Crews. Both cards are hidden while no list is loaded.
 
-When a list read finds a **Team** Crew you haven't been told about, the bell says
+When a list read finds a **Shared** Crew you haven't been told about, the bell says
 "You've been added to <name>", with **Open**, and the switcher's caret and that
 Crew's row show a dot until you open the Crew or open the switcher. Two or more
 new Crews in one read, which is what a first sign-in with several already granted
@@ -370,7 +386,7 @@ looks like, get one note with the count instead. Each Crew is announced once: th
 Crews already announced are kept on this computer's gateway, in
 `relay-viewer-crews.json` under the data home, so a new window doesn't announce
 them again. A failed read, or the feature turned off, never announces anything,
-and a Crew that leaves the list isn't announced as lost. Mute the **Team Crews**
+and a Crew that leaves the list isn't announced as lost. Mute the **Remote Crews**
 channel in Settings › Notifications to stop the notes. You only learn of a Crew
 here once Kiro Crew is installed and you've signed in; telling someone sooner is
 for whoever grants the access.
@@ -509,8 +525,8 @@ can't recover from by itself, such as a relay that refuses this version. A Crew
 you turned on with `remote-control on` shows every reason on the Overview page's
 Tunnel tile.
 
-A team Crew leases with its crew API key. Store the key under **Settings →
-Secrets**, then name it:
+A Shared Crew on the Kiro relay leases with its crew API key. Store the key under
+**Settings → Secrets**, then name it:
 
 ```bash
 kirocrew config set tunnel.relay_lease_credential secret://<name>
@@ -537,17 +553,17 @@ its JWT-SVID file or a crew key; the profile ARN does not pick the Region.
 A value the person did not give (absent, null, empty or blank) leases from us-east-1;
 any value they gave must be a known Region, or the relay refuses and sends nothing.
 
-A team Crew with its key set hosts by default after the next restart, with no
+A Shared Crew with its key set hosts by default after the next restart, with no
 `remote-control on`: setting the key is the choice to host. A host with a workload
 identity whose `tunnel.relay_lease_credential` names its credential does too. The
 first time such a Crew connects, the log and the bell say once that people the relay
-lets open it can now reach it. Without the key, a team Crew does not connect, and
+lets open it can now reach it. Without the key, a Shared Crew does not connect, and
 the tunnel status names `tunnel.relay_lease_credential`. A host with a workload
 identity never falls back to the sign-in.
-A team Crew pod under the Restricted Pod Security Standard has no inner sandbox;
+A Shared Crew pod under the Restricted Pod Security Standard has no inner sandbox;
 set `agent.sandbox_allow_unsandboxed_exec=true` and the container is the only
 boundary; `agent.sandbox_allow_no_isolation=true` quiets the per-process warning
-(see the Docker guide, "A team Crew pod: the container is the boundary").
+(see the Docker guide, "A Shared Crew pod: the container is the boundary").
 
 `kirocrew remote-control off` turns hosting off and stops the relay within a few
 seconds, with no restart. It writes `tunnel.relay_enabled: false`, which wins over
@@ -626,8 +642,10 @@ reports the first broken link, which is usually the whole answer.
 | What you see | What it means |
 |---|---|
 | `ssh_unreachable` / `ssm_unreachable` | The hub cannot reach the machine at all. Check the host alias and your key, or that the SSM agent is online. |
+| `ssh_unreachable` or a connect error that names a refused `session-manager-plugin` | The host's `ProxyCommand` runs the plugin, and the hub will not run the installed copy, for example one that AWS's macOS package left owned by another account. Apply the fix the message names, then reconnect. Each connect checks the plugin again, so no restart is needed. |
 | `ssh_client_missing` | The machine running Kiro Crew has no usable `ssh`, so nothing reached the remote host. Install the OpenSSH client (on Windows, the optional OpenSSH Client feature) or put `ssh` on the gateway's PATH, then reconnect. |
-| `ssm_target_missing` | SSM lists no managed node with this crew's `ssm_target`. If the instance was terminated or replaced (an Auto Scaling instance refresh gives it a new id), edit the crew and set `ssm_target` to the new id. Otherwise check the AWS profile and region, and that the instance has registered with SSM (agent running, instance profile granting `AmazonSSMManagedInstanceCore`). |
+| `ssm_target_missing` | SSM lists no managed node with this crew's `ssm_target`. If the instance was terminated or replaced (an Auto Scaling instance refresh gives it a new id), edit the crew and set `ssm_target` to the new id, or name its group with `asg:` (see [Adding an instance](#adding-an-instance)); for an `asg:` or `param:` crew, wait until the new instance's agent registers, or update the parameter. Otherwise check the AWS profile and region, and that the instance has registered with SSM (agent running, instance profile granting `AmazonSSMManagedInstanceCore`). |
+| `ssm_target_unresolved` | The crew's `asg:` or `param:` target did not name exactly one instance: the reason says whether the group or parameter is missing, the group has no or several `InService` instances, the parameter holds something other than an instance id, or the read was refused (the profile needs `autoscaling:DescribeAutoScalingGroups` or `ssm:GetParameter`). |
 | `ssm_access_denied` | Your AWS profile was refused `ssm:SendCommand` on the instance. Add the three SSM permissions under [SSH or SSM](#ssh-or-ssm-which-transport) to the profile's IAM policy. |
 | `ssm_user_unknown` | The **Remote user** does not exist on the instance (Ubuntu images use `ubuntu`, not `ec2-user`). Set **Remote user** in **Edit settings**. |
 | `remote_wrong_port` | A Kiro Crew gateway answers on the instance, on another port than the one you configured. Set **Remote port** to the port the reason names. |

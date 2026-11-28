@@ -198,6 +198,17 @@ describe('SttSettings audio decoder', () => {
     expect(prompt).toContain('Linux x86_64')
   })
 
+  it('gives the missing-decoder notice buttons a resting fill and a strong edge on its tint', async () => {
+    mount({ ffmpeg: { download: { ...IDLE_DOWNLOAD, stage: 'failed', error_code: 'decoder_wheel_unverified' } } })
+    await missingNotice()
+    for (const name of [/download decoder/i, /let Kiro Crew fix it/i]) {
+      const button = screen.getByRole('button', { name })
+      expect(button).toHaveClass('bg-bg-elevated', 'border-border-strong')
+      expect(button).not.toHaveClass('bg-transparent')
+      expect(button).not.toHaveClass('border-border')
+    }
+  })
+
   it('never offers a fetch inside a desktop release', async () => {
     // A bundled app carries its own authenticated decoder and its resolver looks
     // nowhere else, so the only supported repair is reinstalling the app.

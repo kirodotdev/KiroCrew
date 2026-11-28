@@ -110,7 +110,13 @@ DEFAULT_PATHSPECS = (
 )
 
 ENTRY_RE = re.compile(r"^## span=([0-9a-f]{12})\s*$")
-FIELD_RE = re.compile(r"^(class|search|risk|resolution|sites|branches):[ \t]*(.*?)\s*$")
+# The value is empty or ends on a non-space, and ``(?![ \t])`` keeps the run
+# before it whole, so each whitespace run has one reader: a lazy value beside
+# ``\s*$`` rescanned the trailing run once per value character. Every match
+# is unchanged.
+FIELD_RE = re.compile(
+    r"^(class|search|risk|resolution|sites|branches):[ \t]*(?![ \t])((?:.*\S)?)\s*$"
+)
 # A site or branch row. The keyword and its argument are named groups, so no
 # later step splits on a delimiter the pattern did not require (any whitespace
 # separates the parts).
@@ -686,7 +692,8 @@ def run(base, git_dir=None, cwd=None, prior_counts=None, blocked_pushes=None):
         return EXIT_ENV
     rc, branch, _ = _git(["symbolic-ref", "--short", "-q", "HEAD"], cwd)
     branch_ref = "refs/remotes/origin/" + branch.strip() if rc == 0 and branch.strip() else ""
-    rc, names, _ = _git(["diff", "--name-only", "-z", base_ref, "HEAD"], cwd)
+    # What HEAD changes since it left the base: the base may have moved on since.
+    rc, names, _ = _git(["diff", "--name-only", "-z", base_ref + "...HEAD"], cwd)
     changed = {n for n in names.split("\0") if n}
 
     entries, parse_problems = parse_sweep(text)
@@ -727,6 +734,12 @@ def main(argv=None):
         else:
             print("usage: sweep_check.py --base BASE [--git-dir DIR]", file=sys.stderr)
             return 64
+    # The skill passes --base origin/<base> to its scripts, so accept that form
+    # rather than reading refs/remotes/origin/origin/<base>.
+    for remote_prefix in ("refs/remotes/origin/", "origin/"):
+        if base and base.startswith(remote_prefix):
+            base = base[len(remote_prefix) :]
+            break
     if not base:
         print("usage: sweep_check.py --base BASE [--git-dir DIR]", file=sys.stderr)
         return 64

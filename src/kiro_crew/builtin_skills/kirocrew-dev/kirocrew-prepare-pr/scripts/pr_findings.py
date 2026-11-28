@@ -53,7 +53,13 @@ SWEEP_FILE = "prepare-pr-sweep.md"
 # round of this PR introduced;  `mechanism: <one line>`  names something the
 # round added (a file, a persisted structure, a guard, an ordering contract).
 SELF_ADDED_RE = re.compile(r"^self-added:\s*(yes|no)\s*$", re.MULTILINE | re.IGNORECASE)
-MECHANISM_RE = re.compile(r"^mechanism:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
+# The capture ends on a non-space, so the trailing ``\s*`` is the only reader
+# of the whitespace after it: a lazy capture beside ``\s*$`` rescanned that run
+# once per captured character. A tail of whitespace alone still yields the one
+# character the lazy form took, so every match is unchanged.
+MECHANISM_RE = re.compile(
+    r"^mechanism:\s*(\S(?:.*\S)?|[^\S\n](?=\n*\Z))\s*$", re.MULTILINE | re.IGNORECASE
+)
 DISPOSITION_WORD_RE = re.compile(r"^\*\*([a-z-]+)\*\*", re.MULTILINE)
 # The PR's frozen goal: the body's `**Goal:** <one sentence>` line, written once
 # at open. Every retrospective is measured against it, so the view prints it.

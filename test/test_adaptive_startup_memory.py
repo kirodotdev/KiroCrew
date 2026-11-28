@@ -18,6 +18,7 @@ import pytest
 from overload_fakes import Clock, mock_ctx, mock_sessions, wait_taskq_open
 
 import kiro_crew.subagent as subagent_mod
+from kiro_crew import platform_compat
 from kiro_crew.adaptive.controller import AdaptiveController, HostSample
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.subagent import (
@@ -35,7 +36,8 @@ from kiro_crew.testing.wait import await_until
 def test_startup_memory_guard_uses_native_host_reader(monkeypatch, platform, free, ok):
     for name in ("LINUX", "WINDOWS", "MACOS"):
         monkeypatch.setattr(subagent_mod.platform_compat, "IS_" + name, name == platform)
-    monkeypatch.setattr(subagent_mod, "_host_available_gb", lambda: free)
+    reader = "_macos_available_memory_gb" if platform == "MACOS" else "_host_available_gb"
+    monkeypatch.setattr(subagent_mod, reader, lambda: free)
     assert subagent_mod.check_memory_available(min_gb=4.5) == (ok, free)
 
 
@@ -82,7 +84,11 @@ _D = _UNLEARNED_DEDICATED_START_GB  # an unpriced warming row's price, nothing l
         ([{"last_rss_gb": 0.1, "peak_rss_gb": 7.5, "_rss_samples": 2}], 1, 0.5),
     ],
 )
-def test_startup_reserve_tracks_unobserved_dedicated_memory(rows, running, expected) -> None:
+def test_startup_reserve_tracks_unobserved_dedicated_memory(
+    monkeypatch, rows, running, expected
+) -> None:
+    # Off macOS: there a settled row keeps owing its price (start_pricing._owes_price_once_settled).
+    monkeypatch.setattr(platform_compat, "IS_MACOS", False)
     agents = [SubagentInfo(id=str(i), task="work", **row) for i, row in enumerate(rows)]
     assert _startup_memory_reserve_gb(agents, running_count=running, cost_gb=0.5) == pytest.approx(
         expected

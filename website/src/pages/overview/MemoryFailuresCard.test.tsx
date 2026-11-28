@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { installInitialResizeObserver } from '../../test/initialResizeObserver'
 import { renderWithProviders } from '../../test/helpers'
 import MemoryFailuresCard from './MemoryFailuresCard'
 import { ApiError } from '../../api/apiError'
@@ -34,6 +35,8 @@ const failure = {
 }
 
 beforeEach(() => {
+  // Table edges are first measured on the observer's first delivery.
+  installInitialResizeObserver()
   vi.clearAllMocks()
   api.themes.mockResolvedValue({ themes: [] })
   api.themeDetail.mockResolvedValue({})
@@ -41,6 +44,7 @@ beforeEach(() => {
   api.recurringFailures.mockResolvedValue({ failures: [failure], window_days: 7 })
   api.kirocrewConfig.mockResolvedValue({})
 })
+afterEach(() => { vi.unstubAllGlobals() })
 
 describe('MemoryFailuresCard', () => {
   it('writes nothing until the owner saves the draft, then saves the edited text as a tool lesson', async () => {
@@ -69,7 +73,7 @@ describe('MemoryFailuresCard', () => {
     await userEvent.click(await screen.findByRole('button', { name: /Draft lesson/ }))
     await userEvent.click(screen.getByRole('button', { name: 'Save lesson' }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('injection_detected')
+    expect((await screen.findByText(/injection_detected/)).closest('[role="alert"]')).not.toBeNull()
     expect(screen.getByRole('textbox', { name: 'Lesson text' })).toBeInTheDocument()
   })
 
@@ -228,6 +232,29 @@ describe('MemoryFailuresCard table keyboard stop', () => {
     expect(region.querySelector('table')).not.toBeNull()
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByRole('region', { name: 'Repeated failures' })).toBeNull()
+  })
+
+  it('names a row with no tool kind as unnamed and says which surface logged it', async () => {
+    api.recurringFailures.mockResolvedValue({
+      failures: [{ ...failure, signature: 'unknown|||', tool_kind: 'unknown', tool: '', error: '', source: 'dashboard' }],
+      window_days: 7,
+    })
+    renderWithProviders(<MemoryFailuresCard />)
+    expect(await screen.findByText('Unnamed tool')).toBeInTheDocument()
+    expect(screen.getByText('Logged by dashboard')).toBeInTheDocument()
+    expect(screen.queryByText('unknown')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: /Draft lesson/ }))
+    expect(screen.getByRole('textbox', { name: 'Lesson text' })).toHaveValue('Unnamed tool keeps failing. Check why before you try it again.')
+  })
+
+  it('keeps a tool kind that is literally named, and a rule, as they are', async () => {
+    api.recurringFailures.mockResolvedValue({
+      failures: [{ ...failure, signature: 'execute_bash||exfil|hook_deny', tool_kind: 'execute_bash', tool: '', rule_id: 'exfil', error: 'hook_deny', source: 'agent' }],
+      window_days: 7,
+    })
+    renderWithProviders(<MemoryFailuresCard />)
+    expect(await screen.findByText('exfil')).toBeInTheDocument()
+    expect(screen.queryByText('Logged by agent')).toBeNull()
   })
 
   it('adds no stop to a clipped table whose rows hold a control', async () => {

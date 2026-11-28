@@ -2,8 +2,8 @@
 
 The stdio reader skips blank lines, notifications and non-object JSON, and gives up after a
 capped run of non-JSON banner lines; it reads a line up to the gateway's read ceiling; a
-malformed response or a timeout becomes an error rather than a crash, and a child that exits early leaves a bounded, redacted stderr tail
-on its error, after a tail of the non-JSON stdout lines the reader skipped; and the teardown closes stdin, kills on timeout and reaps the probe's
+malformed response or a timeout becomes an error rather than a crash, and a child that exits early says it stopped, with its exit
+code, and leaves a bounded, redacted stderr tail on its error, after a tail of the non-JSON stdout lines the reader skipped; and the teardown closes stdin, kills on timeout and reaps the probe's
 process group, on Windows off the event loop and without a traceback for an already-exited
 process.
 """
@@ -32,6 +32,12 @@ from conftest import host_abs
 from kiro_crew import platform_compat
 from kiro_crew.mcp_discovery import McpServerInfo, _read_stdio_jsonrpc_response, probe_server
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until
+
+# The stopped-server, start-up-wait and stderr cases each start a real interpreter
+# child whose exit or reply IS the case under test, so one shared module-scoped child
+# cannot serve them; the group lands every such child on one worker so their cold
+# starts never run side by side (D8).
+pytestmark = pytest.mark.xdist_group(name="mcp_probe_stdio_children")
 
 
 class TestProbeServerProcessCleanup:
@@ -83,7 +89,8 @@ class TestProbeServerProcessCleanup:
             patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
         ):
             proc.stdout = AsyncMock()
-            proc.stdout.readline = AsyncMock(return_value=b"")
+            # A child that never answers: the one left running for the teardown.
+            proc.stdout.readline = AsyncMock(side_effect=asyncio.TimeoutError)
             result = await probe_server(server)
 
         # The teardown hands back the probe's own error verdict, never its own exception.
@@ -227,6 +234,66 @@ class TestProbeServerTimeout:
 
         assert result.status == "error"
         assert result.error == "timeout"
+
+
+class TestLocalProbeWaitsForStartUp:
+    """A stdio probe starts the server, so each reply gets a longer wait than the
+    probe timeout: a server that starts slower than the timeout but works in chats
+    must not read as timed out."""
+
+    @pytest.mark.parametrize(
+        ("probe_timeout", "local_wait"),
+        [(5, 20), (15, 60), (30, 120), (120, 120)],
+    )
+    def test_four_times_the_probe_timeout_up_to_its_ceiling(
+        self, monkeypatch, probe_timeout, local_wait
+    ) -> None:
+        from kiro_crew.mcp_discovery import _get_local_probe_timeout
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery._get_probe_timeout", lambda: probe_timeout)
+
+        assert _get_local_probe_timeout() == local_wait
+
+    @pytest.mark.asyncio
+    async def test_every_reply_of_a_stdio_probe_gets_the_local_wait(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Every read, not just the first: the start-up cost can land on any of them
+        (Kiro Crew's own servers answer ``initialize`` and ``tools/list`` before
+        their handlers load)."""
+        from kiro_crew import mcp_discovery
+
+        stub = tmp_path / "ok-server.py"
+        stub.write_text(
+            "import json, sys\n"
+            "for line in sys.stdin:\n"
+            "    request = json.loads(line)\n"
+            "    if request.get('method') == 'initialize':\n"
+            "        result = {}\n"
+            "    elif request.get('method') == 'tools/list':\n"
+            "        result = {'tools': [{'name': 'ping'}]}\n"
+            "    else:\n"
+            "        continue\n"
+            "    reply = {'jsonrpc': '2.0', 'id': request['id'], 'result': result}\n"
+            "    print(json.dumps(reply), flush=True)\n",
+            encoding="utf-8",
+        )
+        waits: list[float] = []
+        real_read = mcp_discovery._read_stdio_jsonrpc_response
+
+        async def _recording_read(stream, timeout, *args, **kwargs):
+            waits.append(timeout)
+            return await real_read(stream, timeout, *args, **kwargs)
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery._get_probe_timeout", lambda: 15)
+        monkeypatch.setattr("kiro_crew.mcp_discovery._read_stdio_jsonrpc_response", _recording_read)
+
+        result = await probe_server(
+            McpServerInfo(name="slowstart", command=sys.executable, args=[str(stub)])
+        )
+
+        assert (result.status, result.tools) == ("ok", ["ping"]), result.error
+        assert waits == [60, 60]
 
 
 class TestProbeServerStderrCapture:
@@ -394,6 +461,103 @@ class TestProbeServerStderrCapture:
         assert len(result.error or "") <= _PROBE_ERROR_MAX_CHARS
         # The credential is redacted before it reaches server.error.
         assert github_classic(seed=1) not in (result.error or "")
+
+
+class TestProbeServerStoppedServer:
+    """A server that exits before it answers says it stopped, with its exit code.
+
+    A crash and a hang both leave the probe without an answer, and the exit code is
+    how a person tells them apart. A server still running keeps "no response".
+    """
+
+    async def _probe_script(self, tmp_path, name: str, body: str) -> McpServerInfo:
+        stub = tmp_path / f"{name}.py"
+        stub.write_text(body, encoding="utf-8")
+        server = McpServerInfo(name=name, command=sys.executable, args=[str(stub)])
+        with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls:
+            mock_cfg = MagicMock()
+            mock_cfg.dashboard.mcp_probe_timeout_secs = 10
+            mock_cls.load.return_value = mock_cfg
+            return await probe_server(server)
+
+    @pytest.mark.asyncio
+    async def test_a_server_that_exits_at_once_names_its_exit_code(self, tmp_path) -> None:
+        result = await self._probe_script(tmp_path, "quits", "import sys\nsys.exit(7)\n")
+
+        assert result.status == "error"
+        assert result.error == "the server stopped before it answered (exit code 7)"
+
+    @pytest.mark.asyncio
+    async def test_the_stderr_tail_follows_the_exit_code(self, tmp_path) -> None:
+        body = "import sys\nsys.stderr.write('boom\\n')\nsys.exit(1)\n"
+        result = await self._probe_script(tmp_path, "boom", body)
+
+        assert result.status == "error"
+        assert result.error == "the server stopped before it answered (exit code 1)\nstderr: boom"
+
+    @pytest.mark.asyncio
+    async def test_a_server_that_stops_after_initialize_names_tools_list(self, tmp_path) -> None:
+        # It reads the notification and the tools/list request before it exits, so
+        # every write the probe makes lands and the read is what finds it gone.
+        body = (
+            "import json, sys\n"
+            "request = json.loads(sys.stdin.readline())\n"
+            "print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': {}}), flush=True)\n"
+            "sys.stdin.readline()\n"
+            "sys.stdin.readline()\n"
+            "sys.exit(3)\n"
+        )
+        result = await self._probe_script(tmp_path, "half", body)
+
+        assert result.status == "error"
+        assert result.error == "tools/list: the server stopped before it answered (exit code 3)"
+
+    @pytest.mark.asyncio
+    async def test_a_server_still_running_keeps_no_response(self, tmp_path) -> None:
+        """A banner flood from a live server is not a stop."""
+        from kiro_crew.mcp_discovery import _MAX_BANNER_LINES
+
+        # It reads stdin to its end, so it runs until the probe's teardown closes it.
+        body = (
+            "import sys\n"
+            f"for n in range({_MAX_BANNER_LINES + 1}):\n"
+            "    print('banner', n, flush=True)\n"
+            "sys.stdin.read()\n"
+        )
+        result = await self._probe_script(tmp_path, "flood", body)
+
+        assert result.status == "error"
+        assert result.error.partition("\n")[0] == "no response"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            pytest.param(ConnectionResetError("Connection lost"), id="connection-lost"),
+            pytest.param(BrokenPipeError(32, "Broken pipe"), id="broken-pipe"),
+        ],
+    )
+    async def test_a_server_gone_before_the_first_write_names_its_exit_code(self, exc) -> None:
+        """A server that exits before the probe writes to it fails the write, not a read."""
+        proc = AsyncMock()
+        proc.returncode = 7
+        proc.stdin = MagicMock()
+        proc.stdin.write = MagicMock()
+        proc.stdin.drain = AsyncMock(side_effect=exc)
+        proc.stdin.close = MagicMock()
+        proc.wait = AsyncMock(return_value=7)
+        proc.stdout = AsyncMock()
+        proc.stderr = MagicMock()
+        proc.stderr.read = AsyncMock(return_value=b"")
+        server = McpServerInfo(name="gone", command="gone")
+        with (
+            patch("kiro_crew.mcp_discovery.asyncio.create_subprocess_exec", return_value=proc),
+            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/gone"),
+        ):
+            result = await probe_server(server)
+
+        assert result.status == "error"
+        assert result.error == "the server stopped before it answered (exit code 7)"
 
 
 class TestProbeStdioReadLimit:
@@ -579,6 +743,29 @@ class TestProbeStdioProtocolVersion:
 
         assert (result.status, result.error) == ("error", "boom")
         assert [m["params"]["protocolVersion"] for m in inits] == ["2025-06-18"]
+
+    def test_an_answered_error_is_marked_refused(self, monkeypatch) -> None:
+        """The server started and answered, so the quarantine must not count it."""
+        signed_out = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32001, "message": "proxy HTTP 307 Temporary Redirect"},
+        }
+
+        result, _ = self._run(monkeypatch, [json.dumps(signed_out).encode() + b"\n"])
+
+        assert result.status == "error"
+        assert result.probe_mode == "refused"
+
+    def test_a_tools_list_error_is_marked_refused(self, monkeypatch) -> None:
+        ok = {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18"}}
+        denied = {"jsonrpc": "2.0", "id": 2, "error": {"code": -32001, "message": "sign in"}}
+        lines = [json.dumps(m).encode() + b"\n" for m in (ok, denied)]
+
+        result, _ = self._run(monkeypatch, lines)
+
+        assert (result.status, result.error) == ("error", "tools/list: sign in")
+        assert result.probe_mode == "refused"
 
 
 def _make_stream(lines: list[bytes]) -> asyncio.StreamReader:
@@ -798,13 +985,15 @@ class TestProbeServerBannerTolerance:
 
 _INIT_OK = b'{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}\n'
 _LAUNCHER_FAILURE = b"launcher: uvx not found on PATH\n"
+#: The head of the error for the launcher below, which exits 0 once it has said why.
+_LAUNCHER_STOPPED = "the server stopped before it answered (exit code 0)"
 
 
 class TestProbeServerLauncherStdout:
     """A failed probe's error carries the non-JSON stdout lines the reader skipped.
 
     A launcher that cannot start the server it fronts prints why on stdout and
-    exits, so without those lines the error says only "no response" and the
+    exits, so without those lines the error says only that it stopped and the
     failure streak quarantines the server with no cause anywhere a person sees.
     """
 
@@ -831,10 +1020,10 @@ class TestProbeServerLauncherStdout:
     @pytest.mark.parametrize(
         "stdout,head",
         [
-            pytest.param([_LAUNCHER_FAILURE, b""], "no response", id="eof-before-initialize"),
+            pytest.param([_LAUNCHER_FAILURE, b""], _LAUNCHER_STOPPED, id="eof-before-initialize"),
             pytest.param(
                 [_INIT_OK, _LAUNCHER_FAILURE, b""],
-                "tools/list: no response after a successful initialize",
+                "tools/list: " + _LAUNCHER_STOPPED,
                 id="eof-before-tools-list",
             ),
             pytest.param(
@@ -882,7 +1071,7 @@ class TestProbeServerLauncherStdout:
 
         assert result.status == "error"
         kept = range(_MAX_BANNER_LINES + 1 - _STDOUT_TAIL_LINES, _MAX_BANNER_LINES + 1)
-        assert result.error == "no response\nstdout: " + "\n".join(
+        assert result.error == _LAUNCHER_STOPPED + "\nstdout: " + "\n".join(
             f"launcher line {n}" for n in kept
         )
 
@@ -953,7 +1142,10 @@ class TestProbeServerLauncherStdout:
 
         assert result.status == "error"
         assert short not in result.error
-        assert result.error == "no response\nstdout: [withheld: a line was too long to redact]"
+        assert (
+            result.error
+            == _LAUNCHER_STOPPED + "\nstdout: [withheld: a line was too long to redact]"
+        )
 
 
 # ── Probe process-group reap tests ───────────
@@ -1107,7 +1299,8 @@ class TestProbeGroupReap:
         )
         script.chmod(0o755)
 
-        monkeypatch.setattr("kiro_crew.mcp_discovery._get_probe_timeout", lambda: 1)
+        # A local probe waits four times this (1 s) for the handshake that never comes.
+        monkeypatch.setattr("kiro_crew.mcp_discovery._get_probe_timeout", lambda: 0.25)
         # The child deliberately never exits, so `probe_server`'s teardown pays its
         # graceful-exit budget AND its post-SIGKILL budget in full (2 x 5s) before
         # reaching the process-group reap this test is about. Shrink both: the reap

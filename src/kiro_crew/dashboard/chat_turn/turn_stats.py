@@ -69,6 +69,7 @@ if TYPE_CHECKING:
         _keep_background_open,
         _native_subagent_close_all,
     )
+    from kiro_crew.dashboard.chat_turn.stop_recovery import _stale_replay_vetoed
     from kiro_crew.dashboard.chat_turn.tool_rows import _MAX_TCID_SOURCES
     from kiro_crew.dashboard.chat_turn.turn_ledgers import _report_consumed, _wt_collect
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
@@ -292,6 +293,11 @@ def _attach_turn_stats(
     if row is None:
         return False
     row.setdefault("meta", {})["turn_stats"] = stats
+    # Imported here: this body runs on the chat runner module's globals.
+    from kiro_crew.dashboard.engine_subagent_record import attach_engine_record
+
+    # The turn's engine sub-agents, recorded on the row its footer went on.
+    attach_engine_record(slot, row)
     return True
 
 
@@ -474,15 +480,14 @@ def _merge_cards_reached_the_model(turn: _ChatTurn) -> bool:
     finally's reset kills a runtime that may still be answering, and the
     reloaded session may lack the prompt. The card is delivered again
     rather than lost. The kept-prompt clause is the Kiro contract, so it
-    counts only on kiro-cli and KAS (which runs the Kiro CLI pick); any other
-    harness consumes a card only on a landed turn, so a wrong guess there
-    repeats the card.
+    counts only where the harness has ``keeps_prompt_on_unlanded_turn``
+    (kiro-cli and KAS); any other harness consumes a card only on a landed
+    turn, so a wrong guess there repeats the card.
     """
-    provider = getattr(turn, "client", None)
-    on_kiro = any(getattr(provider, n, None) is True for n in ("is_kiro_backend", "is_kas_backend"))
+    keeps_prompt = capabilities_of(getattr(turn, "client", None)).keeps_prompt_on_unlanded_turn
     return (
         (turn._turn_lands and not turn._empty_verdict_left_prompt_unanswered)
-        or (on_kiro and _kiro_cli_kept_the_prompt(turn))
+        or (keeps_prompt and _kiro_cli_kept_the_prompt(turn))
     ) and not _native_session_lacks_the_prompt(turn)
 
 
@@ -504,7 +509,7 @@ def _emit_turn_metric(
 
     ``trigger`` is who started the turn (:func:`_dashboard_turn_trigger`).
     ``owning_app`` is the turn's live client's ``owning_app``, for
-    ``kirocrew.app.run_time``.
+    ``kirocrew.app.run_time`` and ``kirocrew.app.credits``.
 
     ``harness`` labels the duration and usage samples (see
     :func:`kiro_crew.metrics.turns.emit_turn_duration`); the caller resolves it
@@ -552,6 +557,7 @@ def _emit_turn_metric(
         model=model,
         provider=provider,
         harness=harness,
+        owning_app=owning_app,
     )
 
 
@@ -863,7 +869,8 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # turn that is actually re-driven in place, so a stall takes the
     # terminal stall_exhausted label when its 3-attempt budget is
     # already spent ("Session stuck") OR when it is a NESTED turn
-    # (depth > 0), which those branches never re-queue — it dies
+    # (depth > 0) or a stale replay the person's newer intent vetoes,
+    # which those branches never re-queue — it dies
     # with "please retry", a user-visible fault that must reach
     # fault_rate. Only this surface maintains such a budget; every
     # other surface's outcome comes from its stop reason alone.
@@ -873,7 +880,9 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # zero-billing timeout takes the second path only.
     if event.stop_reason == STOP_REASON_STALE_RECOVER:
         _turn_exhausted = (
-            _prompt_depth > 0 or slot._stale_recovery_retries >= STOP_RECOVERY_MAX_RETRIES
+            _prompt_depth > 0
+            or slot._stale_recovery_retries >= STOP_RECOVERY_MAX_RETRIES
+            or _stale_replay_vetoed(turn)
         )
     elif event.stop_reason == STOP_REASON_TOOL_STALL:
         _turn_exhausted = _prompt_depth > 0 or slot._tool_stall_retries >= STOP_RECOVERY_MAX_RETRIES

@@ -37,7 +37,6 @@ from kiro_crew.config.loader_builders import (
 from kiro_crew.config.loader_credentials import (
     _JIRA_TOKEN_RE,
     CREDENTIAL_KEYS,
-    EnvFileWideEncodingError,
     _shadow_checked_env_keys,
     _warned_env_keys,
     adopt_env_owned_keys_from_reexec,
@@ -558,6 +557,10 @@ class KiroCrewConfig:
         repr=False,
         compare=False,
     )
+
+    #: Sections discarded by this load alone, without process-wide sticky observations.
+    #: None denotes a manually constructed snapshot without read provenance.
+    _read_degraded_sections: frozenset[str] | None = field(default=None, repr=False, compare=False)
 
     #: True when the load that built this instance found ``config.json`` present
     #: but unparseable, so every base setting here is a DEFAULT, not the user's.
@@ -1311,7 +1314,9 @@ class KiroCrewConfig:
             enforce_env_permissions(ep)
             try:
                 env_text = read_env_text(ep)
-            except EnvFileWideEncodingError as exc:
+            except UnicodeDecodeError as exc:
+                # A UTF-16/UTF-32 save, or a byte invalid in the active encoding:
+                # empty with one warning, as the live watcher reads it.
                 warn_undecodable_env(ep, exc)
                 env_text = ""
             creds.update(parse_env_lines(env_text))
@@ -1463,6 +1468,7 @@ class KiroCrewConfig:
         create a per-session subdirectory under ``workspace_root()``.
         """
         from kiro_crew.agent_sdk.drivers.acp import build_acp_provider
+        from kiro_crew.agent_sdk.tool_gate import harness_sandbox_mode
         from kiro_crew.session_work_dir import is_disposable_session_key
 
         model = self.agent.model
@@ -1470,6 +1476,7 @@ class KiroCrewConfig:
             model = self._resolve_agent_model()
 
         sandbox = self.agent.sandbox
+        harness_sandbox = self.agent.harness_sandbox
         tool_search = self.agent.tool_search
         tool_search_min_pct = self.agent.tool_search_min_pct
         tool_search_min_tokens = self.agent.tool_search_min_tokens
@@ -1533,6 +1540,10 @@ class KiroCrewConfig:
             # same reason: swallowed, its claude session would load and write
             # Claude Code's auto-memory.
             include_memory: bool = True,
+            # A Default the dashboard slot recorded with no live clear. NAMED for
+            # the same reason: swallowed, the start would read back the level the
+            # slot's earlier pick left in the workspace cli.json.
+            clear_effort_overlay: bool = False,
             **_kwargs: object,
         ):  # return type inferred from build_acp_provider (SDK boundary: config may not name AcpProvider)
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
@@ -1701,7 +1712,9 @@ class KiroCrewConfig:
                 model=m,
                 agent=agent,
                 crew_agent=crew_agent,
-                sandbox_mode=sandbox,
+                # The session's tier, chosen once with its backend: the launch's mask
+                # preflight and its wrap both read it (``agent.harness_sandbox``).
+                sandbox_mode=harness_sandbox_mode(_backend, sandbox, harness_sandbox),
                 session_key=session_key,
                 channel_id=channel_id,
                 extra_env=extra_env,
@@ -1725,6 +1738,7 @@ class KiroCrewConfig:
                 on_gate_queued=on_gate_queued,
                 side_read_only=side_read_only,
                 include_memory=include_memory,
+                clear_effort_overlay=clear_effort_overlay,
                 # Only a work dir DERIVED from a one-run key is the provider's
                 # to reclaim at shutdown; an explicit ``cwd`` is the caller's
                 # directory whatever the key says (session_work_dir).

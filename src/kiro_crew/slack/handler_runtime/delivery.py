@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         _NO_RESPONSE,
         ACTIVATION_REVIEW,
         STOP_REASON_CANCELLED,
+        STOP_REASON_REFUSAL,
         DashboardState,
         PostedOptions,
         _append_footer_actions,
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
         _reply_by_voice,
         _safe_final_update,
         _SlackTurn,
+        annotate_model_fallback,
         auto_title,
         build_timing_footer,
         count_redaction_tags,
@@ -202,10 +204,32 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
             turn.release_permit()
             return
 
+        # A V2 refusal fallback dropped the refused model's streamed text mid-turn
+        # (``_AnswerStream.on_model_fallback``). If the fallback then answered,
+        # ``accumulated`` holds that answer; if it did not, restore the refused
+        # text so the reader still sees the provider's own words. Either way,
+        # prepend the engine-fallback notice -- the shared spelling reads this
+        # turn's fallback walk off the provider and names the model that answered.
+        if answer.refused_drop:
+            # Restore the refused text ONLY when the turn did not answer (a
+            # refusal terminal): a fallback that answered with tool work alone
+            # ends ``end_turn`` with no text, and restoring the refusal there
+            # would show it under a notice saying another model answered.
+            if _stop_reason == STOP_REASON_REFUSAL and not answer.accumulated.strip():
+                answer.accumulated = answer.last_refused
+            answer.accumulated = annotate_model_fallback(
+                answer.accumulated, client, stop_reason=_stop_reason
+            )
+
         # Strip any inline <thinking> tags that leaked into the text
         _untrimmed = ""
+        # The reply WITH its control tags: the stream's comment hold is settled
+        # against it, because against the stripped reply a held control-tag tail
+        # always reads as content and streams as text.
+        _with_tags = ""
         if answer.accumulated:
             answer.accumulated, inline_thinking = strip_thinking_tags(answer.accumulated)
+            _with_tags = answer.accumulated
             # Trailing control-tag lines are peeled BEFORE the whitespace trim: the
             # trim would erase the indentation that marks a quoted, 4-space-indented
             # tag as code, and the tail grammar would then read it as protocol.
@@ -357,6 +381,10 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
         def _build_footer(options_token: str | None) -> tuple[list[dict], str]:
             """The timing footer with its OPTIONS / Link-to-Dashboard controls."""
             footer_blocks, footer_text = build_timing_footer(time.monotonic() - _t0, client)
+            if not footer_blocks and not options:
+                # Timing hidden and no choices: the Link to Dashboard button is all
+                # this footer can still carry, so its notification says that.
+                footer_text = "Link to Dashboard"
             # Re-read the DASHBOARD link for the footer button only: a mid-turn
             # click on the turn-start button may have linked the thread to a slot
             # since turn start, and a second Link button would be redundant. (Not
@@ -407,7 +435,7 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
 
         try:
             if answer.use_slack_stream and answer.stream_ts:
-                await answer.finish(_untrimmed)
+                await answer.finish(_with_tags)
                 # ``answer.delivered`` rises only on a confirmed real-text append,
                 # so a stream whose every append was refused (a Slack outage) is a
                 # failure. Applied only when there was answer text, since a
@@ -418,7 +446,11 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
                 # turn strikes the buttons with a ``chat.update`` on that ts.
                 _footer_inline = await answer.seal(
                     clean_text,
-                    redacted=bool(_render_redacted or exfil_warnings or cred_warnings),
+                    # A refusal drop forces the overwrite: the refused text was
+                    # appended to the live stream, and only this path rewrites it.
+                    redacted=bool(
+                        _render_redacted or exfil_warnings or cred_warnings or answer.refused_drop
+                    ),
                     footer_blocks=None if options else _build_footer(None)[0],
                 )
                 if _answer_text_to_send:
@@ -633,8 +665,9 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
         _footer_ts: str | None = None
         _options_delivered = False
         try:
-            # Already inside the answer message when the seal carried it.
-            if not _footer_inline:
+            # Already inside the answer message when the seal carried it; an empty
+            # footer (timing hidden, no controls) posts nothing.
+            if not _footer_inline and footer_blocks:
                 _footer_ts = await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
             _options_delivered = True
         except Exception:

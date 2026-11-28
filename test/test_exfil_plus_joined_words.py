@@ -13,6 +13,7 @@ Sample URLs are built from parts so no literal long-query URL appears here.
 from __future__ import annotations
 
 import base64
+from urllib.parse import urlencode
 
 import pytest
 
@@ -54,6 +55,30 @@ class TestWordListsPass:
         args = {"inputs": [url]}
         assert _scanned_tool_args("builder", "ReadPage", args) is args
 
+    @pytest.mark.parametrize("count", [3, 5, 9])
+    def test_ids_in_a_query_python_urlencode_built(self, count: int) -> None:
+        # urlencode writes "(" as %28, so the run starts on "28" before the first id.
+        query = urlencode({"q": "aliases:(" + " OR ".join(_IDS[:count]) + ")"})
+        assert "%28" + _IDS[0] + "+OR+" in query
+        assert not _flagged(_url(query))
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            pytest.param("q=%28" + "+OR+".join(_IDS[:2]) + "%29+AND+status+is+open", id="after-29"),
+            pytest.param("q=Hello%21+how+do+I+set+a+timezone+on+my+laptop+today", id="after-21"),
+            pytest.param("q=%28+" + "+OR+".join(_IDS[:3]) + "%29", id="octet-then-space"),
+        ],
+    )
+    def test_an_octet_right_before_a_plus_still_passes(self, query: str) -> None:
+        # The octet's digits alone are the first piece; the whole run is words.
+        assert not _flagged(_url(query))
+
+    def test_cron_call_tool_sends_the_urlencode_built_lookup(self) -> None:
+        url = _url(urlencode({"q": "aliases:(" + " OR ".join(_IDS[:9]) + ")"}))
+        args = {"inputs": [url]}
+        assert _scanned_tool_args("builder", "ReadPage", args) is args
+
 
 class TestSecretsStillFire:
     def test_aws_secret_with_plus_in_place_of_slash(self) -> None:
@@ -89,6 +114,17 @@ class TestSecretsStillFire:
 
     def test_slash_in_the_run_keeps_firing(self) -> None:
         assert _exfil_blob_hit("+".join(_IDS[:3]) + "/" + _IDS[3])
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_secret_after_a_percent_octet_keeps_firing(self, seed: int) -> None:
+        raw = synth(38, B64, seed)
+        secret = raw[:13] + "+" + raw[13:26] + "+" + raw[26:]
+        assert _exfil_blob_hit("%28" + secret)
+
+    def test_only_the_octet_digits_are_set_aside(self) -> None:
+        # One digit after "%", or "28" with no "%", is not an octet tail: judged whole.
+        assert _exfil_blob_hit("%8" + "+OR+".join(_IDS[:4]))
+        assert _exfil_blob_hit("x28" + "+OR+".join(_IDS[:4]))
 
     def test_mixed_case_piece_keeps_firing(self) -> None:
         assert _exfil_blob_hit("+".join(["kJxQwErTyUiOp", "aBcDeFgHiJkLm", "QwErTyUiOpAsD"]))

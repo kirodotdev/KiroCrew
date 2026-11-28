@@ -1,4 +1,4 @@
-"""The launcher's default ``GIT_SSH_COMMAND`` names only identity files that exist.
+"""With ``-F /dev/null``, the default ``GIT_SSH_COMMAND`` names only identity files that exist.
 
 A user-supplied ``IdentityFile`` that is missing is an error-level ``no such identity``
 line on every git-over-ssh call, which reads as a failed fetch although the command

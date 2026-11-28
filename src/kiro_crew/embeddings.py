@@ -132,6 +132,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CUSTOM_LABEL,
         _POOLING_SUFFIX_SEPARATOR,
         LEGACY_EMBEDDING_WARNING,
+        QWEN3_QUERY_TASK,
         CustomModelSpec,
         _custom_model_id,
         _is_sensitive_model_path,
@@ -159,6 +160,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         model_file_present,
         model_pooling_type,
         models_dir,
+        query_instruction_applies,
+        query_instruction_text,
         resolve_custom_model,
         validate_custom_model_path,
     )
@@ -169,6 +172,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LINUX_X86_64_REQUIRED_CPU_FLAGS,
         _VENDOR_DIR,
         _WINDOWS_MSVC_RUNTIME_DLLS,
+        _WINDOWS_X86_64_CPU_FEATURE_IDS,
         _install_diskcache_stub,
         _linux_aarch64_cpu_features,
         _linux_aarch64_has_dotprod,
@@ -184,6 +188,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _platform_libs_dirname,
         _publish_lib_path_for_import,
         _quiet_native_log_without_redirect,
+        _windows_x86_64_missing_cpu_flags,
         verify_vendored_libs,
     )
     from kiro_crew.embeddings_ollama import (  # noqa: F401
@@ -201,10 +206,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _RefuseRedirects,
         _url_error,
         build_ollama_backend,
+        egress_url,
         ollama_backend_selected,
         resolve_ollama_settings,
     )
     from kiro_crew.embeddings_settings import (  # noqa: F401
+        _BACKLOG_BULK_DUTY,
         _CHILD_CALL_BASE_SECS,
         _CHILD_CALL_SECS_PER_TEXT,
         _CHILD_LOAD_TIMEOUT_SECS,
@@ -231,6 +238,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _GGUF_SHA256,
         _HTTP_CHUNK_BYTES,
         _HTTP_TIMEOUT_SECS,
+        _IDLE_REST_SECS,
         _INFER_STOP_TIMEOUT_SECS,
         _INTERACTIVE_QUEUE_RESERVE,
         _LARGE_HOST_EMBED_THREADS,
@@ -261,10 +269,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         PRIORITY_INTERACTIVE,
         PRIORITY_NORMAL,
         EmbeddingWork,
+        _backlog_boost,
+        _backlog_boost_allowed,
         _embed_threads,
         _read_memory_config,
         _small_host_cache,
         _work_for_priority,
+        bulk_backlog_boost,
         bulk_duty_cycle,
         bulk_embed_threads,
         bulk_pace_delay,
@@ -277,13 +288,19 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         work_phase,
     )
     from kiro_crew.embeddings_shared import (  # noqa: F401
+        _B,
         _EMBED_CACHE_MAX,
         ReembedProgress,
         _align_store_embedding_space,
         _AlignableStore,
         _backend_factory,
+        _cached_after_policy_check,
+        _custom_backend,
+        _drop_if_policy_changed,
         _embedding_alignment_lock,
         _EmbedFlight,
+        _policy_allows,
+        _policy_answer_changed,
         _ReconcilableStore,
         _reembed_progress,
         _retire_backend,
@@ -295,6 +312,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _sync_embed_cache_lock,
         _sync_embed_flights,
         _sync_embed_stripes,
+        _with_policy_tag,
         activate_shared_embedder,
         active_embedding_space_signature,
         align_store_embedding_space,
@@ -316,6 +334,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         register_embedding_backend,
         reset_shared_embedder,
         store_embedding_space_is_stale,
+        wait_for_cold_shared_embedder,
         warm_embedder_for_person,
         warm_embedder_for_person_soon,
     )
@@ -361,6 +380,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.embeddings_preempt import (  # noqa: F401
         PreemptFlag,
         install_preempt_flag,
+    )
+    from kiro_crew.embeddings_rest import (  # noqa: F401
+        rest_if_idle,
+        wake_embedder,
     )
     from kiro_crew.metrics.provider import (  # noqa: F401
         get_recorder,

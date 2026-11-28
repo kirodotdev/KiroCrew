@@ -47,6 +47,7 @@ registerBuiltinSurface({
   icon: <MessageSquare size={16} />,
   badgeLabel: 'unread conversations',
   badgeLabelKey: 'nav.badge_unread_conversations',
+  badgeCountKey: 'nav.badge_unread_conversations_count',
   // Expanded-rail activity stays separate from unread attention: sub-agents
   // in flight are not unread conversations, and folding them into that count
   // would corrupt both the number and the tab-title attention sum. The
@@ -68,6 +69,7 @@ registerBuiltinSurface({
   icon: <CrewMemberMark />,
   badgeLabel: 'unread member threads',
   badgeLabelKey: 'nav.badge_unread_member_threads',
+  badgeCountKey: 'nav.badge_unread_member_threads_count',
 })
 
 registerBuiltinSurface({
@@ -91,9 +93,10 @@ registerBuiltinSurface({
   // (global task-gate approval count) comes from a React Query result that
   // lives outside Redux; shell/nav/railBadges.ts mirrors it into `appBadges['projects']`
   // and `NavBadge` picks it up via the appBadges fallback. The label here
-  // is what the fallback path's aria-label uses.
+  // is the badge's tooltip; `badgeCountKey` names it for screen readers.
   badgeLabel: 'approvals needed',
   badgeLabelKey: 'nav.badge_approvals_needed',
+  badgeCountKey: 'nav.badge_approvals_needed_count',
 })
 
 registerBuiltinSurface({
@@ -230,9 +233,11 @@ registerBuiltinSurface({
   icon: <KiroGhostMark size={16} />,
   // Stub surface, like Projects: shell/nav/railBadges.ts mirrors the count of
   // shared servers waiting for an approval into `appBadges['capabilities']`,
-  // because MCP Servers is a Customize tab. The key here is what the fallback
-  // path's aria-label and tooltip read.
+  // because MCP Servers is a Customize tab. The key here is the badge's
+  // tooltip; `badgeCountKey` names it for screen readers with that tab
+  // badge's own string, the same count under one name.
   badgeLabelKey: 'nav.mcp_servers_waiting_badge',
+  badgeCountKey: 'pages.capabilitiesPage.mcp_servers_waiting',
 })
 
 registerBuiltinSurface({

@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.security import audit_injection_dropped, contains_injection, redact
 from kiro_crew.slack.enterprise import validated_self_bot_id
+from kiro_crew.slack.events_block_text import _SLACK_BLOCK_FALLBACKS, _extract_blocks_text
 
 if TYPE_CHECKING:
     from kiro_crew.slack.client import SlackClientOps
@@ -55,6 +56,10 @@ _FETCH_LIMIT = 200
 _WATERMARK_SLOTS = 4096
 
 _WITHHELD = "[withheld: this reply matched a prompt-injection pattern]"
+
+#: What Slack appends to its plain ``text`` copy of a message whose content
+#: lives in blocks (a streamed reply with a table, for one). Not content.
+_BLOCKS_TEXT_TAIL = ", with interactive elements"
 
 #: ``(session_key, thread_ts)`` -> ts of the message the last turn answered.
 _last_turn: OrderedDict[tuple[str, str], str] = OrderedDict()
@@ -117,11 +122,30 @@ def _author_name(msg: dict, own_bot_id: str) -> str:
     return name or user or "someone"
 
 
+def _body(msg: dict) -> str:
+    """*msg*'s text: Slack's ``text`` copy, or its blocks rendered when that copy is incomplete.
+
+    Slack marks a ``text`` copy that leaves block content out: it is empty or a
+    generic placeholder, or it ends with :data:`_BLOCKS_TEXT_TAIL` (a streamed
+    reply with a table, for one). Only such a copy is replaced by the blocks,
+    rendered in order by the one Block Kit renderer, with the copy minus its tail
+    as the fallback. Any other copy is the reply as its poster wrote it, blocks or
+    not, and the renderer (which knows no ``header`` block and skips section
+    fields) must not shorten it.
+    """
+    text = str(msg.get("text") or "").rstrip()
+    blocks = msg.get("blocks")
+    incomplete = not text or text in _SLACK_BLOCK_FALLBACKS or text.endswith(_BLOCKS_TEXT_TAIL)
+    if not blocks or not incomplete:
+        return text
+    return _extract_blocks_text(blocks) or text.removesuffix(_BLOCKS_TEXT_TAIL)
+
+
 def _line(msg: dict, own_bot_id: str, *, session_key: str, channel: str, thread_ts: str) -> str:
     when = datetime.fromtimestamp(_ts(msg.get("ts")), tz=timezone.utc).strftime(
         "%Y-%m-%d %H:%M UTC"
     )
-    text = redact(str(msg.get("text") or "")).strip() or "[no text]"
+    text = redact(_body(msg)).strip() or "[no text]"
     if len(text) > TEXT_CAP:
         text = text[:TEXT_CAP] + "…[truncated]"
     line = f"[{when}] {redact(_author(msg, own_bot_id))}: {text}"

@@ -1,9 +1,12 @@
 import { type Dispatch, type RefObject, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react'
 
 import type { DisplayItem } from './types'
+import { leadMessage, rowOfMessage } from '../../chat-core/transcript/rowKeys'
+import { useStableMessageKey } from '../../chat-core/transcript/useStableMessageKey'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import {
   DEFAULT_PINNED_CARD_H,
+  PINNED_BYLINE_H,
   ROW_PAD_Y,
   computeLiveCardH,
   computePinnedCardMaxH,
@@ -33,11 +36,52 @@ export function isTranscriptRow(node: Element, scroller: Element): boolean {
 }
 
 /** The transcript row wrapper for `idx`, skipping any forged copy in message content. */
-function findTranscriptRow(scroller: Element, idx: number): HTMLElement | null {
+export function findTranscriptRow(scroller: Element, idx: number): HTMLElement | null {
   for (const node of scroller.querySelectorAll(`[data-display-index="${idx}"]`)) {
     if (isTranscriptRow(node, scroller)) return node as HTMLElement
   }
   return null
+}
+
+/**
+ * The row's own user root when someone else sent it: UserMessage's
+ * `div[data-role="user"]` carrying `data-user-side="start"`, the mark of the
+ * rule the pinned card reads its sender by (`OtherSenderBubble`). That card
+ * carries the sender's name above its box, so this is how the geometry knows
+ * a card will be named before one is mounted. Reached from the bubble by
+ * walking UP, for the reason `userRoot` in updatePinnedPrompt gives: a prompt
+ * can mint `data-*` inside its bubble, never on an ancestor of it.
+ */
+function otherSenderRoot(row: Element): Element | null {
+  const root = row.querySelector('.message-bubble')?.closest('[data-role="user"]') ?? null
+  return root && row.contains(root) && root.getAttribute('data-user-side') === 'start' ? root : null
+}
+
+/**
+ * How far below the fold `row` hands over to the card, in px. 0 for every row
+ * but one kind.
+ *
+ * A named card's box rests PINNED_BYLINE_H lower than an unnamed one's. A row
+ * that shows the name above its own bubble lines up with that by itself: its
+ * top on the fold puts name on name and bubble on box. A row in the middle of
+ * one person's run shows no name (`continuesRun`), so its bubble meets the
+ * card's box while its top is still that far below the fold. Handing over
+ * there keeps the swap a box replaced by a box at the same pixel, with the
+ * name arriving above it; handing over at the fold moved the text down by the
+ * name's height on the frame it pinned. Measured from the row, so whatever
+ * else a row puts above its bubble (a steer's badge) counts against the lead.
+ *
+ * Only a bubble that fits a resting named card gets the lead. A taller one is
+ * held back by the tall-prompt gate in updatePinnedPrompt until it has
+ * scrolled behind the band, and a row that has "reached the line" but cannot
+ * pin drops the card before it: with the lead, that card would vanish the
+ * name's height short of the end of its push.
+ */
+function pinBylineLead(row: HTMLElement, rowTop: number, foldY: number): number {
+  if (!otherSenderRoot(row)) return 0
+  const bubble = row.querySelector('.message-bubble')!.getBoundingClientRect()
+  if (bubble.bottom - foldY - ROW_PAD_Y > DEFAULT_PINNED_CARD_H + PINNED_BYLINE_H + 0.5) return 0
+  return Math.max(0, PINNED_BYLINE_H - (bubble.top - rowTop - ROW_PAD_Y))
 }
 
 /**
@@ -85,6 +129,8 @@ export interface UsePinnedPromptOptions {
  */
 export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }: UsePinnedPromptOptions) {
   const displayItemsRef = useRef<DisplayItem[]>([])
+  // The row identity rule the transcript keys its rows by, for the jump.
+  const msgKey = useStableMessageKey()
   // Pinned-prompt banner. `pinFoldRef` is a zero-height sentinel sitting
   // directly under the title row: its top edge is the fold line the banner
   // sticks to, and it is always mounted so the fold stays measurable even when
@@ -112,12 +158,15 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
   // only place the SETTLED height is knowable: measuring the card from here would
   // sample the expand/collapse morph mid-flight and drag the line with it.
   const pinCollapsedHRef = useRef(DEFAULT_PINNED_CARD_H)
+  // True until the candidate's own card has reported: the height above is then
+  // still the seed, and the seed of a named card is taller (see the gate).
+  const pinCollapsedSeededRef = useRef(true)
   // The prompt the hook last resolved as the pin candidate (pinCandidateKey).
   // `pinCollapsedHRef` is reset when it changes and the card re-reports for the
   // new identity; see updatePinnedPrompt.
   const pinCandidateKeyRef = useRef<string | null>(null)
   const onPinCollapsedHeight = useCallback((h: number) => {
-    if (h > 0) pinCollapsedHRef.current = h
+    if (h > 0) { pinCollapsedHRef.current = h; pinCollapsedSeededRef.current = false }
   }, [])
   // Scroll the transcript on the card's behalf. The card is interactive so its text
   // stays selectable and its buttons keep working, but it sits in a
@@ -142,6 +191,11 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     // later: the flash at the top of the chat. The reader has not moved, so
     // the card holds and is worked out once, when the place has settled.
     if (slideSettling(el)) { afterSlideSettles(el, () => updatePinnedPromptRef.current()); return }
+    // No rows, nothing to pin: the walk below would end in the same
+    // `setPinned(null)`. Answered without reading layout, because the commit
+    // that opens a session (its transcript still empty) runs this, and the
+    // first read there forces a layout of the whole page.
+    if (displayItemsRef.current.length === 0) { setPinned(null); return }
     // Measure with getBoundingClientRect (viewport-relative) so the origin
     // matches the scroller regardless of which ancestor is the items'
     // offsetParent — consistent with useScrollManager, which also deliberately
@@ -177,7 +231,12 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
       if (!isTranscriptRow(htmlItem, el)) continue
       const rect = htmlItem.getBoundingClientRect()
       const rowIdx = parseInt(htmlItem.getAttribute('data-display-index') || '0', 10)
-      if (rect.top > handoffY) {
+      // Only a row inside the name's height of the line can have a lead, so
+      // the row's subtree is read for at most one row per frame.
+      const lead = rect.top > handoffY && rect.top <= handoffY + PINNED_BYLINE_H
+        ? pinBylineLead(htmlItem, rect.top, foldY)
+        : 0
+      if (rect.top > handoffY + lead) {
         if (requiresMountedHandoff && first) { setPinned(null); return }
         handoffIdx = rowIdx
         break
@@ -231,6 +290,7 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     const candidateKey = pinCandidateKey(pinIdx, pinItem.msg.ts)
     if (pinCandidateKeyRef.current !== null && pinCandidateKeyRef.current !== candidateKey) {
       pinCollapsedHRef.current = DEFAULT_PINNED_CARD_H
+      pinCollapsedSeededRef.current = true
     }
     pinCandidateKeyRef.current = candidateKey
     // The incoming prompt pushes the banner out; when its row is not mounted it
@@ -313,6 +373,14 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     // back to being content-driven and its own expand / peek morph owns the height.
     // The threshold lives here because this is where the resting height lives;
     // duplicating it in the card would let the two disagree about "at rest".
+    // Another person's card carries their name above its box, so its seed is
+    // taller by that name. Without this the gate below read a named card as
+    // one line shorter than it is: the row stayed in the transcript until its
+    // bubble had risen past the box it was about to become, and the text
+    // dropped back by the difference on the frame it pinned.
+    if (pinCollapsedSeededRef.current) {
+      pinCollapsedHRef.current = DEFAULT_PINNED_CARD_H + (pinEl && otherSenderRoot(pinEl) ? PINNED_BYLINE_H : 0)
+    }
     const restingH = pinCollapsedHRef.current
     // A prompt taller than the resting card is NOT pinned while any of it is
     // still below the card's resting bottom. Pinning it there hid the real,
@@ -523,7 +591,9 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
    * measurement and the banner swap refine the landing; a frame with neither a
    * mounted row nor an estimate yields no goal (see runConvergingGlide). User
    * scroll intent aborts the glide, and owning each frame's write prevents
-   * follow-controller writes from cancelling it.
+   * follow-controller writes from cancelling it. `exact` lands `target` itself
+   * instead of the head of its prompt run: a quote jump must show the quoted
+   * row, not the prompt above it.
    */
   const jumpCancelRef = useRef<(() => void) | null>(null)
   const jumpToPinnedPromptInPlace = useCallback((
@@ -532,6 +602,7 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
       mountIndex: (index: number, opts?: { unionOnly?: boolean }) => boolean
       estimateRowTop: (index: number) => number | null
     },
+    opts?: { exact?: boolean },
   ) => {
     jumpCancelRef.current?.()
     const sc0 = scrollerRef.current
@@ -540,19 +611,22 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     // before any output, a double-send) so the row on the hand-off line is a
     // non-prompt and the previous turn's banner survives the landing — see
     // jumpAnchorIdx.
-    const anchor = jumpAnchorIdx(displayItemsRef.current, target)
+    const anchor = opts?.exact ? target : jumpAnchorIdx(displayItemsRef.current, target)
+    // The glide aims at that row's prompt and finds the prompt's row again on
+    // each frame: a page that lands mid-glide renumbers the rows.
+    const anchorItem = displayItemsRef.current[anchor]
+    const prompt = anchorItem ? leadMessage(anchorItem) : null
+    if (!prompt) return
     steer.mountIndex(anchor, { unionOnly: true })
-    const rowEl = (): HTMLElement | null => {
-      const sc = scrollerRef.current
-      return sc ? findTranscriptRow(sc, anchor) : null
-    }
     const goal = (): number | null => {
       const sc = scrollerRef.current
       if (!sc) return null
-      const row = rowEl()
+      const at = rowOfMessage(displayItemsRef.current, prompt, msgKey)
+      if (at < 0) return null
+      const row = findTranscriptRow(sc, at)
       const rowTop = row
         ? sc.scrollTop + (row.getBoundingClientRect().top - sc.getBoundingClientRect().top)
-        : steer.estimateRowTop(anchor)
+        : steer.estimateRowTop(at)
       if (rowTop == null) return null
       return Math.max(0, Math.min(sc.scrollHeight - sc.clientHeight, rowTop - pinnedJumpChrome()))
     }
@@ -572,7 +646,9 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
       onEnd: () => { detach(); jumpCancelRef.current = null },
     })
     jumpCancelRef.current = cancelGlide
-  }, [pinnedJumpChrome, scrollerRef])
+  }, [pinnedJumpChrome, scrollerRef, msgKey])
+  /** Ends the in-place jump's glide, for a scroll that takes over from it. */
+  const cancelJumpInPlace = useCallback(() => { jumpCancelRef.current?.() }, [])
 
   return {
     displayItemsRef,
@@ -589,5 +665,6 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     onScrollPin,
     pinnedJumpChrome,
     jumpToPinnedPromptInPlace,
+    cancelJumpInPlace,
   }
 }

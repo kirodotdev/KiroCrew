@@ -1,9 +1,11 @@
 """Turning an app's source directory into the tree an install leaves behind.
 
 Validating a source directory and its manifest, the copy itself (what it skips and
-which generated dependency artifacts it sweeps), and the rules that keep a preserved
+which generated dependency artifacts it sweeps), the rules that keep a preserved
 ``data/`` directory in place across a copy (``gateway_data_dir_obstruction``,
-``copy_app_tree_as_installed``).
+``copy_app_tree_as_installed``), and the update's swap of an app directory's own root
+entries and its one restore (``_move_out_old_entries``, ``_restore_old_entries``),
+each step through a pin of the directory it lists or renames in (``_pin``).
 
 Part of the ``kiro_crew.apps.manager`` family: callers and tests reach every name here
 as ``kiro_crew.apps.manager.<name>``, and a patch there reaches this module too
@@ -12,21 +14,29 @@ as ``kiro_crew.apps.manager.<name>``, and a patch there reaches this module too
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
 import shutil
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from kiro_crew import platform_compat
+from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.apps.manager_records import (
     APP_MANIFEST_FILENAME,
     APPROVED_GRANTS_FILENAME,
     INSTALLED_META_FILENAME,
+    UPDATE_TREE_PHASES,
+    _update_tree_prefix,
     app_dir,
 )
 from kiro_crew.apps.manifest import RESERVED_APP_NAME_CODE, AppManifest, is_reserved_app_name
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.platform_compat import is_link_or_junction
+
+if TYPE_CHECKING:
+    from kiro_crew.apps.backend_runtime.provisioning import _PinnedDir
 
 logger = logging.getLogger("kiro_crew.apps.manager")
 
@@ -87,6 +97,25 @@ def _reserved_name_code(source: Path) -> str:
     except (OSError, ValueError):
         return ""
     return RESERVED_APP_NAME_CODE if is_reserved_app_name(manifest.name) else ""
+
+
+def _min_version_refusal_code(source: Path) -> str:
+    """Return ``MIN_VERSION_REFUSAL_CODE`` if *source* needs a newer Kiro Crew.
+
+    Called on the ``_validate_source_path`` failure path, like
+    ``_reserved_name_code``: the refusal that only an update of Kiro Crew can
+    clear carries its own code, so the dashboard does not send the user to the
+    app's maker for it. Parses defensively for the same reason.
+    """
+    from kiro_crew.apps.version import MIN_VERSION_REFUSAL_CODE
+
+    try:
+        manifest = AppManifest.from_json_file(source / APP_MANIFEST_FILENAME)
+    except (OSError, ValueError):
+        return ""
+    if manifest.minKiroCrewVersion and _check_min_version(manifest.minKiroCrewVersion):
+        return MIN_VERSION_REFUSAL_CODE
+    return ""
 
 
 def _check_min_version(min_version: str) -> str | None:
@@ -185,15 +214,16 @@ def gateway_data_dir_obstruction(root: Path) -> str:
     """Why :func:`app_data_dir` could not stand in *root*, or ``""`` when it can.
 
     The gateway's per-app data directory is ``<app dir>/data``, created with
-    ``mkdir(exist_ok=True)`` once the install is otherwise complete, and MOVED --
-    aside before every update's copy and back after it, to ``.<name>-data-tmp``
-    beside the app directory -- so the runtime's question is two questions: can
-    ``mkdir`` stand there, and can the gateway relocate what stands there and
-    put it back whole. A real directory answers both. A link answers neither
-    safely: ``mkdir`` may follow one that resolves to a directory, but the move
-    relocates the LINK, and a relative link moved out of its tree dangles -- the
-    directory it named stays inside the tree the update retires and is deleted
-    with it, silently, on the update's own success path. So a link at ``data`` is
+    ``mkdir(exist_ok=True)`` once the install is otherwise complete, kept in place
+    while an update replaces the app's other root entries, and MOVED -- aside to
+    ``.<name>-data-tmp`` beside the app directory and back -- by an install over
+    kept data and a keep-data uninstall, so the runtime's question is two
+    questions: can ``mkdir`` stand there, and can the gateway keep or relocate
+    what stands there whole. A real directory answers both. A link answers
+    neither safely: ``mkdir`` may follow one that resolves to a directory, but an
+    in-tree directory it names is retired with the old entries an update
+    replaces, and a relative link moved out of its tree dangles -- the directory
+    it named is deleted, silently, on the update's own success path. So a link at ``data`` is
     refused whatever it resolves to, and so is anything else that is not a
     directory: a regular file, a dangling link, a link to a file. Asked of the
     copied tree AFTER the gateway's own part (a preserved ``data/`` put back over
@@ -211,8 +241,8 @@ def gateway_data_dir_obstruction(root: Path) -> str:
     INSTALLED tree in its preflight, BEFORE its transaction opens, so an installed
     ``data`` that is a link or a file -- from before the refusal, or made by the
     app's own runtime -- is refused with the old tree and record untouched instead
-    of being skipped by the move-aside and deleted with the retired tree on the
-    update's success path. The sentence names the obstruction: it is
+    of losing what it names with the retired entries on the update's success
+    path. The sentence names the obstruction: it is
     the only explanation the install log, the ``AppResult`` and the audit record
     carry.
     """
@@ -235,7 +265,7 @@ def gateway_data_dir_obstruction(root: Path) -> str:
 
 
 def _owned_data_dir(path: Path) -> bool:
-    """A directory the gateway can move aside and put back: a real one, not a link.
+    """A directory the gateway can keep or move aside and put back: a real one, not a link.
 
     The shape :func:`install_app` and :func:`update_app` preserve across the copy
     and :func:`preserved_data_awaits` predicts. ``is_dir`` alone follows a link
@@ -254,9 +284,10 @@ def _temp_data_name_obstruction(tmp_data: Path) -> str:
     """Why the shared ``.<name>-data-tmp`` name cannot hold the preserved ``data/``,
     or ``""`` when it can.
 
-    :func:`install_app` and :func:`update_app` move the app's ``data/`` to that
-    name beside the app directory while they replace the app files, and put it
-    back afterwards; the name is shared with the uninstall so a copy a crashed
+    :func:`install_app` moves the app's ``data/`` to that name beside the app
+    directory while it replaces the app files, and puts it back afterwards
+    (:func:`update_app` only puts back what it finds there); the name is shared
+    with the uninstall so a copy a crashed
     sibling stranded there is reclaimable by whichever lifecycle runs next. It is
     reclaimable only when what stands there is a real directory the gateway made.
     Anything else at the name was planted by something else, and moving onto it
@@ -358,15 +389,16 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
 def preserved_data_awaits(name: str) -> bool:
     """Whether an install of *name* will restore a preserved ``data/`` over the copy.
 
-    :func:`install_app` and :func:`update_app` move an existing ``data/`` aside
-    before the copy and put it back afterwards, replacing whatever the source
-    shipped under that name: the installed app's own directory on an update, one
-    a default uninstall left behind, or the ``.{name}-data-tmp`` copy a crashed
-    sibling operation stranded (restored the same way). With none of those on
+    :func:`install_app` moves an existing ``data/`` aside before the copy and puts
+    it back afterwards, and :func:`update_app` leaves the installed app's own in
+    place, so either replaces whatever the source shipped under that name: the
+    installed app's own directory on an update, one a default uninstall left
+    behind, or the ``.{name}-data-tmp`` copy a crashed sibling operation stranded
+    (restored the same way). With none of those on
     disk -- a first install -- the source's ``data/`` is what the runtime meets.
     A LINK at either name is not a preserved directory: the install refuses one
     before its record (:func:`gateway_data_dir_obstruction`) and the update
-    refuses to move one (:func:`_owned_data_dir`), so nothing of the gateway's is
+    refuses one (:func:`_owned_data_dir`), so nothing of the gateway's is
     put back over the copy for it.
     """
     dest = app_dir(name)
@@ -432,3 +464,228 @@ def _remove_any_shape(path: Path) -> None:
         shutil.rmtree(path)
     else:
         path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# The update's swap of an app directory's own root entries
+# ---------------------------------------------------------------------------
+
+
+def _update_trees(name: str, stem: str) -> tuple[Path, Path, Path]:
+    """*name*'s ``new``, ``out`` and ``old`` update trees for *stem*, beside its pinned path."""
+    parent = _pinned_app_dir(name).parent
+    new, out, old = (parent / f"{_update_tree_prefix(name, p)}{stem}" for p in UPDATE_TREE_PHASES)
+    return new, out, old
+
+
+def _pinned_app_dir(name: str) -> Path:
+    """*name*'s app directory with its ancestors canonical, the form :func:`_pin` takes."""
+    from kiro_crew.apps.backend import _pinned_ancestors  # deferred: backend imports the facade
+
+    return _pinned_ancestors(app_dir(name))
+
+
+def _pin(path: Path) -> _PinnedDir:
+    """Hold the directory *path* for the swap; a link at it, or at an ancestor since it
+    was made canonical, raises ``OSError``."""
+    from kiro_crew.apps.backend import _PinnedDir  # deferred: backend imports the facade
+
+    return _PinnedDir(path, what=f"update directory {path.name}", during="update")
+
+
+def _list_pinned(pin: _PinnedDir) -> list[str]:
+    """The entry names of the pinned directory, read through its descriptor."""
+    if pin.fd is not None and os.listdir in os.supports_fd:
+        return sorted(os.listdir(pin.fd))
+    pin.verify()
+    return sorted(os.listdir(pin.path))
+
+
+def _lstat_pinned(pin: _PinnedDir, entry: str) -> os.stat_result | None:
+    """``lstat`` of *entry* in the pinned directory, or ``None`` when it is absent."""
+    if pin.fd is not None:
+        return pinned_fs.stat_at(pin.fd, entry)
+    pin.verify()
+    try:
+        return os.lstat(pin.path / entry)
+    except FileNotFoundError:
+        return None
+
+
+def _move_entry(src: _PinnedDir, entry: str, dst: _PinnedDir) -> None:
+    """Rename *entry* of one pinned directory to the same name in another."""
+    if src.fd is not None and dst.fd is not None:
+        os.replace(entry, entry, src_dir_fd=src.fd, dst_dir_fd=dst.fd)
+        return
+    src.verify()
+    dst.verify()
+    replace_with_retry(src.path / entry, dst.path / entry)
+
+
+def _move_into(path: Path, dst: _PinnedDir, entry: str) -> None:
+    """Rename *path* to *entry* in the pinned directory."""
+    if dst.fd is not None:
+        os.replace(path, entry, dst_dir_fd=dst.fd)
+        return
+    dst.verify()
+    replace_with_retry(path, dst.path / entry)
+
+
+def _rename_pinned(pin: _PinnedDir, path: Path) -> None:
+    """Rename the pinned directory to *path*, then refuse unless *path* names it."""
+    replace_with_retry(pin.path, path)
+    pin.path = path
+    pin.verify()
+
+
+def _names_pinned(pin: _PinnedDir) -> bool:
+    """Whether the pinned directory's path still names it."""
+    try:
+        pin.verify()
+    except OSError:
+        return False
+    return True
+
+
+def _remove_in(pin: _PinnedDir, entry: str) -> None:
+    """Remove *entry* of the pinned directory without following a link, best effort."""
+    from kiro_crew.apps.backend import _pinned_remove_entry  # deferred: backend imports the facade
+
+    _pinned_remove_entry(pin, pin.path, entry)
+
+
+def _remove_tree(pin: _PinnedDir) -> None:
+    """Remove the pinned directory and its contents; only the directory pinned goes.
+
+    Best effort: a path naming another tree, or a tree that will not go, is
+    logged and left to :func:`sweep_completed_swap_leftovers`.
+    """
+    if not os.path.lexists(pin.path):
+        return
+    try:
+        if pin.fd is None:
+            pin.verify()
+            shutil.rmtree(pin.path)
+            return
+        expected = os.fstat(pin.fd)
+
+        def _same_tree(root_fd: int, _tree: pinned_fs.PinnedTree) -> str | None:
+            return None if os.path.samestat(os.fstat(root_fd), expected) else "not the pinned tree"
+
+        pinned_fs.remove_tree_pinned(
+            str(pin.path), what="app update tree", approve=_same_tree, refusal=OSError
+        )
+    except OSError:
+        logger.warning("Could not remove the update tree %s", pin.path, exc_info=True)
+
+
+def _remove_unpinned_tree(path: Path) -> None:
+    """Remove the tree at *path*: a link or file is unlinked, a directory pinned first."""
+    if not os.path.lexists(path):
+        return
+    if is_link_or_junction(path) or not path.is_dir():
+        _remove_any_shape(path)
+        return
+    try:
+        pin = _pin(path)
+    except OSError:
+        logger.warning("Could not remove the update tree %s", path, exc_info=True)
+        return
+    try:
+        _remove_tree(pin)
+    finally:
+        pin.close()
+
+
+def _swapped_root_entries(dest: _PinnedDir) -> list[str]:
+    """*dest*'s root entries an update replaces: all but ``data`` and ``.app_secret``.
+
+    Those two are excluded by identity (``lstat``, never a scandir stat, which can
+    report no inode on Windows), so a case-folded spelling of one is excluded too.
+    """
+    kept = [st for st in (_lstat_pinned(dest, leaf) for leaf in ("data", ".app_secret")) if st]
+    swapped = []
+    for entry in _list_pinned(dest):
+        st = _lstat_pinned(dest, entry)
+        if st is not None and not any(os.path.samestat(st, k) for k in kept):
+            swapped.append(entry)
+    return swapped
+
+
+def _new_pinned_dir(path: Path) -> _PinnedDir:
+    """Create the directory *path* and pin it at once."""
+    path.mkdir()
+    try:
+        return _pin(path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.rmdir(path)
+        raise
+
+
+def _move_out_old_entries(dest: _PinnedDir, out: _PinnedDir) -> None:
+    """Move *dest*'s replaced root entries into the pinned *out*, ``installed.json`` first."""
+    entries = _swapped_root_entries(dest)
+    if INSTALLED_META_FILENAME in entries:
+        _move_entry(dest, INSTALLED_META_FILENAME, out)
+    for entry in entries:
+        if entry != INSTALLED_META_FILENAME:
+            _move_entry(dest, entry, out)
+
+
+def _move_in_new_entries(new: _PinnedDir, dest: _PinnedDir, moved_in: list[str]) -> None:
+    """Move every root entry of *new* into *dest*, naming each in *moved_in*; *new* stays,
+    empty, for a rollback to move them back into."""
+    for entry in _list_pinned(new):
+        _move_entry(new, entry, dest)
+        moved_in.append(entry)
+    new.verify()
+
+
+def _restore_old_entries(
+    name: str,
+    trees: tuple[Path, Path, Path],
+    moved_in: list[str] | None,
+    dest: _PinnedDir,
+    retired: _PinnedDir | None,
+    new: _PinnedDir | None = None,
+) -> bool:
+    """Put an update's old root entries back into the pinned app directory. Idempotent.
+
+    Moves the entries the update moved in (*moved_in*, or with ``None`` every
+    replaced root entry) back into the ``new`` tree (*new*, or the directory at its
+    name, made when absent), names the *retired* tree ``out`` again while its name
+    still names it, moves its entries back with ``installed.json`` last, and
+    removes ``out`` and ``new``; every step goes through the pins. ``data`` and
+    ``.app_secret`` are never touched. An entry of ``out`` whose name is taken in
+    the app directory stops it before anything moves back: it is logged
+    (``recovery_ambiguous``) and False is returned.
+    """
+    new_path, out_path, _old_path = trees
+    with contextlib.ExitStack() as held:
+        leaving = _swapped_root_entries(dest) if moved_in is None else list(moved_in)
+        if leaving and new is None:
+            new = _pin(new_path) if os.path.lexists(new_path) else _new_pinned_dir(new_path)
+            held.callback(new.close)
+        for entry in leaving:
+            assert new is not None  # bound above whenever an entry leaves
+            _move_entry(dest, entry, new)
+        if retired is not None:
+            # A retired name naming something other than the pinned tree is left alone; the
+            # entries still come back through the pin.
+            if retired.path != out_path and _names_pinned(retired):
+                _rename_pinned(retired, out_path)
+            entries = sorted(
+                _list_pinned(retired), key=lambda entry: entry == INSTALLED_META_FILENAME
+            )
+            if any(_lstat_pinned(dest, entry) is not None for entry in entries):
+                logger.warning("recovery_ambiguous: %s has an old entry's name taken", name)
+                return False
+            for entry in entries:
+                _move_entry(retired, entry, dest)
+            _remove_tree(retired)
+        if new is not None:
+            _remove_tree(new)
+        else:
+            _remove_unpinned_tree(new_path)
+    return True

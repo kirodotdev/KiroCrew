@@ -9,6 +9,8 @@ asserted on its own.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from kiro_crew.mcp_dashboard import TABLE
@@ -32,7 +34,11 @@ class TestSteerForwarding:
             {"ok": True, "target": "chat-2", "started": False, "steered": True},
         )
         assert sent.path == "/api/session-control/send"
-        # ``receipt`` asks the gateway for this call's outgoing-card record.
+        # ``receipt`` asks the gateway for this call's outgoing-card record, and
+        # ``request_id`` lets it answer a resend from the first reply.
+        request_id = sent.body.pop("request_id")
+        assert sent.body.pop("request_attempt") == 0
+        assert re.fullmatch(r"[0-9a-f]{32}", request_id)
         assert sent.body == {
             "target": "chat-2",
             "message": "stop that",

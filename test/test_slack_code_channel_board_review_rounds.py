@@ -708,7 +708,7 @@ def test_a_question_after_a_same_second_decide_waits_on_the_owner_and_pages_them
     snap = source.project(SimpleNamespace(goal="", round=1), [asked], lambda k: model.LIVE_IDLE)
     [row] = snap.rows
     assert row.state == model.WAITING_ON_YOU and row.needs_owner
-    assert "1 waiting on you" in snap.aggregate
+    assert "1 needs you" in snap.aggregate
     agg = model.work_aggregate(snap)
     assert agg["state"] == "waiting" and agg["counts"]["waiting"] == 1
     assert _publish(snap) == "posted"

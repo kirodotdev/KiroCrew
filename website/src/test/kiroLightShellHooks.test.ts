@@ -121,10 +121,12 @@ describe('kiro-light shell hooks', () => {
   it('the pinned-prompt card carries the same hook as the bubble it stands in for', () => {
     // The banner is a pixel-for-pixel copy of the bubble so the hand-off reads as
     // the bubble sticking, not being replaced; a theme that tints one must tint
-    // the other or the swap becomes visible.
+    // the other or the swap becomes visible. The hook leads both tones: the
+    // viewer's own filled card, and a teammate's outlined one, whose
+    // `user-bubble-other` clears the tint as it does on the bubble.
     const src = read('pages', 'chat', 'PinnedPrompt.tsx')
     expect(src, KEEP_HOOK('user-bubble', ['pages', 'chat', 'PinnedPrompt.tsx'])).toMatch(
-      /className="message-bubble user-bubble flex items-stretch gap-2 overflow-hidden rounded-xl bg-card text-card-fg ring-1 /,
+      /className=\{`message-bubble user-bubble flex items-stretch gap-2 overflow-hidden rounded-xl ring-1 [^`]*\$\{other \? 'user-bubble-other [^']*' : 'bg-card text-card-fg ring-border'\}`\}/,
     )
   })
 

@@ -459,7 +459,9 @@ async def api_chat_tag_update(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    if "name" in body:
+    # Test the VALUE, like the folder route: ``str(None)`` would rename the tag
+    # to "None", so an explicit null leaves the name as it is.
+    if body.get("name") is not None:
         new_name = str(body["name"]).strip()[:_NAME_MAX]
         if not new_name:
             return web.json_response(
@@ -493,7 +495,7 @@ async def api_chat_tag_update(request: web.Request) -> web.Response:
 
         pre_snapshot = [dict(t) for t in state._tags]
 
-        if "name" in body:
+        if body.get("name") is not None:
             # Redact BEFORE truncation (same reasoning as tag create).
             safe_name = str(body["name"]).strip()
             safe_name, _ = redact_exfiltration_urls(safe_name)

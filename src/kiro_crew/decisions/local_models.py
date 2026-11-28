@@ -98,7 +98,8 @@ class LocalModel:
     hard_relative_pct: int
     #: Peak resident memory of the server, measured, in GB.
     peak_ram_gb: float
-    #: Median seconds per decision on 10 CPU cores.
+    #: Median seconds per decision on 10 CPU cores. Also the preset's declared
+    #: typical answer time where it is above the local spec's (``gate.capabilities``).
     p50_secs: float
     #: 95th-percentile seconds per decision on 10 CPU cores.
     p95_secs: float

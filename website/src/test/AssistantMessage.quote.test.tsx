@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import AssistantMessage from '../pages/chat/AssistantMessage'
+import { QUOTED_BTN_CLS } from '../pages/chat/QuotedMark'
 
 vi.mock('../components/MarkdownRenderer', () => ({
   default: ({ content }: { content: string }) => <div data-testid="md">{content}</div>,
@@ -259,5 +260,54 @@ describe('AssistantMessage copy on select', () => {
     expect(screen.getByRole('button', { name: 'Quote' })).toBeInTheDocument()
     expect(copyToClipboard).not.toHaveBeenCalled()
     expect(copyRichToClipboard).not.toHaveBeenCalled()
+  })
+})
+
+describe('AssistantMessage Quote done state', () => {
+  it('the row Quote button shows a check and "Quoted" for two seconds, then turns back', () => {
+    const onQuote = vi.fn()
+    render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onQuoteMessage={onQuote} />)
+    const button = screen.getByTestId('quote-message')
+    expect(button).not.toHaveTextContent('Quoted')
+    fireEvent.click(button)
+    expect(onQuote).toHaveBeenCalledWith(LONG)
+    expect(button).toHaveTextContent('Quoted')
+    expect(screen.getByRole('status')).toHaveTextContent('Quoted')
+    act(() => { vi.advanceTimersByTime(1999) })
+    expect(button).toHaveTextContent('Quoted')
+    act(() => { vi.advanceTimersByTime(1) })
+    expect(button).not.toHaveTextContent('Quoted')
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('a Quote chosen from More says "Quoted" in the row, since the menu closes', () => {
+    render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onRegenerate={() => {}} onQuoteMessage={() => {}} />)
+    openMore()
+    fireEvent.click(screen.getByTestId('quote-message-menu-item'))
+    expect(screen.getByTestId('quote-done')).toHaveTextContent('Quoted')
+    act(() => { vi.advanceTimersByTime(2000) })
+    expect(screen.queryByTestId('quote-done')).toBeNull()
+  })
+
+  it('draws "Quoted" inside the Quote button, which leaves its square icon cell so the label cannot spill over Copy', () => {
+    render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onQuoteMessage={() => {}} />)
+    const button = screen.getByTestId('quote-message')
+    expect(button.className).not.toContain(QUOTED_BTN_CLS)
+    fireEvent.click(button)
+    expect(button).toContainElement(screen.getByRole('status'))
+    expect(button.className).toContain(QUOTED_BTN_CLS)
+    expect(button.querySelector('.absolute')).toBeNull()
+    act(() => { vi.advanceTimersByTime(2000) })
+    expect(button.className).not.toContain(QUOTED_BTN_CLS)
+  })
+
+  it('a Quote from More gets its own slot in the row: an in-flow span beside the buttons, not an overlay', () => {
+    render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onRegenerate={() => {}} onQuoteMessage={() => {}} />)
+    openMore()
+    fireEvent.click(screen.getByTestId('quote-message-menu-item'))
+    const done = screen.getByTestId('quote-done')
+    expect(done.tagName).toBe('SPAN')
+    expect(done.className).not.toMatch(/\b(absolute|fixed)\b/)
+    expect(done.parentElement).toBe(screen.getByTestId('assistant-more-actions').parentElement)
   })
 })

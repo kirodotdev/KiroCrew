@@ -28,6 +28,16 @@ describe('CommentList image rows', () => {
     expect(screen.getByText('Box 1 on "Schedule page listing recurring…"')).toBeInTheDocument()
   })
 
+  it('shows each anchor line in full in the bubble on keyboard focus, never only in a native title', () => {
+    render(<CommentList comments={COMMENTS} onEdit={vi.fn()} onRemove={vi.fn()} onSubmitAll={vi.fn()} />)
+    for (const [line, full] of [[screen.getByText('"first paragraph"'), '"first paragraph"'], [screen.getByText('Box 2 on "Schedule page"'), 'a.png']] as const) {
+      expect(line).toHaveAttribute('title', '')
+      fireEvent.focus(line)
+      expect(screen.getByRole('tooltip')).toHaveTextContent(full)
+      fireEvent.blur(line)
+    }
+  })
+
   // A box comment's row is the same row as a text comment's, so an unfinished
   // edit of it survives the panel withholding the tab for a moment, and the
   // reopened row still names its box.

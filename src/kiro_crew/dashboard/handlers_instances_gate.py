@@ -260,7 +260,11 @@ def _status_for(state: "DashboardState", instance_id: str) -> dict:
             return d
         last_err = mgr.last_error(instance_id)
         if last_err:
-            return {"instance_id": instance_id, "state": "error", "error": last_err}
+            d = {"instance_id": instance_id, "state": "error", "error": last_err}
+            code = mgr.last_error_code(instance_id)
+            if code:
+                d["error_code"] = code
+            return d
     return {"instance_id": instance_id, "state": "disconnected"}
 
 

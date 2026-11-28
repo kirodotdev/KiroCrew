@@ -557,9 +557,9 @@ def test_a_charge_with_no_opener_is_stated_not_assigned() -> None:
 
 
 def test_the_counts_answer_what_is_done_and_what_needs_me() -> None:
-    """``accepted``/``open`` come from the item's state, ``needs_you`` from an open one's
-    report naming a person (``reason`` approval / needs_human). A plain question is the
-    conductor's to answer, so it does not count (the Board's rule, ``work_vocab.waits_on_person``).
+    """``accepted``/``open`` come from the item's state, ``needs_you`` from an open one
+    the conductor asked the person about. A question the conductor has not relayed is the
+    conductor's to answer, so it does not count (the Board's rule, ``awaits_person``).
     """
     value = _fold(
         [
@@ -656,16 +656,16 @@ def test_a_closed_item_no_longer_needs_me() -> None:
         for state in ("accepted", "rejected", "abandoned")
         for status in ("question", "blocked")
     }
-    # The open question, the open blocker and the reopened question; not the
-    # open progress, and none of the six closed ones.
-    assert board["needs_you"] == 3
+    # The open question, the open blocker, the open progress the conductor asked
+    # the person about and the reopened question; none of the six closed ones.
+    assert board["needs_you"] == 4
     assert board["open"] == 4
 
 
 def test_a_savepoint_from_before_reason_and_answered_rebuilds() -> None:
     """Items in an older savepoint carry no ``reason``/``answered``/``asked``, so
     resuming one would miscount ``needs_you``. The bumped version retires it."""
-    assert projection._FOLDS["workstreams"].state_version == projection._FOLD_STATE_VERSION_BASE + 3
+    assert projection._FOLDS["workstreams"].state_version == projection._FOLD_STATE_VERSION_BASE + 4
 
 
 def _asked(item_id: str, status: str, reason: str | None) -> list[Entry]:
@@ -682,8 +682,9 @@ def test_an_answered_report_no_longer_needs_me() -> None:
 
     ``status`` is the worker's last report and moves only when the worker reports again,
     so counting by status kept an answered ask on the count until the worker spoke. The
-    fold uses the Board's own rule (``work_vocab.waits_on_person``): an answer clears it,
-    a new report asks again, and a plain question (no person reason) never counts.
+    fold uses the Board's own rule (``awaits_person``): an answer clears it, a new report
+    asks again once the conductor relays it, and the conductor's ``ask`` alone counts,
+    whatever reason the report gave and whether a ``decide`` came before it.
     """
     entries = [_opened(CONDUCTOR), _work("goal", goal="answers", round=1)]
     entries += _asked("plain_decided", "question", None)
@@ -703,6 +704,13 @@ def test_an_answered_report_no_longer_needs_me() -> None:
     ]
     entries += _asked("closed", "blocked", "needs_human")
     entries += [_work("close", item_id="closed", state="abandoned")]
+    entries += _asked("plain_open", "question", None)
+    entries += [
+        _work("create", item_id="decided_then_asked", title="decided_then_asked", round=1),
+        _work("report", actor="worker", item_id="decided_then_asked", status="blocked"),
+        _work("decide", item_id="decided_then_asked", decision="hold on"),
+        _work("ask", item_id="decided_then_asked", ask={"what": "?"}),
+    ]
     board = _board(_fold(entries), "answers")
     waits = {t["item_id"]: t["awaits_person"] for t in board["tasks"]}
     assert waits == {
@@ -712,19 +720,29 @@ def test_an_answered_report_no_longer_needs_me() -> None:
         "approval_steered": False,
         "asked_again": True,
         "closed": False,
+        "plain_open": True,
+        "decided_then_asked": True,
     }
-    assert board["needs_you"] == 2
+    assert board["needs_you"] == 4
 
 
 @pytest.mark.parametrize(
-    ("decided_at", "answered"),
-    [("2026-10-03T12:05:00+00:00", True), ("2026-10-03T11:55:00+00:00", False), (None, False)],
+    ("decided_at", "asked_at", "answered"),
+    [
+        # A ``decide`` clears the record, so one still held was written after it.
+        ("2026-10-03T12:05:00+00:00", "2026-10-03T12:05:00+00:00", False),
+        ("2026-10-03T11:55:00+00:00", "2026-10-03T12:01:00+00:00", False),
+        (None, "2026-10-03T12:01:00+00:00", False),
+        # A record older than the report explains an earlier question.
+        (None, "2026-10-03T11:59:00+00:00", True),
+    ],
 )
-def test_a_baselined_item_reads_its_hand_back_from_the_stamps(
-    decided_at: str | None, answered: bool
+def test_a_baselined_item_reads_its_ask_from_the_stamps(
+    decided_at: str | None, asked_at: str, answered: bool
 ) -> None:
     """An item first seen whole (a baseline) carries no event order, so the ledger's own
-    stamps decide: ``decided_at`` at or after ``last_report_at`` answered the report."""
+    stamps decide: the ``ask`` record waits when it was written at or after
+    ``last_report_at``."""
     value = _fold(
         [
             _opened(CONDUCTOR),
@@ -739,7 +757,7 @@ def test_a_baselined_item_reads_its_hand_back_from_the_stamps(
                 reason="needs_human",
                 last_report_at="2026-10-03T12:00:00+00:00",
                 decided_at=decided_at,
-                ask={"what": "?", "written_at": "2026-10-03T12:01:00+00:00"},
+                ask={"what": "?", "written_at": asked_at},
                 verdict="pending",
             ),
         ]
@@ -765,8 +783,9 @@ def test_a_baselined_item_reads_its_hand_back_from_the_stamps(
 def test_the_shared_rule_is_the_boards(
     status: str, reason: str | None, answered: bool, running: bool, waits: bool
 ) -> None:
-    """``work_vocab.waits_on_person`` is the one rule the Board, the sidebar and this
-    fold count by: a report naming a person, unanswered, its worker's turn not running."""
+    """``work_vocab.waits_on_person`` is the rule behind a worker's own claim that it
+    waits on a person (the Board's ``names_person``): a report naming one, unanswered,
+    its worker's turn not running."""
     from kiro_crew.work_vocab import waits_on_person
 
     assert waits_on_person(status, reason, answered=answered, running=running) is waits

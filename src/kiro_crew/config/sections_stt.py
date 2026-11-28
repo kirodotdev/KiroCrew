@@ -638,8 +638,7 @@ class SttConfig:
         metadata=_meta(
             "Dictation Panel",
             "Show the animated dictation panel while recording instead of the thin status bar. "
-            "Ignored when the browser lacks WebGL2 or the OS requests reduced motion — both "
-            "fall back to the status bar.",
+            "Ignored when the OS requests reduced motion, which falls back to the status bar.",
         ),
     )
     dictation_note: bool = field(

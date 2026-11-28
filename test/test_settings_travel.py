@@ -533,8 +533,50 @@ class TestCliRestoreRefusesAnUnusableSettingsDocument:
             [str(tarball), "--mode", mode, "--components", "config", "--force"] + unpinnable_argv()
         )
 
-        assert ret != 0
+        if name == "config.local.json" and mode == "merge":
+            # A merge never installs the overlay, so its bundle copy cannot refuse the restore.
+            assert ret == 0
+        else:
+            assert ret != 0
         assert (live.read_bytes() if live.exists() else None) == before
+
+
+class TestCliRestoreAcceptsAByteOrderMarkTheReaderAccepts:
+    @pytest.mark.parametrize(
+        ("name", "body"),
+        [
+            # None: the config writer's document after its first load, which later loads keep.
+            ("config.json", None),
+            ("config.local.json", '{"timezone": "UTC"}'),
+            ("hooks.json", '{"hooks": []}'),
+            ("notification_settings.json", '{"channel_settings": {"app.a": {"muted": true}}}'),
+        ],
+    )
+    def test_a_replace_restore_installs_it_as_saved(self, tmp_path, monkeypatch, name, body):
+        """Notepad's "UTF-8 with BOM" writes this mark and these files' readers drop it, so
+        the restore must not refuse the bundle as unreadable."""
+        src = tmp_path / "src"
+        _setup_fake_kirocrew(src)
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+        if body is None:
+            KiroCrewConfig().save()
+            KiroCrewConfig.load()  # lands the one-time migrations a fresh document gets
+            body = (src / name).read_text(encoding="utf-8")
+        saved = b"\xef\xbb\xbf" + body.encode("utf-8")
+        (src / name).write_bytes(saved)
+        tarball = _make_snapshot(src, tmp_path / "out")
+        dst = tmp_path / "dst"
+        _setup_fake_kirocrew(dst)
+        (dst / name).unlink(missing_ok=True)
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+        ret = restore_main(
+            [str(tarball), "--mode", "replace", "--components", "config", "--force"]
+            + unpinnable_argv()
+        )
+
+        assert ret == 0
+        assert (dst / name).read_bytes() == saved
 
 
 class TestCliMergeSaysWhatItKept:
@@ -716,6 +758,89 @@ class TestCliMergeSaysWhatItKept:
         assert ret == 0
         assert "project_dir" not in out
         assert "✅ config" in out
+
+
+#: The data-home store the MCP Servers page writes (`mcp_config_files._kirocrew_mcp_json`).
+#: A server's ``env`` holds credentials, which is why its writer creates the file owner-only.
+_MCP_STORE = {
+    "mcpServers": {"echo": {"command": "python3", "args": ["echo.py"], "env": {"T": "t"}}}
+}
+
+
+class TestTheMcpServersStoreRidesInConfig:
+    """The servers added on the MCP Servers page live in ``<data home>/mcp.json``. A backup
+    restored onto a new machine brings them back, and a merge names the file it keeps."""
+
+    def _bundle(self, tmp_path, monkeypatch, body: str = json.dumps(_MCP_STORE)) -> Path:
+        src = tmp_path / "src"
+        _setup_fake_kirocrew(src)
+        (src / "mcp.json").write_text(body, encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+        return _make_snapshot(src, tmp_path / "out")
+
+    def _restore(self, tarball: Path, dst: Path, monkeypatch, mode: str) -> int:
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+        return restore_main(
+            [str(tarball), "--mode", mode, "--components", "config", "--force"] + unpinnable_argv()
+        )
+
+    def test_a_merge_onto_a_new_machine_restores_it_and_says_so(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        tarball = self._bundle(tmp_path, monkeypatch)
+        with tarfile.open(tarball) as tar:
+            carried = {"/".join(Path(m.name).parts[1:]) for m in tar.getmembers()}
+        assert "mcp.json" in carried
+        dst = tmp_path / "dst"
+        _setup_fake_kirocrew(dst)
+        capsys.readouterr()
+
+        ret = self._restore(tarball, dst, monkeypatch, "merge")
+
+        assert ret == 0
+        assert json.loads((dst / "mcp.json").read_text(encoding="utf-8")) == _MCP_STORE
+        assert "mcp.json: restored (was missing)" in capsys.readouterr().out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits; Windows uses a DACL")
+    @pytest.mark.parametrize("mode", ["replace", "merge"])
+    def test_it_is_installed_owner_only(self, tmp_path, monkeypatch, mode):
+        tarball = self._bundle(tmp_path, monkeypatch)
+        dst = tmp_path / "dst"
+        _setup_fake_kirocrew(dst)
+
+        assert self._restore(tarball, dst, monkeypatch, mode) == 0
+
+        assert stat.S_IMODE((dst / "mcp.json").stat().st_mode) == 0o600
+
+    def test_a_merge_keeps_this_machines_servers_and_names_the_file(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        tarball = self._bundle(tmp_path, monkeypatch)
+        dst = tmp_path / "dst"
+        _setup_fake_kirocrew(dst)
+        local = '{"mcpServers": {"local": {"command": "node"}}}'
+        (dst / "mcp.json").write_text(local, encoding="utf-8")
+        capsys.readouterr()
+
+        ret = self._restore(tarball, dst, monkeypatch, "merge")
+
+        out = capsys.readouterr().out
+        assert ret == 0
+        assert (dst / "mcp.json").read_text(encoding="utf-8") == local
+        assert "mcp.json: kept the existing file" in out
+        assert "✅ config" not in out
+
+    def test_a_store_with_comments_is_restored_as_written(self, tmp_path, monkeypatch):
+        """Its reader accepts comments, so a hand-commented store is a usable one and must
+        not stop the restore the way an unreadable config.json does."""
+        body = "// my servers\n" + json.dumps(_MCP_STORE)
+        tarball = self._bundle(tmp_path, monkeypatch, body)
+        dst = tmp_path / "dst"
+        _setup_fake_kirocrew(dst)
+
+        assert self._restore(tarball, dst, monkeypatch, "replace") == 0
+
+        assert (dst / "mcp.json").read_text(encoding="utf-8") == body
 
 
 class TestNestingBound:

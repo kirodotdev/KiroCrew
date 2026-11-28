@@ -468,7 +468,7 @@ def test_workspace_shell_meets_the_gateway_deny_floor():
 #: Core tools reviewed as safe for a remote session: they act on gateway state on
 #: purpose (artifacts, memory, crons, chats) or take content, never a gateway path.
 REMOTE_SAFE_CORE_TOOLS = frozenset("""
-artifact_delete artifact_delete_comment artifact_folder_create artifact_folder_delete
+app_store_search artifact_delete artifact_delete_comment artifact_folder_create artifact_folder_delete
 artifact_folder_list artifact_folder_move artifact_folder_rename artifact_get
 artifact_get_comments artifact_list artifact_mark_review artifact_move artifact_post_comment
 artifact_reply_comment artifact_revert artifact_save artifact_update artifact_versions
@@ -479,7 +479,7 @@ dismiss_notification get_chat_session issue_radar_crew_read issue_radar_crew_rec
 issue_radar_record_investigation kiro_cli_logs knowledge_add_document knowledge_dedup
 knowledge_list_sources learn_add learn_list learn_remove learn_update list_sessions
 local_knowledge_search mcp_server_wait memory_recall monitor_inspect monitor_start monitor_stop
-monitor_update monitor_watch nothing_to_do ops_mission_control_api pod_ls pod_status
+monitor_update monitor_watch nothing_to_do ops_mission_control_api pod_ls pod_provision_status pod_status
 read_slack_history read_slack_profile register_hook reset_conversation resource_status
 resource_subscribe resource_subscriptions resource_unsubscribe route_crew
 search_chat_history select_crew send_message send_notification session_ledger_read

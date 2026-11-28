@@ -7,6 +7,7 @@ import {
   eventKeyToken,
   formatChordKeys,
   formatQuickSearchKeys,
+  formatQuickSearchShortcut,
   hasCustomChord,
   isModKEvent,
   isValidChord,
@@ -220,14 +221,18 @@ describe('chordMatchesEvent', () => {
     expect(chordMatchesEvent(ke({ code: 'Backquote', key: '\\', ctrlKey: true }), { key: '`', ctrl: true }, false)).toBe(true)
     // UK ISO: Shift+Backslash types '~'; it must not reach a Ctrl+Shift+` binding.
     expect(chordMatchesEvent(ke({ code: 'Backslash', key: '~', ctrlKey: true, shiftKey: true }), { key: '`', ctrl: true, shift: true }, false)).toBe(false)
-    // Dvorak: the Semicolon key types 's'; it must not fire a Ctrl+S chord.
-    expect(chordMatchesEvent(ke({ code: 'Semicolon', key: 's', ctrlKey: true }), { key: 's', ctrl: true }, false)).toBe(false)
   })
 
-  it('keeps letters positional only, so a non-US layout glyph does not match', () => {
-    // AZERTY: the physical Q key types 'a'. Only the positional token 'q' matches.
-    expect(chordMatchesEvent(ke({ code: 'KeyQ', key: 'a', ctrlKey: true }), { key: 'a', ctrl: true }, false)).toBe(false)
-    expect(chordMatchesEvent(ke({ code: 'KeyQ', key: 'a', ctrlKey: true }), { key: 'q', ctrl: true }, false)).toBe(true)
+  it('matches the letter the layout types, and the physical key only when it types no Latin letter', () => {
+    // AZERTY: the physical Q key types 'a', so it is the Ctrl+A chord, not Ctrl+Q.
+    expect(chordMatchesEvent(ke({ code: 'KeyQ', key: 'a', ctrlKey: true }), { key: 'a', ctrl: true }, false)).toBe(true)
+    expect(chordMatchesEvent(ke({ code: 'KeyQ', key: 'a', ctrlKey: true }), { key: 'q', ctrl: true }, false)).toBe(false)
+    // Dvorak: the Semicolon key types 's', so it is the Ctrl+S chord.
+    expect(chordMatchesEvent(ke({ code: 'Semicolon', key: 's', ctrlKey: true }), { key: 's', ctrl: true }, false)).toBe(true)
+    // Russian: the physical O key types 'щ', so the chord falls back to its position.
+    expect(chordMatchesEvent(ke({ code: 'KeyO', key: 'щ', ctrlKey: true }), { key: 'o', ctrl: true }, false)).toBe(true)
+    // macOS: Option+Shift+A types 'Å'; the Option layer is matched by position.
+    expect(chordMatchesEvent(ke({ code: 'KeyA', key: 'Å', altKey: true, shiftKey: true }), { key: 'a', alt: true, shift: true }, true)).toBe(true)
   })
 })
 
@@ -259,6 +264,16 @@ describe('formatters', () => {
 
   it('returns no caps for a custom mode without a recorded chord', () => {
     expect(formatQuickSearchKeys({ mode: 'custom' }, false)).toEqual([])
+  })
+
+  it('spells the gesture inline for a sentence: ⌘K on macOS, Ctrl+K elsewhere', () => {
+    expect(formatQuickSearchShortcut({ mode: 'mod-k' }, true)).toBe('⌘K')
+    expect(formatQuickSearchShortcut({ mode: 'mod-k' }, false)).toBe('Ctrl+K')
+    const config = { mode: 'custom', custom: { key: 'j', mod: true, shift: true } } as const
+    expect(formatQuickSearchShortcut(config, true)).toBe('⌘⇧J')
+    expect(formatQuickSearchShortcut(config, false)).toBe('Ctrl+Shift+J')
+    expect(formatQuickSearchShortcut({ mode: 'double-shift' }, false)).toBe('Double Shift')
+    expect(formatQuickSearchShortcut({ mode: 'custom' }, false)).toBe('')
   })
 
   it('formatChordKeys and displayKeyCap render the key legibly', () => {

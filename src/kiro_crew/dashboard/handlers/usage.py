@@ -12,9 +12,9 @@
 #   ``usage_store`` -- the shard store, the reporting window, slot categories, row readers
 #   ``usage_spend`` -- a slot's spend, the per-day credits, one slot's per-turn usage
 #   ``usage_context`` -- context-window occupancy and a session's context trace
+#   ``usage_sessions`` -- the Usage page's kiro-cli and KAS session activity and its cached parse
 #   ``usage_cost`` -- the Telemetry panel's spend breakdown
 #   ``usage_history`` -- the Usage page's per-day token history
-#   ``usage_sessions`` -- the Usage page's kiro-cli and KAS session activity and its cached parse
 
 from __future__ import annotations
 
@@ -644,8 +644,9 @@ def _emit_turn_histogram(
 ) -> None:
     """Emit this turn's OTEL samples from a built record.
 
-    ``owning_app`` is the session's app for ``kirocrew.app.run_time``: the live
-    provider's ``owning_app``, else the row's ``app`` stamp.
+    ``owning_app`` is the session's app for ``kirocrew.app.run_time`` and
+    ``kirocrew.app.credits``: the live provider's ``owning_app``, else the row's
+    ``app`` stamp.
 
     ``kirocrew.turn.duration`` plus the turn's usage family
     (``kirocrew.turn.tokens`` and whichever of ``kirocrew.turn.credits`` /
@@ -697,6 +698,7 @@ def _emit_turn_histogram(
         model=model,
         provider=provider,
         harness=harness,
+        owning_app=owning_app,
     )
 
 
@@ -783,9 +785,9 @@ _OWNERS = (
     "kiro_crew.dashboard.handlers.usage_store",
     "kiro_crew.dashboard.handlers.usage_spend",
     "kiro_crew.dashboard.handlers.usage_context",
+    "kiro_crew.dashboard.handlers.usage_sessions",
     "kiro_crew.dashboard.handlers.usage_cost",
     "kiro_crew.dashboard.handlers.usage_history",
-    "kiro_crew.dashboard.handlers.usage_sessions",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -820,6 +822,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _COST_CACHE_TTL,
         _COST_MIN_GROWTH_TURNS,
         _COST_TOP_CONVOS,
+        _purpose_of,
         cost_breakdown,
     )
     from kiro_crew.dashboard.handlers.usage_history import (  # noqa: F401
@@ -881,6 +884,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _parse_bound,
         _parse_row_dt,
         _sessions_dir,
+        _shard_counted_harnesses,
         _token_usage_dir,
         is_session_slot,
         resolve_window,
@@ -889,18 +893,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import model_registry, platform_compat  # noqa: F401
-    from kiro_crew.agent_sdk.backends import (  # noqa: F401
-        ACP_BACKEND_ANTIGRAVITY,
-        ACP_BACKEND_CLAUDE,
-        ACP_BACKEND_CODEX,
-        ACP_BACKEND_COPILOT,
-        ACP_BACKEND_DEEPSEEK,
-        ACP_BACKEND_GOOSE,
-        ACP_BACKEND_MIMOCODE,
-        ACP_BACKEND_OPENCODE,
-        ACP_BACKEND_PI,
-        ACP_BACKEND_STRANDS,
-    )
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_KNOWN  # noqa: F401
+    from kiro_crew.agent_sdk.capabilities import capabilities_for  # noqa: F401
     from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE  # noqa: F401
     from kiro_crew.config.paths import data_home, kiro_sessions_dir  # noqa: F401
     from kiro_crew.constants import crew_log_enabled, env_file_display  # noqa: F401

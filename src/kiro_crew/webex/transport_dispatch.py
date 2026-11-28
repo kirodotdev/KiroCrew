@@ -86,6 +86,7 @@ from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
     COMPACT_ACCOUNT_CHANGED_TEXT,
     arm_cancelled_turn,
+    clean_compact_focus,
     compact_unsupported_backend,
     compact_unsupported_reply,
     context_recycle_warning,
@@ -458,7 +459,9 @@ class WebexDispatcher:
                 return
             if cmd == "compact":
                 self._conv.clear_awaiting(route)
-                await self._handle_compact(inbound)
+                await self._handle_compact(
+                    inbound, clean_compact_focus(parse_command_argument(text))
+                )
                 return
             if cmd == "help":
                 await self._reply(inbound, build_help_text())
@@ -770,6 +773,21 @@ class WebexDispatcher:
         section = self._live_cfg().webex
         allowed = {e.lower() for e in (getattr(section, "allowed_emails", None) or []) if e}
         return bool(email) and email.lower() in allowed
+
+    def _is_owner(self, email: str) -> bool:
+        """Whether *email* may change YOLO and answer approval prompts here.
+
+        ``webex.owner_email`` when it is set, else the only allow-listed email
+        (:func:`~kiro_crew.messaging.commands.is_channel_owner`). Read live.
+        """
+        from kiro_crew.messaging.commands import is_channel_owner
+
+        section = self._live_cfg().webex
+        return self._sender_allowed(email) and is_channel_owner(
+            (email,),
+            owner=getattr(section, "owner_email", ""),
+            allowed=getattr(section, "allowed_emails", None) or (),
+        )
 
     def _bot_name(self) -> str:
         """The bot's display name, for stripping its own @mention in a space."""
@@ -1346,8 +1364,11 @@ class WebexDispatcher:
                 "to compress it, or `/new` to start fresh.",
             )
 
-    async def _compact_provider(self, provider: Any) -> tuple[bool, str]:
+    async def _compact_provider(self, provider: Any, focus: str = "") -> tuple[bool, str]:
         """Compact in place and report what actually happened.
+
+        *focus* is the cleaned text after a typed ``/compact``; empty calls
+        ``provider.compact()`` with no argument, as the automatic path does.
 
         Returns ``(ok, detail)`` where *detail* explains a failure. The result is
         READ rather than assumed: the ACP client synthesizes a completion event
@@ -1361,7 +1382,10 @@ class WebexDispatcher:
         and the caller holds the session semaphore for the whole wait.
         """
         try:
-            await asyncio.wait_for(provider.compact(), timeout=_COMPACT_TIMEOUT_S)
+            await asyncio.wait_for(
+                provider.compact(focus) if focus else provider.compact(),
+                timeout=_COMPACT_TIMEOUT_S,
+            )
             result = await provider.wait_for_compaction(
                 timeout=self.sessions.compact_wait_budget_secs()
             )
@@ -1377,7 +1401,7 @@ class WebexDispatcher:
             return False, "timed out" if kind == "timeout" else "failed"
         return True, ""
 
-    async def _handle_compact(self, inbound: "WebexInbound") -> None:
+    async def _handle_compact(self, inbound: "WebexInbound", focus: str = "") -> None:
         """In-place ACP ``/compact`` on the user's current session."""
         session_key = self._session_key(_route_of(inbound))
         # Serialize compaction against the turn semaphore: compacting while a
@@ -1408,7 +1432,7 @@ class WebexDispatcher:
             if unsupported:
                 await self._reply(inbound, compact_unsupported_reply(unsupported))
                 return
-            ok, detail = await self._compact_provider(provider)
+            ok, detail = await self._compact_provider(provider, focus)
             await self._reply(
                 inbound,
                 (

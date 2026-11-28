@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from kiro_crew.publish_provider import PublishProvider
     from kiro_crew.platform.interfaces import (
         BrowserCredentialTarget,
+        CredentialFreshness,
         ImportSource,
         InboundToken,
         McpScope,
@@ -283,6 +284,11 @@ class DefaultIdentityProvider:
         # rotated-credential file path(s) here.
         return []
 
+    def credential_freshness(self) -> Optional[CredentialFreshness]:
+        # The public edition's tools sign in on their own, so no host sign-in
+        # can hold a scheduled run. A companion reads its host credential here.
+        return None
+
 
 class DefaultAgentIdentityProvider:
     """Disabled agent-identity seam — standalone has no workload or Gateway.
@@ -358,6 +364,15 @@ class DefaultMcpToolingProvider:
         return []
 
     def kas_relayed_env_references(self) -> FrozenSet[str]:
+        return frozenset()
+
+    def custom_agent_servers(self) -> Tuple[str, ...]:
+        return ()
+
+    def launch_token_normalizer(self, token: str) -> str:
+        return token
+
+    def folder_free_mcp_servers(self) -> FrozenSet[str]:
         return frozenset()
 
 
@@ -646,6 +661,10 @@ class DefaultDashboardContributor:
 
     def company_sign_in_defaults(self) -> Dict[str, str]:
         # The public edition knows no company portal: the form starts empty.
+        return {}
+
+    def idc_sign_in_profiles(self) -> Dict[str, Dict[str, Any]]:
+        # No start URL has an edition form: every IdC sign-in is the public one.
         return {}
 
     def mixed_internal_api_paths(self) -> "frozenset[str]":

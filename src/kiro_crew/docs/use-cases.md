@@ -116,8 +116,48 @@ List available agents with `kirocrew agent list`, then select one for a CLI chat
 Each installed agent has its own system prompt, tools, and skills — scoped via
 per-agent MCP configuration.
 
+## Bring In Past Claude Code Sessions
+
+Kiro Crew does not import another tool's chat transcripts. To bring the context
+of your past Claude Code sessions in, have an agent summarize them and file each
+summary into a folder named after the project it came from:
+
+1. In **Settings → Developer → Feature Previews → Agent MCP servers**, click
+   **Add dashboard and debug MCPs to the default agent**. This gives the default
+   agent the folder and session tools ([Session Control](session-control.md)).
+2. Open a new chat and ask for it, for example:
+
+> "Read my Claude Code sessions under `~/.claude/projects/`. Make a sidebar
+> folder for each project they ran in, named after the project. For each
+> session, open a new chat in that folder that starts with a summary: what I
+> worked on, what was decided, what is still open, and the session's date.
+> Leave tokens, keys and passwords out of the summaries."
+
+Claude Code keeps one folder per working directory under `~/.claude/projects/`
+(`$CLAUDE_CONFIG_DIR/projects/` when you set that) on the machine the gateway
+runs on. To bring in only some projects, name them in the request. Chats you ran
+on the Claude Code harness inside Kiro Crew are stored there too, and are
+summarized with the rest unless you leave their projects out. A second run
+summarizes the same sessions again, so name only the new ones when you run it
+again.
+
+One chat can keep at most 50 chats it opened at a time, and open at most 20 in
+five minutes. To bring in more, close the summaries you have read, or raise
+**Settings → Chat → Sessions → Sessions per creator**.
+
+The agent reads each transcript in full, tool output included, so whatever those
+sessions printed or you pasted into them reaches Kiro Crew's model. Read each
+chat it is about to open before you approve it.
+
+Each summary is a new chat, dated the day it is created. It holds the summary,
+not the original turns. The new chat's agent answers the summary as soon as the
+chat opens, so every session brought in costs one model turn. The agent
+cannot link a folder to a directory: to tie one to its project, open the
+folder's **Folder settings** and set **Project directory**.
+
 ## Tips from the Community
 
 - **Unattended overnight runs**: For `kirocrew run`, allowlist the tools the spec needs in `hooks.auto_approve_tools`; for a gateway started with `--approval yolo`, use an isolated `KIROCREW_HOME`. Review the pull requests in the morning.
+- **Trust and auto-approve outlast a restart**: A chat's Trust or Trust reads, and auto-approve (YOLO) turned on from the dashboard, Slack or the API, stay on when the gateway restarts, updates, crashes or the machine reboots; a timed auto-approve keeps the time it had left. They end only when you stop Kiro Crew yourself (`kirocrew stop`, Quit in the desktop app, or Ctrl+C on a gateway running in your terminal), or pick another mode. A policy that now forbids a mode still turns it off at the next start.
 - **Workspace isolation**: Use `KIROCREW_HOME` and `KIROCREW_PORT` env vars to run multiple Kiro Crew instances with separate data.
 - **Background gateway**: Use a macOS Launch Agent or systemd service to keep the gateway running across reboots (see [Getting Started](getting-started.md)).

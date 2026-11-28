@@ -53,6 +53,11 @@ export function PrereqCard({
   const preflightSandboxKind = preflightNoSandbox && preflightQuery.error instanceof ApiError
     ? parseErrorField(preflightQuery.error.body, 'kind')
     : undefined
+  // A cap the probe read as 0 is named for any kind: the ENOSPC verdict is
+  // `transient`, but no moment clears a disabled cap.
+  const preflightSandboxRemedy = preflightNoSandbox && preflightQuery.error instanceof ApiError
+    ? parseErrorField(preflightQuery.error.body, 'remedy')
+    : undefined
   // Found but refused is not "not installed": the install command would put the
   // same refused file back, so the plugin row says why it was refused instead.
   const pluginRefusal = preflight ? pluginRefusalCopy(preflight) : null
@@ -146,20 +151,30 @@ export function PrereqCard({
         <ErrorNotice
           className="mb-2"
           message={preflightNoSandbox
-            ? preflightSandboxKind === 'transient'
-              ? i18nT('pages.settings.remoteCrewPanel.aws_check_sandbox_busy')
-              : preflightSandboxKind === 'foreign_sandbox'
-                ? i18nT('pages.settings.remoteCrewPanel.aws_check_outer_sandbox')
-                : i18nT('pages.settings.remoteCrewPanel.aws_check_no_sandbox')
+            ? preflightSandboxRemedy === 'userns_cap_zero'
+              ? i18nT('pages.settings.remoteCrewPanel.aws_check_userns_cap_zero')
+              : preflightSandboxKind === 'transient'
+                ? i18nT('pages.settings.remoteCrewPanel.aws_check_sandbox_busy')
+                : preflightSandboxKind === 'foreign_sandbox'
+                  ? i18nT('pages.settings.remoteCrewPanel.aws_check_outer_sandbox')
+                  : i18nT('pages.settings.remoteCrewPanel.aws_check_no_sandbox')
             : errMsg(preflightQuery.error, i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
           report={preflightNoSandbox ? reportForError(preflightQuery.error) : undefined}
           askAgent
         />
       )}
       {preflightQuery.isLoading ? (
-        <div className="flex items-center gap-2 text-muted text-sm py-2">
-          <RefreshCw className="lucide-inline animate-spin" /> {i18nT('pages.settings.remoteCrewPanel.checking')}
-        </div>
+        <ul className="m-0 p-0 list-none" aria-busy="true">
+          {[
+            i18nT('pages.settings.remoteCrewPanel.prereq_credentials'),
+            i18nT('pages.settings.remoteCrewPanel.prereq_ec2'),
+            i18nT('pages.settings.remoteCrewPanel.prereq_cloudformation'),
+            i18nT('pages.settings.remoteCrewPanel.prereq_ssm'),
+            i18nT('pages.settings.remoteCrewPanel.plugin'),
+          ].map(title => (
+            <PrereqRow key={title} pending ok={null} title={title} detail={i18nT('pages.settings.remoteCrewPanel.checking')} />
+          ))}
+        </ul>
       ) : preflight ? (
         <ul className="m-0 p-0 list-none">
           <PrereqRow
@@ -247,7 +262,7 @@ export function LaunchFormCard({
   identityQuery, identityChosen, identityUnknownCause, identityRadioShown, identityMode,
   identityStartUrl, identityStartUrlOk, identityRegion, identityRegionOk, onIdentity,
   launchBuiltin, launchReady, alreadyLaunched, launching, setupRunning, launchFailed,
-  launchFailedBeforeProvision, launchFailedCrewListed, identityResolving, identityUnknown,
+  launchFailedNothingCreated, launchFailedCrewListed, identityResolving, identityUnknown,
   identityOk, regionOk, blockingOk, blockingCheck, signinOnLaunch, setSigninOnLaunch,
 }: {
   profile: string
@@ -282,7 +297,7 @@ export function LaunchFormCard({
   launching: boolean
   setupRunning: boolean
   launchFailed: boolean
-  launchFailedBeforeProvision: boolean
+  launchFailedNothingCreated: boolean
   launchFailedCrewListed: boolean
   identityResolving: boolean
   identityUnknown: boolean
@@ -304,6 +319,7 @@ export function LaunchFormCard({
 
       <div>
         <div className="text-[13px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.size')}</div>
+        <p className="text-[12px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.stopped_billing_note')}</p>
         {region.trim() !== PRICE_REGION && (
           <p className="text-[12px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.price_region_note', { priceRegion: PRICE_REGION })}</p>
         )}
@@ -524,7 +540,7 @@ export function LaunchFormCard({
              the gateway accepted the launch), so navigating away loses them. */
           <ErrorNotice
             variant="inline"
-            message={launchFailedBeforeProvision
+            message={launchFailedNothingCreated
               ? i18nT('pages.settings.remoteCrewPanel.launch_failed_retry')
               : launchFailedCrewListed
                 ? i18nT('pages.settings.remoteCrewPanel.launch_failed_crew_listed')

@@ -14,6 +14,8 @@ import { messageTextFor, readMessageText, truncateUnits } from './messageText'
 import { holdVisibleCodeText } from '../utils/visibleText'
 import { CodeBlock } from '../components/CodeBlock'
 import MarkdownRenderer from '../components/MarkdownRenderer'
+import UserMessage from '../pages/chat/UserMessage'
+import { prependQuote } from '../chat-core/composer/messageQuote'
 
 const copyToClipboard = vi.fn(async (_text: string) => true)
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: (t: string) => copyToClipboard(t) }))
@@ -180,6 +182,21 @@ describe('message text: the visible text of the bubble', () => {
     expect(readMessageText(screen.getByTestId('bubble'))).toBe('Mine.\nsecond segment')
     view.unmount()
     expect(textOf(<p>outer <span data-message-body="">inner</span></p>)).toBe('outer inner')
+  })
+
+  it('never reads a sent quote card, only the row\'s own words', () => {
+    const quote = { role: 'assistant' as const, text: 'the quoted reply', ts: '2026-09-29T09:12:00Z' }
+    const view = render(
+      <UserMessage
+        content={prependQuote('my own words', quote)}
+        meta={{ quote }}
+        renderContent={(c) => <div data-message-body="">{c}</div>}
+      />,
+    )
+    const card = screen.getByTestId('quote-card-sent')
+    expect(card.querySelector('[data-message-body]')).not.toBeNull()
+    expect(readMessageText(card.closest('.message-bubble'))).toBe('my own words')
+    view.unmount()
   })
 
   it('refuses a bubble that is not on the page, has no content root, or shows nothing', () => {

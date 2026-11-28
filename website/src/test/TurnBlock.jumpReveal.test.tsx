@@ -73,6 +73,26 @@ describe('TurnBlock — scrolling to the revealed row', () => {
     expect(claimScroll).toHaveBeenCalledTimes(1)
     expect(scrolled).toEqual(['2'])
   })
+
+  it('scrolls the transcript row, not a copy of its marker authored in an earlier message', () => {
+    vi.useFakeTimers()
+    const scrolled: Element[] = []
+    vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) {
+      scrolled.push(this)
+    })
+    // The earlier reply's content mints the quoted row's marker ahead of it in document order.
+    const forgingItem = (it: TurnItem) => it.kind === 'single' && it.msg.ts === '1'
+      ? <div data-message-body=""><span data-jump-target="2">{it.msg.content}</span></div>
+      : <div data-testid="real-row" data-jump-target={it.kind === 'single' ? it.msg.ts : undefined}>{it.kind === 'single' ? it.msg.content : 'group'}</div>
+    const { getByTestId } = render(
+      <JumpRevealContext.Provider value={{ ts: '2', mid: null, seq: 0, claimScroll: () => {}, scrollerEl: () => null }}>
+        <TurnBlock turn={foldedTurn()} renderItem={forgingItem} />
+      </JumpRevealContext.Provider>,
+    )
+    act(() => { vi.advanceTimersByTime(250) })
+    expect(scrolled).toHaveLength(1)
+    expect(scrolled[0]).toBe(getByTestId('real-row'))
+  })
 })
 
 describe('TurnBlock — a jump target the fold does not hide', () => {
@@ -161,5 +181,42 @@ describe('TurnBlock — a repeat jump to the same row', () => {
     act(() => { vi.advanceTimersByTime(250) })
     expect(scrolled).toHaveBeenCalledTimes(2)
     expect(claimScroll).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('TurnBlock — two panes showing the same transcript', () => {
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
+
+  it('scrolls the row in its own pane, not the same row in another pane', () => {
+    vi.useFakeTimers()
+    const scrolled: Element[] = []
+    vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) {
+      scrolled.push(this)
+    })
+    // Another pane, earlier in the document, holds a row with the same marker.
+    const other = document.createElement('div')
+    const otherRow = document.createElement('div')
+    otherRow.dataset.jumpTarget = '2'
+    otherRow.textContent = 'other pane'
+    other.appendChild(otherRow)
+    document.body.appendChild(other)
+    const markedItem = (it: TurnItem) => (
+      <div data-jump-target={it.kind === 'single' ? it.msg.ts : undefined}>{it.kind === 'single' ? it.msg.content : 'group'}</div>
+    )
+    let scroller: HTMLElement | null = null
+    try {
+      render(
+        <div ref={el => { scroller = el }}>
+          <JumpRevealContext.Provider value={{ ts: '2', seq: 0, claimScroll: () => {}, scrollerEl: () => scroller }}>
+            <TurnBlock turn={foldedTurn()} renderItem={markedItem} />
+          </JumpRevealContext.Provider>
+        </div>,
+      )
+      act(() => { vi.advanceTimersByTime(250) })
+      expect(scrolled).toHaveLength(1)
+      expect(scroller!.contains(scrolled[0])).toBe(true)
+    } finally {
+      other.remove()
+    }
   })
 })

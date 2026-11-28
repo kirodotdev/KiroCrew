@@ -37,7 +37,7 @@ import ThinkingBlock from './ThinkingBlock'
 import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
 import ConversationCard, { CARD_ROLE, changeCardShownAgainBelow } from '../../cards/ConversationCard'
-import { opensTurn } from './RecoveryCard'
+import RecoveryCard, { opensTurn, resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
 import SkillLoadCard, { isSkillLoadRow } from './SkillLoadCard'
 import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, capabilityRefusal, isAppAgentRefused, isAuthRequired, isKiroCliSignIn, kiroCliRowOffersCrewSignIn, isContextOverflow, isImageRepair, isKiroCliMissing, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, sessionStartFailureStreak, type CapabilityFix, type FreshSessionState, type RepairImagesState } from './ErrorCard'
@@ -45,6 +45,7 @@ import { isFeatureRequestRow } from '../../prompts/featureRequest'
 import { feedbackTracker } from '../../feedbackTracker'
 import NoticeCard from './NoticeCard'
 import { isKasSignedOut, resolveGatewayNotice } from './gatewayNotice'
+import { selectErrorRuns } from './errorRuns'
 import CrewDispatchNoticeCard from './CrewDispatchNoticeCard'
 import CrewPausedNoticeCard from './CrewPausedNoticeCard'
 import McpSignInNeededNotice, { isMcpSignInNeededNotice } from './McpSignInNeededNotice'
@@ -54,6 +55,7 @@ import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './Subage
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 import SubagentCompletionCard from './SubagentCompletionCard'
 import { isSubagentCompletionMessage, type ParsedSubagentCompletion } from './subagentCompletion'
+import { CrewReplyStatus } from '../../components/crew/CrewReplyStatus'
 import { REASONING_ROLES, hasReasoningContent } from './groupDisplayItems'
 import { FileCard } from '../../components/FileCard'
 import { parseFileRecord } from '../../lib/fileRecord'
@@ -138,8 +140,8 @@ export interface TranscriptRendererOptions {
   /** Open a directory in the host's side panel. Same #3300 blocker. */
   onFolderOpen?: (path: string) => void
   /** Reveal the Crew (Workers) tab from the Crew Mode dispatch-notice button.
-   *  Host-owned because it must close the find pane (which keeps the dock
-   *  unmounted while open) and rebind a background pane's slot to the active one
+   *  Host-owned because it must end the history search, as every tab opened
+   *  from the chat does, and rebind a background pane's slot to the active one
    *  before opening — neither reachable from the card. Absent (a side/embedded
    *  chat, a crew window) leaves the card's button inert, the same opt-in shape
    *  as the other host reveals above. */
@@ -184,8 +186,9 @@ export interface TranscriptRendererOptions {
    *  the very mechanics the surface hides. Off (default) the SDK's `user`
    *  entry is used unchanged. */
   hideSteerBadge?: boolean
-  /** Fix affordance for an `auth_required` row: deep-link to the Kiro sign-in
-   *  card in Settings. Omitted on a surface with no settings route. */
+  /** Set where the surface offers Kiro Crew's own sign-in on an `auth_required`
+   *  row: the row then draws the Sign in strip, which opens the sign-in dialog
+   *  in place. Omitted (embed, popout, a crew window's peer rows): plain text. */
   onOpenSignIn?: () => void
   /** True while Kiro's own sign-in works (`/api/kas-login`). The newest
    *  `kas_signed_out` row then offers Resume with the sign-in, since a
@@ -461,6 +464,18 @@ export function createTranscriptRenderers(
 
   return [
     {
+      // The SDK default's card, except for a Resume press inside a run of
+      // identical failures: the run's one card stands for it (`errorRuns.ts`).
+      id: 'recovery_inject',
+      roles: ['*'],
+      match: m => m.role === 'inject' && resolveInjectCard(m) !== null,
+      render: (m, ctx) => {
+        const parsed = resolveInjectCard(m)
+        if (!parsed || selectErrorRuns(ctx.messages).folded.has(m)) return null
+        return ctx.row(<RecoveryCard parsed={parsed} disclosureKey={ctx.key} />)
+      },
+    },
+    {
       id: 'warm_task_brief_claim',
       roles: ['notice'],
       match: m => m.meta?.kind === 'warm_task_brief_claim',
@@ -682,8 +697,8 @@ export function createTranscriptRenderers(
         const pos = crewmateRunPosition(ctx.messages, ctx.index, crewmateTranscriptOf())
         return ctx.row(
           <CrewmateMessage pos={pos}>
-            {/* Same cap as a crewmate bubble (72ch at the message font size). */}
-            <div className="max-w-[72ch]" style={{ fontSize: 'var(--mc-message-font-size, 14px)' }}>
+            {/* As wide as a crewmate bubble: the content column (--mc-content-width). */}
+            <div className="max-w-full" style={{ fontSize: 'var(--mc-message-font-size, 14px)' }}>
               <CardCornersContext.Provider value={crewmateCornerClass(pos)}>
                 <CardAuthorContext.Provider value={crewmate.label || crewmate.name}>
                   <ConversationCard message={m} slot={o.slot} shownAgainBelow={shownAgainBelow} />
@@ -793,6 +808,9 @@ export function createTranscriptRenderers(
               revealActions: o.revealActions,
               copyOnSelect: o.copyOnSelect,
               linkPreviews: o.linkPreviews,
+              // The heading inside the bubble names the same speaker as the
+              // group around it, not the product.
+              speakerName: crewmate.label || crewmate.name,
             })
             if (bubble === null) return null
             return ctx.row(
@@ -808,6 +826,11 @@ export function createTranscriptRenderers(
       id: 'error',
       roles: ['error'],
       render: (m, ctx) => {
+        // A run of identical failures draws one card, on its first row
+        // (`errorRuns.ts`): the later rows draw nothing.
+        const runs = selectErrorRuns(ctx.messages)
+        if (runs.folded.has(m)) return null
+        const attempts = runs.attemptsByLead.get(m)
         // A gateway status row draws localized copy keyed on its notice token.
         // A transient-5xx retry the gateway is already running is routine
         // status, not a failure: a soft NoticeCard. Every other family keeps the
@@ -843,7 +866,9 @@ export function createTranscriptRenderers(
         // stamp only selects it.
         const featureRequestFormUrl =
           offersFeatureRequestForm(m) && isFeatureRequestRefusal(ctx.messages, ctx.index) ? feedbackTracker().formUrl : undefined
-        const newest = ctx.index === lastErrorIndex(ctx.messages)
+        // A run's card stands for its newest row, the one Resume would rerun.
+        const lastError = lastErrorIndex(ctx.messages)
+        const newest = attempts ? ctx.messages[lastError] === attempts[attempts.length - 1] : ctx.index === lastError
         // The same session start failed twice in a row (Resume between them
         // re-issued it): a third press would fail the same way, and the server
         // refuses it (`session_start_repeat`). Only the NEWEST row decides --
@@ -918,6 +943,8 @@ export function createTranscriptRenderers(
             freshSession={o.freshSession}
             onRepairImages={imageRepair && newest && imageRepairIsNewest(ctx.messages) ? o.onRepairImages : undefined}
             repairImages={o.repairImages}
+            attempts={attempts}
+            disclosureKey={ctx.key}
           />,
         )
       },
@@ -969,6 +996,7 @@ export function createTranscriptRenderers(
                 continuesRun={continuesAuthorRun(ctx.messages, ctx.index)}
                 onReplyInThread={replyInThreadFor(m, ctx)}
                 onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
+                onJumpToQuote={ctx.onJumpToQuote}
               />
               {threadFooterFor(m, ctx, 'end')}
             </>,
@@ -984,7 +1012,14 @@ export function createTranscriptRenderers(
           roles: ['assistant', 'streaming'],
           render: (m: ChatMessage, ctx: MessageRenderContext) => {
             const bubble = renderAssistantBubble(m, ctx, undefined, { redactionSlot: o.revealSlot, messageTs: m.ts, copyOnSelect: o.copyOnSelect, linkPreviews: o.linkPreviews })
-            return bubble === null ? null : ctx.wrapper(bubble)
+            if (bubble === null) return null
+            // Workers under the pane's latest conductor reply (Feature Preview, off
+            // by default), read from this pane's own rows: split view is one of
+            // the places the sidebar row is out of sight.
+            const workers = o.onOpenCrewTab && m.role === 'assistant'
+              ? <CrewReplyStatus slotKey={o.revealSlot} message={m} messages={ctx.messages} running={ctx.running} askAgent={ctx.handOff !== false} onOpenWorkers={o.onOpenCrewTab} />
+              : null
+            return ctx.wrapper(workers ? <div className="flex flex-col min-w-0">{bubble}{workers}</div> : bubble)
           },
         } satisfies MessageRenderer]
       : []),

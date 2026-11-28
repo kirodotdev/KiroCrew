@@ -69,6 +69,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _AGENTS_DIR_RACY_MAX_DIGEST_BYTES,
         _AGENTS_DIR_RACY_MAX_DIGESTS,
         _AGENTS_DIR_RACY_WINDOW_NS,
+        _AGENTS_DIR_UNHASHABLE_LOGGED,
         _DIGEST_CHUNK_BYTES,
         _NO_DIGEST,
         _PIN_EVERY_ENTRY_ON_BYTES,
@@ -95,16 +96,19 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         warm_project_agent_names,
     )
     from kiro_crew.agent_discovery_parts.skill_scope import (  # noqa: F401
+        _COMPANION_SKILLS,
         MATE_CONDUCTOR_INHERITS_USER_SKILLS,
         WHOLE_CATALOG_TEMPLATES,
         SkillScopeResolutionError,
         agent_skill_globs,
         can_inherit_skills,
+        child_skill_globs,
         inherited_skill_globs,
         mate_conductor_scope,
         served_provider_label,
         session_skill_globs,
         skill_search_refusal,
+        with_companion_skills,
     )
     from kiro_crew.agent_discovery_parts.spec_fields import (  # noqa: F401
         _DEFER_MODEL,
@@ -122,6 +126,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_internal_agent_spec,
         skill_resource_uris,
         skill_uri_for_path,
+        spec_is_toolless,
         spec_model,
         spec_str,
         spec_welcome_message,
@@ -154,6 +159,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         apple_double_sidecar,
         declared_spec_claim,
         declared_spec_entry,
+        held_spec_refusal,
         iter_declared_specs,
         plain_markdown_document,
         read_agent_spec_strict,

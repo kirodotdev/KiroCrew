@@ -44,7 +44,9 @@ const RENEWAL_CODE = Object.freeze({ RELAY_VIEWER_OFF: "NOT_SET_UP", UNAVAILABLE
 
 // Main to the opening dashboard: `{ endpointId, type: "chord", index }`,
 // `{ endpointId, type: "theme", dark }` (dark: true, false or null),
-// `{ endpointId, type: "loaded" }` or `{ endpointId, type: "closed" }`. preload.js's `onPaneEvent` listens.
+// `{ endpointId, type: "header", header }` (header: true or false, whether the pane's page
+// drew its own header), `{ endpointId, type: "loaded" }` or `{ endpointId, type: "closed" }`.
+// preload.js's `onPaneEvent` listens.
 const PANE_EVENT = "relay-crew:pane-event";
 
 // `openPane` puts the Crew in the main window instead of a window of its own
@@ -150,6 +152,8 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
           parent: pane.parent,
           dashboard: pane.dashboard,
           bounds: pane.bounds,
+          // The dashboard asked for the Crew's page to draw its own header.
+          ownHeader: pane.ownHeader === true,
           menuReload: (o) => reloadCrew(endpointId, o),
         })
         : openWindow(opts);
@@ -167,6 +171,9 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
         win.onChord((index) => tell({ type: "chord", index }));
         if (win.onThemeDark) win.onThemeDark((dark) => tell({ type: "theme", dark }));
         if (win.onLoaded) win.onLoaded(() => tell({ type: "loaded" }));
+        // A boolean and nothing else: the page is not trusted, and this only lets the
+        // dashboard's own bar keep to its tab strip above this pane.
+        if (win.onHeaderDrawn) win.onHeaderDrawn((drawn) => tell({ type: "header", header: drawn === true }));
         win.onClosed(() => tell({ type: "closed" }));
       }
       // Registered once per window, not in wire(): a restart re-wires the same window.

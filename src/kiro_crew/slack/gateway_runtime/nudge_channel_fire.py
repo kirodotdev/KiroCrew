@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from kiro_crew.slack.gateway import (
         APPROVAL_INTERACTIVE,
         STRUCTURAL_TERMINAL_REASON,
+        TRIGGER_MONITOR,
         AgentTurnUsage,
         AutoNudgeService,
         DirectiveTracker,
@@ -55,9 +56,11 @@ if TYPE_CHECKING:
         nudge_cycle_header,
         provider_last_turn_usage,
         render_for_slack,
+        reset_current_trigger,
         run_in_embed_pool,
         save_conversation_turn_off_loop,
         session_store_for_turn,
+        set_current_trigger,
         stream_and_collect,
         terminal_wake_line,
         turn_ceiling,
@@ -130,8 +133,14 @@ async def _fire_slack_nudge(
     that lands there waits for it instead of cancelling a reply the provider
     already produced. The provider wait itself stays cancellable.
     """
-    with contextlib.ExitStack() as bookkeeping:
-        return await self._fire_slack_inner_nudge(loop, wake_message, bookkeeping)
+    # Declared for the session release, which picks the idle timeout from it;
+    # reset so the loop's caller does not inherit it.
+    token = set_current_trigger(TRIGGER_MONITOR)
+    try:
+        with contextlib.ExitStack() as bookkeeping:
+            return await self._fire_slack_inner_nudge(loop, wake_message, bookkeeping)
+    finally:
+        reset_current_trigger(token)
 
 
 def _bookkeeping_section(
@@ -288,6 +297,8 @@ async def _fire_slack_inner_nudge(
                 ),
                 audit_caller="slack_nudge",
             )
+            from kiro_crew.channel_spec_hooks import SessionSpecGate
+
             response = await asyncio.wait_for(
                 stream_and_collect(
                     client,
@@ -306,9 +317,15 @@ async def _fire_slack_inner_nudge(
                     on_complete=_capture_raw_completion,
                     undelivered_watch_key=key,
                     on_event=directive_event_observer(_directives),
+                    # The thread agent's own spec PreToolUse hooks, asked first.
+                    spec_hooks=SessionSpecGate(client, key),
                 ),
                 timeout=_NUDGE_TURN_TIMEOUT,
             )
+            # A directive tool result the reply quotes is protocol, not reply text.
+            from kiro_crew.session_directive import strip_quoted_markers
+
+            response = strip_quoted_markers(response or "")
             if _directives.terminal_applied:
                 # A plain wake has no human-steer path. Its accepted quiet end
                 # is the reply, not any text the provider streams around it.

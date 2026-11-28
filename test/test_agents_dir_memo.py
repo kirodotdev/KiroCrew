@@ -19,6 +19,7 @@ session must be a copy the caller owns.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import stat
 import time
@@ -637,7 +638,7 @@ def test_with_every_entry_pinned_add_remove_and_rename_move_the_revision(
 
 
 def test_with_every_entry_pinned_a_directory_past_the_byte_budget_has_no_revision(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     _pin_every_entry(monkeypatch)
     for name in ("a", "b", "c"):
@@ -648,7 +649,37 @@ def test_with_every_entry_pinned_a_directory_past_the_byte_budget_has_no_revisio
     assert agent_discovery.agents_dir_revision(tmp_path) is not None
 
     monkeypatch.setattr(agent_discovery, "_AGENTS_DIR_ALL_ENTRIES_MAX_DIGEST_BYTES", 20)
-    assert agent_discovery.agents_dir_revision(tmp_path) is None
+    with caplog.at_level(logging.INFO, logger="kiro_crew.agent_discovery"):
+        assert agent_discovery.agents_dir_revision(tmp_path) is None
+    assert "cannot be hashed" not in caplog.text, "a spent byte budget blamed a readable spec"
+
+
+def test_an_entry_that_cannot_be_hashed_is_logged_once_until_the_directory_has_a_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One entry the revision cannot hash turns the memo off for its directory, so
+    one WARNING names the folder; the next waits for a revision in between."""
+    _pin_every_entry(monkeypatch)
+    _write_spec(tmp_path / f"{AGENT}.json", {"name": AGENT})
+    odd = tmp_path / "odd.json"
+    odd.mkdir()
+    memo: agent_discovery.AgentsDirMemo[int] = agent_discovery.AgentsDirMemo()
+
+    def records() -> list[logging.LogRecord]:
+        return [r for r in caplog.records if "cannot be hashed" in r.getMessage()]
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.agent_discovery"):
+        assert memo.get(tmp_path, AGENT, lambda: 1) == 1
+        assert memo.get(tmp_path, AGENT, lambda: 2) == 2, "an unprovable directory was memoized"
+        assert len(records()) == 1
+        assert records()[0].levelno == logging.WARNING
+        assert str(tmp_path) in records()[0].getMessage()
+
+        odd.rmdir()
+        assert agent_discovery.agents_dir_revision(tmp_path) is not None
+        odd.mkdir()
+        assert agent_discovery.agents_dir_revision(tmp_path) is None
+        assert len(records()) == 2
 
 
 # --- prefill ------------------------------------------------------------------

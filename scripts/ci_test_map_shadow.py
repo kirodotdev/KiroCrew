@@ -30,11 +30,13 @@ import re
 import statistics
 import subprocess
 import sys
+import tempfile
+import threading
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
@@ -44,6 +46,9 @@ REPO = "kirodotdev/KiroCrew"
 # ci.yml's Linux matrix job, `Backend Tests (3.12, 4)`; not the Windows or IPv6 lanes.
 LINUX_BACKEND_JOB = re.compile(r"Backend Tests \(3\.\d+, \d+\)")
 TIMEOUT = 120
+# A backend shard's log is a few megabytes. One a pull request made larger than
+# this is not read: it is cut off at the limit, never held whole.
+MAX_LOG_BYTES = 64 * 1024 * 1024
 _NO_TIER = "\0no-guard-tier"
 
 
@@ -80,24 +85,70 @@ def _gh_json(args: list[str], root: Path) -> Any:
     return json.loads(_run(["gh", *args], root))
 
 
+def capped(stream: IO[bytes], most: int) -> bytes | None:
+    """What `stream` holds, or None when it holds more than `most` bytes.
+
+    One byte past the limit is the most that is ever kept: a job log and an
+    artifact are as large as the pull request that made them chose.
+    """
+    held = stream.read(most + 1)
+    return None if len(held) > most else held
+
+
+def _gh_bytes(argv: list[str], root: Path, most: int) -> bytes | None:
+    """What one `gh` call prints, undecoded; None when it prints more than `most` bytes.
+
+    The output is read as it comes and the call is ended at the limit, so no
+    more than the limit is ever held. Raises as `_run` does when the call fails.
+    """
+    with tempfile.TemporaryFile() as said:
+        call = subprocess.Popen(  # noqa: S603  (fixed argv, no shell)
+            argv, cwd=root, stdout=subprocess.PIPE, stderr=said
+        )
+        deadline = threading.Timer(TIMEOUT, call.kill)
+        deadline.start()
+        try:
+            assert call.stdout is not None  # noqa: S101  (PIPE was asked for)
+            held = capped(call.stdout, most)
+            if held is None:
+                call.kill()
+            code = call.wait()
+        finally:
+            deadline.cancel()
+            if call.stdout is not None:
+                call.stdout.close()
+        if held is None:
+            return None
+        if code:
+            said.seek(0)
+            error = said.read(4096).decode("utf-8", errors="replace")
+            raise subprocess.CalledProcessError(code, argv, stderr=error)
+    return held
+
+
 def failing_test_files(failures: dict[str, str]) -> list[str]:
     """Node ids -> the distinct test files they live in."""
     return sorted({nodeid.split("::", 1)[0] for nodeid in failures})
 
 
 def judge(
-    name_status: str, test_map: dict[str, Any], tier: list[str], failing: list[str] | None = None
+    name_status: str,
+    test_map: dict[str, Any],
+    tier: list[str],
+    failing: list[str] | None = None,
+    functions: dict[str, set[str] | None] | None = None,
 ) -> dict[str, Any]:
     """One sample's verdict: full or not, share, and (for a red run) what was missed.
 
     `map_share` and `missed_by_map` leave the guard tier out, to show what the map
-    alone picks and what only the tier caught.
+    alone picks and what only the tier caught. `functions` is
+    `ci_test_map.changed_functions` of the sample, so a function-level miss counts.
     """
     changes = ctm.parse_name_status(name_status)
-    result = ctm.select(changes, test_map, tier)
+    result = ctm.select(changes, test_map, tier, functions)
     # The same selection with a stand-in tier, which select needs non-empty: keeps a
     # changed test file that is also in the tier, drops only what the tier added.
-    by_map = ctm.select(changes, test_map, [_NO_TIER])
+    by_map = ctm.select(changes, test_map, [_NO_TIER], functions)
     by_map = by_map._replace(tests=[t for t in by_map.tests if t != _NO_TIER])
     row: dict[str, Any] = {
         "full": result.full,
@@ -190,6 +241,12 @@ def red_samples(
 
 def backend_jobs(run_id: int, attempt: int, root: Path) -> list[dict[str, Any]] | None:
     """The Linux `Backend Tests` jobs of one run attempt, None when they cannot all be read."""
+    jobs = run_jobs(run_id, attempt, root)
+    return None if jobs is None else [j for j in jobs if LINUX_BACKEND_JOB.fullmatch(j["name"])]
+
+
+def run_jobs(run_id: int, attempt: int, root: Path) -> list[dict[str, Any]] | None:
+    """Every job of one run attempt, None when they cannot all be read."""
     jobs: list[dict[str, Any]] = []
     page = 1
     while True:
@@ -208,26 +265,25 @@ def backend_jobs(run_id: int, attempt: int, root: Path) -> list[dict[str, Any]] 
         if not doc["jobs"] or len(jobs) >= doc["total_count"]:
             break
         page += 1
-    return [job for job in jobs if LINUX_BACKEND_JOB.fullmatch(job["name"])]
+    return jobs
+
+
+def job_log(job: dict[str, Any], root: Path) -> str | None:
+    """One job's log, None when it is larger than `MAX_LOG_BYTES`. Raises when `gh` fails."""
+    argv = ["gh", "api", "--allow-escape-sequences", f"repos/{REPO}/actions/jobs/{job['id']}/logs"]
+    raw = _gh_bytes(argv, root, MAX_LOG_BYTES)
+    return None if raw is None else raw.decode("utf-8", errors="replace")
 
 
 def job_failures(
     job: dict[str, Any], root: Path, parse: Callable[[str], dict[str, str]]
 ) -> dict[str, str] | None:
-    """The failing node ids one job's log names, None when the log cannot be read."""
+    """The failing node ids one job's log names, None when the log cannot be read whole."""
     try:
-        log = _run(
-            [
-                "gh",
-                "api",
-                "--allow-escape-sequences",
-                f"repos/{REPO}/actions/jobs/{job['id']}/logs",
-            ],
-            root,
-        )
+        log = job_log(job, root)
     except subprocess.CalledProcessError:
         return None
-    return parse(log)
+    return None if log is None else parse(log)
 
 
 def _red_row(
@@ -283,7 +339,9 @@ def evaluate(
             row.get("base") or _run(["git", "merge-base", "origin/main", row["head"]], root).strip()
         )
         name_status = ctm.git_name_status(base, row["head"], root)
-        out.append({**row, **judge(name_status, test_map, tier, row.get("failing"))})
+        changes = ctm.parse_name_status(name_status)
+        functions = ctm.changed_functions(base, row["head"], changes, test_map, root)
+        out.append({**row, **judge(name_status, test_map, tier, row.get("failing"), functions)})
     for row in out:
         if row.get("missed"):
             others = {

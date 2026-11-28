@@ -59,6 +59,8 @@ can see rather than one that answers a flag and then no-ops.
 
 from __future__ import annotations
 
+import os
+import shlex
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Dict, FrozenSet, Mapping, Optional, Protocol, Tuple, runtime_checkable
@@ -810,16 +812,17 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # on the operator's own machine needs no key at all.
         sign_in_remedy=(
             "DeepSeek Harness reaches a hosted model with a provider key Kiro Crew "
-            "holds for it. Save the key under Settings → Secrets, then map it in "
-            "agent.deepseek_env under the environment-variable name the provider "
-            "expects, such as DEEPSEEK_API_KEY. A model served locally on this "
-            "machine needs no key: point a provider route at it instead."
+            "holds for it. Save the key under Settings → Agent Harness → DeepSeek "
+            "Harness → Provider key, which keeps it in Settings → Secrets. A model "
+            "served locally on this machine needs no key: point a provider route at "
+            "it instead. Another provider route's key is mapped in agent.deepseek_env "
+            "under the name that route reads."
         ),
         signed_out_message=(
-            "DeepSeek Harness has no provider key. Save one under Settings > Secrets "
-            "and map it in `agent.deepseek_env` (for example "
-            "`DEEPSEEK_API_KEY: secret://my-dsh-key`), or point a provider route at a "
-            "model served locally on this machine, then start a new chat."
+            "DeepSeek Harness has no provider key. Save one under Settings > Agent "
+            "Harness > DeepSeek Harness > Provider key, which keeps it in Settings > "
+            "Secrets, or point a provider route at a model served locally on this "
+            "machine, then start a new chat."
         ),
         # Excluded deliberately, and for this harness the reason is stronger than a
         # separate store: there is no host credential on the wire at all, so a
@@ -1176,7 +1179,8 @@ def bedrock_auth_remedy(backend: str) -> str:
             "Bedrock authentication failed. Strands runs sandboxed and cannot read ~/.aws "
             "profiles: pick Bedrock under Settings > Agent Harness > Strands > Model "
             "provider and save its AWS_BEARER_TOKEN_BEDROCK (a Bedrock API key) and "
-            "AWS_REGION there, then start a new chat."
+            "AWS_REGION there, then start a new chat. A Bedrock Mantle model also needs "
+            "the key's IAM identity to allow bedrock-mantle:CallWithBearerToken."
         )
     return ""
 
@@ -1213,8 +1217,47 @@ def for_terminal(text: str) -> str:
     that exact sentence to translate it, so the sentence stays as it is and a
     terminal surface swaps in :data:`KAS_TERMINAL_SIGN_IN`. Any other text is
     returned unchanged.
+
+    Inside a pod the bare command would sign in the host's data home, not the
+    pod's, so the command carries the pod's ``KIROCREW_HOME``
+    (:func:`_kas_terminal_sign_in`).
     """
-    return text.replace(f"Sign in from {_KAS_CARD}", KAS_TERMINAL_SIGN_IN)
+    text = text.replace(f"Sign in from {_KAS_CARD}", KAS_TERMINAL_SIGN_IN)
+    return text.replace(KAS_TERMINAL_SIGN_IN, _kas_terminal_sign_in(os.environ))
+
+
+def _kas_terminal_sign_in(environ: Mapping[str, str]) -> str:
+    """:data:`KAS_TERMINAL_SIGN_IN`, or its pod form when *environ* is a pod's.
+
+    A pod process carries ``KIROCREW_POD=1`` and its own ``KIROCREW_HOME``
+    (``pod.runtime.build_pod_env``). Its Crew sign-in lives in that home, so a
+    reader in a host shell must run the command with it set. The dashboard named
+    is the pod's own, whose Kiro account card signs the pod in.
+    """
+    command = pod_kas_login_command(environ)
+    if not command:
+        return KAS_TERMINAL_SIGN_IN
+    return f"This is a pod: sign it in with `{command}` (or in this pod's dashboard: {_KAS_CARD})"
+
+
+def pod_kas_login_command(environ: Mapping[str, str]) -> str:
+    """The ``kas login`` command that signs in the pod *environ* belongs to, or ``""``.
+
+    A wrapping printer keeps it on one line (``doctor_checks.render``): split, the
+    home assignment and the login run apart and the login signs in the host.
+    """
+    home = (environ.get("KIROCREW_HOME") or "").strip()
+    if environ.get("KIROCREW_POD") != "1" or not home:
+        return ""
+    if os.name == "nt":
+        # PowerShell needs an environment assignment, with single quotes doubled.
+        # Restore the prior home even if login fails, so later commands target the host.
+        quoted = "'" + home.replace("'", "''") + "'"
+        return (
+            f"$prev=$env:KIROCREW_HOME; $env:KIROCREW_HOME={quoted}; "
+            "try { kirocrew kas login } finally { $env:KIROCREW_HOME=$prev }"
+        )
+    return f"KIROCREW_HOME={shlex.quote(home)} kirocrew kas login"
 
 
 def _leads_with(text: str, sentence: str) -> bool:

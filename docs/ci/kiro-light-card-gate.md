@@ -25,8 +25,8 @@ So the gate reads computed styles on rendered pages.
 2. Opens each route in `ROUTES` in kiro-light: the chat page, Settings (Overview,
    Chat, Display / Theme, Security), Schedule, Artifacts, Knowledge, the Apps
    library, Members, every built-in app page in
-   `website/src/apps/builtinRegistry.ts` (21 pages, from `/worlds` to
-   `/project-scaffolder`), and the two core pop-out pages in
+   `website/src/apps/builtinRegistry.ts` (19 pages, from `/worlds` to
+   `/design-tweak`), and the two core pop-out pages in
    `website/src/pages/corePopoutPages.tsx` (`/channels` and `/projects`). App pages that index straight into a response shape
    the generic `[]` / `{}` fallback cannot satisfy get their answers from
    `APP_FIXTURES` in the script: AWS Control, File Explorer, PPTX Maker,

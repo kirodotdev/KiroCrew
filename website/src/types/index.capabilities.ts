@@ -172,6 +172,13 @@ export interface SkillBudgetResponse {
   window_days: number
   total_chars: number
   rows: SkillBudgetRow[]
+  /** The startup `[Skills:]` index, computed for the default agent with no
+   *  project open: its character allowance, and how many on-demand skills it
+   *  names of how many. Both counts are null when the index could not be
+   *  rendered; all three are absent from an older gateway. */
+  index_budget_chars?: number
+  index_listed?: number | null
+  index_total?: number | null
 }
 
 /** A single entry in a skill folder's tree listing. */
@@ -332,7 +339,12 @@ export interface DiscoveredMcpServer {
 /** Outcome of one provider leg in an MCP discovery search. */
 export interface McpProviderOutcome {
   name: string
-  status: 'ok' | 'timeout' | 'error'
+  /** Display label for the provider; absent on gateways that predate it. */
+  display_name?: string
+  /** `unavailable`: a registered provider that was not ready and said why in `message`. */
+  status: 'ok' | 'timeout' | 'error' | 'unavailable'
+  /** The provider's reason, scrubbed server-side. Set only when it said why it could not search. */
+  message?: string
 }
 
 /** Response from GET /api/mcp/discover */
@@ -478,6 +490,11 @@ export interface McpServer {
    *  The table locks its Kiro Crew switch on and offers no Uninstall, and the
    *  backend refuses turning it off or removing it. */
   builtin?: boolean
+  /** The installed app whose manifest declares this server (`{app}:{server}`).
+   *  The agent rebuild re-derives it from the manifest, so Uninstall cannot
+   *  stick and the row has none; its Kiro Crew switch still works. Absent on
+   *  every other row. */
+  app?: string
   /** Which config switched the row off, from the backend — never inferred from
    *  `enabled` + `kirocrewManaged`. `kirocrew`: a disable in Kiro Crew's own
    *  store, which the Kiro Crew scope badge + Apply lifts (the consent step).
@@ -505,6 +522,11 @@ export interface McpServer {
    *  agent, so its tools never reach a chat. `command` is the declared command
    *  that was not found. Absent when the server was mounted. */
   agentDropped?: { command: string; reason: 'command_not_found' }
+  /** Set when the user's own MCP file declares another server under this name,
+   *  which the agent does not run: this build ships a server of the same name,
+   *  and that one wins. `file` is the user's file (home shown as `~`), `command`
+   *  the command or URL their entry names. Absent otherwise. */
+  ownEntryUnused?: { file: string; command: string }
 }
 
 export interface McpApplyChange {

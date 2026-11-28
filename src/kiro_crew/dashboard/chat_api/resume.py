@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         _STRUCTURED_CONTENT_MAX_CHARS,
         _STRUCTURED_CONTENT_PLACEHOLDER,
         MERGED_FROM_MAX_CREATED_AT_CHARS,
+        METADATA_LINE_CORRUPT,
         DashboardState,
         ResumeOutcome,
         ResumeRefusal,
@@ -273,6 +274,7 @@ def _materialise_slot_from_history(
     # consumes capacity for the process lifetime. ``slot`` may be unbound if
     # ``get_or_create_slot`` itself raised (e.g. the under-construction create
     # guard), so the rollback is conditional on it existing.
+    from kiro_crew.dashboard.relay_archive import mark_cron_run_read_only
     from kiro_crew.dashboard.slot_persistence import metadata_codec
 
     slot = None
@@ -329,6 +331,8 @@ def _materialise_slot_from_history(
             mint_missing_mids=mint_missing_mids,
             keeps_mode=keeps_mode,
         )
+        read = disk_meta_observed and bool(meta or all_messages)
+        mark_cron_run_read_only(slot, history_key=history_key, app=app, transcript_read=read)
     except BaseException:
         # ``slot`` is None if ``get_or_create_slot`` itself raised (nothing was
         # reserved). Otherwise release the construction count, drop the slot from
@@ -342,6 +346,11 @@ def _materialise_slot_from_history(
             state._slots.pop(slot.key, None)
             state._restricted_keys.discard(f"dashboard:{slot.key}")
         raise
+    # A slot built here has no creator (RESUME leaves ``created_by`` to a revive that
+    # corroborates it), so it is not thread-born: a mark this process still holds
+    # from before the close is dropped, as a restart drops it, and a revive marks it
+    # again from the creator it verifies (``members.note_worker_lineage``).
+    members_mod.note_worker_lineage(slot.key, "")
     # DELIBERATELY does NOT end construction on success -- the caller ends it at
     # its own tail, after its finalization (import awaits Layer B write/join + a
     # durable save with the slot RETRACTED from ``_slots``). This asymmetry is
@@ -617,7 +626,7 @@ async def resume_slot_from_history(
     """
     if not request_app and state.conversation_log:
         # A cron transcript reopens as its job's own tab, which ``slot_args`` binds
-        # to the line's ``cron:`` link, so the cron paths that look that tab up by
+        # to the transcript's own ``cron:`` key, so the cron paths that look that tab up by
         # name reach it. Named here, before the bookkeeping below keys on it.
         from kiro_crew.dashboard.chat_utils import cron_tab_name
         from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
@@ -1316,7 +1325,7 @@ async def _resume_slot_from_history_noted(
                     "member thread agent is pinned", "member_thread_agent_pinned", 409
                 )
             )
-    post_read_meta = state.conversation_log.get_metadata(history_key)
+    post_read_meta, post_read_readable = state.conversation_log.get_metadata_status(history_key)
     if _member_binding is not None and post_read_meta != meta:
         # Identity barrier for the window the binding await opened: the
         # transcript was read at `meta`-time (with `all_messages`), and this
@@ -1336,6 +1345,21 @@ async def _resume_slot_from_history_noted(
         return ResumeOutcome(
             refusal=ResumeRefusal(
                 "this thread changed while resuming; open it again", "member_resume_conflict", 409
+            )
+        )
+    # On the loop the read's retries cannot pause, so a brief Windows hold on the
+    # file can fail them all; an empty line read that way would build the slot
+    # without its app, links and effort. A damaged line no retry will read
+    # resumes as empty, so the next save can rewrite it.
+    if (
+        not post_read_readable
+        and state.conversation_log.metadata_line_state(history_key) != METADATA_LINE_CORRUPT
+    ):
+        if request_app:
+            return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "this session changed while resuming; open it again", "resume_conflict", 409
             )
         )
 

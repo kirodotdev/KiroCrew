@@ -92,6 +92,12 @@ export function kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUs
       // not mistaken for a failed read. It only arises with kiro-cli, so it
       // never hides with the non-Kiro `none` case.
       node = (<HoverTip key="usage" label={i18nT('app.kiro_credit_usage_sign_in_type')}><button className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} aria-label={i18nT('app.kiro_credit_usage_sign_in_type')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span> <Info size={11} aria-hidden="true" data-testid="kiro-usage-sign-in-type-mark" /></button></HoverTip>)
+    } else if (kiroUsageState === 'no-limit') {
+      // The usage service answered and reports no credit limit, so there is no
+      // balance: the muted dash and info mark of the sign-in state above, not a
+      // failed read. Like that state it states a fact about the Kiro account
+      // (only the Kiro usage read produces it), so it never hides with `none`.
+      node = (<HoverTip key="usage" label={i18nT('app.kiro_credit_usage_no_limit')}><button className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} aria-label={i18nT('app.kiro_credit_usage_no_limit')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span> <Info size={11} aria-hidden="true" data-testid="kiro-usage-no-limit-mark" /></button></HoverTip>)
     } else if (kiroUsageState === 'failed') {
       // Failed with nothing cached to fall back on. A dash says that;
       // a spinner would claim a fetch is still in flight. A failure

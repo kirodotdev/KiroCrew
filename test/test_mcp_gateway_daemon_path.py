@@ -34,8 +34,8 @@ from kiro_crew.mcp_gateway.pool import BackendPool, PoolKey
 def _same_dir(a: str, b: str) -> bool:
     """Compare two PATH entries as DIRECTORIES, not as strings.
 
-    ``_EXTRA_PATH_DIRS`` uses forward slashes, so on Windows the built value mixes
-    separators; ``normpath`` and ``normcase`` settle separators and case.
+    A built entry and a ``Path``-built expectation can differ in separators and
+    case; ``normpath`` and ``normcase`` settle both.
     """
     return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
 
@@ -206,14 +206,18 @@ def test_a_contributed_dir_that_duplicates_a_guess_leads_and_appears_once(
 def test_the_toolbox_bin_dir_reaches_the_daemon(monkeypatch, tmp_path) -> None:
     """The specific directory the field failure was missing.
 
-    ``~/.toolbox/bin`` holds the tool that every launcher wrapper exec's by bare
-    name. This is the assertion that goes red if someone narrows the
-    augmentation back to a hand-picked subset.
+    ``~/.toolbox/bin`` (``%LOCALAPPDATA%\\Toolbox\\bin`` on Windows) holds the
+    tool that every launcher wrapper exec's by bare name. This is the assertion
+    that goes red if someone narrows the augmentation back to a hand-picked subset.
     """
     minimal = os.pathsep.join(["/usr/bin", "/bin"])
     env = _captured_daemon_env(monkeypatch, tmp_path, minimal)
 
-    toolbox_bin = str(Path(os.path.expanduser("~")) / ".toolbox" / "bin")
+    home = os.path.expanduser("~")
+    if env_mod.platform_compat.IS_WINDOWS:
+        toolbox_bin = env_mod._windows_toolbox_bin_dir(home, None)
+    else:
+        toolbox_bin = str(Path(home) / ".toolbox" / "bin")
     assert any(_same_dir(entry, toolbox_bin) for entry in env["PATH"].split(os.pathsep))
 
 

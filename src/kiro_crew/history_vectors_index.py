@@ -31,6 +31,29 @@ _LOGGER = logging.getLogger(__name__)
 #: withheld or vanished session has had its rows dropped and nothing to redo.
 INDEXED, WITHHELD, GONE, RETRY = "indexed", "withheld", "gone", "retry"
 
+#: What ``_iter_message_texts`` yields, as part of the chunker value a session's
+#: rows are stored under. A row stored under another value is stale, so moving
+#: this re-chunks every session without dropping vectors for text that did not
+#: change (a chunk is shared by text hash).
+#:
+#: 2: the size-rotated archive head is read before the live file. Rows stored
+#: before held the live file only, and its unchanged stat still vouches for them.
+#:
+#: 3: each message text is redacted, the text search results show.
+CORPUS_VERSION = 3
+
+
+def chunker_value(tokenizer: "Tokenizer") -> str:
+    """The value ``session_state.chunker`` holds for rows *tokenizer* chunked now.
+
+    It names the loaded redaction rules too: chunks hold the text search results
+    show, redacted under those rules, so a change of rules re-chunks every session.
+    """
+    from kiro_crew.history_index import loaded_rules_marker
+
+    rules = loaded_rules_marker()[:16]
+    return f"{tokenizer.signature}|corpus:{CORPUS_VERSION}|rules:{rules}"
+
 
 class Tokenizer(NamedTuple):
     count_tokens: Callable[[str], int]
@@ -64,6 +87,7 @@ def _usable_model_path() -> Path | None:
     the embedder: a custom path the resolver rejected is not used, and a path the
     sensitive-path gate covers is never handed over.
     """
+    from kiro_crew import embedding_source_governance as source_gov
     from kiro_crew.embeddings_model import (
         _is_sensitive_model_path,
         default_model_path,
@@ -73,6 +97,8 @@ def _usable_model_path() -> Path | None:
 
     spec = resolve_custom_model()
     if spec is not None and spec.error:
+        return None
+    if spec is None and not source_gov.source_permitted(source_gov.BUNDLED):
         return None
     path = spec.path if spec is not None else default_model_path()
     if _is_sensitive_model_path(path) or not model_file_present(path):
@@ -166,7 +192,7 @@ def chunk_session(
             except OSError:
                 return RETRY
             chunks = chunk_messages(texts, tokenizer.count_tokens)
-            store.sync_session(key, st, tokenizer.signature, chunks)
+            store.sync_session(key, st, chunker_value(tokenizer), chunks)
     except _history_lock_timeout():
         return RETRY
     return INDEXED
@@ -268,7 +294,7 @@ def backfill_chunks(
             stats[meta["key"]] = log._path(meta["key"]).stat()
         except OSError:
             continue
-    fresh = store.fresh_keys(stats, tokenizer.signature)
+    fresh = store.fresh_keys(stats, chunker_value(tokenizer))
     quiet_cutoff_ns = time.time_ns() - int(_INDEX_QUIET_WINDOW_SECS * 1e9)
     pending: list[str] = []
     deferred = 0

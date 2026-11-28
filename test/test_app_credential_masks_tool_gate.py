@@ -1,7 +1,8 @@
 """The agent tool gate honours the ``credentialMasks`` of INSTALLED app records.
 
 The shipped built-ins' declarations are static rows of the gate
-(``security._CREW_SECRET_LEAVES``). An installed tree's, a retained record's and an
+(``security._CREW_SECRET_LEAVES``), read again by the listing below so a shipped
+manifest that did not read at import still fences. An installed tree's, a retained record's and an
 adopted former built-in's are listed by the gate itself
 (``credential_masks.tool_gate_crew_leaves``, ``paths_targets._app_credential_mask_rows``),
 so an app that leaves the wheel keeps the file-tool fence its built-in had. These cases
@@ -18,6 +19,7 @@ widen what the static view lists.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import shutil
@@ -68,6 +70,25 @@ def _fenced_both_ways(path: Path | str) -> bool:
     return read
 
 
+def _hold(monkeypatch, path: Path) -> set[Path]:
+    """Make reading *path* fail as a file another process holds open; clear the set to let go."""
+    held = {path}
+    real = Path.read_text
+
+    def read_text(self, *args, **kwargs):
+        if self in held:
+            raise PermissionError(errno.EACCES, "held open without read sharing", str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    return held
+
+
+def _readable_and_write_fenced(path: Path | str) -> bool:
+    """A manifest that holds a fence: the read gate allows it, the write gate refuses it."""
+    return not security.is_sensitive_path(str(path)) and security.is_sensitive_write_path(str(path))
+
+
 class TestAnInstalledDeclarationIsFenced:
     def test_a_file_mask_its_artifacts_and_its_staged_copy(self, home):
         data = _install(home, "demo", ["secrets.json"])
@@ -77,7 +98,7 @@ class TestAnInstalledDeclarationIsFenced:
         assert _fenced_both_ways(data / "secrets.json.lock")
         assert _fenced_both_ways(home / "apps" / ".demo-data-tmp" / "secrets.json")
         assert not _fenced_both_ways(data / "notes.md"), "an undeclared sibling stays open"
-        assert not _fenced_both_ways(home / "apps" / "demo" / "app.json")
+        assert _readable_and_write_fenced(home / "apps" / "demo" / "app.json")
 
     def test_a_directory_mask_covers_everything_beneath_it(self, home):
         data = _install(home, "demo", ["secrets/"])
@@ -147,7 +168,7 @@ class TestADeclarationThatCannotBeReadFailsClosed:
         assert _fenced_both_ways(home / "apps" / "demo" / "data" / "tmpab12cd.tmp")
         assert _fenced_both_ways(home / "apps" / ".demo-data-tmp" / "anything.json")
         assert not _fenced_both_ways(home / "apps" / "neighbour" / "data" / "anything.json")
-        assert not _fenced_both_ways(home / "apps" / "demo" / "app.json")
+        assert _readable_and_write_fenced(home / "apps" / "demo" / "app.json")
         for beside in ("apps/demo/app.json.tmp", "apps/demo/x.lock", "apps/x.tmp", "apps/.a.lock"):
             assert not _fenced_both_ways(home / beside), f"{beside} is not the app's data"
 
@@ -162,6 +183,35 @@ class TestADeclarationThatCannotBeReadFailsClosed:
         credential_masks.record_path("demo").write_text("{", encoding="utf-8")
 
         assert _fenced_both_ways(home / "apps" / "demo" / "data" / "anything.json")
+
+    def test_a_shipped_manifest_that_did_not_read_fences_until_it_does(
+        self, home, tmp_path, monkeypatch
+    ):
+        """A built-in the static rows lack, as one whose manifest was held at import does."""
+        manifest = tmp_path / "builtins" / "late_notes" / "app.json"
+        manifest.parent.mkdir(parents=True)
+        body = {"name": "late-notes", "credentialMasks": ["state/"]}
+        manifest.write_text(json.dumps(body), encoding="utf-8")
+        monkeypatch.setattr(credential_masks, "_builtins_root", lambda: manifest.parent.parent)
+        held = _hold(monkeypatch, manifest)
+        data = home / "apps" / "late-notes" / "data"
+
+        assert _fenced_both_ways(data / "state" / "notebook.json")
+        assert _fenced_both_ways(data / "notes.md"), "its whole data while it does not read"
+        assert _fenced_both_ways(home / "apps" / ".late-notes-data-tmp" / "notes.md")
+
+        held.clear()
+        paths_targets._APP_CREDENTIAL_MASK_ROWS.reset()  # past the listing's reuse window
+        assert _fenced_both_ways(data / "state" / "notebook.json")
+        assert not _fenced_both_ways(data / "notes.md"), "the fence lifts once it reads"
+
+    def test_a_read_another_process_blocked_is_not_kept(self, home, monkeypatch):
+        _install(home, "demo", ["secrets.json"])
+        held = _hold(monkeypatch, home / "apps" / "demo" / "app.json")
+        assert credential_masks.declared_masks(builtin=False) == {}
+
+        held.clear()
+        assert credential_masks.declared_masks(builtin=False) == {"demo": ("secrets.json",)}
 
     def test_an_unlistable_apps_dir_fences_apps(self, home):
         (home / "apps").rmdir()

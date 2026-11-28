@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Legacy monitoring loops -- PR reads while held or ungated, kept agent stops, and agent-declared waits
 
-- Status: accepted. These are the product owner's decisions (Kyle Seaman,
+- Status: partial (accepted). These are the product owner's decisions (Kyle Seaman,
   @kyleseaman), given 2026-10-19 for the stack [#21377](https://github.com/kirodotdev/KiroCrew/pull/21377)
   → [#21621](https://github.com/kirodotdev/KiroCrew/pull/21621) → [#21622](https://github.com/kirodotdev/KiroCrew/pull/21622).
   Kyle asked for each behaviour below and asked that it be recorded here rather

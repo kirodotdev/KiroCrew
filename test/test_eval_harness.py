@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -296,6 +297,26 @@ class TestEvalRunner:
         assert result.passed is True
         assert result.total_assertions == 1
         assert result.passed_assertions == 1
+
+    @pytest.mark.asyncio
+    async def test_skills_loader_is_built_off_the_loop(self, monkeypatch):
+        # Its constructor resolves every skills.extra_paths root, which blocks
+        # until a slow or network mount answers.
+        from kiro_crew.eval import runner as runner_mod
+
+        built_on: list[int] = []
+
+        class _SpyLoader(runner_mod.SkillsLoader):
+            def __init__(self, *a, **kw) -> None:
+                built_on.append(threading.get_ident())
+                super().__init__(*a, **kw)
+
+        monkeypatch.setattr(runner_mod, "SkillsLoader", _SpyLoader)
+        scenario = Scenario(
+            name="off_loop", sessions=[Session(name="s1", turns=[Turn(user="hello")])]
+        )
+        await EvalRunner(provider_factory=lambda key, **kw: MockProvider()).run_scenario(scenario)
+        assert built_on and threading.get_ident() not in built_on
 
     @pytest.mark.asyncio
     async def test_run_scenario_fail(self):
@@ -1013,6 +1034,95 @@ class TestJudgeFiltering:
         result = await runner.run_scenario(scenario)
         # Both assertions should be in results
         assert result.total_assertions == 2
+
+    @pytest.mark.asyncio
+    async def test_a_judge_only_turn_without_the_flag_is_not_evaluated_never_passed(self):
+        judge = Assertion(type=AssertionType.JUDGE, value="recalls it")
+        scenario = Scenario(
+            name="judge_only",
+            dimensions=["memory_recall"],
+            sessions=[
+                # A setup turn with no assertions, then a recall turn only a judge checks.
+                Session(name="teach", turns=[Turn(user="remember Rust")]),
+                Session(name="recall", turns=[Turn(user="what?", assertions=[judge])]),
+            ],
+        )
+        runner = EvalRunner(provider_factory=lambda key, **kw: MockProvider(), judge_enabled=False)
+        result = await runner.run_scenario(scenario)
+
+        recall = result.sessions[1]
+        assert (recall.turns[0].status, recall.status, result.status) == ("SKIP",) * 3
+        assert not recall.turns[0].passed and not recall.passed and not result.passed
+        assert result.summary()["passed"] is False and result.summary()["not_run"] == 1
+        assert score_by_dimension([result]) == {}
+        report = format_results([result])
+        assert "## SKIP judge_only" in report and "### SKIP Session 2: recall" in report
+        assert "1 not evaluated" in report and "SKIP 1 judge assertion(s)" in report
+
+    @pytest.mark.asyncio
+    async def test_a_turn_with_other_assertions_is_scored_on_them(self):
+        scenario = Scenario(
+            name="mixed",
+            sessions=[
+                Session(
+                    name="s1",
+                    turns=[Turn(user="hello", assertions=[
+                        Assertion(type=AssertionType.CONTAINS, value="echo"),
+                        Assertion(type=AssertionType.JUDGE, value="quality check"),
+                    ])],
+                ),
+            ],
+        )
+        runner = EvalRunner(provider_factory=lambda key, **kw: MockProvider(), judge_enabled=False)
+        result = await runner.run_scenario(scenario)
+        assert result.status == "PASS" and result.not_run == 1
+        assert result.summary()["assertions"] == "1/1"
+
+    @pytest.mark.asyncio
+    async def test_an_errored_turn_fails_every_assertion_it_would_have_checked(self):
+        class Broken(MockProvider):
+            async def stream(self, message: str):
+                raise RuntimeError("the provider went away")
+                yield  # pragma: no cover - makes this an async generator
+
+        scenario = Scenario(
+            name="errored",
+            sessions=[
+                Session(
+                    name="s1",
+                    turns=[Turn(user="hello", assertions=[
+                        Assertion(type=AssertionType.CONTAINS, value="echo"),
+                        Assertion(type=AssertionType.JUDGE, value="quality check"),
+                    ])],
+                ),
+            ],
+        )
+        runner = EvalRunner(provider_factory=lambda key, **kw: Broken(), judge_enabled=False)
+        result = await runner.run_scenario(scenario)
+        turn = result.sessions[0].turns[0]
+        assert turn.error and result.status == "FAIL"
+        assert [ok for _, ok in turn.assertion_results] == [False]
+        assert turn.assertion_notes == ["the turn errored"] and turn.not_run == 1
+        assert result.summary()["assertions"] == "0/1"
+
+    @pytest.mark.asyncio
+    async def test_the_judge_never_scores_a_turn_that_errored(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew.cli_commands_eval import _judge_results
+
+        judge_assertion = Assertion(type=AssertionType.JUDGE, value="says nothing harmful")
+        turn = TurnResult(
+            user_message="hi",
+            agent_response="",
+            assertion_results=[(judge_assertion, False)],
+            error="the provider went away",
+        )
+        result = ScenarioResult(name="s", sessions=[SessionResult(name="s1", turns=[turn])])
+        judge = MagicMock(judge_turn=AsyncMock(), pass_threshold=3.0)
+        await _judge_results(judge, [Scenario(name="s", sessions=[])], [result])
+        judge.judge_turn.assert_not_awaited()
+        assert turn.assertion_results == [(judge_assertion, False)]
 
 
 @pytest.mark.asyncio

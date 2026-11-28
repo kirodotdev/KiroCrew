@@ -11,6 +11,7 @@ The server stays in the array.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from types import SimpleNamespace
 from typing import Any
 
@@ -372,6 +373,23 @@ def test_no_notice_off_opencode_or_with_nothing_waiting(rows):
     )
 
     assert rows == []
+
+
+@pytest.mark.parametrize("reports", [True, False])
+def test_the_notice_follows_the_capability_not_the_backend_name(rows, reports):
+    """``reports_mcp_sign_in_suspects``, not opencode's name, shows the row."""
+    base = ACP_BACKEND_GOOSE if reports else ACP_BACKEND_OPENCODE
+    provider = SimpleNamespace(
+        capabilities=dataclasses.replace(
+            capabilities_for(base), reports_mcp_sign_in_suspects=reports
+        )
+    )
+
+    chat_runner._notice_mcp_may_need_sign_in(
+        SimpleNamespace(), _slot(), {"sign_in_suspected": ["p-oauth"]}, provider
+    )
+
+    assert [role for role, _text in rows] == (["notice"] if reports else [])
 
 
 def test_publishing_the_probed_report_shows_the_notice(rows):

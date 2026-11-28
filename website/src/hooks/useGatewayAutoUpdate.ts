@@ -106,6 +106,12 @@ export type SwitchState = {
    * not confirm (the last value read, or the value a save answered with).
    */
   refreshFailed: string | null
+  /**
+   * The failed read behind `readFailed` / `refreshFailed`, when it was an HTTP
+   * request: both notices are worded from the catalog, so "Ask the agent"
+   * needs its report handed over explicitly.
+   */
+  readError?: unknown
   set: (next: boolean) => void
   saveError: string | null
 }
@@ -219,6 +225,7 @@ export function useGatewayAutoUpdate(
         : neverRead && saved !== undefined
           ? i18nT('pages.settings.aboutPanel.auto_update_save_answer_shown')
           : null,
+    readError: q.error ?? undefined,
     overlayPinned: pin.data?.pinned === true,
     overlayPolicy,
     set: next => save.mutate(next),

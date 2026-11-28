@@ -584,6 +584,52 @@ def _write_manifest_negative_cache(entry: dict[str, Any]) -> None:
     _gc_manifest_cache_dir()
 
 
+# Past this age the marker reads as absent: each budget cancel renews it, so a row no
+# budget has cancelled for a day ranks as cold or stale again, in index order.
+_PREWARM_BUDGET_MARK_TTL = 86400  # 24 hours
+
+
+def _prewarm_budget_mark_path(entry: dict[str, Any]) -> Path:
+    """Marker that the store-art prewarm's batch budget cancelled *entry*'s clone.
+
+    Same source identity as :func:`_manifest_cache_path`, with a
+    ``.budget-cancelled`` infix; the ``.json`` suffix inside ``by-source/``
+    keeps it in :func:`_gc_manifest_cache_dir`'s sweep.
+    """
+    success_path = _manifest_cache_path(entry)
+    return success_path.with_name(success_path.name[: -len(".json")] + ".budget-cancelled.json")
+
+
+def _read_prewarm_budget_mark(entry: dict[str, Any]) -> float | None:
+    """When the budget last cancelled *entry*, or None if unmarked, expired or unreadable.
+
+    The marker carries no payload; its age is its mtime.
+    """
+    try:
+        marked_at = _prewarm_budget_mark_path(entry).stat().st_mtime
+    except OSError:
+        return None
+    return marked_at if time.time() - marked_at <= _PREWARM_BUDGET_MARK_TTL else None
+
+
+def _write_prewarm_budget_mark(entry: dict[str, Any]) -> None:
+    """Mark *entry* as budget-cancelled (best-effort); a rewrite refreshes the mtime."""
+    path = _prewarm_budget_mark_path(entry)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(path, "")
+    except OSError as exc:
+        logger.debug("Failed to write prewarm budget mark for %s: %s", entry.get("name", ""), exc)
+
+
+def _clear_prewarm_budget_mark(entry: dict[str, Any]) -> None:
+    """Drop *entry*'s prewarm budget mark (best-effort)."""
+    try:
+        _prewarm_budget_mark_path(entry).unlink(missing_ok=True)
+    except OSError as exc:
+        logger.debug("Failed to clear prewarm budget mark for %s: %s", entry.get("name", ""), exc)
+
+
 _EXTERNAL_REGISTRY_CACHE_TTL = 3600  # 1 hour
 
 

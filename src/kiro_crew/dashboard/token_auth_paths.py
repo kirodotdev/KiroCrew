@@ -10,6 +10,7 @@ patch; this module never imports it.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import logging
 import re
@@ -80,6 +81,9 @@ _BYPASS_EXACT = {
     # without this entry every `kirocrew logout` is denied 403 by the middleware
     # before the handler (and its audit events) ever run.
     "/api/logout",
+    # `kirocrew logout --link`: the same caller and the same two checks, re-run by
+    # api_logout_link before it revokes anything.
+    "/api/logout/link",
     "/api/theme/boot",
     # Liveness/readiness probes (rec #6): orchestrators / load balancers carry
     # no auth cookie, so these must be reachable without a token. Each exposes
@@ -415,6 +419,22 @@ def _is_spa_shell_request(request: web.Request) -> bool:
     return not _APPS_SPA_EXCLUDED_RE.match(path)
 
 
+# The sign-in page's one script. It is fixed text (``{reason}`` lands only in the
+# heading), so the page's own policy names it by hash and allows no other script; the
+# button is wired here rather than by an ``onclick`` attribute, which a hash cannot
+# allow.
+_403_SCRIPT = (
+    "function go(){var v=document.getElementById('u').value.trim();if(!v)return;"
+    "var t;try{var u=new URL(v);t=u.searchParams.get('token')}"
+    "catch(_){t=v}if(t){var d=new URL(window.location.href);"
+    "d.searchParams.set('token',t);window.location.href=d.toString()}"
+    "else{document.getElementById('e').style.display='block'}}"
+    "document.getElementById('b').addEventListener('click',go);"
+    "document.getElementById('u').addEventListener('keydown',"
+    "function(e){if(e.key==='Enter')go()});"
+)
+_403_SCRIPT_HASH = base64.b64encode(hashlib.sha256(_403_SCRIPT.encode()).digest()).decode()
+
 _403_HTML = (
     "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' "
     "content='width=device-width,initial-scale=1'><title>Access Denied</title>"
@@ -449,20 +469,32 @@ _403_HTML = (
     "then send the sign-in link to this device. Or paste a sign-in link below.</p>"
     "<p>No other signed-in device? Run <code>kirocrew token</code> in your terminal, then paste the URL below.</p>"
     "<input id='u' type='text' placeholder='Paste sign-in link or token…' autofocus>"
-    "<button onclick='go()'>Connect</button>"
+    "<button id='b'>Connect</button>"
     "<div class='err' id='e'>Invalid URL</div>"
     "</div>"
-    "<script>"
-    "function go(){{var v=document.getElementById('u').value.trim();if(!v)return;"
-    "var t;try{{var u=new URL(v);t=u.searchParams.get('token')}}"
-    "catch(_){{t=v}}if(t){{var d=new URL(window.location.href);"
-    "d.searchParams.set('token',t);window.location.href=d.toString()}}"
-    "else{{document.getElementById('e').style.display='block'}}}}"
-    "document.getElementById('u').addEventListener('keydown',"
-    "function(e){{if(e.key==='Enter')go()}});"
-    "</script>"
+    "<script>" + _403_SCRIPT.replace("{", "{{").replace("}", "}}") + "</script>"
     "</body></html>"
 )
+
+
+def _403_csp(request: web.Request) -> str:
+    """The sign-in page's own policy: its one script by hash, nothing else to load.
+
+    It replaces the shell's policy, which still allows inline script. ``frame-ancestors``
+    is built the way every framed dashboard response builds it, so the Instances embed
+    still shows this page inside its parent.
+    """
+    # Function-local: ``server`` imports this module through the token_auth facade,
+    # and the facade serves every module-level name of its owners.
+    from kiro_crew.dashboard.origin import frame_ancestors_value
+    from kiro_crew.dashboard.server import _extra_frame_ancestors
+
+    ancestors = frame_ancestors_value(_extra_frame_ancestors(request, request.app))
+    return (
+        f"default-src 'none'; script-src 'sha256-{_403_SCRIPT_HASH}'; "
+        "style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; "
+        f"frame-ancestors {ancestors}"
+    )
 
 
 def _credential_fingerprint(value: str) -> str:
@@ -527,11 +559,17 @@ def _deny(request: web.Request, reason: str, code: str = "") -> web.Response:
             request_id_for(request),
             headers,
         )
+    from kiro_crew.dashboard.headless import HEADLESS_KEY
+
+    if request.app.get(HEADLESS_KEY, False) is True:
+        return web.json_response(
+            {"error": reason, "code": code or "forbidden"}, status=403, headers=headers
+        )
     return web.Response(
         text=_403_HTML.format(reason=reason),
         status=403,
         content_type="text/html",
-        headers=headers,
+        headers={**headers, "Content-Security-Policy": _403_csp(request)},
     )
 
 
@@ -547,3 +585,18 @@ def _log_auth(request: web.Request, user_id: str, outcome: str, error: str) -> N
         )
     except Exception:
         logger.warning("Failed to log auth event to SEL", exc_info=True)
+
+
+def _log_query_token_refused(request: web.Request, user_id: str, reason: str) -> None:
+    """Record why a ``?token=`` was refused when the session cookie beside it authenticated.
+
+    That request still succeeds on the cookie, so without this row a link that did
+    not work looks exactly like one that did: the page loads signed in, and a link
+    whose exchange opens something (a Slack challenge window) silently opens nothing.
+    *reason* is the fixed refusal string from token validation; the token itself is
+    never logged.
+    """
+    _log_auth(request, user_id, "query_token_rejected", reason)
+    logger.info(
+        "dashboard link refused (%s); trying the session cookie on %s", reason, request.path
+    )

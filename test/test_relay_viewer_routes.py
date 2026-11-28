@@ -85,6 +85,7 @@ def viewer(monkeypatch):
     state.profile_arns = []
     state.list_profile_arns = []
     state.crew_domains = []
+    state.off_domain = 0
 
     state.refs = []
 
@@ -97,7 +98,7 @@ def viewer(monkeypatch):
         state.calls.append(("list", bearer))
         state.token_types.append(("list", token_type))
         state.list_profile_arns.append(profile_arn)
-        return (CREW,)
+        return cps.CrewList((CREW,), state.off_domain)
 
     async def _mint(url, bearer, endpoint_id, *, token_type="", profile_arn=""):
         state.calls.append(("mint", endpoint_id))
@@ -221,7 +222,7 @@ async def test_crews_gives_last_seen_in_whole_epoch_seconds(viewer, monkeypatch)
     seen = dataclasses.replace(CREW, presence="NOT_CONNECTED", last_seen_at=1762470000.75)
 
     async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
-        return (seen, dataclasses.replace(CREW, endpoint_id=OTHER))
+        return cps.CrewList((seen, dataclasses.replace(CREW, endpoint_id=OTHER)))
 
     monkeypatch.setattr(cps, "list_crew_endpoints", _list)
     async with _client() as client:
@@ -484,7 +485,7 @@ def _refusing_list(viewer, monkeypatch, refusals):
             status = refusals.pop(0)
             code = cps.SIGNED_OUT if status == 401 else cps.ACCESS_DENIED
             raise cps.CpsRefused(code, "refused", status=status)
-        return (CREW,)
+        return cps.CrewList((CREW,))
 
     monkeypatch.setattr(rv, "_bearer", _bearer)
     monkeypatch.setattr(cps, "list_crew_endpoints", _list)
@@ -910,7 +911,7 @@ async def test_a_crew_is_kept_only_under_the_set_domain_or_at_its_own_name(
     async def _list(url, bearer, *, crew_domain="", token_type="", profile_arn=""):
         viewer.calls.append(("list", bearer))
         crew = cps._crew_endpoint(raw, crew_domain)
-        return () if crew is None else (crew,)
+        return cps.CrewList(() if crew is None else (crew,))
 
     monkeypatch.setattr(cps, "list_crew_endpoints", _list)
     async with _client() as client:
@@ -954,7 +955,7 @@ async def test_a_team_crew_is_minted_with_no_profile_even_when_signed_in_with_on
     viewer, monkeypatch
 ) -> None:
     async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
-        return (TEAM_CREW,)
+        return cps.CrewList((TEAM_CREW,))
 
     monkeypatch.setattr(cps, "list_crew_endpoints", _list)
     viewer.profile_arn = PROFILE
@@ -1107,7 +1108,7 @@ async def test_crews_names_the_account_when_both_reads_match(viewer) -> None:
 async def test_crews_leaves_the_account_out_when_the_sign_in_changes(viewer, monkeypatch) -> None:
     async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
         viewer.fingerprint = FP_B  # a sign-in landed during the list call
-        return (CREW,)
+        return cps.CrewList((CREW,))
 
     monkeypatch.setattr(cps, "list_crew_endpoints", _list)
     resp, body = await _crews()
@@ -1248,3 +1249,14 @@ async def test_a_workload_host_reads_no_person_sign_in(monkeypatch) -> None:
         await rv._bearer("")
     assert refused.value.code == cps.SIGNED_OUT
     assert await rv._sign_in_marker("") is None
+
+
+@pytest.mark.asyncio
+async def test_the_list_says_how_many_crews_the_relay_domain_alone_left_out(viewer) -> None:
+    """Row 65: the dashboard is told, so it names the setting instead of showing none."""
+    async with _client() as client:
+        assert "offDomain" not in await (await client.get("/api/relay-viewer/crews")).json()
+        viewer.off_domain = 3
+        body = await (await client.get("/api/relay-viewer/crews")).json()
+    assert body["offDomain"] == 3
+    assert [c["endpointId"] for c in body["crews"]] == [EP]

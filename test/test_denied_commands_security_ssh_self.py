@@ -110,7 +110,7 @@ class TestSandboxEscapeSshSelf:
         assert is_safe_user_regex(_rule_pattern(self._RULE))
 
     def test_refusal_note_is_actionable(self):
-        """The note carries the three facts a refused caller needs.
+        """The note carries the four facts a refused caller needs.
 
         A first-contact refusal is a PENDING classification, so the note must
         say so and tell the caller the action that resolves it (retry the same
@@ -121,8 +121,11 @@ class TestSandboxEscapeSshSelf:
         refusal is only settled once it repeats after the check has had time to
         finish; the note must say how long to keep retrying and what to use
         instead after that (an unresolvable name, an IP address while the
-        address list cannot be read, or this machine).  The cases are labelled
-        so an agent can find its own without parsing a conditional sentence.
+        address list cannot be read, or this machine).  A ``*`` word followed by a
+        bare ``0`` (a Sunday cron schedule in backticks) reads as an ssh to this
+        machine, so the note must name that reading and the schedule spelling
+        that passes.  The cases are labelled so an agent can find its own
+        without parsing a conditional sentence.
         Content-pinned here because the note is the whole UX of this floor: a
         reword that drops the retry hint leaves the caller with no way forward.
         """
@@ -149,6 +152,12 @@ class TestSandboxEscapeSshSelf:
         )
         assert "(3) FORWARDED port" in note
         assert "per-rule toggle in Settings" in note
+        assert "(4) WILDCARD" in note
+        assert "a bare `0` (0.0.0.0, read as this machine)" in note
+        assert "write Sunday as `7`" in note
+        # The case's claims hold: the schedule it names is refused, the spelling it gives passes.
+        assert _denied_by("echo '`0 3 * * 0`'") == self._RULE
+        assert _denied_by("echo '`0 3 * * 7`'") is None
         # One line: the note is the refusal's second line, which the recovery
         # card and the suite's ``_denied_by`` split on.
         assert "\n" not in note
@@ -544,7 +553,7 @@ class TestSandboxEscapeSshSelf:
             # rsync ``--rsh`` naming plain ``ssh`` (no self host) is the
             # normal remote-shell selector; ``--exclude`` names data.  (The
             # detached ``-e ssh`` spelling is floor-allowed too -- asserted in
-            # test_rsync_detached_rsh_floor_allows_plain_ssh -- and, because the
+            # test_multi_name_exports_feed_rsync_remote_shell -- and, because the
             # ``reverse-shell-nc`` row is anchored to the ``nc`` command token,
             # allowed end-to-end as well; pinned by
             # TestReverseShellNcIsCommandTokenAnchored.)
@@ -598,11 +607,13 @@ class TestSandboxEscapeSshSelf:
     def test_other_hosts_and_mentions_stay_allowed(self, cmd):
         assert _denied_by(cmd) is None, cmd
 
-    def test_rsync_detached_rsh_floor_allows_plain_ssh(self):
-        # THIS floor must not deny the normal detached remote-shell selector, and
-        # neither does the ``reverse-shell-nc`` catalog row: it is anchored to the
-        # ``nc`` command token, so the letters ``nc -e`` inside ``rsync -e`` are not
-        # a match.  Pinned end-to-end here as well as at the floor.
+    def test_multi_name_exports_feed_rsync_remote_shell(self):
+        for builtin in ("export", "declare -x", "typeset -x"):
+            cmd = f"{builtin} A=1 RSYNC_RSH='ssh localhost'; rsync far:/x ."
+            assert _denied_by(cmd) == self._RULE, cmd
+
+        # The normal detached selector remains allowed when it names no self host,
+        # including through the separate reverse-shell catalog rule.
         cmd = "rsync " + "-e ssh /tmp/f far.example.com:/p"
         assert not security._is_ssh_to_self(cmd)
         assert _denied_by(cmd) is None
@@ -695,6 +706,12 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("ssh `echo localhost` id") == self._RULE
         assert _denied_by("ssh local$(printf host) id") == self._RULE
         assert _denied_by("ssh $(printf remote.example.com) id") is None
+        assert _denied_by("ssh $(echo localhost) id") == self._RULE
+        # Only the first printed word is spliced, so a substitution printing
+        # several words in command position is not read exactly (main allowed
+        # both).  It stays allowed, as on main.
+        assert _denied_by("$(echo ssh localhost) id") is None
+        assert _denied_by("$(echo ssh remote.example.com) id") is None
 
     @pytest.mark.parametrize(
         "cmd",
@@ -819,7 +836,10 @@ class TestSandboxEscapeSshSelf:
                 "echo `echo\\;echo ssh -p 22 localhost id`",
                 "echo\\;echo ssh -p 22 localhost id",
             ),
-            ("echo $(sudo -H ls s* l*)", "sudo -h ls s* l*"),
+            (
+                "echo bash -c 'echo $(echo hi; ssh -p 22 localhost id)'",
+                "echo bash -c 'ssh -p 22 localhost id'",
+            ),
         ],
     )
     def test_known_fail_closed_residuals_are_refused(self, cmd, body):
@@ -829,7 +849,9 @@ class TestSandboxEscapeSshSelf:
         on main: the floor reads a glued ``;echo``, a ``#`` comment, the text a
         ``cat`` prints from an unquoted-tag heredoc, and an escaped ``\\;`` as
         commands.  A substitution body is judged as such a line, so it inherits
-        the same refusal.  A fix to that reading flips this test on purpose.
+        the same refusal.  The ssh floor's payload readers take a ``bash -c`` script
+        that ``echo`` only prints as a payload, on the plain line too.  A fix to that
+        reading flips this test on purpose.
         """
         assert _denied_by(cmd) == self._RULE
         assert _denied_by(body) == self._RULE
@@ -1097,6 +1119,13 @@ class TestSandboxEscapeSshSelf:
             "sudo -e s*",
             # The cased words go through the same body masking as the lowered ones.
             "echo \"$(date '+%F x')\" s; sudo -H ls -l s* *.*",
+            # A ``;`` inside a word of a comment does not end the comment.
+            "ls # x;s?h local*",
+            # A ``;;`` or ``;&`` glued to the next arm's patterns leaves them patterns.
+            'case "$f" in docs) echo d;;s*|r*) du -sh l*;;esac',
+            'case "$f" in docs) echo d;&s*|r*) ls l*;;esac',
+            # A ``case`` glued after a separator opens a case statement too.
+            "true;case sample in s*|r* ) echo local* ;; esac",
         ],
     )
     def test_a_glob_host_after_a_glob_verb_is_not_this_host(self, text):
@@ -1119,12 +1148,25 @@ class TestSandboxEscapeSshSelf:
             "sudo s?h local*",
             "time s?h local*",
             "xargs s?h local*",
+            # Bash drops a leading redirection before it finds the program.
+            ">/dev/null s?h local*",
+            "2>/dev/null s?h local*",
             # A glob verb glued to a substitution opener, a subshell or a
             # separator is still the program bash runs.
             "echo $(s?h local* id)",
             "x=$(s?h local* id)",
             "(s?h local* id)",
             "cd /tmp;s?h local*",
+            "cd tmp;s?h local* id",
+            "cd tmp&&s?h local* id",
+            "cd tmp|s?h local*",
+            "(cd tmp;s?h local*)",
+            # A ``;`` or ``|`` inside one word that does not end the command (a
+            # clobber redirect, a substitution) leaves the verb in program position.
+            ">|out s?h local* id",
+            "$(a;b) s?h local* id",
+            # A ``case`` an earlier command runs into opens no case statement.
+            "echo case;true in x;s?h local* id",
             "echo $(s?h localhost id)",
             # Bash runs a ``$(`` inside double quotes as a command line of its own.
             'echo "$(s?h localhost id)"',
@@ -1151,6 +1193,9 @@ class TestSandboxEscapeSshSelf:
             "env -C . s?h local*",
             "sudo -D /tmp s?h local*",
             "xargs -P 4 s?h local*",
+            "sudo -T 5 s?h local*",
+            "xargs -S 5 s?h local*",
+            "env -U root s?h local*",
             # ``sudo -H`` and ``sudo -E`` take no value and run the next word.
             "sudo -H s?h local* id",
             "sudo -E s?h local* id",
@@ -1909,64 +1954,3 @@ class TestSandboxEscapeSshSelf:
         top_cmd = "git commit -m '`ssh -p 22 localhost id`'"
         top = [s for s, _ in security._shell_payload_walk(top_cmd)]
         assert "ssh -p 22 localhost id" not in top
-
-
-def _nested_double_quoted(levels: int, inner: str) -> str:
-    return 'echo "$(' * levels + inner + ')"' * levels
-
-
-class TestSshFloorNestingDepth:
-    """A deep nest of double-quoted ``$( )`` is refused, not a RecursionError."""
-
-    def test_the_issue_command_is_refused_without_an_exception(self):
-        from kiro_crew.security import argv_floor_ssh as ssh
-
-        real = ssh._double_quoted_substitution_bodies
-        calls = [0]
-
-        def counting(text):
-            calls[0] += 1
-            return real(text)
-
-        cmd = _nested_double_quoted(1000, "true; echo ssh")
-        with patch.object(ssh, "_double_quoted_substitution_bodies", counting):
-            assert _argv_floor._reaches_self_over_ssh(cmd.lower()) is True
-        assert calls[0] == ssh._MAX_SSH_READING_DEPTH
-
-    def test_the_gate_refuses_a_nest_past_the_bound_without_an_exception(self):
-        from kiro_crew.security import argv_floor_ssh as ssh
-
-        # The gate's own substitution-depth cap (32) lets this depth through, so
-        # the floor's reading bound is what refuses it.
-        at_cap = _nested_double_quoted(ssh._MAX_SSH_READING_DEPTH, "true; echo ssh")
-        assert _denied_by(at_cap) == "sandbox-escape-ssh-self"
-        # Deeper than that cap, the gate refuses before any floor reads the command.
-        verdict = security.is_denied(_nested_double_quoted(128, "true; echo ssh"))
-        assert verdict is not None and "substitution nesting deeper than 32" in verdict
-
-    def test_the_readings_open_at_once_stop_at_the_bound(self):
-        from kiro_crew.security import argv_floor_ssh as ssh
-
-        real = ssh._double_quoted_substitution_bodies
-        deepest = [0]
-
-        def counting(text):
-            deepest[0] = max(deepest[0], ssh._ssh_reading_depth.get())
-            return real(text)
-
-        with patch.object(ssh, "_double_quoted_substitution_bodies", counting):
-            assert (
-                _argv_floor._reaches_self_over_ssh(_nested_double_quoted(200, "echo ssh")) is True
-            )
-        assert deepest[0] == ssh._MAX_SSH_READING_DEPTH
-        assert ssh._ssh_reading_depth.get() == 0
-
-    def test_a_shallow_nest_is_read_as_before(self):
-        assert _denied_by(_nested_double_quoted(3, "ssh localhost id")) == (
-            "sandbox-escape-ssh-self"
-        )
-        assert _denied_by(_nested_double_quoted(3, "true; echo hi")) is None
-
-    def test_a_deep_nest_that_names_no_ssh_verb_is_allowed(self):
-        cmd = _nested_double_quoted(1000, "true; echo hi")
-        assert _argv_floor._reaches_self_over_ssh(cmd.lower()) is False

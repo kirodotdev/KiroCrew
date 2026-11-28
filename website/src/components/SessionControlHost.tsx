@@ -10,8 +10,8 @@
  *    renders a compact inline notice and leaves the chat untouched — it never
  *    unmounts anything but itself.
  * 2. **The session identity is the payload.** The control is handed
- *    `{ sessionKey, folderId, folderName, cwd }` — the grain apps mis-bind on
- *    today, and nothing more. That is the whole reason the slot exists: an app
+ *    `{ sessionKey, folderId, folderName, cwd }`, plus `member` in a Bot's own
+ *    thread — the grain apps mis-bind on today, and nothing more. That is the whole reason the slot exists: an app
  *    cannot discover the active session key from its own page. Fields no
  *    control has named a use for are deliberately absent, because this is a
  *    third-party contract and adding one later is cheaper than removing it.
@@ -27,6 +27,7 @@ import { RefreshCw } from 'lucide-react'
 import ErrorNotice from './ErrorNotice'
 import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { AppApiProvider } from '../app-sdk'
+import { importAppBundle } from './appBundleImport'
 import { i18nT } from '../i18n/t'
 import type { ResolvedSessionControl } from '../hooks/useSessionControls'
 import { withBase } from '@/lib/basePath'
@@ -48,6 +49,11 @@ export interface SessionControlContext {
   folderName?: string
   /** Working directory recorded for the session, when known. */
   cwd: string
+  /**
+   * The Bot whose own thread this chat is, by its display name, so a control
+   * can say who the user is talking to. Undefined in every other chat.
+   */
+  member?: { name: string }
 }
 
 export interface SessionControlHostProps {
@@ -137,7 +143,7 @@ export default function SessionControlHost({
   const LazyControl = useMemo(
     () =>
       lazy(() =>
-        import(/* @vite-ignore */ bundlePath).catch(err => {
+        importAppBundle<{ session: SessionControlContext; onClose: () => void }>(bundlePath).catch(err => {
           // eslint-disable-next-line no-console -- surface bundle load failures for debugging
           console.error(
             `[SessionControl] failed to load ${control.appName}/${control.id} from ${bundlePath}:`,

@@ -40,7 +40,14 @@ def _resquash_remedy(base):
 
 
 def _check_single_on_base(base, git_dir, vouched=()):
-    """Post-squash guard: HEAD's ONLY parent is origin/<base>, and the record covers HEAD."""
+    """Post-squash guard: HEAD is one commit on origin/<base>'s history, it merges into
+    origin/<base> without a conflict, and the record covers HEAD.
+
+    HEAD's only parent may be an older origin/<base> commit: the base moving while the
+    reviewed commit waited for its push is no reason to rebuild, and so re-review, a
+    commit that still merges cleanly. Returns how many commits the base moved past
+    that parent.
+    """
     pinned = _sha(_remote_ref(base))
     head = _sha("HEAD")
     tree, parents, _ = _commit_info(head)
@@ -50,20 +57,39 @@ def _check_single_on_base(base, git_dir, vouched=()):
     print("origin/{}:     {}".format(base, pinned[:12]))
     print("HEAD:            " + head[:12])
 
-    if parents != [pinned]:
+    on_base = len(parents) == 1 and (
+        parents[0] == pinned
+        or _ask(["git", "merge-base", "--is-ancestor", parents[0], pinned], answers=(0, 1))[0] == 0
+    )
+    if not on_base:
         err(
-            "REFUSED: HEAD's parents ({}) are not exactly origin/{} ({}). "
-            "The squashed commit does not sit directly on the freshly fetched "
-            "remote base — either the squash landed on a stale ref or the "
-            "branch carries unexpected history.\n"
+            "REFUSED: HEAD's parents ({}) are not one commit of origin/{} ({}). "
+            "The squashed commit does not sit on the freshly fetched remote base "
+            "— either the squash landed on a stale ref or the branch carries "
+            "unexpected history.\n"
             "  To fix: {}.".format(shown, base, pinned[:12], _resquash_remedy(base))
         )
         raise Refused()
+    behind = 0
+    if parents[0] != pinned:
+        behind = int(_ask(["git", "rev-list", "--count", parents[0] + ".." + pinned])[1] or 0)
+        print("base moved:      {} commit(s) since HEAD's parent".format(behind))
+        # 0: merges cleanly; 1: a conflict. A tree is written but nothing is checked out.
+        rc, _ = _ask(["git", "merge-tree", "--write-tree", pinned, head], answers=(0, 1))
+        if rc:
+            err(
+                "REFUSED: HEAD ({}) conflicts with origin/{} ({}).\n"
+                "  To fix: {}.".format(head[:12], base, pinned[:12], _resquash_remedy(base))
+            )
+            raise Refused()
+    # The record covers what HEAD itself changes: against its own parent, never
+    # against a base that moved on (that diff would hold the base's new work too).
     unknown = _unrecorded(
-        git_dir, _head_ref(), _changed(pinned, tree), [head], pinned, head, vouched
+        git_dir, _head_ref(), _changed(parents[0], tree), [head], pinned, head, vouched
     )
     if unknown:
         _refuse_unrecorded(unknown, "HEAD ({})".format(head[:12]), git_dir, base, "single")
+    return behind
 
 
 def _patch_ids(revs):

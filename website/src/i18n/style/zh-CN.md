@@ -95,6 +95,8 @@ conventions a reviewer checks, and context may require variation.
 | effort (reasoning) † | 强度 | 投入度 |
 | reject † | 拒绝 | 驳回 |
 | WeCom † | 企业微信 | WeCom |
+| Command Bar † | 命令栏 | Command Bar |
+| Side Chat † | 随手问 | Side Chat |
 
 † gates one Avoid rendering per row, the one `zhStyle.test.ts` `BANNED` lists (for
 example `工作空间`, `子智能体`, `仪表盘`); the other Avoid entries in those rows
@@ -178,6 +180,7 @@ sentence. New copy must not add fragments: one key per sentence.
 | no unreachable plural suffixes | `zhStyle.test.ts` |
 | selected terminology mappings | `zhStyle.test.ts` |
 | CJK punctuation, ellipsis, no corner brackets, mixed parentheses or source-layout line breaks | `zhStyle.test.ts` |
+| no space after `。` | `sentenceJoin.test.ts` |
 | no 您, 这将, doubled particles or three-的 clauses | `zhStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 

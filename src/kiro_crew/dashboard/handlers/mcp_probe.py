@@ -16,7 +16,8 @@ import asyncio
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping
+from typing import Any
 
 from aiohttp import web
 
@@ -26,7 +27,10 @@ from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
-from kiro_crew.dashboard.handlers.mcp_agent_sync import _builtin_mcp_server_names
+from kiro_crew.dashboard.handlers.mcp_agent_sync import (
+    _app_owned_mcp_servers,
+    _builtin_mcp_server_names,
+)
 from kiro_crew.dashboard.handlers.mcp_config_files import (
     _GLOBAL_MCP_JSON,
     _KIRO_GLOBAL_SURFACE,
@@ -48,9 +52,6 @@ from kiro_crew.mcp_gateway.rewriter import records_dir
 from kiro_crew.sel import sel
 from kiro_crew.session import process_shutdown_requested
 from kiro_crew.user_json import loads_mcp_config
-
-if TYPE_CHECKING:
-    from kiro_crew.session import SessionManager
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.mcp")
 
@@ -87,11 +88,18 @@ def _quarantine_verdicts(rows: list[dict[str, Any]]) -> list[tuple[str, str, str
     the count: no handshake was attempted, so there is no outcome either way.
     This is the same rule that excludes ``needs_auth`` -- only a status that
     actually reports a handshake attempt may move the counter.
+
+    A ``refused`` row is dropped too. The server started and answered the
+    handshake with an error, such as an upstream sign-in that expired. The
+    quarantine exists to stop re-spawning a server that wedges, and this one
+    exits at once; counting it left a server excluded after its user signed in
+    again, since an excluded server is never probed back to ``ok``. Its row still
+    shows the error, and the next pass re-probes it.
     """
     return [
         (str(r.get("name") or ""), str(r.get("status") or ""), str(r.get("error") or ""))
         for r in rows
-        if str(r.get("name") or "") and str(r.get("probeMode") or "") != "declared"
+        if str(r.get("name") or "") and str(r.get("probeMode") or "") not in ("declared", "refused")
     ]
 
 
@@ -107,7 +115,7 @@ def _arm_reprobe(request: web.Request) -> None:
     actually prevents a second concurrent probe.
     """
     state: DashboardState = request.app["state"]
-    task = asyncio.create_task(_bg_mcp_probe(state.sessions))
+    task = asyncio.create_task(_bg_mcp_probe(state))
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
 
@@ -130,10 +138,10 @@ def _edited_since_probe(servers: list[McpServerInfo]) -> dict[str, str]:
     not mark the edit handled by a probe that read the config before it.
 
     Keyed on the CACHED identity, so each edit arms at most once. Some rows are
-    never re-probed by ``probe_all`` (a quarantined server is left out of the
-    spawn set), so their entry stays mismatched indefinitely; comparing against
-    the current config instead would re-arm a full fan-out on every request for
-    as long as that lasts.
+    never re-probed by ``probe_all`` (one whose env names a ``secret://`` value is
+    refused before any spawn and never cached), so their entry stays mismatched
+    indefinitely; comparing against the current config instead would re-arm a
+    full fan-out on every request for as long as that lasts.
     """
     live = {s.name for s in servers if not s.disabled}
     for name in [n for n in _mcp_reprobe_armed_for if n not in live]:
@@ -174,7 +182,7 @@ def _probe_view() -> tuple[dict[str, bool], frozenset[str]]:
     from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
 
     servers = list_servers()
-    held = _spawn_excluded()
+    held = _spawn_excluded(servers)
     probeable = frozenset(
         s.name
         for s in servers
@@ -244,35 +252,52 @@ def _annotate_quarantine(rows: list[dict[str, Any]]) -> None:
 
 
 def _annotate_agent_drops(rows: list[dict[str, Any]]) -> None:
-    """Stamp ``agentDropped`` onto rows the latest default-agent rebuild left out.
+    """Stamp what the latest default-agent rebuild left out onto its rows.
 
+    ``agentDropped`` on a server left out because its program was not found.
     Recorded keys may be raw spec names while rows use canonical aliases.
     Exact-name matches win over aliases; cached notes are refreshed each time.
+    ``ownEntryUnused`` on an edition server's row whose name the user's own entry
+    also declares for another server, which the agent therefore does not run.
+    A row the user switched off gets neither note: the record may predate the switch,
+    because a toggle runs no rebuild.
     """
-    from kiro_crew.mcp_dropped_servers import load_dropped
+    from kiro_crew.mcp_dropped_servers import load_dropped, load_unused_own
     from kiro_crew.mcp_utils import mcp_server_alias
 
     drops = load_dropped()
     aliased_drops = {mcp_server_alias(key): drop for key, drop in drops.items()}
+    unused = load_unused_own()
+    aliased_unused = {mcp_server_alias(key): rec for key, rec in unused.items()}
     for row in rows:
         row.pop("agentDropped", None)
+        row.pop("ownEntryUnused", None)
         name = row.get("name")
-        if not isinstance(name, str):
+        if not isinstance(name, str) or row.get("enabled") is False:
             continue
         drop = drops.get(name) or aliased_drops.get(mcp_server_alias(name))
         if drop is not None:
             row["agentDropped"] = drop
+        own = unused.get(name) or aliased_unused.get(mcp_server_alias(name))
+        if own is not None:
+            row["ownEntryUnused"] = own
 
 
-def _record_probe_verdicts(rows: list[dict[str, Any]]) -> None:
-    """Filter probe rows to eligible servers and fold them into the store.
+def _record_probe_verdicts(rows: list[dict[str, Any]], servers: list[McpServerInfo]) -> None:
+    """Fold probe rows into the store, each under the launch *servers* probed.
 
     One function so ONE ``to_thread`` covers both halves. Passing
     ``_quarantine_verdicts(rows)`` as an argument to ``to_thread`` evaluated it on
     the event loop, and that filter reads up to three MCP scope files to decide
     eligibility -- so the loop paid for those reads on every probe round.
+
+    *servers* are the probed objects the rows were built from; their launch is
+    what lets a changed command leave the quarantine (``mcp_quarantine``).
     """
-    mcp_quarantine.record_verdicts(_quarantine_verdicts(rows))
+    from kiro_crew.mcp_discovery import _probe_identity
+
+    launches = {s.name: _probe_identity(s) for s in servers}
+    mcp_quarantine.record_verdicts(_quarantine_verdicts(rows), launches)
 
 
 def _kirocrew_mcp_servers() -> dict[str, Any]:
@@ -314,6 +339,7 @@ def _stamp_config_state(
     global_mcps: Any,
     kirocrew_mcps: Any,
     builtin_names: frozenset[str] = frozenset(),
+    app_owned: Mapping[str, str] | None = None,
 ) -> None:
     """Stamp the config-derived fields onto one serialized server row.
 
@@ -382,6 +408,10 @@ def _stamp_config_state(
     d["kirocrewManaged"] = kc_spec is not None
     # One of Kiro Crew's own servers: the table locks its off switch.
     d["builtin"] = name in builtin_names
+    # An installed app's server: the table has no Uninstall for it, and names
+    # the app whose removal is the one that removes the server.
+    if app_owned and (app := app_owned.get(name)):
+        d["app"] = app
     shared_off = mcp_entry_is_muted(spec)
     store_off = mcp_entry_is_muted(kc_spec)
     is_disabled = shared_off or store_off or d.get("disabled") is True
@@ -430,7 +460,7 @@ def _invalid_flag_reason(entry: Any) -> str | None:
     return None if isinstance(flag, bool) else "invalid"
 
 
-async def _bg_mcp_probe(sessions: SessionManager | None) -> None:
+async def _bg_mcp_probe(state: DashboardState | None) -> None:
     """Populate the MCP probe cache — SINGLE-FLIGHT.
 
     Two independent boot paths reach this: ``dashboard/server.py`` fires it as a
@@ -451,6 +481,10 @@ async def _bg_mcp_probe(sessions: SessionManager | None) -> None:
     probe mid-handshake — the fan-out completes and the cache is populated for
     whoever asks next, which is what the boot path's
     "continuing without full probe" message already implies.
+
+    *state* is the dashboard the result is for: its sessions decide whether the
+    round overlapped a shutdown, and its open tabs are told when the cache is
+    filled. ``None`` probes with neither.
     """
     global _mcp_probe_task
 
@@ -459,13 +493,19 @@ async def _bg_mcp_probe(sessions: SessionManager | None) -> None:
         await asyncio.shield(inflight)
         return
 
-    task = asyncio.ensure_future(_run_mcp_probe(sessions))
+    task = asyncio.ensure_future(_run_mcp_probe(state))
     _mcp_probe_task = task
     await asyncio.shield(task)
 
 
-async def _run_mcp_probe(sessions: SessionManager | None) -> None:
-    """The probe fan-out itself. Reached only through `_bg_mcp_probe`."""
+async def _run_mcp_probe(state: DashboardState | None) -> None:
+    """The probe fan-out itself. Reached only through `_bg_mcp_probe`.
+
+    A round that fills the cache pushes an ``mcp_servers`` refresh frame, so an
+    open MCP Servers tab re-reads ``GET /api/mcp`` and shows the verdicts without
+    a reload. That re-read finds the cache fresh and arms no further probe. A
+    round that fails pushes nothing: the cache it would announce did not change.
+    """
     global _mcp_probe_ts, _mcp_probe_in_progress
     _mcp_probe_in_progress = True
     try:
@@ -478,28 +518,33 @@ async def _run_mcp_probe(sessions: SessionManager | None) -> None:
         global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
         kirocrew_mcps = await asyncio.to_thread(_kirocrew_mcp_servers)
         builtin = await asyncio.to_thread(_builtin_mcp_server_names)
+        app_owned = await asyncio.to_thread(_app_owned_mcp_servers)
 
         # Route through probe_all() so the fan-out is bounded by its
         # PROBE_MAX_CONCURRENCY semaphore. An
         # unbounded gather here floods the loop's default executor during a
         # network blip and can starve the heartbeat into a watchdog _exit.
         probed = await probe_all()
-        overlapped_shutdown = process_shutdown_requested(sessions)
+        overlapped_shutdown = process_shutdown_requested(
+            state.sessions if state is not None else None
+        )
         result: list[dict[str, Any]] = []
         for s in probed:
             d = s.to_dict()
             spec = global_mcps.get(s.name, {})
-            _stamp_config_state(d, global_mcps, kirocrew_mcps, builtin)
+            _stamp_config_state(d, global_mcps, kirocrew_mcps, builtin, app_owned)
             if isinstance(spec, dict) and spec.get("disabledTools"):
                 d["disabledTools"] = spec["disabledTools"]
             result.append(d)
         if result:
             if not overlapped_shutdown:
-                await asyncio.to_thread(_record_probe_verdicts, result)
+                await asyncio.to_thread(_record_probe_verdicts, result, probed)
             await asyncio.to_thread(_annotate_quarantine, result)
         _mcp_probe_cache[:] = result
         _mcp_probe_ts = time.time()
         logger.info("MCP probe complete: %d servers", len(result))
+        if state is not None:
+            state.push_refresh("mcp_servers")
     except Exception:
         logger.debug("Background MCP probe failed", exc_info=True)
     finally:
@@ -523,8 +568,8 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     # Off the loop: it reads every scope's config file, like the other reads here.
     servers = await asyncio.to_thread(list_servers)
 
-    # Kick off a background re-probe if the handler cache is stale,
-    # so the next request gets fresh results.
+    # Kick off a background re-probe if the handler cache is stale. When it
+    # finishes, its refresh frame makes an open tab read this route again.
     now = time.time()
     stale = now - _mcp_probe_ts > _MCP_PROBE_CACHE_SECS
 
@@ -535,8 +580,8 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     cached_by_name: dict[str, dict] = {s["name"]: s for s in _mcp_probe_cache}
 
     # Also re-probe if a new server appeared (e.g. fresh install from AIM
-    # Browse) so status transitions from "Unknown" to "ok"/"error" on the
-    # next page refresh without waiting out the cache TTL.
+    # Browse) so status transitions from "Unknown" to "ok"/"error" as soon as
+    # that probe finishes, without waiting out the cache TTL.
     #
     # Only consider rows probe_all() would actually PROBE. It never spawns a
     # consent-disabled server, so a disabled row enters _mcp_probe_cache only
@@ -578,6 +623,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     # page load -- a slow data-home mount would stall the loop and its heartbeat.
     kirocrew_mcps = await asyncio.to_thread(_kirocrew_mcp_servers)
     builtin = await asyncio.to_thread(_builtin_mcp_server_names)
+    app_owned = await asyncio.to_thread(_app_owned_mcp_servers)
     result: list[dict] = []
     for s in servers:
         d = s.to_dict()
@@ -604,7 +650,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
             d["status"] = cached.get("status", d["status"])
             d["tools"] = cached.get("tools", d["tools"])
             d["error"] = cached.get("error", d["error"])
-        _stamp_config_state(d, global_mcps, kirocrew_mcps, builtin)
+        _stamp_config_state(d, global_mcps, kirocrew_mcps, builtin, app_owned)
         err = d.get("error")
         if err:
             from kiro_crew.security import redact
@@ -649,16 +695,47 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
-def _agent_mcp_server_names(agent: str) -> list[str] | None:
-    """The sorted names of the servers kiro-cli mounts for the user-level spec *agent*.
+def _live_backend_of_slot(request: web.Request) -> str:
+    """The backend the live session of the ``?slot=`` chat runs on, else kiro-cli's.
+
+    Read from the session itself (``capabilities_of(provider).backend``), never
+    from a value the caller sends. The slot key only selects which session to ask:
+    a missing or unknown slot, one with no live session, a backend this build does
+    not know, and an app caller that does not own the slot and its session
+    (``slot_ownership.app_owns_slot_session``, the rule the per-slot routes apply)
+    all answer ``ACP_BACKEND_KIRO``, which is what this endpoint assumed before.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO, ACP_BACKENDS_KNOWN
+    from kiro_crew.agent_sdk.capabilities import capabilities_of
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.dashboard.slot_ownership import app_owns_slot_session
+
+    name = (request.query.get("slot") or "").strip()
+    state = request.app.get("state")
+    slot = getattr(state, "_slots", {}).get(name) if name else None
+    if slot is None:
+        return ACP_BACKEND_KIRO
+    request_app = request.get("app", "")
+    if request_app and not app_owns_slot_session(request_app, slot):
+        return ACP_BACKEND_KIRO
+    try:
+        provider = state.sessions.get_provider(effective_session_key(slot))
+    except (AttributeError, KeyError):
+        return ACP_BACKEND_KIRO
+    backend = capabilities_of(provider).backend
+    return backend if backend in ACP_BACKENDS_KNOWN else ACP_BACKEND_KIRO
+
+
+def _agent_mcp_server_names(agent: str, backend: str) -> list[str] | None:
+    """The sorted names of the servers *backend* mounts for the user-level spec *agent*.
 
     The spec's own ``mcpServers``, and the enabled servers of the global
-    ``mcp.json`` that its ``includeMcpJson`` opt-in mounts beside them
-    (``agent_sdk.mcp_json_reach``). ``None`` when no spec declares that name. A
-    thread-side read: it walks the agents directory and parses specs (both forms)
-    until the first match, then reads the global file when the spec opts in.
+    ``mcp.json`` that its ``includeMcpJson`` opt-in mounts beside them on a
+    backend that reads that file (``agent_sdk.mcp_json_reach``). ``None`` when no
+    spec declares that name. A thread-side read: it walks the agents directory and
+    parses specs (both forms) until the first match, then reads the global file
+    when the spec opts in.
     """
-    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
     from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
 
     for f in iter_agent_spec_files(kiro_agents_dir_path(), ordered=False):
@@ -674,7 +751,7 @@ def _agent_mcp_server_names(agent: str) -> list[str] | None:
             # must answer an empty list, not a 500 from ``sorted(None)``.
             servers = spec.get("mcpServers")
             names = set(servers) if isinstance(servers, dict) else set()
-            return sorted(names.union(mcp_json_server_names(spec, ACP_BACKEND_KIRO)))
+            return sorted(names.union(mcp_json_server_names(spec, backend)))
     return None
 
 
@@ -683,9 +760,11 @@ async def api_mcp_active(request: web.Request) -> web.Response:
 
     For non-kirocrew agents, reads ``mcpServers`` from the agent's config
     in ``~/.kiro/agents/``, plus the global ``~/.kiro/settings/mcp.json``
-    servers when that config opts in with ``includeMcpJson``: the servers
-    kiro-cli loads when ``--agent <name>`` is passed. For kirocrew (or no
-    agent), reads every scope through the one launch predicate.
+    servers when that config opts in with ``includeMcpJson`` and the chat's
+    backend mounts that file. ``?slot=`` names the chat whose live session's
+    backend is asked (:func:`_live_backend_of_slot`); without one the answer is
+    kiro-cli's. For kirocrew (or no agent), reads every scope through the one
+    launch predicate.
     """
     agent = request.query.get("agent", "")
 
@@ -706,7 +785,8 @@ async def api_mcp_active(request: web.Request) -> web.Response:
     # directory and reads specs until the name matches, so it runs in a thread:
     # a large directory must not stall every other request on the loop.
     if agent and agent != "kirocrew":
-        agent_mcps = await asyncio.to_thread(_agent_mcp_server_names, agent)
+        backend = _live_backend_of_slot(request)
+        agent_mcps = await asyncio.to_thread(_agent_mcp_server_names, agent, backend)
         if agent_mcps is None:
             return web.json_response([])
         return web.json_response([{"name": n, "enabled": True} for n in agent_mcps])
@@ -761,17 +841,18 @@ async def _probed_rows(servers: list[Any], overlapped_shutdown: bool) -> list[di
     global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
     kirocrew_mcps = await asyncio.to_thread(_kirocrew_mcp_servers)
     builtin = await asyncio.to_thread(_builtin_mcp_server_names)
+    app_owned = await asyncio.to_thread(_app_owned_mcp_servers)
     result: list[dict[str, Any]] = []
     for s in servers:
         d = s.to_dict()
         spec = global_mcps.get(s.name, {})
-        _stamp_config_state(d, global_mcps, kirocrew_mcps, builtin)
+        _stamp_config_state(d, global_mcps, kirocrew_mcps, builtin, app_owned)
         if isinstance(spec, dict) and spec.get("disabledTools"):
             d["disabledTools"] = spec["disabledTools"]
         result.append(d)
     if result:
         if not overlapped_shutdown:
-            await asyncio.to_thread(_record_probe_verdicts, result)
+            await asyncio.to_thread(_record_probe_verdicts, result, servers)
         await asyncio.to_thread(_annotate_quarantine, result)
         await asyncio.to_thread(_annotate_owner_sign_in, result)
         await asyncio.to_thread(_annotate_unconfigured_connection, result)
@@ -1192,7 +1273,7 @@ async def api_mcp_probe_one(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, "mcp_probe_one")
     if denied is not None:
         return denied
-    from kiro_crew.mcp_discovery import _note_denied_env, list_servers
+    from kiro_crew.mcp_discovery import _note_denied_env, list_servers, same_process_lock
     from kiro_crew.mcp_discovery_probe import probe_server
 
     name = request.match_info["name"]
@@ -1204,8 +1285,10 @@ async def api_mcp_probe_one(request: web.Request) -> web.Response:
         )
     server = matches[0]
     # probe_server refuses a consent-disabled server itself (no spawn, stale
-    # refusals dropped), so every row takes the same path here.
-    await probe_server(server)
+    # refusals dropped), so every row takes the same path here. The lock waits
+    # out a pass that is checking another name of the same process right now.
+    async with same_process_lock(server):
+        await probe_server(server)
     # The same post-probe note probe_all gives a failed row, so the row this
     # returns does not read as a broken server when a policy dropped its env.
     _note_denied_env(server)

@@ -3,6 +3,7 @@
     "agent_capabilities": {
       "_meta": {
         "goose": {
+          "localInference": {},
           "recipeParameterScopes": {}
         }
       },
@@ -23,7 +24,7 @@
         "list": {}
       }
     },
-    "agent_version": "1.57.0",
+    "agent_version": "1.50.1",
     "frame": "response",
     "id": 1,
     "protocol_version": 1
@@ -184,7 +185,7 @@
     "events": [
       {
         "kind": "text_chunk",
-        "message_id": "c1",
+        "message_id": "chatcmpl-1",
         "text": "done"
       }
     ],

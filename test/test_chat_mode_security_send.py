@@ -947,14 +947,17 @@ def _scripted_turns(state, monkeypatch, *turns) -> None:
 
 
 async def _run_app_turn_and_successors(state, slot) -> list[tuple[str, str]]:
-    await chat_runner._run_chat(state, slot, "from the app", _turn_actor="app")
-    for _ in range(5):
-        successor = slot.task
-        if successor is None or successor.done():
-            break
-        await await_until(successor, what="the successor turn finishing")
-    assert slot.task is None or slot.task.done()
-    return [(m["role"], m["content"]) for m in slot.drain()]
+    # The app's stream reads the queue, so it holds it for the whole cycle, as
+    # the Crew API does; with no reader a turn's end empties the queue.
+    with slot.pending_consumer():
+        await chat_runner._run_chat(state, slot, "from the app", _turn_actor="app")
+        for _ in range(5):
+            successor = slot.task
+            if successor is None or successor.done():
+                break
+            await await_until(successor, what="the successor turn finishing")
+        assert slot.task is None or slot.task.done()
+        return [(m["role"], m["content"]) for m in slot.drain()]
 
 
 @pytest.mark.asyncio
@@ -1175,6 +1178,28 @@ async def test_a_held_app_recovery_cannot_extend_a_later_apps_stream(state, monk
     assert any("later app reply" in content for _, content in pending[:boundary])
     assert any("older recovered reply" in content for _, content in pending[boundary:])
     assert all("older recovered reply" not in content for _, content in pending[:boundary])
+
+
+@pytest.mark.asyncio
+async def test_a_restored_turns_retry_keeps_its_restored_provenance(state, monkeypatch) -> None:
+    # The retry is stamped with the `user` fallback the restored turn ran under, so
+    # without its own mark it would drain as the person's turn.
+    _scripted_turns(state, monkeypatch, "")
+    slot = _user_slot(state)
+    slot._titled = True
+    with patch.object(chat_runner, "_start_next_queued_turn", new=AsyncMock(return_value=False)):
+        await chat_runner._run_chat(state, slot, "restored request", _turn_provenance_restored=True)
+    [retry] = slot._queue
+    assert retry["meta"][TURN_ACTOR_META_KEY] == "user"
+    run_chat = MagicMock()
+
+    with (
+        patch.object(chat_runner, "spawn_guarded_turn", side_effect=_spawn_closing_the_turn),
+        patch.object(chat_runner, "_run_chat", new=run_chat),
+    ):
+        assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+    assert run_chat.call_args.kwargs.get("_turn_provenance_restored") is True
 
 
 @pytest.mark.asyncio

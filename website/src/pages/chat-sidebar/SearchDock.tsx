@@ -27,7 +27,7 @@ import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, Fil
 import { FOLDER_SORT_MODES, folderHasCreatedStamp, type FolderSortMode } from '../../utils/folderTree'
 import { type RecentUnit, RECENT_WINDOW_PRESETS, formatRecentWindow } from '../recentWindow'
 import { STALE_COLLAPSE_PRESETS_MS } from '../staleCollapse'
-import { SORT_LABEL_KEY, type SortKey } from '../chat/sessionOrder'
+import { SORT_LABEL_KEY, staleCollapseApplies, type SortKey } from '../chat/sessionOrder'
 import { i18nT } from '../../i18n/t'
 import { openGlobalChatSearch } from '../../components/globalChatSearch/globalChatSearchStore'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
@@ -42,6 +42,10 @@ import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import { renderResumeAllRow } from './resumeAll'
 import type { SidebarScope } from './scope'
 import RemoveMergedCrChips from './RemoveMergedCrChips'
+
+/** The unread-first toggle's note, which the toggle names as its description. One
+ *  sort menu is open at a time and its content mounts only while open, so one id. */
+const UNREAD_FIRST_NOTE_ID = 'folder-order-unread-first-note'
 
 /**
  * The menu's Folders section, its separator included. Opened for it (`reveal`, the board
@@ -137,6 +141,9 @@ const SORT_OPTIONS: { value: SortKey }[] = [
   // The person's own drag order, under Name. A drop between two rows in any
   // sort switches to it, so it is checked whenever the list is in that order.
   { value: 'manual' },
+  // The running sessions on top, the rest newest first. Last, so the rows above
+  // keep the places people know them by.
+  { value: 'active-then-date' },
 ]
 // Kept beside `SortKey`, where the manual order's notice reads it too.
 export { SORT_LABEL_KEY }
@@ -188,7 +195,7 @@ function RemoteCrewNamesError() {
 export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode; shelf: React.ReactNode } {
   const { activeFilters, activeModelKeys, activeModelRows, activeTagIds, activeTagNames, autoTitleError,
     availableLanes, boardLaneActive, changeRecentUnit, clearHiddenFilters, clearModelFilter, clearTagFilter,
-    closeRefused, columnsError, columnsFailed, creatorFilter, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError,
+    closeRefused, columnsError, columnsFailed, columnsReady, creatorFilter, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError,
     dismissUnfiledAboveFoldersError, dispatch,
     filterCounts, filterHiddenFolders, filterSortOpen, filtersPaused, pausedFilters, flatLaneActive, folderActionError, groupByKind, toggleGroupByKind,
     folderFilterRows, folderOfflineNotice, folderReorderHint, folderReorderHintRef, folderRowsDrawn, folderSortMode,
@@ -651,25 +658,6 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     </DropdownMenuRadioItem>
                   ))}
                 </DropdownMenuRadioGroup>
-                {/* A view over the mode, kept in this browser: folders with an
-                    unread chat are drawn first. Only where folder rows are drawn,
-                    since the flat and conductor lanes show no folder to move. */}
-                {folderRowsDrawn && (
-                  <DropdownMenuItem
-                    role="menuitemcheckbox"
-                    aria-checked={foldersUnreadFirst}
-                    data-testid="folder-order-unread-first"
-                    onSelect={e => { e.preventDefault(); toggleFoldersUnreadFirst() }}
-                  >
-                    <span className="flex-1">{i18nT('pages.chatSidebar.folder_order_unread_first')}</span>
-                    {foldersUnreadFirst && <Check size={14} className="text-accent shrink-0" aria-hidden="true" />}
-                  </DropdownMenuItem>
-                )}
-                {foldersUnreadFirst && folderRowsDrawn && (
-                  <div className="px-2 pt-0.5 pb-1.5 text-[11px] text-muted italic whitespace-normal max-w-[300px]" data-testid="folder-order-unread-first-note">
-                    {i18nT('pages.chatSidebar.folder_order_unread_first_note')}
-                  </div>
-                )}
                 {/* Outside Custom a folder drag can re-parent but not reorder
                     (the rows' droppable side is off). Said here, where the mode
                     is chosen, the same caption grammar as the stale control's
@@ -703,11 +691,37 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     {i18nT('pages.chatSidebar.folder_order_unstamped_note')}
                   </div>
                 )}
+                {/* A view over the mode, kept in this browser: folders with an
+                    unread chat are drawn first. Only where folder rows are drawn,
+                    since the flat and conductor lanes show no folder to move.
+                    Below the mode notes and behind a separator, so it does not
+                    read as a fourth mode; its note is its description, so a
+                    screen reader hears why folder drag stopped. */}
+                {folderRowsDrawn && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      role="menuitemcheckbox"
+                      aria-checked={foldersUnreadFirst}
+                      aria-describedby={foldersUnreadFirst ? UNREAD_FIRST_NOTE_ID : undefined}
+                      data-testid="folder-order-unread-first"
+                      onSelect={e => { e.preventDefault(); toggleFoldersUnreadFirst() }}
+                    >
+                      <span className="flex-1">{i18nT('pages.chatSidebar.folder_order_unread_first')}</span>
+                      {foldersUnreadFirst && <Check size={14} className="text-accent shrink-0" aria-hidden="true" />}
+                    </DropdownMenuItem>
+                    {foldersUnreadFirst && (
+                      <div id={UNREAD_FIRST_NOTE_ID} className="px-2 pt-0.5 pb-1.5 text-[11px] text-muted italic whitespace-normal max-w-[300px]" data-testid="folder-order-unread-first-note">
+                        {i18nT('pages.chatSidebar.folder_order_unread_first_note')}
+                      </div>
+                    )}
+                  </>
+                )}
                 {/* Where the sessions filed in no folder sit relative to the folder
                     list (dashboard.unfiled_sessions_above_folders). Under Folder order
                     because it is one more fact about how the folder list reads.
                     The separator above the row sets this layout toggle apart from
-                    the order choices. It renders only with the row. A lane that
+                    the rows above. It renders only with the row. A lane that
                     hides the row then shows no doubled separator.
                     Offered in the lanes that draw a folder row (`folderRowsDrawn`,
                     a lane-mode gate). A tree with no folders yet, or a board whose
@@ -745,7 +759,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                   // The trigger must not advertise "· 2d" while the collapse
                   // is inert (narrowed list / non-date sort): a control that
                   // displays an active setting while doing nothing is a lie.
-                  const stalePaused = staleCollapseMs > 0 && (listNarrowed || sortKey !== 'date-desc')
+                  const stalePaused = staleCollapseMs > 0 && (listNarrowed || !staleCollapseApplies(sortKey))
                   const staleRowBody = (
                     <>
                       <Clock size={14} className="text-muted shrink-0" />
@@ -1249,8 +1263,10 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
            * failure. It must not show under a toggle-SAVE failure: there its
            * "Try again" label would promise to retry the save but instead seed
            * lanes into a board the user never switched to (UX Review). The
-           * save-failure copy already carries its own next step. */}
-          {!toggleSaveFailed && (
+           * save-failure copy already carries its own next step. It also stays
+           * hidden until the columns read succeeds: seeding needs the loaded
+           * list, and while that read has failed its own Retry is the way on. */}
+          {!toggleSaveFailed && columnsReady && (
             <div>
               <Btn
                 type="button"

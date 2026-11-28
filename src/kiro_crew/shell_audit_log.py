@@ -192,10 +192,10 @@ def rotate_shell_audit_log(data_home: Path) -> bool:
             SHELL_AUDIT_LOG_MAX_BYTES,
         )
     else:
-        # The primitive tells its caller nothing and logs only a refused
-        # rename, so this is the only line with the sizes, and the only one at
-        # all when the attempt failed before the rename (a lock file it could
-        # not open). Without it an over-cap file whose rotation fails every
+        # The primitive tells its caller nothing, and its own WARNING (a
+        # refused rename, or a lock file it could not open) carries the path
+        # and the error class but no sizes, so this is the only line with
+        # the sizes. Without it an over-cap file whose rotation fails every
         # tick looks exactly like a file under the cap, and the file the sweep
         # exists to bound grows on with no signal an operator could act on.
         # Throttled to one line per ``SHELL_AUDIT_LOG_WARN_INTERVAL_SECS`` per data home: the

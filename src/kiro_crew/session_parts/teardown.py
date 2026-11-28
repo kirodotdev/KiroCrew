@@ -212,14 +212,19 @@ async def discard_conversation(
     refuse_only_on_active_turn: bool = False,
     refuse_if: Callable[[], bool] | None = None,
     teardown_reason: str = "",
+    confirm_teardown: bool = False,
+    unconfirmed_handle_out: list | None = None,
 ) -> bool:
     """Drop native conversation state while retaining channel linkage.
 
     Returns whether a session was actually torn down; False means
     ``skip_if_busy`` refused because a turn was in flight, or ``refuse_if``
-    answered true. See
-    :meth:`SessionLifecycleService.discard_conversation` for the guard's
-    atomicity contract and ``teardown_reason``.
+    answered true.  When ``confirm_teardown=True``, False is also returned
+    when the shared-KAS ``session/close`` was not confirmed by the host.
+    When ``unconfirmed_handle_out`` is a list and an unconfirmed KAS close
+    is detected, ``(runtime, session_id)`` is appended to it for retry.
+    See :meth:`SessionLifecycleService.discard_conversation` for the full
+    contract.
     """
     return await self._lifecycle_boundary().discard_conversation(
         key,
@@ -228,6 +233,8 @@ async def discard_conversation(
         refuse_only_on_active_turn=refuse_only_on_active_turn,
         refuse_if=refuse_if,
         teardown_reason=teardown_reason,
+        confirm_teardown=confirm_teardown,
+        unconfirmed_handle_out=unconfirmed_handle_out,
     )
 
 

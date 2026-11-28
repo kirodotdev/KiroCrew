@@ -63,6 +63,31 @@ class TestHostSandboxReadiness:
         assert "kiro-cli" not in status["sandbox_blocked_backends"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("floors,blocked", [({"opencode": "auto"}, False), ({}, True)])
+    async def test_a_harness_with_a_sandbox_floor_is_not_held_back_while_the_sandbox_is_off(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, floors: dict, blocked: bool
+    ) -> None:
+        from kiro_crew import sandbox
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig()
+        cfg.agent.sandbox = "off"
+        cfg.agent.harness_sandbox = dict(floors)
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+        monkeypatch.setattr(sandbox, "configured_sandbox_mode", lambda: "off")
+        monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: None)
+        monkeypatch.setattr(sandbox, "_inside_kirocrew_sandbox", lambda: False)
+        monkeypatch.setattr(sandbox, "detect_backend", lambda **kwargs: "namespace")
+        monkeypatch.setattr(
+            prerequisite_module, "find_kiro_cli_candidates", lambda *args, **kwargs: []
+        )
+        service = KiroPrerequisiteService(home=tmp_path, environ={}, audit_writer=_no_audit)
+        status = await service.snapshot(force=True)
+        assert ("opencode" in status["sandbox_blocked_backends"]) is blocked
+        # The floor is per harness: an enforced harness with no entry stays held back.
+        assert "codex" in status["sandbox_blocked_backends"]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "platform_name,backend,available",
         [

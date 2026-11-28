@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { renderWithProviders } from './helpers'
+import { createConnectedTestStore, renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 import { copyToClipboard } from '../utils/clipboard'
 import { consumeChatHandoff, __resetErrorJournalForTests } from '../utils/errorReport'
@@ -173,7 +173,7 @@ describe('RemoteCrewPanel', () => {
       new Promise(resolve => { releaseLaunches = resolve }) as ReturnType<typeof api.cloudLaunches>,
     )
     const u = userEvent.setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     // While launches are in flight the list is not classified at all.
     expect(await screen.findByText(/Loading/i)).toBeInTheDocument()
@@ -429,7 +429,7 @@ describe('RemoteCrewPanel', () => {
     }
     vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [fargate] })
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     expect(await screen.findByText('fargate-idle')).toBeInTheDocument()
     expect(screen.queryByTestId('turn-url')).not.toBeInTheDocument()
@@ -482,7 +482,7 @@ describe('RemoteCrewPanel', () => {
         }),
       ),
     )
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     // Both saved crews render, each with its own Connect button.
     expect(await screen.findByText('dev-box-1')).toBeInTheDocument()
@@ -666,7 +666,8 @@ describe('RemoteCrewPanel', () => {
     await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
 
     // The localized "not installed" line still explains the gap…
-    expect(await screen.findByText('Session Manager plugin')).toBeInTheDocument()
+    // In the answered list: the rows drawn while the check runs carry the same titles.
+    expect(await screen.findByText('Session Manager plugin', { selector: 'ul:not([aria-busy]) div' })).toBeInTheDocument()
     // …but no Copy button appears with nothing to copy.
     expect(screen.queryByRole('button', { name: /Copy command/i })).not.toBeInTheDocument()
   })
@@ -773,7 +774,7 @@ describe('RemoteCrewPanel', () => {
     await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
 
     const profileInput = await screen.findByLabelText(/AWS profile/i)
-    const credsRow = await screen.findByText('AWS credentials')
+    const credsRow = await screen.findByText('AWS credentials', { selector: 'ul:not([aria-busy]) div' })
     // compareDocumentPosition: 4 = FOLLOWING — the row comes after the input.
     expect(profileInput.compareDocumentPosition(credsRow) & 4).toBeTruthy()
     // And the probed identity is stated in plain words, never as a profile named "none set".
@@ -813,7 +814,7 @@ describe('RemoteCrewPanel', () => {
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [DONE_JOB] })
     vi.mocked(api.cloudStart).mockResolvedValue({ started: true } as never)
     const u = userEvent.setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     await openRowMenu(u)
     await u.click(await screen.findByRole('button', { name: /^Start Kiro Crew Cloud/i }))
@@ -843,7 +844,7 @@ describe('RemoteCrewPanel', () => {
     let release: (v: unknown) => void = () => {}
     vi.mocked(api.cloudStop).mockReturnValue(new Promise(r => { release = r }) as never)
     const u = userEvent.setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     await openRowMenu(u)
     await u.click(await screen.findByRole('button', { name: /^Stop Kiro Crew Cloud/i }))
@@ -860,7 +861,7 @@ describe('RemoteCrewPanel', () => {
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [DONE_JOB] })
     vi.mocked(api.cloudDestroy).mockResolvedValue({ cleanup: 'pending' } as never)
     const u = userEvent.setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     await openRowMenu(u)
     await u.click(await screen.findByRole('button', { name: /^Delete Kiro Crew Cloud/i }))
@@ -906,7 +907,7 @@ describe('RemoteCrewPanel', () => {
     vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [CLOUD_INSTANCE, MANUAL_INSTANCE] })
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [DONE_JOB, RUNNING_JOB] })
     const u = userEvent.setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     // Cloud row carries the cloud attribution + a Stop control; manual row does not.
     await expandRows()
@@ -931,7 +932,7 @@ describe('RemoteCrewPanel', () => {
     await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     // Prereq checklist rendered; a missing plugin blocks Launch.
     expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
-    expect(screen.getByText('Session Manager plugin')).toBeInTheDocument()
+    expect(await screen.findByText('Session Manager plugin', { selector: 'ul:not([aria-busy]) div' })).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: /^Launch$/ })).toBeDisabled())
     expect(screen.getByText('Fix “Session Manager plugin” above to enable this.')).toBeInTheDocument()
   })
@@ -1360,7 +1361,7 @@ describe('RemoteCrewPanel', () => {
         instances: [FARGATE, SSH, SSM, CHAINED],
       } as unknown as Awaited<ReturnType<typeof api.listInstances>>)
       vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
-      renderWithProviders(<RemoteCrewPanel />)
+      renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
       await screen.findByText('fargate-crew')
 
       // The fargate connect SUCCEEDS and carries a port -- the exact shape that passed
@@ -1459,7 +1460,7 @@ describe('RemoteCrewPanel', () => {
       ;vi.mocked(api.disconnectInstance).mockResolvedValue({} as never)
       ;vi.mocked(api.removeInstance).mockResolvedValue({} as never)
       const u = userEvent.setup()
-      renderWithProviders(<RemoteCrewPanel />)
+      renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
       await screen.findByText('Nimbus')
       await openRowMenu(u)
       await u.click(await screen.findByRole('button', { name: /Diagnose Nimbus/i }))

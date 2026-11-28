@@ -1,7 +1,8 @@
 """The session MCP report, the session-start notice for Kiro Crew's own servers a session
 lacks, the session-init OAuth drain, the MCP OAuth banner lifecycle, the scrub of the ACP
-strings it shows, and the stream's MCP arms (``_on_mcp_oauth_request``,
-``_on_mcp_server_initialized``, ``_on_mcp_server_init_failure``)."""
+strings it shows, the stream's MCP arms (``_on_mcp_oauth_request``,
+``_on_mcp_server_initialized``, ``_on_mcp_server_init_failure``), and the consent link
+that reaches a chat between turns (``_watch_mcp_consent_between_turns``)."""
 
 from __future__ import annotations
 
@@ -10,7 +11,10 @@ import functools
 import json
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_OPENCODE, ACP_BACKENDS_OPEN_EXTERNAL_URL
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_KAS,
+    ACP_BACKENDS_OPEN_EXTERNAL_URL,
+)
 from kiro_crew.config.loader import oauth_endpoints_path
 from kiro_crew.dashboard.chat_utils import (
     _expire_dead_child_oauth_meta,
@@ -24,16 +28,19 @@ from kiro_crew.dashboard.mcp_banner_dedupe import (
 from kiro_crew.dashboard.mcp_oauth_expiry_watch import watch_open_oauth_banners
 from kiro_crew.dashboard.mcp_oauth_provenance import record_emitted
 from kiro_crew.dashboard.session_notice_marks import _session_notice_is_new
+from kiro_crew.dashboard.state import SlotOrigin
 from kiro_crew.dashboard.urls import is_loopback
 from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
 from kiro_crew.security import sanitized_oauth_endpoint, sanitized_oauth_endpoint_display
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
+        EVENT_MCP_OAUTH_REQUEST,
         DashboardState,
         SessionMcpReport,
         _ChatSlot,
         _is_safe_oauth_url,
+        _log_task_exception,
         append_and_surface,
         capabilities_of,
         effective_session_key,
@@ -112,6 +119,27 @@ def _connections_managed_mcp_names() -> frozenset[str]:
     return frozenset(managed & carded)
 
 
+def _card_signs_in_on_kas(slug: str) -> bool:
+    """Whether *slug*'s Connect signs in on the KAS engine, False when unknown. Blocking."""
+    # Local so importing the chat runner does not load the Connections mint engine.
+    from kiro_crew.connections.mint_kas import kas_sign_in_entry
+
+    try:
+        return kas_sign_in_entry(slug) is not None
+    except Exception:
+        logger.warning("Cannot resolve where %s's Connect signs in", slug, exc_info=True)
+        return False
+
+
+async def _card_owns_sign_in(client: Any, server_name: str, managed: frozenset[str]) -> bool:
+    """Whether *server_name*'s card owns its consent: membership, and on KAS a Connect on KAS."""
+    if not server_name or server_name not in managed:
+        return False
+    if capabilities_of(client).backend == ACP_BACKEND_KAS:  # harness-ok: KAS Connect sign-in
+        return await asyncio.to_thread(_card_signs_in_on_kas, server_name)
+    return True
+
+
 async def _drain_session_init_oauth_requests(
     state: "DashboardState", slot: "_ChatSlot", client: Any
 ) -> None:
@@ -124,7 +152,7 @@ async def _drain_session_init_oauth_requests(
     URL out of, so dropping one costs the user their only way to authorize.
 
     Requests for a server a Connections card owns are tagged ``card_owned`` (see
-    :func:`_connections_managed_mcp_names`) purely so the render layer can decide
+    :func:`_card_owns_sign_in`) purely so the render layer can decide
     whether chat needs to repeat a prompt the card already shows. That is a
     presentation question and it is answered where the flag that governs the card
     is known — not here.
@@ -161,7 +189,7 @@ async def _drain_session_init_oauth_requests(
             slot,
             server_name,
             oauth_url,
-            card_owned=bool(server_name) and server_name in managed,
+            card_owned=await _card_owns_sign_in(client, server_name, managed),
             minted_by=minted_by,
             session_id=session_id,
         )
@@ -280,6 +308,71 @@ async def _notice_unresolved_control_plane(
     )
 
 
+#: Most servers the left-out notice names; the rest are counted.
+_LEFT_OUT_NOTICE_NAMES = 8
+#: ``meta.kind`` of that notice. The transcript keeps a row of this kind visible
+#: when it folds the turn's steps (``TurnBlock.isAlwaysVisible``).
+MCP_SERVERS_LEFT_OUT_KIND = "mcp_servers_left_out"
+
+
+def _crew_left_out_notice(provider: Any) -> str:
+    """The session-start notice naming the servers Crew left out as unstartable, or ``""``.
+
+    Read off the session's MCP report (``crew_left_out``, filled by
+    ``record_pruned`` from the array prune and the spec writer's command-not-found
+    drops, and pi's registration refusals), kept to the names still in its failed
+    bucket, each with its own reason. The reason says what is wrong (a command not
+    found, a same-named entry in pi's ``mcp.json``), so the row gives no cause of
+    its own.
+    """
+    report = _session_mcp_report(provider)
+    if report is None:
+        return ""
+    try:
+        left_out = getattr(report, "crew_left_out", ())
+        payload = report.payload() or {}
+    except Exception:  # noqa: BLE001 - an informational row must never fail a turn
+        logger.debug("Failed to read the session MCP report", exc_info=True)
+        return ""
+    failed = set(payload.get("failed") or ())
+    failures = payload.get("failures") or {}
+    names = [n for n in left_out if isinstance(n, str) and n in failed]
+    if not names:
+        return ""
+    shown = [
+        (
+            f"{name}: {failures[name]}"
+            if isinstance(failures.get(name), str) and failures[name]
+            else name
+        )
+        for name in names[:_LEFT_OUT_NOTICE_NAMES]
+    ]
+    more = len(names) - len(shown)
+    one = len(names) == 1
+    # A reason holds commas of its own, so the entries are split by semicolons.
+    return (
+        f"⚠ This session started without MCP {'server' if one else 'servers'} "
+        + "; ".join(shown)
+        + (f" (+{more} more)" if more else "")
+        + f". {'Its' if one else 'Their'} tools are missing here. Fix what "
+        f"{'the reason names' if one else 'each reason names'}, then start a new chat."
+    )
+
+
+def _notice_crew_left_out_mcp(state: "DashboardState", slot: "_ChatSlot", provider: Any) -> None:
+    """One notice row on a new session that Crew started without some of its MCP servers.
+
+    A server whose command was not found never reaches the harness: the spec
+    writer drops it, or the array prune leaves it out. Apart from this row only
+    the session report and the Connections page say so. Best-effort.
+    """
+    notice = _crew_left_out_notice(provider)
+    if notice:
+        append_and_surface(
+            state, slot, "notice", notice, "msg msg-warn", meta={"kind": MCP_SERVERS_LEFT_OUT_KIND}
+        )
+
+
 #: ``meta.kind`` of the row that tells a chat its servers wait for a sign-in.
 MCP_SIGN_IN_NEEDED_KIND = "mcp_sign_in_needed"
 #: How many servers that row names; the rest are counted.
@@ -313,7 +406,7 @@ def _mcp_sign_in_needed_notice(names: list[str], more: int) -> str:
 def _notice_mcp_sign_in_needed(
     state: "DashboardState", slot: "_ChatSlot", payload: dict[str, Any] | None, provider: Any
 ) -> None:
-    """One row per chat naming the servers this session reports as waiting for a sign-in.
+    """One row naming the servers this session reports as waiting for a sign-in.
 
     A session that needs a sign-in draws a card only when its host sends a link by
     itself. A host that waits to be asked (KAS: the user names the server) leaves
@@ -325,8 +418,11 @@ def _notice_mcp_sign_in_needed(
     sends the consent link back (``ACP_BACKENDS_OPEN_EXTERNAL_URL``, the check
     ``begin_mcp_sign_in`` makes first). Elsewhere the advice would start nothing.
 
-    Shown once per chat, so a server that stays unsigned does not repeat it on
-    every turn. Best-effort: a row that cannot be built is skipped.
+    A chat shows at most one such row per gateway run, and once a person's own
+    plain dashboard chat has named a server, no other chat names it again in that
+    run: a server that stays unsigned is not repeated in every chat. A chat whose
+    rows in memory already name it (reopened after a restart) does not name it
+    again. Best-effort: a row that cannot be built is skipped.
     """
     if slot._mcp_sign_in_notice_shown:
         return
@@ -363,7 +459,16 @@ def _notice_mcp_sign_in_needed(
                 )
             )
         }
-        names = [name for name in waiting if name and name not in carded]
+        told = state._mcp_sign_in_notice_servers | {
+            name
+            for row in slot.messages
+            if isinstance(row, dict)
+            and row.get("role") == "notice"
+            and isinstance(meta := row.get("meta"), dict)
+            and meta.get("kind") == MCP_SIGN_IN_NEEDED_KIND
+            for name in meta.get("servers") or ()
+        }
+        names = [name for name in waiting if name and name not in carded and name not in told]
         if not names:
             return
         shown = names[:_MCP_SIGN_IN_NOTICE_NAMES]
@@ -377,6 +482,16 @@ def _notice_mcp_sign_in_needed(
             "msg msg-warn",
             meta={"kind": MCP_SIGN_IN_NEEDED_KIND, "servers": shown, "more": more},
         )
+        # Only a person's own plain dashboard chat uses up the run's one row: a cron's,
+        # an app's, a channel's, a mode chat (an app page's worker) or a session an
+        # agent opened (``_created_by``, though its origin is user) may go unread.
+        if (
+            slot._origin == SlotOrigin.USER
+            and not slot._app
+            and not slot.mode
+            and not slot._created_by
+        ):
+            state._mcp_sign_in_notice_servers.update(shown)
     except Exception:  # noqa: BLE001 - an informational row must never fail a turn
         logger.debug("Failed to show the MCP sign-in notice", exc_info=True)
 
@@ -405,19 +520,20 @@ def _mcp_may_need_sign_in_notice(names: list[str], more: int) -> str:
 def _notice_mcp_may_need_sign_in(
     state: "DashboardState", slot: "_ChatSlot", payload: dict[str, Any] | None, provider: Any
 ) -> None:
-    """One row per chat on opencode naming the servers its report lists in ``sign_in_suspected``.
+    """One row per chat naming the servers its report lists in ``sign_in_suspected``.
 
-    opencode sends no sign-in frame, so that list is what Crew's credential-free
-    probe found (:mod:`kiro_crew.acp.mcp_sign_in_probe`).
+    Only where the harness has ``SessionCapabilities.reports_mcp_sign_in_suspects``
+    (opencode): it sends no sign-in frame, so that list is what Crew's
+    credential-free probe found (:mod:`kiro_crew.acp.mcp_sign_in_probe`).
     The server may already be signed in through opencode itself, so the row says
     "may", never that the server is broken. Best-effort: a row that cannot be
     built is skipped.
     """
     try:
-        on_opencode = capabilities_of(provider).backend == ACP_BACKEND_OPENCODE
+        reports = capabilities_of(provider).reports_mcp_sign_in_suspects
         names = [
             _redact_acp_string(name)
-            for name in ((payload or {}).get("sign_in_suspected") or () if on_opencode else ())
+            for name in ((payload or {}).get("sign_in_suspected") or () if reports else ())
             if isinstance(name, str) and name
         ]
         names = [name for name in names if name]
@@ -924,11 +1040,12 @@ def _expire_ended_mcp_oauth_banners(
 def _watch_mcp_sign_in_ends(state: "DashboardState", slot: "_ChatSlot", client: Any) -> None:
     """Have *client* retire this chat's Authorize links whose sign-in attempt ended.
 
-    Called by the mid-turn arm before it draws a link, the only path a sign-in
-    Crew starts reaches the chat by. An attempt that ends before that row exists
-    (its link queued behind a prompt, or the arm still awaiting discovery) finds
-    nothing to retire, so the arm asks ``client.mcp_sign_in_ended`` once the row
-    is appended.
+    Called by :func:`_show_mcp_oauth_request` before it draws a link, on the two
+    paths a sign-in Crew starts reaches the chat by: a turn's event and a link
+    that lands between turns. An attempt that ends before that row exists (its
+    link queued behind a prompt, or the draw still awaiting discovery) finds
+    nothing to retire, so the draw asks ``client.mcp_sign_in_ended`` once the
+    row is appended.
     """
     client.set_mcp_sign_in_ended_hook(
         functools.partial(_expire_ended_mcp_oauth_banners, state, slot)
@@ -1133,42 +1250,101 @@ def _mark_mcp_oauth_completed(
     )
 
 
-async def _on_mcp_oauth_request(turn: _ChatTurn, event) -> None:
-    """An MCP server's OAuth request."""
-    client = turn.client
-    slot = turn.slot
-    state = turn.state
-    # kiro-cli emits this notification when an MCP server's token
-    # has expired or never existed. Surface as an inline banner —
-    # kiro-cli's local callback handles the rest of the OAuth flow.
-    # The turn-start sign-in offer re-requests every unauthorized server, so
-    # this arm sees a carded provider on every turn of every session. It is
-    # tagged exactly as the session-init drain tags it, or the render layer
-    # cannot drop a prompt the Connections card already shows.
-    server_name = event.server_name or ""
+async def _show_mcp_oauth_request(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    client: Any,
+    server_name: str,
+    oauth_url: str,
+    *,
+    runtime_global: bool = False,
+    between_turns: bool = False,
+) -> None:
+    """Draw one MCP server's consent link in this chat as its Authorize banner.
+
+    The one pipeline a link takes, whether a turn yielded it or it reached the
+    chat between turns (:func:`_watch_mcp_consent_between_turns`); it needs no
+    turn. A request for a server a Connections card owns is tagged exactly as the
+    session-init drain tags it, or the render layer cannot drop a prompt the card
+    already shows: kiro-cli retries a signed-out server's sign-in on every turn,
+    so a carded provider reaches this on every turn of every session.
+    """
+    name = server_name or ""
     _watch_mcp_sign_in_ends(state, slot, client)
-    managed = (
-        await asyncio.to_thread(_connections_managed_mcp_names) if server_name else frozenset()
-    )
-    await _approve_discovered_mcp_oauth_endpoint(event.server_name, event.oauth_url)
+    managed = await asyncio.to_thread(_connections_managed_mcp_names) if name else frozenset()
+    await _approve_discovered_mcp_oauth_endpoint(server_name, oauth_url)
+    card_owned = await _card_owns_sign_in(client, name, managed)
+    if between_turns and (
+        state._slots.get(slot.key) is not slot
+        or state.sessions.get_provider(effective_session_key(slot)) is not client
+    ):
+        return  # no turn held the session: the chat closed or its session was reset meanwhile
     _emit_mcp_oauth_request(
         state,
         slot,
-        event.server_name,
-        event.oauth_url,
-        card_owned=bool(server_name) and server_name in managed,
+        server_name,
+        oauth_url,
+        card_owned=card_owned,
         minted_by=str(getattr(client, "process_instance", "") or ""),
         session_id=_provider_session_id(client),
     )
-    if client.mcp_sign_in_ended(server_name):
-        _expire_ended_mcp_oauth_banners(state, slot, server_name)
+    if client.mcp_sign_in_ended(name):
+        _expire_ended_mcp_oauth_banners(state, slot, name)
     _record_session_mcp_event(
         state,
         slot,
         client,
-        event.kind,
+        EVENT_MCP_OAUTH_REQUEST,
+        server_name,
+        fanout_no_owner=runtime_global,
+    )
+
+
+def _watch_mcp_consent_between_turns(
+    state: "DashboardState", slot: "_ChatSlot", client: Any
+) -> None:
+    """Have *client* hand this chat each consent link that reaches it while no turn reads.
+
+    A KAS sign-in starts at turn start, and the engine's discovery often sends
+    its link after that turn ended; the provider then gives it here instead of
+    queueing it for a turn that may come too late. The link is drawn by
+    :func:`_show_mcp_oauth_request` in a task the gateway holds, since the
+    provider's caller cannot wait; a draw that fails is logged, and one whose chat
+    closed or whose session was reset meanwhile draws nothing. Called at turn
+    admission; a provider that receives no such link ignores it.
+    """
+
+    def deliver(request: dict[str, str]) -> bool:
+        task = asyncio.get_running_loop().create_task(
+            _show_mcp_oauth_request(
+                state,
+                slot,
+                client,
+                request["serverName"],
+                request["oauthUrl"],
+                between_turns=True,
+            )
+        )
+        state._background_tasks.add(task)
+        task.add_done_callback(state._background_tasks.discard)
+        task.add_done_callback(_log_task_exception)
+        return True
+
+    client.set_mcp_consent_hook(deliver)
+
+
+async def _on_mcp_oauth_request(turn: _ChatTurn, event) -> None:
+    """An MCP server's OAuth request a turn yielded."""
+    # kiro-cli emits this notification when an MCP server's token
+    # has expired or never existed. Surface as an inline banner —
+    # kiro-cli's local callback handles the rest of the OAuth flow.
+    await _show_mcp_oauth_request(
+        turn.state,
+        turn.slot,
+        turn.client,
         event.server_name,
-        fanout_no_owner=event.runtime_global,
+        event.oauth_url,
+        runtime_global=event.runtime_global,
     )
 
 

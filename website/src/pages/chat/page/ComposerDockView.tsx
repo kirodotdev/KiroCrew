@@ -45,7 +45,7 @@ import type { useActiveSlotState } from './activeSlotState'
 import type { useModelPickerModels } from './sessionPicks'
 import { REFUSED_PRESS_TITLE_KEYS, type useRefusedPress } from './turnActions'
 import type { useComposerSend } from './composerSend'
-import type { useSessionControlChips } from './sessionControls'
+import { sessionControlContext, type useSessionControlChips } from './sessionControls'
 import { enclosingRepoRootOf, type useComposerChips } from './composerChips'
 import type { useSessionAutomation } from './sessionAutomation'
 import { SELECTION_INERT_ATTR } from '../useSelectionInertOverlays'
@@ -59,6 +59,7 @@ import { useStableCallbackProps } from '../useStableCallbackProps'
 import type { ComposerTypingLock } from '../shared-crew/useComposerTypingLock'
 import SessionControlHost from '../../../components/SessionControlHost'
 import ErrorNotice from '../../../components/ErrorNotice'
+import { Glass } from '../../../components/Glass'
 import { GUIDE_KEEP_CLEAR } from '../../../guide/trustRoot'
 import KiroSignInPrompt from '../../../components/KiroSignInPrompt'
 import { pinIsWithheld } from '../../../lib/model'
@@ -79,6 +80,7 @@ import { acpBackendName } from '../../../api/acpBackend'
 import { fmtDateFields, fmtNumber } from '../../../i18n/format'
 import { useSlotRunsHere } from '../../../components/sessionEnvironmentHooks'
 import { stagedProjectTurnKey } from '../../../components/chat-input/stagedProject'
+import type { QueuedMessageActions } from '../../../hooks/useQueuedMessageActions'
 
 /**
  * The main composer, with its callback props held at stable identities. This
@@ -185,17 +187,12 @@ interface ComposerDockViewProps {
   composerRef: RefObject<ComposerHandle>
   composerVoiceOptions: ComposerVoiceOptions
   isMac: boolean
-  cancelUpload: () => void
   composerUploadFiles: (files: File[]) => Promise<void> | undefined
   dropTargetProps: ReturnType<typeof useChatPageResourcesController>['dropTargetProps']
   handleCapture: () => Promise<void>
   handleFileOpen: ReturnType<typeof useChatPageResourcesController>['handleFileOpen']
   handleOptimizeResult: (slot: string | null, optimized: string) => void
-  search: ReturnType<typeof useChatPageResourcesController>['search']
   tabsCtl: ReturnType<typeof useChatPageResourcesController>['tabsCtl']
-  /** Live uploads `cancelUpload` aborts: above zero the control is offered,
-   *  above one its label names the count. */
-  uploadCount: number
   sendHeld: boolean
   composerBandRef: (el: HTMLDivElement | null) => void
   scrollBottom: (instant?: boolean) => void
@@ -259,6 +256,8 @@ interface ComposerDockViewProps {
   fastMode?: boolean
   /** Why that switch cannot be turned on (the read's `fast_unavailable` field). */
   fastUnavailable?: string
+  /** The active slot's KAS approve-for-me (the read's `approve_for_me` field). */
+  approveForMe?: boolean
   modelMarker: 'auto' | 'default' | null
   pinModelToAgentMut: ReturnType<typeof useComposerChips>['pinModelToAgentMut']
   projectBranch: string
@@ -279,6 +278,7 @@ interface ComposerDockViewProps {
   isAtBottom: boolean
   answerQuestionCard: (text: string) => void
   handleCancelQueued: (queueId: string) => void
+  handleCancelAllQueued: QueuedMessageActions['onCancelAll']
   handleEditQueued: (queueId: string, content: string) => void
   handleEditOpenQueued: (queueId: string, open: boolean) => void
   handleInterruptQueued: (queueId: string) => void
@@ -313,8 +313,13 @@ interface ComposerDockViewProps {
    *  composer is held, its reason as placeholder, like a memory-mode switch. */
   crewModeSwitching?: 'on' | 'off' | null
   /** A conductor session (Crew Mode): the composer offers no agent picker, since
-   *  the conductor is chosen by Crew Mode itself. Workspace and model stay. */
+   *  the conductor is chosen by Crew Mode itself. Workspace and model stay. Not
+   *  set on a chat that keeps its picker while its conductor is also the default
+   *  agent (`conductorDefaultPicker`). */
   agentPickerHidden?: boolean
+  /** A conductor mode chat that keeps its agent picker (ChatPage's
+   *  `leaveCrewModeTo`): the bolt stays, before the picker. */
+  agentPickerKept?: boolean
   /** Conductor mode is on and no message is sent yet: the chip row stays
    *  with the chip pressed (a toggle), the memory chip is held, and the agent
    *  slot shows nothing. */
@@ -344,16 +349,16 @@ export default function ComposerDockView({
   codexPairModels, filteredModels, hiddenModelsQ, ownModelsFailed, ownModelsFetching, retryOwnModels, modelsBackend, jevRouteOn, modelDropdown, modelDropdownRef, modelFilter, modelInputRef, modelPickerConfigured, modelPickerReturnsFocusRef, setModelDropdown,
   setModelFilter, onAgentListKeyDown, onModelListKeyDown, anchorModelBtn, modelBtnRect, messageQuote, onJumpToQuote, applyAutomationChange, automation, automationCreationReady, automationOpen,
   automationSnapshotFailed, setAutomationOpen, prefillHint, setPrefillHint, pasteSlice, pendingFiles, pendingSessions, resizedInfo, unstageSessionRef, uploading, agentBtnRect, anchorAgentBtn,
-  projectPickerOpen, setProjectPickerOpen, anchorProjectBtn, projectBtnRect, pendingDirs, composerRef, composerVoiceOptions, isMac, cancelUpload, composerUploadFiles, dropTargetProps, handleCapture,
-  handleFileOpen, handleOptimizeResult, search, tabsCtl, uploadCount, sendHeld, composerBandRef, scrollBottom, handleResumeSession, composerRootChange, composerUserEdit, followUpMulti,
+  projectPickerOpen, setProjectPickerOpen, anchorProjectBtn, projectBtnRect, pendingDirs, composerRef, composerVoiceOptions, isMac, composerUploadFiles, dropTargetProps, handleCapture,
+  handleFileOpen, handleOptimizeResult, tabsCtl, sendHeld, composerBandRef, scrollBottom, handleResumeSession, composerRootChange, composerUserEdit, followUpMulti,
   followUpOptions, followUpPicked, followUpPickedRef, followUpSourceKey, toggleFollowUpOption, dashCfg, jevAutoConsented, refusedPress, setRefusedPress, send, composerSend, pickModel, setProject, projectSwitching, switchAgent,
   currentSlot, activeFolderName, anchorSessionControl, openSessionControl, refreshSessionControlStatuses, sessionControlKey, sessionControlRect, sessionControls, setOpenSessionControl,
   activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, mentionEditRange, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
-  effortSupported, effortAutoNote = false, ultracode, fastMode, fastUnavailable, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, resumeAfterSignIn, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
-  endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleEditOpenQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
+  effortSupported, effortAutoNote = false, ultracode, fastMode, fastUnavailable, approveForMe, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, resumeAfterSignIn, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
+  endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleCancelAllQueued, handleEditQueued, handleEditOpenQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock, composerPresence,
-  composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
+  composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, agentPickerKept = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
 }: ComposerDockViewProps) {
   // A chat on a Session Environment runs in its workspace; see ChatPane.
   const runsHere = useSlotRunsHere(currentSlot && currentSlot.executor !== 'remote' ? currentSlot.key : null)
@@ -463,16 +468,14 @@ export default function ComposerDockView({
                   bar is redundant when the activity sidebar is actually SHOWING
                   its own view (Subagents / Workflows), but on any OTHER tab
                   (Files, Changes, Logs, Artifacts) hiding it would lose the live
-                  roster entirely. The condition mirrors the SidePanel's own
-                  render guard (`activityOpen && !search.isOpen`) — so opening the
-                  find pane, which UNMOUNTS the panel, re-shows the bar — and
-                  reads the live panel tab (`tabsCtl`), NOT the Redux
+                  roster entirely. The condition reads the panel's open state
+                  and the live panel tab (`tabsCtl`), NOT the Redux
                   `activityTab`, which only tracks programmatic openActivityToTab
                   calls and goes stale when the user clicks a tab in the panel. */}
-              {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'subagents') && <SubagentProgressBar slot={activeSlot} />}
-              {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
+              {!(activityOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'subagents') && <SubagentProgressBar slot={activeSlot} />}
+              {!(activityOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
               <SubagentDeliveryProgress count={systemDeliveryCount} />
-              <QueueStack key={activeSlot} messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onEditOpen={handleEditOpenQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
+              <QueueStack key={activeSlot} messages={queuedMessages} onCancel={handleCancelQueued} onCancelAll={handleCancelAllQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onEditOpen={handleEditOpenQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               </div>
               {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={endQuoteFlight} />}
               <div ref={inputAreaRef} className="relative z-10 dock-inert">
@@ -486,7 +489,13 @@ export default function ComposerDockView({
                   The title names the refused action. Without it the notice
                   reads as a generic error rather than "this is the answer to
                   the button you just pressed" — a first-time reader then
-                  concludes the click did nothing and presses again. */}
+                  concludes the click did nothing and presses again.
+
+                  On the dock's glass at the `thick` step, like the Read aloud
+                  bar: the notice's own translucent tint lets the transcript
+                  scrolling under the dock show through it. `nested`: the glass
+                  frames it, so it draws no box of its own; its top rule and
+                  padding are the pane's top edge. */}
               {refusedPress && (
                 <div
                   className="px-4 mb-1.5 mx-auto w-full"
@@ -494,16 +503,19 @@ export default function ComposerDockView({
                   data-testid="refused-press-error"
                   {...GUIDE_KEEP_CLEAR}
                 >
-                  <ErrorNotice
-                    title={i18nT(REFUSED_PRESS_TITLE_KEYS[refusedPress.action])}
-                    message={refusedPress.message}
-                    onDismiss={() => setRefusedPress(null)}
-                    // Hand-off on. The composer beneath holds a live draft, but it
-                    // is persisted per slot on every keystroke and on slot switch
-                    // (the setDraft effects above), and an in-chat hand-off opens
-                    // a FRESH slot without navigating away — so the draft survives.
-                    askAgent
-                  />
+                  <Glass variant="chip" thickness="thick" radius={8} className="glass-danger px-3 pb-2.5">
+                    <ErrorNotice
+                      nested
+                      title={i18nT(REFUSED_PRESS_TITLE_KEYS[refusedPress.action])}
+                      message={refusedPress.message}
+                      onDismiss={() => setRefusedPress(null)}
+                      // Hand-off on. The composer beneath holds a live draft, but it
+                      // is persisted per slot on every keystroke and on slot switch
+                      // (the setDraft effects above), and an in-chat hand-off opens
+                      // a FRESH slot without navigating away — so the draft survives.
+                      askAgent
+                    />
+                  </Glass>
                 </div>
               )}
               {showHistorySuggestions && (
@@ -686,11 +698,8 @@ export default function ComposerDockView({
               onDismissHint={() => setPrefillHint(false)}
               onScreenshot={handleCapture}
               onUploadFiles={composerUploadFiles}
-              /* Only while the active slot has a live upload request, whichever
-                 host started it. `uploading` is shared with the screenshot
-                 path, which has no request to cancel. */
-              onCancelUpload={uploadCount > 0 ? cancelUpload : undefined}
-              uploadCount={uploadCount}
+              /* The active slot's uploads in flight, whichever host started
+                 them, each a chip with its own cancel. */
               uploadSlot={activeSlot}
               /* The one collapsible composer. Opt-in rather than default so the
                  shared preference key and the window-level expand event stay
@@ -750,11 +759,11 @@ export default function ComposerDockView({
               // drawn from, so chip, menu and gate cannot disagree.
               modelIsJevRouted={jevRouteOn && isUnpinnedModel(currentSlot?.model)}
               harnessBackend={modelsBackend}
-              // The conductor mode bolt in place of the agent picker. On a crew
-              // member that is not itself a conductor its tip names the role,
-              // Worker, so it does not read as a conductor.
+              // The conductor mode bolt, in place of the agent picker or before a
+              // kept one. On a crew member that is not itself a conductor its tip
+              // names the role, Worker, so it does not read as a conductor.
               agentBadge={crewChipPressed ? undefined
-                : agentPickerHidden ? <CrewModeComposerChip />
+                : agentPickerHidden || agentPickerKept ? <CrewModeComposerChip />
                 : steerWorker !== undefined ? <CrewModeComposerChip worker /> : undefined}
               onAgentClick={provider.capabilities.agentTemplates && !agentPickerHidden && !agentSwitchLocked && steerWorker === undefined ? (rect, trigger) => { anchorAgentBtn(rect, trigger); setAgentDropdown(!agentDropdown) } : undefined}
               onModelClick={(rect, trigger, composerHadFocus) => {
@@ -833,6 +842,7 @@ export default function ComposerDockView({
               compacting={!!currentSlot?.compacting}
               stopDeclined={!!currentSlot?.stop_declined}
               approvalMode={displayMode}
+              approveForMe={approveForMe}
               afterApprovalMode={crewModeMidChatOffered
                 ? <CrewModeChip testId="crew-mode-switch" onTurnOn={turnOnCrewMode} busy={crewModeBusy} disabled={memorySwitching || !!crewModeSwitching} />
                 : undefined}
@@ -998,12 +1008,12 @@ export default function ComposerDockView({
                     setOpenSessionControl(null)
                     refreshSessionControlStatuses()
                   }}
-                  session={{
+                  session={sessionControlContext({
                     sessionKey: sessionControlKey,
-                    folderId: currentSlot?.folder_id || '',
+                    currentSlot,
                     folderName: activeFolderName,
-                    cwd: currentSlot?.project || '',
-                  }}
+                    agents: installedAgents,
+                  })}
                 />
               )
             })()}

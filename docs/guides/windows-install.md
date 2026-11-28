@@ -321,13 +321,24 @@ own sandbox, so Kiro Crew delegates the Kiro CLI chat backend, model list, accou
 identity and usage reads to it automatically.
 
 **The default chat harness, KAS, runs UNCONFINED on Windows.** KAS has no OS
-sandbox of its own on this platform, and it is not a Kiro CLI spawn, so it takes
-the same no-backend path as the other harnesses below: it can read your home
-directory, including `.aws` and `.ssh`. A fresh desktop install still needs no
-config edit before the first chat. To keep chat inside Kiro CLI's sandbox, pick
-**Kiro CLI** in Settings → Agent Harness (stored as `"acp_backend": "kiro"`).
-With the opt-out below declared, a KAS chat is refused with a message naming
-`sandbox_allow_unsandboxed_exec`; pick Kiro CLI to chat under that posture.
+sandbox of its own on this platform, and Kiro CLI's sandbox does not cover it
+here: started through `kiro-cli acp --agent-engine v3` or from Kiro Crew's bundled
+engine, the KAS process runs unconfined, so it takes the same no-backend path as
+the other harnesses below. It can read your home directory, including `.aws` and
+`.ssh`. A fresh desktop
+install still needs no config edit before the first chat. With the opt-out below
+declared, a KAS chat is refused with a message naming
+`sandbox_allow_unsandboxed_exec`.
+
+**Picking Kiro CLI keeps chat in Kiro CLI's sandbox only while your kiro-cli
+runs its v2 engine.** Settings → Agent Harness → **Kiro CLI** (stored as
+`"acp_backend": "kiro"`) runs on Kiro Crew's KAS path once the installed kiro-cli
+offers its v3 engine
+([decision](../decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md)). On
+Windows that chat is then unconfined like any KAS chat, or refused under the
+opt-out. To keep agent chat from running unconfined on Windows, declare the
+opt-out below, which refuses chat instead of confining it, or run Kiro Crew in a
+Linux VM, where its own Linux sandbox confines it.
 
 Everything else — scripts, hooks, third-party ACP backends, app backends, MCP
 probes and the `gh`/`glab` provider CLIs — has no proven internal sandbox to
@@ -373,8 +384,9 @@ spawn the same `kiro-cli` binary chat does, at the same `agent.sandbox` tier —
 on this platform they succeed and fail together with chat, rather than one working
 while the other 503s. Concretely:
 
-- **Default install** (`agent.sandbox` unset → `"auto"`): chat and these fixed
-  Kiro reads delegate to the CLI's built-in sandbox. No broad opt-in is needed.
+- **Default install** (`agent.sandbox` unset → `"auto"`): these fixed Kiro reads,
+  and a Kiro CLI chat while kiro-cli runs its v2 engine, delegate to the CLI's
+  built-in sandbox. No broad opt-in is needed.
   The parent strips gateway credentials, secret/session variables and inherited
   Python runtime variables before every delegated spawn.
 - **`agent.sandbox` explicitly `"off"`** (isolation deferred to kiro-cli's own
@@ -386,7 +398,7 @@ while the other 503s. Concretely:
 
 | Feature | Status on Windows |
 |---------|-------------------|
-| Core gateway / chat / dashboard | works without `sandbox_allow_unsandboxed_exec`. The default KAS harness runs unconfined under this platform's default (declare `sandbox_allow_unsandboxed_exec=false` to refuse it); the Kiro CLI harness delegates to Kiro CLI's built-in sandbox. The parent scrubs sensitive environment variables either way. A source install with a built `website/dist` is linked into `src/kiro_crew/static/dist` at gateway start via a **directory junction** (`platform_compat.symlink_or_junction`), which needs no privilege; a symlink there would need `SeCreateSymbolicLinkPrivilege` and would leave a non-elevated install serving the "not built" page |
+| Core gateway / chat / dashboard | works without `sandbox_allow_unsandboxed_exec`. The default KAS harness runs unconfined under this platform's default (declare `sandbox_allow_unsandboxed_exec=false` to refuse it); the Kiro CLI harness delegates to Kiro CLI's built-in sandbox only while the installed kiro-cli runs its v2 engine, and once kiro-cli offers v3 a Kiro CLI pick runs on KAS, unconfined or refused like any KAS chat (see [above](#kiro-sandbox-delegation-and-the-unsandboxed-exec-opt-in)). The parent scrubs sensitive environment variables either way. A source install with a built `website/dist` is linked into `src/kiro_crew/static/dist` at gateway start via a **directory junction** (`platform_compat.symlink_or_junction`), which needs no privilege; a symlink there would need `SeCreateSymbolicLinkPrivilege` and would leave a non-elevated install serving the "not built" page |
 | Project skills (`<project>/.kiro/skills`) | not yet — Python on Windows does not expose handle-relative directory traversal that can reject every reparse point before resolving it. Catalog, consent and loading fail closed before canonicalizing the project path, preventing a raced junction to a UNC share from initiating SMB authentication. Global and installed skills continue to work. |
 | Theme-pack install, detail, assets, overlays, topbars, and removal | works — opened pack files are contained with `GetFinalPathNameByHandleW`; descriptor resolution fails closed instead of trusting a pathname-only check |
 | LLM cron jobs (the `message` kind) | works |
@@ -589,10 +601,13 @@ would freeze chat/heartbeat, so it takes the lock if free and otherwise fails
 immediately. **Off the loop** (cron, home migration, app backends) it polls up
 to a generous `_LOCK_TIMEOUT_SECS` ceiling — long enough to wait out a
 legitimately long holder such as a data-home migration, rather than racing it,
-yet bounded so a truly stuck/permission-denied fd still fails. Either way, if
-the lock cannot be taken the acquire **fails closed**: it raises rather than
-entering the critical section unserialized, since proceeding lock-less is the
-exact fail-open that loses writes. Non-blocking `try_acquire_lock` already used
+yet bounded so a truly stuck/permission-denied fd still fails. Only `EACCES`
+and `EDEADLOCK`, what a held byte reports, are retried; any other errno (a
+closed fd's `EBADF`, a pipe's `EINVAL`) is about the fd itself and raises at
+once with that errno. Either way, if the lock cannot be taken the acquire
+**fails closed**: it raises rather than entering the critical section
+unserialized, since proceeding lock-less is the exact fail-open that loses
+writes. Non-blocking `try_acquire_lock` already used
 `LK_NBLCK` and is unchanged.
 
 ### The ceiling is not Windows-only
@@ -897,6 +912,47 @@ What this does **not** give you is supervision. `kirocrew service install` has
 no Windows backend: it prints that service management is supported only on
 systemd and launchd. A gateway started this way stops when you sign out or close
 its window, does not start at boot, and is not restarted if it exits.
+
+### Updating a gateway that runs without the desktop app
+
+A gateway started this way checks the same release feed the desktop app reads
+and offers the update in Settings > About and in `kirocrew update`. Nothing
+installs while it runs:
+
+- **From the dashboard:** choose Update, then Restart. The restart verifies the
+  signed installer (the feed's sha512, a valid Authenticode signature from the
+  publisher the app pins, and a release feed offering a version newer than the
+  one running), stops the gateway, installs the new version silently into the
+  app's folder in the scope the app was installed in (all users or just you),
+  and starts the gateway again on the same port. If the installer's own record
+  of that folder is missing from the registry (rare; reinstalling the app once
+  repairs it), the installer may put the new version in a subfolder or the
+  default folder instead.
+  `kirocrew restart` returns as soon as the installer takes over; the gateway
+  answers again a few minutes later. Close other shells that run the bundled
+  `kirocrew.cmd` first: the install waits for them.
+- **From a shell:** run `kirocrew update` (the bundled shim). With the gateway
+  running it verifies the release and arms it for the next `kirocrew restart`;
+  with no gateway running it installs at once. `kirocrew stop` also installs an
+  armed update, and leaves the gateway stopped.
+
+While the desktop app itself is running on the host, none of this installs
+anything: the app runs the gateway then and updates itself, so `kirocrew update`
+points you at the app's own updater instead.
+
+It follows the update channel you chose in the desktop app's Settings > About
+(stable unless you picked insider), read from the app's settings for the same
+Windows account; a channel your organization's policy requires wins. Change the
+channel in the app: the dashboard of a gateway running without it does not.
+
+An install whose updates someone else manages (it carries an `EXTERNALLY-MANAGED`
+marker, beside the app or built into it) is not updated this way either: update it
+the way its owner provides.
+
+An install made for all users needs the gateway to run as an administrator to
+update it. Any failed check leaves the old version in place: the dashboard
+shows the reason, `kirocrew update` exits non-zero, and the installer's own log
+is `desktop-update.log` in the data home.
 
 ## Troubleshooting
 

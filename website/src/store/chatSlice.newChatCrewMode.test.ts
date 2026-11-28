@@ -4,7 +4,8 @@ import { configureStore } from '@reduxjs/toolkit'
  * true`, the person's own New chat entry points) turns conductor mode on the way the
  * composer chip does, by the ordinary agent switch to the conductor after the
  * create, and only for a chat the chip would be offered on. The create request
- * itself is unchanged. */
+ * carries one more flag for the same entry points, `start_mode_default`, which
+ * asks for the person's stored start mode (`dashboard.default_approval_mode`). */
 
 const api = vi.hoisted(() => ({
   createChatSlot: vi.fn(),
@@ -52,6 +53,18 @@ describe('createSlot new chat conductor mode default', () => {
   })
   afterEach(() => {
     resetCrewModeCatalog()
+  })
+
+  it('asks for the stored start mode only from a New chat entry point', async () => {
+    await created({ crewModeDefault: true, defaultFolder: true })
+    expect(api.createChatSlot.mock.calls[0][13]).toBe(true)
+    api.createChatSlot.mockClear()
+    await created({ agent: 'kirocrew', sessionFolder: false })
+    expect(api.createChatSlot.mock.calls[0][13]).toBe(false)
+    api.createChatSlot.mockClear()
+    // New Incognito / Temporary ask for it on their own, outside conductor mode.
+    await created({ memory_mode: 'incognito', defaultFolder: true, startModeDefault: true })
+    expect(api.createChatSlot.mock.calls[0][13]).toBe(true)
   })
 
   it('switches an opted-in New chat to the conductor and opens it switched', async () => {
@@ -153,5 +166,96 @@ describe('createSlot new chat conductor mode default', () => {
     const slot = await created({ crewModeDefault: true })
     expect(slot.key).toBe('NEW')
     expect(slot.agent).toBe('kirocrew')
+  })
+})
+
+/* `conductor: true` (a `?new=1&conductor=1` link) asks for conductor mode
+ * itself: the New chat setting is not consulted, the conductor is whichever
+ * agent the gateway's catalog names, and every other eligibility rule holds. */
+describe('createSlot conductor: true', () => {
+  beforeEach(() => {
+    api.createChatSlot.mockReset()
+    api.chatSlotAgent.mockReset()
+    api.agentCatalog.mockReset()
+    api.agentCatalog.mockResolvedValue(CATALOG)
+    api.dashboardConfig.mockReset()
+    api.dashboardConfig.mockResolvedValue({ default_memory_mode: 'persistent', new_chat_crew_mode: false })
+  })
+  afterEach(() => {
+    resetCrewModeCatalog()
+  })
+
+  it('switches to the conductor the gateway names, whatever the New chat setting says', async () => {
+    setCrewModeCatalog('team-lead-next', ['team-lead-next'], 'kirocrew')
+    api.chatSlotAgent.mockResolvedValue({ ok: true, agent: 'team-lead-next', agent_kind: 'template' })
+    const slot = await created({ conductor: true })
+    expect(api.chatSlotAgent).toHaveBeenCalledWith('NEW', 'team-lead-next', 'template')
+    expect(slot.agent).toBe('team-lead-next')
+  })
+
+  it('leaves a Bot chat plain, which is not a failure', async () => {
+    setCrewModeCatalog(CONDUCTOR, [CONDUCTOR], 'kirocrew')
+    api.createChatSlot.mockResolvedValue({ key: 'NEW', title: 'New', agent: 'my-bot', agent_kind: 'member', memory_mode: 'persistent' })
+    const action = await makeStore().dispatch(createSlot({ conductor: true }))
+    expect(api.chatSlotAgent).not.toHaveBeenCalled()
+    expect(createSlot.fulfilled.match(action) && action.meta.conductorFailed).toBe(false)
+  })
+
+  it('marks the create when the switch it asked for is refused, and keeps the chat', async () => {
+    setCrewModeCatalog(CONDUCTOR, [CONDUCTOR], 'kirocrew')
+    api.chatSlotAgent.mockRejectedValue(new Error('409'))
+    api.createChatSlot.mockResolvedValue({ key: 'NEW', title: 'New', agent: 'kirocrew', agent_kind: 'template', memory_mode: 'persistent' })
+    const action = await makeStore().dispatch(createSlot({ conductor: true }))
+    expect(createSlot.fulfilled.match(action) && action.payload.key).toBe('NEW')
+    expect(createSlot.fulfilled.match(action) && action.meta.conductorFailed).toBe(true)
+  })
+
+  it('never marks a failed switch for the New chat default, which stays silent', async () => {
+    setCrewModeCatalog(CONDUCTOR, [CONDUCTOR], 'kirocrew')
+    api.dashboardConfig.mockResolvedValue({ default_memory_mode: 'persistent', new_chat_crew_mode: true })
+    api.chatSlotAgent.mockRejectedValue(new Error('409'))
+    api.createChatSlot.mockResolvedValue({ key: 'NEW', title: 'New', agent: 'kirocrew', agent_kind: 'template', memory_mode: 'persistent' })
+    const action = await makeStore().dispatch(createSlot({ crewModeDefault: true }))
+    expect(createSlot.fulfilled.match(action) && action.meta.conductorFailed).toBe(false)
+  })
+
+  it('leaves the chat plain in a build without conductor mode (LTS)', async () => {
+    setCrewModeCatalog(CONDUCTOR, [CONDUCTOR], 'kirocrew')
+    turnOffCrewModeAsLts()
+    await created({ conductor: true })
+    expect(api.chatSlotAgent).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['an Incognito chat', 'incognito', () => {}],
+    ['a failed catalog read', 'persistent', () => { resetCrewModeCatalog(); api.agentCatalog.mockRejectedValue(new Error('offline')) }],
+  ])('stays silent before any switch is sent: %s', async (_label, memoryMode, arrange) => {
+    setCrewModeCatalog(CONDUCTOR, [CONDUCTOR], 'kirocrew')
+    arrange()
+    api.createChatSlot.mockResolvedValue({ key: 'NEW', title: 'New', agent: 'kirocrew', agent_kind: 'template', memory_mode: memoryMode })
+    const action = await makeStore().dispatch(createSlot({ conductor: true, memory_mode: memoryMode }))
+    expect(api.chatSlotAgent).not.toHaveBeenCalled()
+    expect(createSlot.fulfilled.match(action) && action.meta.conductorFailed).toBe(false)
+  })
+
+  it('stays silent when the edition lock never arrives, since no switch was sent', async () => {
+    setCrewModeCatalog(CONDUCTOR, [CONDUCTOR], 'kirocrew')
+    api.createChatSlot.mockResolvedValue({ key: 'NEW', title: 'New', agent: 'kirocrew', agent_kind: 'template', memory_mode: 'persistent' })
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers(); __setFeaturePreviewLockKnownForTests(true) })
+    __setFeaturePreviewLockKnownForTests(false)
+    const pending = makeStore().dispatch(createSlot({ conductor: true }))
+    await vi.advanceTimersByTimeAsync(FEATURE_PREVIEW_LOCK_WAIT_MS)
+    const action = await pending
+    expect(api.chatSlotAgent).not.toHaveBeenCalled()
+    expect(createSlot.fulfilled.match(action) && action.meta.conductorFailed).toBe(false)
+  })
+
+  it('marks the create when the switch answers no agent', async () => {
+    setCrewModeCatalog(CONDUCTOR, [CONDUCTOR], 'kirocrew')
+    api.chatSlotAgent.mockResolvedValue({ ok: false })
+    api.createChatSlot.mockResolvedValue({ key: 'NEW', title: 'New', agent: 'kirocrew', agent_kind: 'template', memory_mode: 'persistent' })
+    const action = await makeStore().dispatch(createSlot({ conductor: true }))
+    expect(createSlot.fulfilled.match(action) && action.meta.conductorFailed).toBe(true)
   })
 })

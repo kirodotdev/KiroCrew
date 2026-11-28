@@ -1,8 +1,9 @@
-import { screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { act, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
 import CrashReportNotice from './CrashReportNotice'
+import { fmtDateTime } from '../i18n/format'
 
-type Summary = { newCount: number }
+type Summary = { newCount: number; lastCrashAt?: string | null; nativeLogOff?: string }
 
 const get = vi.fn<[], Promise<Summary>>()
 const reveal = vi.fn<[], Promise<{ ok: boolean; error?: string }>>()
@@ -14,9 +15,23 @@ function bridge(present: boolean) {
   else delete w.crashReportsAPI
 }
 
-function summary(over: Partial<Summary> = {}): Summary {
-  return { newCount: 2, ...over }
+const LAST_CRASH_AT = '2026-10-28T19:19:55.283Z'
+
+const refused = () => new Error('crash-reports:get is restricted to the local dashboard')
+
+/** The whole re-ask schedule (15 s + 45 s + 2 + 5 + 10 min) plus a margin. */
+const PAST_SCHEDULE_MS = 20 * 60_000
+
+/** Lets every settled ask and every timer due within `ms` run. */
+async function advance(ms: number) {
+  await act(async () => { await vi.advanceTimersByTimeAsync(ms) })
 }
+
+function summary(over: Partial<Summary> = {}): Summary {
+  return { newCount: 2, lastCrashAt: LAST_CRASH_AT, ...over }
+}
+
+const COUNT_TEXT = 'New crash records saved on this machine: 2. Attach them when you report the problem.'
 
 describe('CrashReportNotice', () => {
   beforeEach(() => {
@@ -40,6 +55,39 @@ describe('CrashReportNotice', () => {
       expect(button).not.toHaveClass('bg-transparent')
       expect(button).not.toHaveClass('border-border')
     }
+  })
+
+  // The expected date comes from fmtDateTime: this test checks the line, and
+  // format.test.ts owns the date format itself.
+  it('shows when the newest crash happened, directly under the unchanged count', async () => {
+    renderWithProviders(<CrashReportNotice />)
+    const latest = await screen.findByTestId('crash-notice-latest')
+    expect(latest).toHaveTextContent(`Latest crash: ${fmtDateTime(LAST_CRASH_AT)}`)
+    const count = screen.getByText(COUNT_TEXT)
+    expect(count.nextElementSibling).toBe(latest)
+  })
+
+  it('omits the time line when the main process sends lastCrashAt: null', async () => {
+    get.mockResolvedValue(summary({ lastCrashAt: null }))
+    renderWithProviders(<CrashReportNotice />)
+    const notice = await screen.findByRole('status')
+    expect(screen.getByText(COUNT_TEXT)).toBeInTheDocument()
+    expect(screen.queryByTestId('crash-notice-latest')).not.toBeInTheDocument()
+    expect(notice).not.toHaveTextContent(/latest crash/i)
+  })
+
+  // An older shell sends the count alone; a missing or malformed time must
+  // never render as the formatter's "—" placeholder.
+  it.each([
+    ['an older shell that sends no lastCrashAt', { newCount: 2 }],
+    ['a malformed lastCrashAt', { newCount: 2, lastCrashAt: 'not a time' }],
+  ])('omits the time line for %s', async (_label, payload) => {
+    get.mockResolvedValue(payload as Summary)
+    renderWithProviders(<CrashReportNotice />)
+    const notice = await screen.findByRole('status')
+    expect(screen.getByText(COUNT_TEXT)).toBeInTheDocument()
+    expect(screen.queryByTestId('crash-notice-latest')).not.toBeInTheDocument()
+    expect(notice).not.toHaveTextContent('—')
   })
 
   it('never renders without the desktop bridge, and never probes for one', async () => {
@@ -127,8 +175,62 @@ describe('CrashReportNotice', () => {
     expect(dialog).toHaveTextContent(/report a problem/i)
     const note = within(dialog).getByRole('textbox', { name: /what happened/i })
     expect((note as HTMLTextAreaElement).value).toMatch(/closed unexpectedly/i)
-    expect((note as HTMLTextAreaElement).value).toMatch(/2/)
+    expect((note as HTMLTextAreaElement).value).toBe(
+      'The app closed unexpectedly. New crash records saved on this machine: 2.',
+    )
     expect(reveal).not.toHaveBeenCalled()
+  })
+
+  // When Chromium's file log is off this launch, the chromium.log the user is
+  // asked to attach is from an earlier session. Nothing the user asked for
+  // failed, so it is a muted status line under the count and the time (no
+  // role="alert", no agent hand-off), in plain words for the cause code; the
+  // report note stays count-only, as the 2026-11-14 decision keeps it.
+  it('says chromium.log is from an earlier session, as a muted status line', async () => {
+    get.mockResolvedValue(summary({ nativeLogOff: 'disk_full' }))
+    renderWithProviders(<CrashReportNotice />)
+    const banner = await screen.findByRole('status')
+    const line = screen.getByTestId('crash-notice-native-log-off')
+    expect(banner).toContainElement(line)
+    // After the "Latest crash" line, the order the 2026-11-14 decision sets.
+    expect(screen.getByTestId('crash-notice-latest').compareDocumentPosition(line))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(line).not.toHaveAttribute('role')
+    expect(line).toHaveClass('text-muted')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
+    expect(line).toHaveTextContent(/chromium\.log is from an earlier session/i)
+    expect(line).toHaveTextContent(/because the disk is full\./i)
+    expect(line).not.toHaveTextContent(/may not be current|ENOSPC|disk_full/i)
+    fireEvent.click(screen.getByRole('button', { name: /report issue/i }))
+    const dialog = await screen.findByRole('dialog')
+    const note = within(dialog).getByRole('textbox', { name: /what happened/i }) as HTMLTextAreaElement
+    expect(note.value).toBe('The app closed unexpectedly. New crash records saved on this machine: 2.')
+  })
+
+  it.each([
+    ['no_access', /isn't allowed to move the old file/i],
+    ['in_use', /another program has the old file open/i],
+    ['unreadable', /old file couldn't be read/i],
+    ['other', /old file couldn't be moved aside/i],
+  ] as const)('phrases the %s cause in plain words', async (cause, text) => {
+    get.mockResolvedValue(summary({ nativeLogOff: cause }))
+    renderWithProviders(<CrashReportNotice />)
+    await screen.findByRole('status')
+    expect(screen.getByTestId('crash-notice-native-log-off')).toHaveTextContent(text)
+  })
+
+  it('ignores a native-log value that is not a known cause code', async () => {
+    get.mockResolvedValue(summary({ nativeLogOff: 'chromium.log could not be rotated (rotate failed (ENOSPC))' }))
+    renderWithProviders(<CrashReportNotice />)
+    await screen.findByRole('status')
+    expect(screen.queryByTestId('crash-notice-native-log-off')).not.toBeInTheDocument()
+  })
+
+  it('says nothing about native logging when the sink is armed', async () => {
+    renderWithProviders(<CrashReportNotice />)
+    await screen.findByRole('status')
+    expect(screen.queryByTestId('crash-notice-native-log-off')).not.toBeInTheDocument()
   })
 
   it('keeps the crash banner when the report dialog is cancelled', async () => {
@@ -146,5 +248,56 @@ describe('CrashReportNotice', () => {
     await screen.findByRole('status')
     fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  // The desktop shell refuses the ask while its port-owner check fails, which
+  // can last minutes after launch, and runs no scan on a refused ask. The notice
+  // asks again on a bounded schedule instead of waiting for a page reload.
+  describe('re-asking after a refused ask', () => {
+    beforeEach(() => { vi.useFakeTimers() })
+    afterEach(() => { vi.useRealTimers() })
+
+    it('announces the crash once a later ask is answered', async () => {
+      get.mockRejectedValueOnce(refused()).mockRejectedValueOnce(refused())
+      renderWithProviders(<CrashReportNotice />)
+      await advance(0)
+      expect(get).toHaveBeenCalledTimes(1)
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      await advance(15_000)
+      expect(get).toHaveBeenCalledTimes(2)
+      await advance(45_000)
+      expect(get).toHaveBeenCalledTimes(3)
+      expect(screen.getByRole('status')).toHaveTextContent(/closed unexpectedly/i)
+      await advance(PAST_SCHEDULE_MS)
+      expect(get).toHaveBeenCalledTimes(3)
+    })
+
+    it('stops after five re-asks when every ask is refused', async () => {
+      get.mockRejectedValue(refused())
+      renderWithProviders(<CrashReportNotice />)
+      await advance(PAST_SCHEDULE_MS)
+      expect(get).toHaveBeenCalledTimes(6)
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      await advance(PAST_SCHEDULE_MS)
+      expect(get).toHaveBeenCalledTimes(6)
+    })
+
+    it('asks no more once an ask is answered, even with nothing new', async () => {
+      get.mockResolvedValue(summary({ newCount: 0 }))
+      renderWithProviders(<CrashReportNotice />)
+      await advance(PAST_SCHEDULE_MS)
+      expect(get).toHaveBeenCalledTimes(1)
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    })
+
+    it('clears a pending re-ask on unmount', async () => {
+      get.mockRejectedValue(refused())
+      const { unmount } = renderWithProviders(<CrashReportNotice />)
+      await advance(0)
+      expect(get).toHaveBeenCalledTimes(1)
+      unmount()
+      await advance(PAST_SCHEDULE_MS)
+      expect(get).toHaveBeenCalledTimes(1)
+    })
   })
 })

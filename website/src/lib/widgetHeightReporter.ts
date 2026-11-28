@@ -570,8 +570,8 @@ export const HEIGHT_REPORTER_BODY = `(function(){
     // of the load event -- layout settles before images and fonts finish --
     // would otherwise be the LAST post this document ever makes: the parent
     // discards it at load, the deadband swallows this re-check because the
-    // height is unchanged, and three seconds later a healthy, rendering document
-    // is flagged as no longer showing. Resetting lastSent routes the scheduled
+    // height is unchanged, and once that window passes a healthy, rendering
+    // document is flagged as no longer showing. Resetting lastSent routes the scheduled
     // measurement through the first-measurement path, so every load the parent
     // can observe is followed by a report.
     setTimeout(function(){ lastSent = -1; schedule(); }, 100);

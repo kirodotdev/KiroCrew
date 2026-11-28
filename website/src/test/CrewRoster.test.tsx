@@ -372,6 +372,20 @@ describe('crew roster — filtering', () => {
     expect(screen.queryAllByTestId('crew-card')).toHaveLength(0)
   })
 
+  it('does not say there are no bots when the roster read fails', async () => {
+    mockApi.kirocrewAgents.mockRejectedValue(new Error('gateway unreachable'))
+    renderPage()
+    expect(await screen.findByTestId('crews-roster-load-error')).toBeInTheDocument()
+    expect(screen.queryByTestId('empty-state-title')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: i18nT('pages.kiroCrewAgentsPage.create_your_first_crew') })).not.toBeInTheDocument()
+  })
+
+  it('does not say there are no bots before the first roster read returns', () => {
+    mockApi.kirocrewAgents.mockImplementation(() => new Promise(() => {}))
+    renderPage()
+    expect(screen.queryByTestId('empty-state-title')).not.toBeInTheDocument()
+  })
+
   it('does not flash the empty state while an invalidateQueries-driven refetch is in flight', async () => {
     // After retiring the refreshTrigger-in-queryKey pattern (#4179), the
     // roster query key is stable (`['kirocrew-agents']`) and refetches are

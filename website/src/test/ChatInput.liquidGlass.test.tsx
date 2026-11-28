@@ -98,6 +98,8 @@ describe('composer liquid glass', () => {
     // wrapper box), carrying the radius, the caller's class and the effect
     // layers, with the children rendered directly after them.
     expect(dock.classList.contains('liquid-glass')).toBe(true)
+    // The composer keeps the default `thin` step (maintainer direction on #16299).
+    expect(dock.classList.contains('glass-thin')).toBe(true)
     expect(dock.style.isolation).toBe('isolate')
     // The tint rides the oversized frost box inside the clipping effect layer.
     const boxes = Array.from(dock.querySelectorAll<HTMLElement>(':scope > span[aria-hidden="true"] > span'))
@@ -143,11 +145,11 @@ describe('composer liquid glass', () => {
   })
 
   it('lets the follow-up chips keep their top and bottom hairline', () => {
-    // The chip row is overflow-x:auto, which makes overflow-y auto too, and the
-    // glass hairline is drawn 0.5px OUTSIDE each chip's box -- a row exactly one
-    // chip tall clipped it top and bottom. One pixel of padding, cancelled by
-    // the negative margin, lets the line through at the same row height.
-    expect(FOLLOW_UP_BAR_SRC).toMatch(/className=\{`flex \$\{CHIP_ROW_GAP\} overflow-x-auto items-end py-px -my-px`\}/)
+    // The chip row is overflow-x:auto, which makes overflow-y auto too, so a row
+    // exactly one chip tall clipped the glass hairline and the focus ring top and
+    // bottom. Block-axis padding, cancelled by the negative margin, leaves room
+    // at the same row height; the inline axis stays flush with the edge fades.
+    expect(FOLLOW_UP_BAR_SRC).toMatch(/className=\{`flex \$\{CHIP_ROW_GAP\} overflow-x-auto items-end py-1 -my-1`\}/)
   })
 
   it('gives every solidified pane the same 1px --border outline, unchanged on focus', () => {
@@ -165,7 +167,7 @@ describe('composer liquid glass', () => {
       // the glass BUTTONS (chips, memory chip, jump pill), so each block
       // re-asserts the global `:focus-visible` ring -- the app's existing one,
       // which those buttons already wear in glass mode.
-      expect(rule, String(block)).toContain('.liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:2px !important }')
+      expect(rule, String(block)).toContain('.liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:var(--lg-focus-offset, 2px) !important }')
     }
   })
 
@@ -198,10 +200,10 @@ describe('composer liquid glass', () => {
     // the Display panel shows the switch.
     expect(INDEX_HTML).toMatch(/var lg = false; try \{ lg = localStorage\.getItem\('mc-liquid-glass'\) === 'on'; \} catch \(e\) \{\}\n\s+if \(!lg\) document\.documentElement\.dataset\.reduceTransparency = 'on';/)
     expect(INDEX_HTML).not.toContain('mc-reduce-transparency')
-    // On the View card beside the interface style, not at the foot of the
+    // On the View card beside the interface style (the touch layout row may sit between), not at the foot of the
     // Theme card (stacked fields under captions, where a switch row read as a
     // different kind of control). The user-facing name is never the primitive's.
-    expect(DISPLAY_PANEL_SRC).toMatch(/onChange=\{v => setUIMode\(v as 'chat' \| 'cli'\)\} \/>\n(?:\s+\{\/\*[\s\S]*?\*\/\}\n)?(?:\s+<div>\n)?\s+<SettingsToggle\n\s+label=\{i18nT\('pages\.settings\.displayPanel\.translucent_panels'\)/)
+    expect(DISPLAY_PANEL_SRC).toMatch(/onChange=\{v => setUIMode\(v as 'chat' \| 'cli'\)\} \/>\n(?:\s+<TouchLayoutSetting \/>\n)?(?:\s+\{\/\*[\s\S]*?\*\/\}\n)?(?:\s+<div>\n)?\s+<SettingsToggle\n\s+label=\{i18nT\('pages\.settings\.displayPanel\.translucent_panels'\)/)
     expect(DISPLAY_PANEL_SRC).toMatch(/<SettingsToggle\n\s+label=\{i18nT\('pages\.settings\.displayPanel\.translucent_panels'\)\}\n\s+hint=\{i18nT\('pages\.settings\.displayPanel\.translucent_panels_desc'\)\}\n\s+checked=\{liquidGlass\}\n\s+onChange=\{setLiquidGlass\}/)
     expect(DISPLAY_PANEL_SRC).not.toMatch(/liquid_glass/)
     // The live preview follows the row: the real primitive over a skeleton transcript.

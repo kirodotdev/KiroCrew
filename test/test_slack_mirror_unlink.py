@@ -111,9 +111,7 @@ class TestMirrorSuppressionAfterUnlink:
 
         state = _make_state(tmp_path, session_map)
         state.slack_client = _make_slack_client()
-        state.sessions.get_or_create = AsyncMock(
-            return_value=(_fake_provider(), False, False)
-        )
+        state.sessions.get_or_create = AsyncMock(return_value=(_fake_provider(), False, False))
 
         slot = state.get_or_create_slot("s1")
         session_key = _history_key_for(slot.key)
@@ -125,7 +123,9 @@ class TestMirrorSuppressionAfterUnlink:
 
         # ── Linked turn: mirror MUST fire ──
         await _run_chat(state, slot, "first message")
-        assert state.slack_client.post_message.await_count >= 1, "linked turn should mirror user msg"
+        assert (
+            state.slack_client.post_message.await_count >= 1
+        ), "linked turn should mirror user msg"
         # A tool-free turn opens no task stream (it opens on the first tool call);
         # its "Thinking…" placeholder is posted, then deleted before the answer.
         _posted = [c.args[1] for c in state.slack_client.post_message.await_args_list]
@@ -151,7 +151,9 @@ class TestMirrorSuppressionAfterUnlink:
         # ── Unlinked turn: NO mirror calls ──
         await _run_chat(state, slot, "second message")
         assert state.slack_client.post_message.await_count == 0, "unlinked turn must NOT mirror"
-        assert state.slack_client.start_stream.await_count == 0, "unlinked turn must NOT open a stream"
+        assert (
+            state.slack_client.start_stream.await_count == 0
+        ), "unlinked turn must NOT open a stream"
 
     @pytest.mark.asyncio
     async def test_dual_key_inheritance_does_not_resurrect_link(self, tmp_path, monkeypatch):
@@ -171,13 +173,11 @@ class TestMirrorSuppressionAfterUnlink:
 
         state = _make_state(tmp_path, session_map)
         state.slack_client = _make_slack_client()
-        state.sessions.get_or_create = AsyncMock(
-            return_value=(_fake_provider(), False, False)
-        )
+        state.sessions.get_or_create = AsyncMock(return_value=(_fake_provider(), False, False))
 
         slot = state.get_or_create_slot("s1")
         session_key = _history_key_for(slot.key)  # "dashboard:s1"
-        raw_key = session_key[len("dashboard:"):]   # "s1"
+        raw_key = session_key[len("dashboard:") :]  # "s1"
 
         # Simulate the dual-key state: link on the dashboard:-prefixed key AND
         # the raw key (the runner's inheritance copy at chat_runner.py:807-817).
@@ -210,3 +210,46 @@ class TestMirrorSuppressionAfterUnlink:
         await _run_chat(state, slot, "after unlink")
         assert state.slack_client.post_message.await_count == 0
         assert state.slack_client.start_stream.await_count == 0
+
+
+class TestMirrorCarriesOnlyThePersonsWords:
+    @pytest.mark.asyncio
+    async def test_a_queued_notice_reaches_the_model_but_not_the_linked_thread(
+        self, tmp_path, monkeypatch
+    ):
+        """A gateway notice queued for the next prompt (a session restart, a
+        sub-agent failure) is put in front of the person's message for the model.
+        The linked thread's echo is the person's message alone: a long notice in
+        front of it would be cut with the person's words at the mirror's length
+        limit, and the channel would read the gateway's text as theirs."""
+        from kiro_crew.dashboard.chat import _history_key_for, _run_chat
+        from kiro_crew.dashboard.state_parts.injected_turns import (
+            SESSION_RESTARTED_NOTICE_PREFIX,
+            session_restarted_notice,
+        )
+        from kiro_crew.session_map import SessionMap
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
+
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            session_map = SessionMap()
+
+        state = _make_state(tmp_path, session_map)
+        state.slack_client = _make_slack_client()
+        state.sessions.get_or_create = AsyncMock(return_value=(_fake_provider(), False, False))
+
+        slot = state.get_or_create_slot("s1")
+        state.sessions.set_slack_link(_history_key_for(slot.key), "thread-1", "C-1")
+        slot._slack_linked = True
+        slot._slack_channel = "C-1"
+        slot._slack_thread_ts = "thread-1"
+        slot._pending_subagent_failures.append(session_restarted_notice("idle"))
+
+        await _run_chat(state, slot, "is the build still running?", _directive_user_origin=True)
+
+        built = state.context_builder.build_message.call_args.args[0]
+        assert built.startswith(SESSION_RESTARTED_NOTICE_PREFIX)
+        posted = [c.args[1] for c in state.slack_client.post_message.await_args_list]
+        assert any("is the build still running?" in text for text in posted), posted
+        assert not any(SESSION_RESTARTED_NOTICE_PREFIX in text for text in posted)

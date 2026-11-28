@@ -740,9 +740,11 @@ AREAS: dict[str, _Area] = {
         anchors=("page.artifacts",),
     ),
     "apps": _Area(
-        "apps: Discover (the app store) and Library (installed apps and their details)",
+        "apps: Discover (the app store), Library (installed apps and their details) "
+        "and the pages of the apps that ship with Kiro Crew",
         title="page.apps",
         anchors=("page.apps", "page.apps-library"),
+        id_prefixes=("apppage.",),
     ),
     "connections": _Area(
         "connections: the Connections cards and their OAuth apps, MCP servers, messaging channels (Slack, Telegram, ...)",
@@ -875,6 +877,8 @@ def _entry(idx: _Index, loc: dict[str, Any], locale: str) -> dict[str, Any]:
         "path": " > ".join(path_labels + ([] if loc.get("label_kind") == _DESCRIPTION else [text])),
         "tier": loc.get("tier", _CURATED),
     }
+    if loc.get("app"):
+        out["app"] = loc["app"]
     if p.get("surface_id") == SHELL_SURFACE:
         out["on_every_page"] = True
     states = loc.get("state_labels") or []

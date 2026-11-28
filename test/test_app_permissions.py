@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from kiro_crew.apps.manager import InstalledApp
 from kiro_crew.apps.manifest import AppManifest, Permissions
 from kiro_crew.apps.permissions import (
@@ -175,6 +177,42 @@ class TestManagedToolsToExclude:
         # Nothing managed was declared, so every managed tool is excluded except
         # the ones the framework itself needs on every app agent.
         assert excl == _managed_tool_universe() - _FRAMEWORK_REQUIRED_MANAGED_TOOLS
+
+    @pytest.mark.parametrize(
+        "declared",
+        ["@kirocrew-core/memory_recall", "memory_recall"],
+    )
+    def test_a_managed_ref_counts_as_its_bare_name(self, declared):
+        """Agent ``tools`` lists write a host tool as ``@kirocrew-core/<tool>``; the
+        same form in ``mcpTools`` must allow that tool, not silently exclude it."""
+        from kiro_crew.apps.permissions import managed_tools_to_exclude
+
+        m = AppManifest(
+            name="app",
+            version="1.0.0",
+            displayName="A",
+            description="A",
+            permissions=Permissions(mcpTools=[declared]),
+        )
+        excl = managed_tools_to_exclude(m)
+        assert "memory_recall" not in excl
+        assert "spawn_run" in excl, "only the declared tool is allowed"
+
+    @pytest.mark.parametrize(
+        "declared",
+        ["@not-managed/memory_recall", "@kirocrew-core", "@kirocrew-core/", "@/memory_recall"],
+    )
+    def test_a_non_managed_or_broken_ref_allows_nothing_managed(self, declared):
+        from kiro_crew.apps.permissions import managed_tools_to_exclude
+
+        m = AppManifest(
+            name="app",
+            version="1.0.0",
+            displayName="A",
+            description="A",
+            permissions=Permissions(mcpTools=[declared]),
+        )
+        assert "memory_recall" in managed_tools_to_exclude(m)
 
     def test_the_result_is_sorted_and_deduplicated(self):
         from kiro_crew.apps.permissions import managed_tools_to_exclude

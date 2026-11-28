@@ -3,7 +3,7 @@ import { useState, type ReactElement } from 'react'
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 
 import { renderWithProviders, createTestStore } from '../test/helpers'
-import { sseStatus, setUpdateProgress } from '../store/dashboardSlice'
+import { sseConnected, sseDisconnected, sseStatus, setUpdateProgress } from '../store/dashboardSlice'
 import { i18nT } from '../i18n/t'
 import { api, ApiError } from '../api/client'
 import { copyToClipboard } from '../utils/clipboard'
@@ -28,6 +28,7 @@ vi.mock('../api/client', () => {
       restartGateway: vi.fn(),
       armUpdate: vi.fn(),
       armStatus: vi.fn(),
+      status: vi.fn(),
     },
   }
 })
@@ -77,6 +78,10 @@ beforeEach(() => {
   mockedApi.restartGateway.mockReset()
   mockedApi.armUpdate.mockReset()
   mockedApi.armStatus.mockReset()
+  mockedApi.status.mockReset()
+  // The status read after an arm: pending by default, so a test that does not
+  // set it sees only the status frames it dispatches itself.
+  mockedApi.status.mockReturnValue(new Promise(() => {}) as never)
   mockedApi.patchConfig.mockResolvedValue({} as never)
   mockedApi.checkUpdate.mockResolvedValue({ changes: '' } as never)
   mockedApi.armUpdate.mockResolvedValue({
@@ -201,8 +206,7 @@ describe('UpdateFoundModal — desktop source', () => {
     }
     const { container } = await mount(found)
     // Their consent prompt is the staged-build modal at `downloaded`; a popup
-    // here would claim "nothing downloads until you choose" while the main
-    // process is already downloading.
+    // here would ask about a download the main process has already started.
     expect(container.firstChild).toBeNull()
     expect(mockedApi.kirocrewConfig).not.toHaveBeenCalled()
   })
@@ -268,7 +272,6 @@ describe('UpdateFoundModal — desktop source', () => {
     await waitFor(() => expect(dialog()).toBeInTheDocument())
     expect(screen.getByTestId('update-found-preference-error')).toHaveTextContent(
       i18nT('pages.settings.aboutPanel.auto_download_unreadable'))
-    expect(screen.queryByText(i18nT('components.updateFoundModal.nothing_downloads_until_you_choose_to'))).toBeNull()
   })
 
   it('still asks when a later re-read fails, rather than trusting the older answer', async () => {
@@ -539,6 +542,82 @@ describe('UpdateFoundModal — gateway source', () => {
     expect(screen.queryByText(i18nT('components.updateFoundModal.updating_and_restarting'))).toBeNull()
   })
 
+  it('shows the armed state once the arm is answered, before any status push', async () => {
+    const status = { update_available: true, update_latest_version: '8.8.8', update_can_apply: true }
+    mockedApi.applyUpdate.mockResolvedValue({ ok: true, armed: true, version: '8.8.8' } as never)
+    const store = gatewayStore(status)
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_when_i_restart'))
+    // No status frame is dispatched here: the arm's own answer flips the popup.
+    await waitFor(() => expect(byName('components.updateFoundModal.restart_to_update')).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: i18nT('components.updateFoundModal.update_when_i_restart') })).toBeNull()
+    expect(screen.getByText(i18nT('components.updateFoundModal.update_armed_note'))).toBeInTheDocument()
+    // Recorded in the status store, the one source the popup reads.
+    expect(store.getState().dashboard.status?.update_armed_version).toBe('8.8.8')
+    expect(mockedApi.status).not.toHaveBeenCalled()
+    expect(mockedApi.applyUpdate).toHaveBeenCalledTimes(1)
+    expect(mockedApi.restartGateway).not.toHaveBeenCalled()
+  })
+
+  it('a click right after the arm turns the button into Restart does not restart; one after the guard does', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    // Runs even when the test times out inside a waitFor, unlike a finally.
+    onTestFinished(() => { vi.useRealTimers() })
+    const status = { update_available: true, update_latest_version: '8.8.8', update_can_apply: true }
+    mockedApi.applyUpdate.mockResolvedValue({ ok: true, armed: true, version: '8.8.8' } as never)
+    mockedApi.restartGateway.mockReturnValue(new Promise(() => {}) as never)
+    await mount(undefined, gatewayStore(status))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_when_i_restart'))
+    await waitFor(() => expect(byName('components.updateFoundModal.restart_to_update')).toBeInTheDocument())
+    // The second click of a double click.
+    fireEvent.click(byName('components.updateFoundModal.restart_to_update'))
+    expect(mockedApi.restartGateway).not.toHaveBeenCalled()
+    await act(async () => { vi.advanceTimersByTime(1_001) })
+    await waitFor(() => expect(byName('components.updateFoundModal.restart_to_update')).not.toBeDisabled())
+    fireEvent.click(byName('components.updateFoundModal.restart_to_update'))
+    await waitFor(() => expect(mockedApi.restartGateway).toHaveBeenCalledTimes(1))
+    expect(mockedApi.applyUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it('an arm answer that does not say armed leaves the status store alone', async () => {
+    const status = { update_available: true, update_latest_version: '8.8.8', update_can_apply: true }
+    mockedApi.applyUpdate.mockResolvedValue({ ok: true } as never)
+    const store = gatewayStore(status)
+    const before = store.getState().dashboard.status
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_when_i_restart'))
+    await waitFor(() => expect(mockedApi.applyUpdate).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(byName('components.updateFoundModal.update_when_i_restart')).not.toBeDisabled())
+    expect(store.getState().dashboard.status).toBe(before)
+    // The next status push still brings the arm.
+    act(() => { store.dispatch(sseStatus({ ...status, update_armed_version: '8.8.8' } as StatusData)) })
+    await waitFor(() => expect(byName('components.updateFoundModal.restart_to_update')).toBeInTheDocument())
+  })
+
+  it('a late arm answer does not show the arm again after a newer frame showed it cancelled', async () => {
+    let resolveArm: (v: unknown) => void = () => {}
+    mockedApi.applyUpdate.mockReturnValue(new Promise(r => { resolveArm = r }) as never)
+    mockedApi.disarmUpdate.mockResolvedValue({ armed: false } as never)
+    const status = { update_available: true, update_latest_version: '8.8.8', update_can_apply: true }
+    const store = gatewayStore(status)
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_when_i_restart'))
+    await waitFor(() => expect(mockedApi.applyUpdate).toHaveBeenCalledTimes(1))
+    act(() => { store.dispatch(sseStatus({ ...status, update_armed_version: '8.8.8' } as StatusData)) })
+    fireEvent.click(await screen.findByTestId('update-cancel-armed'))
+    await waitFor(() => expect(mockedApi.disarmUpdate).toHaveBeenCalledTimes(1))
+    act(() => { store.dispatch(sseStatus({ ...status } as StatusData)) })
+    await act(async () => { resolveArm({ ok: true, armed: true, version: '8.8.8' }) })
+    await waitFor(() => expect(byName('components.updateFoundModal.update_when_i_restart')).toBeInTheDocument())
+    expect(store.getState().dashboard.status?.update_armed_version).toBeFalsy()
+    expect(screen.queryByTestId('update-cancel-armed')).toBeNull()
+    expect(screen.queryByRole('button', { name: i18nT('components.updateFoundModal.restart_to_update') })).toBeNull()
+  })
+
   it('an arm response that lands after the status frame reports it armed leaves the modal usable', async () => {
     let resolveArm: (v: unknown) => void = () => {}
     mockedApi.applyUpdate.mockReturnValue(new Promise(r => { resolveArm = r }) as never)
@@ -549,10 +628,20 @@ describe('UpdateFoundModal — gateway source', () => {
     fireEvent.click(byName('components.updateFoundModal.update_when_i_restart'))
     await waitFor(() => expect(mockedApi.applyUpdate).toHaveBeenCalledTimes(1))
     act(() => { store.dispatch(sseStatus({ ...status, update_armed_version: '8.8.8' } as StatusData)) })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    onTestFinished(() => { vi.useRealTimers() })
     await act(async () => { resolveArm({ armed: true, version: '8.8.8' }) })
     expect(mockedApi.restartGateway).not.toHaveBeenCalled()
     expect(screen.queryByText(i18nT('components.updateFoundModal.updating_and_restarting'))).toBeNull()
-    expect(byName('components.updateFoundModal.restart_to_update')).not.toBeDisabled()
+    // The answer landed after the push flipped the button, so the second click
+    // of a double click could still reach it: the restart guard holds it first.
+    const restart = byName('components.updateFoundModal.restart_to_update')
+    expect(restart).toBeDisabled()
+    fireEvent.click(restart)
+    expect(mockedApi.restartGateway).not.toHaveBeenCalled()
+    // Once the guard ends the modal is usable: Restart is enabled again.
+    await act(async () => { vi.advanceTimersByTime(1_001) })
+    await waitFor(() => expect(byName('components.updateFoundModal.restart_to_update')).not.toBeDisabled())
   })
 
   it('an armed update offers the restart and the way back, not another install', async () => {
@@ -636,15 +725,108 @@ describe('UpdateFoundModal — gateway source', () => {
     ).toBeInTheDocument())
   })
 
-  it('a staged update on a gateway that cannot apply still offers the restart, not the copy-command path', async () => {
+  it('a staged older version leaves a newer offer installable', async () => {
+    mockedApi.applyUpdate.mockResolvedValue({ armed: true, version: '8.8.9' } as never)
+    await mount(undefined, gatewayStore({
+      update_available: true, update_latest_version: '8.8.9', update_can_apply: true,
+      update_restart_ready: true, update_restart_ready_version: '8.8.8', update_restart_ready_reason: 'staged',
+    }))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+
+    expect(byName('components.updateFoundModal.update_when_i_restart')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: i18nT('components.updateFoundModal.restart_to_update') })).toBeNull()
+    expect(screen.queryByTestId('update-restart-ready-note')).toBeNull()
+
+    fireEvent.click(byName('components.updateFoundModal.update_when_i_restart'))
+
+    await waitFor(() => expect(mockedApi.applyUpdate).toHaveBeenCalledTimes(1))
+    expect(mockedApi.restartGateway).not.toHaveBeenCalled()
+  })
+
+  it('a staged version newer than the offer leaves the offer installable', async () => {
+    // Every writer of the note records the version that was on offer, so a staged
+    // version newer than the offer was staged from another lane: insider 0.14.1rc2
+    // staged, then Stable picked with its feed at 0.14.0rc5. A restart would start
+    // the insider build instead of installing Stable.
+    mockedApi.applyUpdate.mockResolvedValue({ armed: true, version: '0.14.0rc5' } as never)
+    await mount(undefined, gatewayStore({
+      update_available: true, update_latest_version: '0.14.0rc5', update_can_apply: true,
+      update_channel: 'stable', update_channel_move_pending: false,
+      update_restart_ready: true, update_restart_ready_version: '0.14.1rc2', update_restart_ready_reason: 'staged',
+    }))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+
+    expect(byName('components.updateFoundModal.update_when_i_restart')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: i18nT('components.updateFoundModal.restart_to_update') })).toBeNull()
+    expect(screen.queryByTestId('update-restart-ready-note')).toBeNull()
+  })
+
+  it('a restart-ready note without a version still offers the restart', async () => {
     mockedApi.restartGateway.mockResolvedValue({} as never)
     await mount(undefined, gatewayStore({
       update_available: true, update_latest_version: '8.8.8', update_can_apply: false,
-      update_can_arm: true, update_restart_ready: true,
+      update_can_arm: true, update_restart_ready: true, update_restart_ready_reason: 'assets_gone',
     }))
     await waitFor(() => expect(dialog()).toBeInTheDocument())
 
     expect(byName('components.updateFoundModal.restart_to_update')).toBeInTheDocument()
+  })
+
+  const restartReadyStatus: Partial<StatusData> = {
+    update_available: true, update_latest_version: '8.8.8', update_can_apply: true,
+    update_restart_ready: true,
+  }
+
+  it('a restart request lost in transit while the gateway is still connected ends as failed at once', async () => {
+    // The gateway answers a Restart before it restarts, so a dropped request
+    // with the dashboard socket still up means no restart is coming.
+    mockedApi.restartGateway.mockRejectedValue(new TypeError('fetch failed'))
+    const store = gatewayStore(restartReadyStatus)
+    store.dispatch(sseConnected())
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.restart_to_update'))
+    expect(await screen.findByTestId('update-found-action-error'))
+      .toHaveTextContent(i18nT('components.updateFoundModal.update_failed'))
+    expect(screen.queryByText(i18nT('components.updateFoundModal.updating_and_restarting'))).toBeNull()
+    expect(byName('components.updateFoundModal.restart_to_update')).toBeEnabled()
+    expect(byName('components.updateFoundModal.dismiss')).toBeEnabled()
+    expect(byName('components.updateFoundModal.skip_this_version')).toBeEnabled()
+    expect(byName('components.updateFoundModal.remind_me_tomorrow')).toBeEnabled()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(dialog()).not.toBeInTheDocument())
+  })
+
+  it('reads the connection when the restart request fails, not when it was sent', async () => {
+    // Connected at the click, dropped before the request fails: the restart
+    // the person asked for, so the popup stays on restarting.
+    let rejectRestart!: (e: unknown) => void
+    mockedApi.restartGateway.mockReturnValue(new Promise((_, reject) => { rejectRestart = reject }) as never)
+    const store = gatewayStore(restartReadyStatus)
+    store.dispatch(sseConnected())
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.restart_to_update'))
+    await waitFor(() => expect(mockedApi.restartGateway).toHaveBeenCalledTimes(1))
+    act(() => { store.dispatch(sseDisconnected(null)) })
+    await act(async () => { rejectRestart(new TypeError('fetch failed')) })
+    await waitFor(() => expect(
+      screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting')),
+    ).toBeInTheDocument())
+    expect(screen.queryByTestId('update-found-action-error')).toBeNull()
+    expect(byName('components.updateFoundModal.dismiss')).toBeDisabled()
+  })
+
+  it('a restart request that fails once the socket has dropped stays on restarting', async () => {
+    // The gateway went down under the request: the restart the person asked for.
+    mockedApi.restartGateway.mockRejectedValue(new TypeError('fetch failed'))
+    await mount(undefined, gatewayStore(restartReadyStatus))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.restart_to_update'))
+    await waitFor(() => expect(
+      screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting')),
+    ).toBeInTheDocument())
+    expect(screen.queryByTestId('update-found-action-error')).toBeNull()
   })
 
   it('an unrelated progress event before any apply here leaves the modal alone', async () => {
@@ -701,8 +883,29 @@ describe('UpdateFoundModal — gateway source', () => {
     expect(screen.getByTestId('in-app-update-action')).toBe(action)
     expect(action).toHaveTextContent(/copy command/i)
     expect(screen.getByTestId('in-app-update-armed')).toHaveTextContent(/gateway host/i)
-    expect(screen.getByTestId('arm-countdown')).toBeInTheDocument()
+    // One line, the command and Copy: no countdown.
+    expect(screen.queryByTestId('arm-countdown')).not.toBeInTheDocument()
     expect(screen.queryByText('curl -fsSL zzq.sh | sh')).not.toBeInTheDocument()
+  })
+
+  it('an armable update is the title and one button: no body sentence, the hint in an info button', async () => {
+    await mount(undefined, gatewayStore({
+      update_available: true, update_latest_version: '8.8.8',
+      update_can_apply: false, update_can_arm: true,
+    }))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(screen.getByTestId('in-app-update-action')).toHaveTextContent(/update to v8\.8\.8/i)
+    expect(dialog()!).not.toHaveTextContent(/is available\./i)
+    const hint = i18nT('components.updateFoundModal.you_can_update_anytime_from_settings_about')
+    // Not shown in the body, but reachable from the keyboard as the info button's description.
+    expect(screen.queryByText(hint)).not.toBeInTheDocument()
+    const info = byName('components.infoTip.more_information')
+    fireEvent.focus(info)
+    expect(screen.getByRole('tooltip')).toHaveTextContent(hint)
+    expect(info).toHaveAccessibleDescription(hint)
+    // Skip and Remind me tomorrow stay.
+    expect(screen.getByRole('button', { name: i18nT('components.updateFoundModal.skip_this_version') })).toBeInTheDocument()
+    expect(byName('components.updateFoundModal.remind_me_tomorrow')).toBeInTheDocument()
   })
 
   it('an arm failure renders the shared error notice with agent hand-off', async () => {
@@ -843,6 +1046,35 @@ describe('UpdateFoundModal — mandatory update (update_required)', () => {
     // Nothing was persisted either: a forced prompt must not write snooze
     // records the next (voluntary) prompt would then honour.
     expect(mockedApi.patchConfig).not.toHaveBeenCalled()
+  })
+
+  it('a required armable offer armed for the next start turns into its restart, never a dead end', async () => {
+    // A managed venv on the stable link: the arm installs at the next start and
+    // answers `armed`. The dialog cannot be dismissed, so it must offer the restart.
+    mockedApi.armUpdate.mockResolvedValue({ ok: true, status: 'armed', version: '8.8.8' } as never)
+    mockedApi.restartGateway.mockResolvedValue({} as never)
+    const status = { ...requiredStatus, update_can_apply: false, update_can_arm: true } as StatusData
+    const store = gatewayStore(status)
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId('in-app-update-action'))
+    await waitFor(() => expect(mockedApi.armUpdate).toHaveBeenCalledTimes(1))
+    act(() => { store.dispatch(sseStatus({ ...status, update_armed_version: '8.8.8' } as StatusData)) })
+
+    const restart = await screen.findByRole('button', { name: i18nT('components.updateFoundModal.restart_to_update') })
+    expect(screen.getByText(i18nT('components.updateFoundModal.update_armed_note'))).toBeInTheDocument()
+    fireEvent.click(restart)
+    await waitFor(() => expect(mockedApi.restartGateway).toHaveBeenCalledTimes(1))
+  })
+
+  it('an armable offer whose arm names another version keeps its Update', async () => {
+    await mount(undefined, gatewayStore({
+      ...requiredStatus, update_can_apply: false, update_can_arm: true, update_armed_version: '8.8.7',
+    }))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(screen.getByTestId('in-app-update-action')).toHaveTextContent(/update to v8\.8\.8/i)
+    expect(screen.queryByRole('button', { name: i18nT('components.updateFoundModal.restart_to_update') }))
+      .not.toBeInTheDocument()
   })
 
   it('names the floor that made the update mandatory', async () => {

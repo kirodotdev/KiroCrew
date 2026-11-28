@@ -1,9 +1,12 @@
-"""``GET /api/agent-panel/dashboard/snapshot`` -- a picture of the caller's own page.
+"""``GET /api/agent-panel/dashboard/snapshot`` -- a picture and the text of the caller's
+own page.
 
 A crewmate writes its Dashboard page and cannot look at it. The save's page run already
 loads a page in a headless browser on the gateway host; this route runs the page IN FORCE
-the same way, over the crewmate's REAL read, and takes a PNG of the first paint, so the
-crewmate can judge both what its page says and how it looks.
+the same way, over the crewmate's REAL read, takes a PNG of the first paint and reads the
+whole page's rendered text with the frame's "not current" and "may be out of date" marks
+(``dashboard_page_image.read_text``), so the crewmate can judge both what its page says,
+below the first screen too, and how it looks.
 
 Which page, and whose
 ---------------------
@@ -38,6 +41,12 @@ one descriptor at a time with ``O_NOFOLLOW`` and the file is created ``O_EXCL``
 must not steer the gateway's write. Only the crewmate's own session is told the path. Like
 the crew logs its values come from, the file is not fenced at the OS level from another
 process running as the same user.
+
+The page's TEXT does travel in the body: ``snapshot.text`` (redacted whole, then cut at
+``dashboard_page_image.MAX_TEXT_CHARS`` characters, with the full length in
+``snapshot.text_length``), on an ``image`` and a ``no_image`` answer alike whenever the
+run read it, to the calling crewmate's own session only, after
+``member_dashboard._page_safe`` here and the MCP server's redaction pass there.
 
 Otherwise READ ONLY: nothing on the page or its versions is written, staged or recorded,
 and nothing is remembered between calls.
@@ -199,10 +208,18 @@ def _trim(dir_fd: int, *, keep: str) -> None:
             logger.debug("dashboard snapshot trim skipped %s", old, exc_info=True)
 
 
-def _no_image(reason: str, verification: Any = None) -> web.Response:
+def _with_text(snapshot: dict[str, Any], text: Any) -> dict[str, Any]:
+    """*snapshot* with the page's ``text`` and ``text_length`` when the run read any."""
+    if text is not None:
+        snapshot["text"] = text.text
+        snapshot["text_length"] = text.length
+    return snapshot
+
+
+def _no_image(reason: str, verification: Any = None, text: Any = None) -> web.Response:
     return web.json_response(
         {
-            "snapshot": {"status": STATUS_NO_IMAGE, "reason": reason},
+            "snapshot": _with_text({"status": STATUS_NO_IMAGE, "reason": reason}, text),
             "verification": verification,
         }
     )
@@ -216,11 +233,12 @@ async def _await_run(work: Any) -> Any:
 
 
 async def api_dashboard_snapshot(request: web.Request) -> web.Response:
-    """GET /api/agent-panel/dashboard/snapshot -- a PNG of your own page in force.
+    """GET /api/agent-panel/dashboard/snapshot -- a PNG and the text of your own page in force.
 
     See the module docstring. ``snapshot.status`` is ``image`` with ``path``, ``width``,
     ``height``, ``bytes``, ``package_version`` and ``data: "record"``, or ``no_image``
-    with a ``reason``; ``verification`` is the run's own block whenever a run started.
+    with a ``reason``; either carries ``text`` and ``text_length`` when the run read the
+    page's text. ``verification`` is the run's own block whenever a run started.
     """
     resolved, refusal = await _resolve_dashboard_caller(request, "dashboard_snapshot")
     if refusal is not None:
@@ -249,7 +267,7 @@ async def api_dashboard_snapshot(request: web.Request) -> web.Response:
 
     deadline = time.monotonic() + dashboard_verify.RUN_TIMEOUT_SECONDS
     try:
-        verification, image = await _await_run(
+        verification, image, text = await _await_run(
             asyncio.to_thread(
                 member_dashboard_fields.snapshot_package_page,
                 slug,
@@ -263,7 +281,7 @@ async def api_dashboard_snapshot(request: web.Request) -> web.Response:
             )
         )
     except TimeoutError:
-        verification, image = dashboard_verify.timed_out_wire(), None
+        verification, image, text = dashboard_verify.timed_out_wire(), None, None
     if verification is None:
         return _no_image("the page is a block layout, which has no page of its own to draw")
     if image is None or not image.png:
@@ -271,23 +289,26 @@ async def api_dashboard_snapshot(request: web.Request) -> web.Response:
         if reason == dashboard_verify._BUSY:
             # The runner's words name a save; here nothing was saved.
             reason = BUSY
-        return _no_image(reason or "the page was not drawn", verification)
+        return _no_image(reason or "the page was not drawn", verification, text)
     try:
         path = await asyncio.to_thread(spool_png, slug, image.png)
     except Exception:
         logger.warning("dashboard snapshot: %s's picture was not written", slug, exc_info=True)
-        return _no_image("the picture could not be written to a file", verification)
+        return _no_image("the picture could not be written to a file", verification, text)
     return web.json_response(
         {
-            "snapshot": {
-                "status": STATUS_IMAGE,
-                "path": path,
-                "package_version": version,
-                "width": image.width,
-                "height": image.height,
-                "bytes": len(image.png),
-                "data": dashboard_verify.DATA_RECORD,
-            },
+            "snapshot": _with_text(
+                {
+                    "status": STATUS_IMAGE,
+                    "path": path,
+                    "package_version": version,
+                    "width": image.width,
+                    "height": image.height,
+                    "bytes": len(image.png),
+                    "data": dashboard_verify.DATA_RECORD,
+                },
+                text,
+            ),
             "verification": verification,
         }
     )

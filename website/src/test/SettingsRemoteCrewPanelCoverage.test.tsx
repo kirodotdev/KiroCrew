@@ -11,7 +11,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { createTestStore, renderWithProviders } from './helpers'
+import { createConnectedTestStore, renderWithProviders } from './helpers'
 import type {
   CloudPreflight,
   InstanceView,
@@ -52,6 +52,8 @@ vi.mock('../api/client', () => {
       updateInstance: vi.fn(),
       instanceStatus: vi.fn(),
       patchConfig: vi.fn(),
+      // The Settings card reads the stored warm-set cap; an empty config is automatic.
+      kirocrewConfig: vi.fn(async () => ({})),
       cloudLaunches: vi.fn(),
       cloudPreflight: vi.fn(),
       cloudProvisioners: vi.fn(),
@@ -169,8 +171,8 @@ const list = (instances: InstanceView[], extra: { active?: boolean; warm_set_cap
 
 /** A store whose instances slice already holds a warm connection for `id`. */
 function storeWithWarm(id: string) {
-  const base = createTestStore().getState()
-  return createTestStore({
+  const base = createConnectedTestStore().getState()
+  return createConnectedTestStore({
     ...base,
     instances: {
       ...base.instances,
@@ -252,7 +254,7 @@ describe('RemoteCrewPanel — instance actions', () => {
       new Promise<InstanceTunnelStatus>(r => { release = r }) as ReturnType<typeof api.connectInstance>,
     )
     const u = setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     await u.click(await screen.findByRole('button', { name: 'Connect' }))
     // The busy key is per-instance, so the clicked row is the one that changes.
@@ -271,7 +273,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     vi.mocked(api.listInstances).mockResolvedValue(list([MANUAL_INSTANCE]))
     vi.mocked(api.connectInstance).mockRejectedValue(new ApiError(502, 'ssm tunnel refused'))
     const u = setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     await u.click(await screen.findByRole('button', { name: 'Connect' }))
     expect(await screen.findByText(/Connect to m1 failed: ssm tunnel refused/, undefined, { timeout: 5_000 })).toBeInTheDocument()
@@ -297,7 +299,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     vi.mocked(api.listInstances).mockResolvedValue(list([CONNECTED_MANUAL]))
     vi.mocked(api.disconnectInstance).mockRejectedValue(new Error('socket already gone'))
     const u = setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     await openRowMenu(u)
     await u.click(await screen.findByRole('button', { name: 'Disconnect' }))
@@ -328,7 +330,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     vi.mocked(api.disconnectInstance).mockResolvedValue({ disconnected: 'm1', was_connected: false })
     vi.mocked(api.removeInstance).mockRejectedValue(new ApiError(409, 'registry is locked'))
     const u = setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     await openRowMenu(u)
     await u.click(await screen.findByRole('button', { name: 'Remove dev-box-1' }))
@@ -518,7 +520,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     vi.mocked(api.disconnectInstance).mockResolvedValue({ disconnected: 'kc1', was_connected: true })
     vi.mocked(api.removeInstance).mockResolvedValue({ removed: 'kc1' } as never)
     const u = setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     await openRowMenu(u)
     await u.click(await screen.findByRole('button', { name: /Remove Kiro Crew Cloud/ }))
@@ -534,7 +536,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [DONE_JOB] })
     vi.mocked(api.cloudStop).mockRejectedValue(new ApiError(404, 'stack kc-3f9a not found'))
     const u = setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     await openRowMenu(u)
     await u.click(await screen.findByRole('button', { name: /^Stop Kiro Crew Cloud/ }))
@@ -555,7 +557,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [DONE_JOB] })
     vi.mocked(api.cloudStart).mockRejectedValue('nope')
     const u = setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     await openRowMenu(u)
     await u.click(await screen.findByRole('button', { name: /^Start Kiro Crew Cloud/ }))
@@ -570,7 +572,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [DONE_JOB] })
     vi.mocked(api.cloudDestroy).mockResolvedValue({ ok: true })
     const u = setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     // An absent cap falls back to the default rather than advertising "up to 0".
     expect(await screen.findByText(new RegExp(`Up to ${WARM_SET_CAP_AUTO_CEILING} stay warm at once`, 'i'))).toBeInTheDocument()
@@ -1225,7 +1227,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
     // on "Remove…" leaves the row showing nothing but a button with no undo.
     vi.mocked(api.listInstances).mockResolvedValue(list([MANUAL_INSTANCE]))
     const u = setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     await openRowMenu(u)
     await u.click(await screen.findByRole('button', { name: 'Remove dev-box-1' }))

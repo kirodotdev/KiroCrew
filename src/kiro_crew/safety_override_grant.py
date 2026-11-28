@@ -87,6 +87,9 @@ class SafetyOverride:
     # Class-level default lock for instances created via object.__new__() (e.g. tests).
     # Each real instance gets its own lock in __init__; this is just a safe fallback.
     _lock: threading.Lock
+    # Bumped by every deactivate, grant or none: a kept restore (``fence``) that
+    # sampled it before an owner's off-switch is refused at commit.
+    _off_epoch: int = 0
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -115,8 +118,8 @@ class SafetyOverride:
         # Ad-hoc TTL in force, seeded from ``agent.yolo_duration`` at startup.
         self._adhoc_ttl: int = self._ADHOC_TTL_DEFAULT
         # True when ``agent.yolo_duration`` is ``until_shutdown``: an ad-hoc grant
-        # then has no timed expiry and lasts until the process stops. Still
-        # in-memory, so it cannot survive a restart the way a DECLARED grant does.
+        # then has no timed expiry and lasts until the user stops Kiro Crew; any
+        # other exit keeps it (``kept_yolo`` restores it at the next boot).
         self._adhoc_until_shutdown: bool = False
         # Resolves the ad-hoc duration from LIVE config at activation time.
         # Installed in production by ``install_duration_resolver``; ``None`` in
@@ -278,7 +281,7 @@ class SafetyOverride:
 
     @property
     def adhoc_until_shutdown(self) -> bool:
-        """True when an ad-hoc grant should last until the process stops."""
+        """True when an ad-hoc grant should last until the user stops Kiro Crew."""
         return bool(self._adhoc_until_shutdown)
 
     @adhoc_until_shutdown.setter
@@ -347,8 +350,8 @@ class SafetyOverride:
 
         Every ad-hoc surface gets the SAME duration — see ``_ADHOC_TTL_DEFAULT``.
         When ``agent.yolo_duration`` is ``until_shutdown`` an ad-hoc grant has no
-        timed expiry and lasts until the process stops (still in-memory, so a
-        restart clears it). For the operator's declared
+        timed expiry and lasts until the user stops Kiro Crew (a restart keeps
+        it, see ``kept_yolo``). For the operator's declared
         ``dangerouslySkipPermissions`` grant, which is re-established on every
         startup, use :meth:`activate_declared` instead.
 
@@ -398,7 +401,15 @@ class SafetyOverride:
             "reason:approval_modes_policy_denies_yolo",
         )
 
-    def _commit_activation(self, source: str, *, ttl: int, permanent: bool) -> ActivationResult:
+    def _commit_activation(
+        self,
+        source: str,
+        *,
+        ttl: int,
+        permanent: bool,
+        fence: int | None = None,
+        age: float = 0.0,
+    ) -> ActivationResult:
         """Shared activation commit: audit fail-closed, then install the grant."""
         # Policy gate: an ``approval_modes`` deny of ``yolo`` disables YOLO
         # entirely, so arming is refused here BEFORE any commit — this covers the
@@ -416,9 +427,14 @@ class SafetyOverride:
         # The policy's ``yolo_max_seconds`` bounds every grant, so a permanent or
         # longer one is installed as a timed grant of the cap.
         cap = self._bounded_cap()
-        if cap and (permanent or ttl <= 0 or ttl > cap):
+        # A kept grant (``age`` > 0) counts its life from its ORIGINAL activation.
+        left = int(cap - age) if cap else 0
+        if cap and left <= 0:
+            self._log_policy_refusal(source, scope="")
+            return ActivationResult(active=False, ttl=0, source=source, activated_at_iso="")
+        if cap and (permanent or ttl <= 0 or ttl > left):
             permanent = False
-            ttl = cap
+            ttl = left
         now_mono = time.monotonic()
         now_wall = datetime.now(tz=timezone.utc)
         activated_at_iso = now_wall.isoformat()
@@ -474,18 +490,24 @@ class SafetyOverride:
         # holding the lock across it costs nothing.
         committed = False
         with self._lock:
-            if _yolo_policy_permitted_now():
+            cap = self._bounded_cap()
+            left = int(cap - age) if cap else 0
+            if (
+                _yolo_policy_permitted_now()
+                and (fence is None or (fence == self._off_epoch and not self._active))
+                and not (cap and left <= 0)
+            ):
                 # Re-read under the lock ``clamp_to_cap`` takes: a smaller cap
-                # installed during the audit above must bound this grant too.
-                cap = self._bounded_cap()
-                if cap and (permanent or ttl <= 0 or ttl > cap):
+                # installed during the audit above must bound this grant too,
+                # counted from the grant's original activation.
+                if cap and (permanent or ttl <= 0 or ttl > left):
                     permanent = False
-                    ttl = cap
+                    ttl = left
                 committed = True
                 self._active = True
                 self._source = source
                 self._permanent = permanent
-                self._activated_at = now_mono
+                self._activated_at = now_mono - max(0.0, age)
                 # Kept finite even when permanent so the 0.0 inactive sentinel and
                 # the renew grace window keep working; it is simply not consulted.
                 self._expires_at = now_mono + (ttl if ttl > 0 else self._MAX_TTL)
@@ -695,8 +717,16 @@ class SafetyOverride:
         """
         now_mono = time.monotonic()
         with self._lock:
-            if not self._active and self._expires_at <= 0.0:
-                return
+            self._off_epoch += 1
+            nothing = not self._active and self._expires_at <= 0.0
+        # Durable before it is acknowledged, grant or none: a kept grant the boot has
+        # not restored yet must not come back after a crash (``kept_yolo``).
+        from kiro_crew import kept_yolo
+
+        kept_yolo.drop_record()
+        if nothing:
+            return
+        with self._lock:
             # _active alone can overstate liveness: a lapsed TTL is only
             # reconciled when is_active() polls, so derive liveness the same
             # way renew() does — permanence or an unexpired deadline.

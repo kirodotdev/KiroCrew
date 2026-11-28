@@ -37,6 +37,9 @@ const FAILED_CARD_HEIGHT = 96
 /** The failure card sits a few pixels from its link: leaving one for the other
  *  crosses that gap, so the card closes only this long after the pointer left both. */
 export const LEAVE_GRACE_MS = 300
+/** Set on `<html>` while the layer listens for hovers with at least one provider:
+ *  the app list has resolved and the pointer listeners are attached. */
+export const LISTENING_ATTR = 'data-link-preview-listening'
 
 /** What the failure card says, by cause. */
 const FAILED_LINE: Record<FailureCause, string> = {
@@ -378,7 +381,12 @@ export default function LinkPreviewLayer() {
     doc.addEventListener('keydown', onKey)
     window.addEventListener('scroll', onScroll, true)
     window.addEventListener('blur', onBlur)
+    // A hover is a pointerover, which fires once as the pointer enters a link; a
+    // pointer already resting on one when these listeners attach is not seen.
+    // The document says when the layer is listening, so a hover can wait for it.
+    doc.documentElement.setAttribute(LISTENING_ATTR, '')
     return () => {
+      doc.documentElement.removeAttribute(LISTENING_ATTR)
       window.clearTimeout(timer)
       cancelGraceOf(graceRef)
       // A card shown through these listeners must not outlive them. Nor may a

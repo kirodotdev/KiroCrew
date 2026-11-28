@@ -11,7 +11,7 @@ import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { useAnchorTracking } from '../hooks/useAnchorTracking'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 import { skillsCacheStaleTime } from '../lib/skillsCache'
-import { makeScoreThenNameComparator } from '../utils/fuzzyMatch'
+import { dollarToken, leafOf, rankSkills } from '../lib/skillPickerSearch'
 import type { SendMode } from '../pages/chat/ChatSettings'
 
 import { i18nT } from '../i18n/t'
@@ -23,9 +23,12 @@ import { i18nT } from '../i18n/t'
 
 interface SkillItem {
   key: string          // full key, e.g. "WorkforceEmploymentKnowledgeBase/oncall-handover"
-  name: string
+  name: string         // `name:` from SKILL.md; the key when the frontmatter has none
   description: string
   source?: string      // kirocrew | aim | kiro-user | kiro-workspace
+  // Keys the listing dropped when it collapsed two spellings of this same
+  // SKILL.md (e.g. the loader's bare key under a `kiro-user/` row).
+  aliases?: string[]
   // Only present on `kiro-workspace` rows: whether the operator has granted
   // this project directory trust. An untrusted row is LISTED but not usable —
   // its `$token` would expand to nothing, because SkillsLoader gates the
@@ -67,69 +70,6 @@ interface Props {
    * Enter is a newline, so the announcement must name Ctrl+Enter instead.
    */
   sendOnEnter?: SendMode
-}
-
-// The `package/<q>:<rel>` root qualifier minted by the backend's
-// `package_root_qualifier`; `split_package_key` accepts only this exact shape.
-const PACKAGE_QUALIFIER = /^[0-9a-f]{16}:(?=.)/
-
-// Last path segment of a skill key — this is what `$token` matches against.
-// The `$` token grammar stops at `:`, so a qualified copy is invoked by its
-// bare name and the agent's mapping picks the copy.
-function leafOf(key: string): string {
-  const i = key.lastIndexOf('/')
-  const leaf = i === -1 ? key : key.slice(i + 1)
-  return leaf.replace(PACKAGE_QUALIFIER, '')
-}
-
-// Whether `leaf[i]` starts a word: the first char, a char after a separator
-// (anything not a letter or digit), or a lower→Upper camelCase step.
-function startsWord(leaf: string, i: number): boolean {
-  if (i === 0) return true
-  const prev = leaf[i - 1]
-  if (!/[a-z0-9]/i.test(prev)) return true
-  return /[a-z]/.test(prev) && /[A-Z]/.test(leaf[i])
-}
-
-// Fuzzy score of a leaf that does NOT contain the query as a substring, or
-// null. The query must split into runs that each start a word of the leaf,
-// so `$tpull` finds `ticket-pull`, `$tc` finds `ticket-close` and `$onhand`
-// finds `oncall-handover`, while a stray word such as `$hello` does not pick
-// up a skill whose letters merely appear in order — Enter selects the top
-// row, so a loose match would swallow the send. Every alignment is tried, not
-// only the leftmost one: `$ps` reaches the `s` of `shopper` in
-// `personal-shopper` past the mid-word `s` of `personal`. Fewer runs score
-// higher, then a shorter leaf.
-function wordFuzzyScore(query: string, leaf: string): number | null {
-  const q = query.toLowerCase()
-  const l = leaf.toLowerCase()
-  if (!q) return null
-  // Word starts read the original casing (camelCase) only when lowercasing
-  // kept every index in place; a few characters lowercase to two.
-  const cased = l.length === leaf.length ? leaf : l
-  // Fewest runs that place q[qi..] after a match at `prev` (-1 = none yet),
-  // or Infinity. Memoized on (qi, prev): a leaf and a query are both short,
-  // so this is at most |q| * |leaf| states.
-  const memo = new Map<number, number>()
-  const runs = (qi: number, prev: number): number => {
-    if (qi === q.length) return 0
-    const key = qi * (l.length + 1) + prev + 1
-    const hit = memo.get(key)
-    if (hit !== undefined) return hit
-    let best = Infinity
-    // Extend the current run.
-    if (prev >= 0 && l[prev + 1] === q[qi]) best = runs(qi + 1, prev + 1)
-    // Or start a new run at a later word start.
-    for (let i = prev + 1; i < l.length; i++) {
-      if (l[i] !== q[qi] || !startsWord(cased, i)) continue
-      best = Math.min(best, 1 + runs(qi + 1, i))
-    }
-    memo.set(key, best)
-    return best
-  }
-  const n = runs(0, -1)
-  if (!Number.isFinite(n)) return null
-  return 1000 - 10 * n - leaf.length
 }
 
 // A workspace skill the operator has not consented to yet.
@@ -188,6 +128,10 @@ export default function SkillPickerMenu({
   // ChatInput's focus-prefetch — same query key, same queryFn — stays
   // interchangeable with this reader).
   const { items, agentScoped, scopedAgent } = useMemo(() => unwrapSkills(data), [data])
+  // Current at keypress time, like resultsRef: `choose` reads the whole catalog
+  // to decide whether a chosen row's leaf is shared.
+  const itemsRef = useRef<SkillItem[]>([])
+  itemsRef.current = items
 
   // The pinned scope footer shows for ANY scoped non-empty catalog — including
   // one the typed query filtered to zero rows, where "No matching skills"
@@ -203,43 +147,29 @@ export default function SkillPickerMenu({
     const r = resultsRef.current
     const s = r[idx >= r.length ? 0 : idx]
     if (!s) return
-    const info = { leaf: leafOf(s.key || s.name), key: s.key || s.name }
+    // `leaf` is the text inserted after `$`: the last folder while unique in
+    // the catalog, else the loader key, so same-leaf skills each resolve
+    // (#42694). Listed rows always have one (rankSkills hides the rest); the
+    // leaf fallback only guards the type.
+    const key = s.key || s.name
+    const info = { leaf: dollarToken(s, itemsRef.current) ?? leafOf(key), key }
     // Route an unconsented project skill to the consent step. Inserting its
     // token instead would look like success and then do nothing at all.
     if (needsTrust(s) && onTrustRequest) onTrustRequest(info)
     else onSelect(info)
   }, [onSelect, onTrustRequest])
 
-  // Filter by leaf name (case-insensitive). Leaf-substring matches come first,
-  // in catalog order; leaves that only match as word-start fuzzy (see
-  // wordFuzzyScore) follow, best score first. Empty query lists all, capped
-  // for menu height. Dedupe by leaf so the same $token isn't ambiguous
-  // (mirrors the backend's leaf-addressed resolution). Memoized (not computed
-  // in the ordering effect below) so the keyboard-release gate reads the SAME
-  // render's match set — a gate derived from the `results` state would lag one
-  // effect flush behind and could release Enter while matches exist.
-  const matched = useMemo(() => {
-    const q = query.toLowerCase()
-    const seen = new Set<string>()
-    const exact: SkillItem[] = []
-    const fuzzy: { item: SkillItem; leaf: string; score: number }[] = []
-    for (const s of items) {
-      const rawLeaf = leafOf(s.key || s.name)
-      const leaf = rawLeaf.toLowerCase()
-      if (seen.has(leaf)) continue
-      if (!q || leaf.includes(q)) {
-        seen.add(leaf)
-        exact.push(s)
-        continue
-      }
-      const score = wordFuzzyScore(q, rawLeaf)
-      if (score === null) continue
-      seen.add(leaf)
-      fuzzy.push({ item: s, leaf: rawLeaf, score })
-    }
-    fuzzy.sort(makeScoreThenNameComparator((f) => f.score, (f) => f.leaf))
-    return [...exact, ...fuzzy.map((f) => f.item)].slice(0, 50)
-  }, [items, query])
+  // Filter and rank (case-insensitive) against the skill's `name:`, its last
+  // folder, every path segment and the full key — see rankSkills (#42694):
+  // exact and prefix matches on name/leaf first, then path segments, then
+  // substrings, then word-start fuzzy matches best score first. Empty query
+  // lists all, capped for menu height. Rows are deduped by leaf so the same
+  // $token isn't ambiguous (mirrors the backend's leaf-addressed resolution).
+  // Memoized (not computed in the ordering effect below) so the
+  // keyboard-release gate reads the SAME render's match set — a gate derived
+  // from the `results` state would lag one effect flush behind and could
+  // release Enter while matches exist.
+  const matched = useMemo(() => rankSkills(items, query).slice(0, 50), [items, query])
 
   // "Settled and genuinely empty": only then does the menu have no claim on
   // Enter/Tab — release them so the composer's own Enter action still works
@@ -410,9 +340,17 @@ export default function SkillPickerMenu({
         className="overflow-y-auto flex-1 min-h-0"
       >
         {results.length === 0 ? empty : results.map((s, i) => {
-          const leaf = leafOf(s.key || s.name)
+          const key = s.key || s.name
           const gated = needsTrust(s)
-          const info = { leaf, key: s.key || s.name }
+          const token = dollarToken(s, items) ?? leafOf(key)
+          const info = { leaf: token, key }
+          // The bold label IS the token a pick inserts (`$leaf`, or the full
+          // key for a shared leaf), so what the row says is what the user can
+          // later type by hand. The skill's `name:` and its path go on the
+          // second line whenever they add something the token does not, so two
+          // groups' same-leaf skills read apart (#42694).
+          const name = s.name && s.name !== token && s.name !== leafOf(key) && s.name !== key ? s.name : ''
+          const showPath = key !== token && key !== s.name
           return (
             <div
               role="option"
@@ -433,9 +371,19 @@ export default function SkillPickerMenu({
                 ? <Lock size={14} className="shrink-0 lucide-inline" />
                 : <Sparkles size={14} className="shrink-0 lucide-inline" />}
               <div className="flex-1 min-w-0">
-                <div className={`text-[13px] font-mono font-semibold truncate ${gated ? 'text-muted' : ''}`}>${leaf}</div>
-                <div className="text-[11px] text-muted truncate">
-                  {gated ? i18nT('components.skillPickerMenu.trust_needed_hint') : (s.description || s.key)}
+                <div className={`text-[13px] font-mono font-semibold truncate ${gated ? 'text-muted' : ''}`}>${token}</div>
+                <div className="text-[11px] text-muted flex gap-2 min-w-0">
+                  {gated
+                    ? <span className="truncate">{i18nT('components.skillPickerMenu.trust_needed_hint')}</span>
+                    : <>
+                        {/* Every span shrinks and truncates: on a 320px composer
+                            the name and path alone outrun the row, and a fixed
+                            pair would scroll the listbox sideways and squeeze
+                            the description to nothing. */}
+                        {name && <span className="min-w-0 truncate" data-testid="skill-name">{name}</span>}
+                        {showPath && <span className="font-mono min-w-0 truncate" data-testid="skill-path">{key}</span>}
+                        <span className="min-w-0 truncate">{s.description || (showPath || name ? '' : key)}</span>
+                      </>}
                 </div>
               </div>
               {gated

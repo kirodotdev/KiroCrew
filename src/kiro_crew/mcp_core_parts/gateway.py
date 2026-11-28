@@ -518,6 +518,9 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
     message = raw or str(exc)
     counted = False
     code = ""
+    request_id = ""
+    replay = ""
+    replay_attempt: int | None = None
     hints: dict[str, str] = {}
     if raw:
         try:
@@ -534,6 +537,20 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
                 raw_code = parsed.get("code")
                 if isinstance(raw_code, str) and _re.fullmatch(r"[a-z0-9_.-]{1,64}", raw_code):
                     code = raw_code
+                # The request id a replayed session-control refusal echoes, which is
+                # how ``mcp_session_once`` tells the first post's own refusal from a
+                # resend's. Kept only in the shape the tool mints.
+                raw_request_id = parsed.get("request_id")
+                if isinstance(raw_request_id, str) and _re.fullmatch(
+                    r"[0-9a-f]{32}", raw_request_id
+                ):
+                    request_id = raw_request_id
+                raw_replay = parsed.get("replay")
+                if raw_replay in ("first", "unsaved", "replayed"):
+                    replay = raw_replay
+                raw_attempt = parsed.get("replay_attempt")
+                if type(raw_attempt) is int and 0 <= raw_attempt < 100:
+                    replay_attempt = raw_attempt
                 # The how-to-retry text a refusal carries next to its sentence
                 # (deploy's "use ttl_hours=0" and the command to run). Redacted
                 # below with the message, since it is the same untrusted body.
@@ -545,58 +562,30 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
             pass
     message, _ = redact_exfiltration_urls(message)
     message, _ = redact_credentials(message)
-    if code == "internal_auth_mismatch":
-        # The auth layer's bare "Forbidden" looks like a permission denial on
-        # the tool's subject, but this is an instance mix-up: the credential
-        # this client read belongs to a different gateway generation than the
-        # one on the port it dialled. Rewritten here so every tool gets it from
-        # one place, and keyed on the CODE because a real permission denial has
-        # the same body.
-        message = (
-            "this client authenticated against the wrong Kiro Crew instance. "
-            "The credential it read does not match the gateway now serving that "
-            "port, usually because a second gateway started on this machine and "
-            "replaced the shared credential file. Restart the gateway (or target "
-            "the instance you meant) and retry; the gateway's security event log "
-            "records both credential fingerprints for the mismatch."
-        )
-    elif code == "internal_secret_missing":
-        message = (
-            "the gateway received no internal credential from this client. A "
-            "sandbox or harness mask that withholds it, or a desynchronized "
-            "credential listener, are possible causes. This is not a "
-            "second-gateway mix-up. The gateway's security event log marks "
-            "these denials as received=absent."
-        )
-    elif code in ("ipc_capability_invalid", "ipc_session_unbound", "ipc_session_mismatch"):
-        # The agent-socket capability this server holds does not admit it: the
-        # gateway that issued it is gone, or so is the session it names.
-        message = (
-            "this tool server's connection to the gateway does not admit it for this "
-            "session. Start a new session and retry."
-        )
-    elif code == "caller_record_missing":
-        message = (
-            "this session's cron or subagent record no longer exists; start a new "
-            "session before retrying the tool."
-        )
-    elif code == "unix_peer_unverified":
-        message = (
-            "the gateway could not verify this Unix-socket caller as the same local "
-            "user. Restart the gateway and start a new session; if the error persists, "
-            "make sure the client and gateway run as the same OS user."
-        )
-    elif code == "peer_session_mismatch":
-        message = (
-            "this Unix-socket caller is bound to a different session than the "
-            "X-Session-Key it declared. Restart the affected session, or start a new "
-            "one, before retrying the tool."
-        )
+    # In-function: a module-scope import would be served on the mcp_core facade.
+    from kiro_crew.auth_refusal_text import auth_refusal_text
+
+    explained = auth_refusal_text(code)
+    if explained:
+        # Every internal tool receives the auth layer's bare "Forbidden", which
+        # reads as a permission decision about the tool's own subject and sends
+        # the reader after the wrong bug. Rewritten HERE because all tool call
+        # sites already flow through this decoder, so one lookup covers them
+        # instead of one branch per tool -- and it is keyed on the CODE, since a
+        # genuine permission denial produces the same body and must not be given
+        # this explanation. The CLI reads the same table.
+        message = explained
     out: dict = {"error": message}
     if counted:
         out["counted"] = True
     if code:
         out["code"] = code
+    if request_id:
+        out["request_id"] = request_id
+    if replay:
+        out["replay"] = replay
+    if replay_attempt is not None:
+        out["replay_attempt"] = replay_attempt
     for key, value in hints.items():
         value, _ = redact_exfiltration_urls(value)
         value, _ = redact_credentials(value)

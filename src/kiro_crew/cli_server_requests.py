@@ -199,6 +199,9 @@ def _token(args: argparse.Namespace) -> None:
     # send gate is needed here; the live connected-peer verdict is the single
     # authority.
     url = f"http://{_CLI_LOOPBACK}:{port}/api/token/local?ttl={args.ttl}" + _embed_query(args)
+    bearer = bool(getattr(args, "bearer", False))
+    if bearer:
+        url += "&kind=session"
     req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
     try:
         with _owner_verified_secret_urlopen(
@@ -248,6 +251,10 @@ def _token(args: argparse.Namespace) -> None:
     if not token:
         print("❌ Gateway returned empty token", file=sys.stderr)
         sys.exit(1)
+    if bearer:
+        # The credential alone: a Crew API client sends it in ``Authorization: Bearer``.
+        print(token)
+        return
     _probe_dashboard_health(port)
 
     _emit_session_urls(port, token)
@@ -316,22 +323,24 @@ def _emit_session_urls(port: int, token: str) -> None:
                 file=sys.stderr,
             )
             return
-        tailnet_url = tailnet_origin()
+        https_port = cfg.dashboard.tailscale.https_port
+        tailnet_url = tailnet_origin(https_port)
         if tailnet_url and tailnet_url != origin:
-            # Ownership of the 443/ mount, not just "a tailnet name exists". The URL
+            # Ownership of the mount on the HTTPS port this URL carries
+            # (dashboard.tailscale.https_port), not just "a tailnet name exists". The URL
             # carries a bearer session, so printing it when something ELSE is serving
             # that name hands the operator a link that delivers their token to a
             # foreign service, which can then replay it against the dashboard.
             #
             # That state is reachable, not theoretical: `tailnet up` deliberately
-            # REFUSES to overwrite a foreign 443/ handler, so a host can sit with the
+            # REFUSES to overwrite a foreign handler on that port, so a host can sit with the
             # trust flag on and a resolvable name while the mount belongs to something
             # unrelated. The flag and the name were never evidence of ownership.
             #
             # `published` is tri-state and only True is safe: False means nothing is
             # serving, None means the serve config could not be read -- and unknown
             # ownership is exactly the risk, so it fails closed.
-            state = tailnet_serve.serve_state(port)
+            state = tailnet_serve.serve_state(port, https_port=https_port)
             if state.published is True:
                 print()
                 print(f"{tailnet_url}/?token={token}")
@@ -359,8 +368,26 @@ def _emit_session_urls(port: int, token: str) -> None:
             )
 
 
-def _logout(port: int) -> None:
-    """Revoke all dashboard sessions by calling the gateway's /api/logout endpoint."""
+def _logout(port: int, link: str | None = None) -> None:
+    """Revoke dashboard sessions by calling the gateway's /api/logout endpoint.
+
+    With *link* (a dashboard link or its bare token) only that link's credential
+    family ends: the link, every session it opened, and their refresh chains.
+    ``None`` is the distinct "no ``--link`` was given" ask, which ends every
+    session; a given-but-blank value is refused here rather than silently
+    becoming that one.
+    """
+    # A blank ``--link`` names no link, and the one thing it must NOT do is widen
+    # into the revoke-all: the operator asked to end one sign-in. Refuse before
+    # anything is read or sent.
+    if link is not None and not link.strip():
+        print(
+            "❌ --link needs a dashboard link or its token. To revoke every "
+            "session, run `kirocrew logout` with no --link.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # /api/logout acts on owner authority, so the secret must reach only this
     # install's own gateway. The authoritative proof is bound to the live
     # connection in _owner_verified_secret_urlopen (_connected_peer_verdict on
@@ -373,12 +400,14 @@ def _logout(port: int) -> None:
         print("❌ Gateway not running — start it with: kirocrew gateway", file=sys.stderr)
         sys.exit(1)
 
-    url = f"http://{_CLI_LOOPBACK}:{port}/api/logout"
+    # One link has its own route: a gateway that predates it refuses the path and
+    # changes nothing, where /api/logout would revoke every session.
+    url = f"http://{_CLI_LOOPBACK}:{port}/api/logout" + ("/link" if link is not None else "")
     req = urllib.request.Request(
         url,
         method="POST",
         headers={"X-Local-Secret": secret, "Content-Type": "application/json"},
-        data=b"{}",
+        data=json.dumps({"link": link}).encode() if link is not None else b"{}",
     )
     try:
         with _owner_verified_secret_urlopen(
@@ -386,7 +415,11 @@ def _logout(port: int) -> None:
         ) as resp:
             data = json.loads(resp.read())
             if data.get("ok"):
-                print("✅ All dashboard sessions revoked.")
+                print(
+                    "✅ That link and every session it opened are revoked."
+                    if link is not None
+                    else "✅ All dashboard sessions revoked."
+                )
             else:
                 print(
                     f"❌ Failed to revoke sessions: {data.get('error', 'unknown error')}",
@@ -406,6 +439,16 @@ def _logout(port: int) -> None:
         from kiro_crew.loopback_http import http_error_reason
 
         reason = http_error_reason(e)
+        # A gateway older than ``--link`` has no such route: its router answers 404,
+        # or its token gate refuses the unknown path first. Either way nothing changed.
+        if link is not None and (e.code == 404 or (e.code == 403 and reason == "Token required")):
+            print(
+                "❌ The running gateway predates `kirocrew logout --link`, so nothing was "
+                "revoked. Restart the gateway (`kirocrew restart`) to revoke one link, or "
+                "run `kirocrew logout` to revoke every dashboard session.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         print(
             f"❌ Failed to revoke sessions: HTTP {e.code}" + (f": {reason}" if reason else ""),
             file=sys.stderr,
@@ -534,5 +577,7 @@ def _update_approve() -> None:
         print(f"\n✅ Approved. v{body.get('version', pending.version)} is armed.")
         print("   It installs at the gateway's next start; nothing restarts now.")
         return
-    print(f"\n✅ Approved. The gateway is applying v{body.get('version', pending.version)}")
-    print("   and will restart itself; watch progress in the dashboard.")
+    # The apply only installs beside the running version: nothing restarts,
+    # and a restart before the install finishes stops it.
+    print(f"\n✅ Approved. The gateway is installing v{body.get('version', pending.version)}.")
+    print("   Once the dashboard shows it installed, run `kirocrew restart` to start it.")

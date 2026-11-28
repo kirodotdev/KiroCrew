@@ -39,12 +39,16 @@ from kiro_crew.instances.token_mint import (
     REMOTE_BIN_CANDIDATES,
     _build_ssh_argv,
     custom_remote_bin,
+    refused_plugin_message,
+    spawn_one_shot_ssh,
     ssh_spawn_argv_env,
 )
 from kiro_crew.instances.validation import (
     SshValidationError,
+    SsmTargetUnresolvedError,
     SsmValidationError,
     split_ecs_target,
+    split_ssm_resolver,
     validate_aws_profile,
     validate_aws_region,
     validate_remote_bin,
@@ -89,6 +93,11 @@ SSM_UNREACHABLE = "ssm_unreachable"
 # registered, or the wrong account/region looks like, as distinct from a node
 # that is listed but whose agent is offline.
 SSM_TARGET_MISSING = "ssm_target_missing"
+# SSM rung before the first: the row's asg:/param: target could not be looked up
+# as exactly one instance id (no such group or parameter, none or several
+# InService instances, a value that is no instance id, a refused read). It points
+# at the group or whatever publishes the parameter, not at the agent or network.
+SSM_TARGET_UNRESOLVED = "ssm_target_unresolved"
 # SSM second-rung failures the probe's own output tells apart from a gateway that
 # is simply not running, each worded with the crew setting that fixes it: the
 # AWS profile is refused ssm:SendCommand on the instance; sudo knows no Remote
@@ -122,6 +131,15 @@ _REASONS = {
     "Otherwise check the AWS profile and region, and that the instance has registered "
     "with SSM (agent running, instance profile granting AmazonSSMManagedInstanceCore).",
 }
+
+# ``ssm_target_missing`` for an asg:/param: target. The id came from the lookup,
+# so the remedy is never to type a fixed id over the resolver.
+_RESOLVED_TARGET_MISSING = (
+    "SSM lists no managed node with {target}, the id this crew's SSM target names now, in "
+    "this AWS account and region. If the instance is new, wait until its agent registers "
+    "with SSM (instance profile granting AmazonSSMManagedInstanceCore); if a parameter "
+    "holds an old id, update the parameter. Otherwise check the AWS profile and region."
+)
 
 # SSM variants of the shared rungs, worded for the SSM transport so the UI copy
 # never tells an SSM user to "check SSH access".
@@ -271,18 +289,17 @@ async def _run_ok(argv: list[str], timeout: float) -> bool:
     "ssh ran and failed".
     """
     argv, env = await asyncio.to_thread(ssh_spawn_argv_env, argv)
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
+    proc = await spawn_one_shot_ssh(
+        argv,
+        env,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
-        env=env,
     )
     try:
         await asyncio.wait_for(proc.wait(), timeout=timeout)
     except asyncio.TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
+        await kill_and_reap(proc)
         return False
     except asyncio.CancelledError:
         # A cancelled diagnosis (an instance edit, a gateway shutdown) must not
@@ -299,18 +316,17 @@ async def _run_stdout(argv: list[str], timeout: float) -> str | None:
     ``OSError`` rather than returning None.
     """
     argv, env = await asyncio.to_thread(ssh_spawn_argv_env, argv)
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
+    proc = await spawn_one_shot_ssh(
+        argv,
+        env,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
-        env=env,
     )
     try:
         stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
+        await kill_and_reap(proc)
         return None
     except asyncio.CancelledError:
         await kill_and_reap(proc)
@@ -350,7 +366,15 @@ async def diagnose_instance(
         return DiagnosisResult(SSH_CLIENT_MISSING, _REASONS[SSH_CLIENT_MISSING], probes)
     probes.append({"name": "ssh", "ok": ssh_ok})
     if not ssh_ok:
-        return DiagnosisResult(SSH_UNREACHABLE, _REASONS[SSH_UNREACHABLE], probes)
+        reason = _REASONS[SSH_UNREACHABLE]
+        refused = await asyncio.to_thread(refused_plugin_message)
+        if refused:
+            # This step sees no ssh stderr, so the plugin is only a possible cause.
+            reason += (
+                " If this host's ssh config runs session-manager-plugin in a ProxyCommand,"
+                f" this is the cause: {refused}"
+            )
+        return DiagnosisResult(SSH_UNREACHABLE, reason, probes)
 
     try:
         remote_ok = await _probe_remote_dashboard(ssh_host, remote_port, connect_timeout_secs)
@@ -545,6 +569,7 @@ async def diagnose_instance_ssm(
 ) -> DiagnosisResult:
     """SSM-transport diagnosis ladder — the SSM sibling of :func:`diagnose_instance`.
 
+        0. Resolver names one id?  ``asg:``/``param:`` lookup         → no ⇒ ssm_target_unresolved
         1. SSM node reachable?     ``describe-instance-information`` → no ⇒ ssm_unreachable,
                                    or ssm_target_missing when SSM lists no such node
         2. Remote dashboard up?    ``send-command`` + curl :RP        → no ⇒ remote_down,
@@ -554,11 +579,13 @@ async def diagnose_instance_ssm(
         else                                                              ⇒ ok
 
     Validates the SSM params first; an invalid target short-circuits to UNKNOWN
-    with a clear reason rather than dispatching an AWS call. All probes are
+    with a clear reason rather than dispatching an AWS call. Rung 0 runs only for
+    a resolver target, and its lookup's own message is the reason. All probes are
     read-only.
     """
+    resolver = split_ssm_resolver(ssm_target or "")
     try:
-        target = validate_ssm_target(ssm_target)
+        target = "" if resolver else validate_ssm_target(ssm_target)
         profile = validate_aws_profile(aws_profile)
         region = validate_aws_region(aws_region)
         run_as = validate_ssm_run_as(ssm_run_as)
@@ -568,6 +595,33 @@ async def diagnose_instance_ssm(
 
     probes: list[dict] = []
 
+    if resolver:
+        # The same lookup a connect makes, so the ladder walks the instance a
+        # connect would dial; what it finds is never stored.
+        kind, name = resolver
+        try:
+            target = validate_ssm_target(
+                await asyncio.wait_for(
+                    asyncio.to_thread(cloud_ssm.resolve_ssm_target, kind, name, profile, region),
+                    timeout=_SSM_PING_TIMEOUT_SECS,
+                )
+            )
+        except SandboxUnavailableError as e:
+            # The hub's own sandbox refused to start `aws`: no lookup ran.
+            probes.append({"name": "ssm_target_resolver", "ok": False})
+            return DiagnosisResult(UNKNOWN, str(e), probes)
+        except SsmTargetUnresolvedError as e:
+            probes.append({"name": "ssm_target_resolver", "ok": False})
+            return DiagnosisResult(SSM_TARGET_UNRESOLVED, str(e), probes)
+        except Exception as e:  # a timeout, or `aws` failing to start
+            probes.append({"name": "ssm_target_resolver", "ok": False})
+            return DiagnosisResult(
+                SSM_TARGET_UNRESOLVED,
+                f"could not look up {ssm_target!r}: {str(e) or type(e).__name__}",
+                probes,
+            )
+        probes.append({"name": "ssm_target_resolver", "ok": True})
+
     try:
         node = await _probe_ssm_managed(target, profile, region)
     except SandboxUnavailableError as e:
@@ -576,6 +630,10 @@ async def diagnose_instance_ssm(
         return DiagnosisResult(UNKNOWN, str(e), probes)
     probes.append({"name": "ssm_managed_node", "ok": node == _NODE_ONLINE})
     if node == _NODE_MISSING:
+        if resolver:
+            return DiagnosisResult(
+                SSM_TARGET_MISSING, _RESOLVED_TARGET_MISSING.format(target=target), probes
+            )
         return DiagnosisResult(SSM_TARGET_MISSING, _REASONS[SSM_TARGET_MISSING], probes)
     if node != _NODE_ONLINE:
         return DiagnosisResult(SSM_UNREACHABLE, _REASONS[SSM_UNREACHABLE], probes)

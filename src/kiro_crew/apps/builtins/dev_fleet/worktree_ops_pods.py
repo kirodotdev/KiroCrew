@@ -559,6 +559,72 @@ async def _pod_token(name: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+async def _pod_api(
+    name: str, method: str, path: str, data: str = "", *, allow_write: bool = False
+) -> dict:
+    """One authenticated request to the pod, as ``kirocrew pod api`` makes it.
+
+    The token is minted here, in the gateway, and spent on that one request over
+    the pod's private socket (``rt.pod_api``); the answer is the status and the
+    body with every form of the token scrubbed out, so the caller never holds it.
+    A method other than GET/HEAD is refused unless *allow_write* is set, the CLI's
+    own rule. Like :func:`_pod_token`, only the gateway can mint.
+    """
+    if live.running_in_backend():
+        return {
+            "ok": False,
+            "code": "wrong_process",
+            "error": "pod api must run in the gateway process, not in the Dev Fleet backend",
+        }
+    guard = await _pod_checkout_guard(name)
+    if guard:
+        return {"ok": False, "error": guard}
+    cfg = runtime._load_cfg()
+    if cfg is None:
+        return {"ok": False, "error": "PodConfig unavailable"}
+    target, ferr = await repository._find_worktree(name)
+    if target is None:
+        return {"ok": False, "error": ferr or f"unknown worktree: {name!r}"}
+    return await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(),
+        functools.partial(
+            _pod_api_locked, cfg, name, target["path"], method, path, data, allow_write
+        ),
+    )
+
+
+def _pod_api_locked(
+    cfg: Any,
+    name: str,
+    expected_checkout: str,
+    method: str,
+    path: str,
+    data: str,
+    allow_write: bool,
+) -> dict:
+    """Revalidate the pod's checkout pin and send the request under one name lock.
+
+    The guard above ran before this, so a pod taken down and brought up again from
+    another checkout under the same name in between would otherwise answer. Held
+    across the mint and the send, as :func:`_mint_pod_token_locked` holds it.
+    """
+    try:
+        with runtime.rt.pod_name_mutex(cfg, name):
+            env_exists, pinned = _read_pin_strict(cfg, name)
+            if not env_exists or not pinned:
+                return {"ok": False, "error": f"pod {name!r} has no verifiable checkout pin"}
+            if Path(pinned).resolve() != Path(expected_checkout).resolve():
+                return {"ok": False, "error": f"pod {name!r} is pinned to a different checkout"}
+            status, body = runtime.rt.pod_api(
+                cfg, name, method, path, data=data, allow_write=allow_write
+            )
+    except runtime.rt.PodError as exc:
+        return {"ok": False, "error": runtime._redact(str(exc))}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"pod api failed ({type(exc).__name__})"}
+    return {"ok": True, "status": status, "body": body}
+
+
 async def _pod_logs(name: str, n: int = 120) -> dict:
     guard = await _pod_checkout_guard(name)
     if guard:
@@ -670,6 +736,33 @@ async def _pod_provision(name: str) -> dict:
         )
         fleet_state._PROVISION_INFLIGHT[name] = rid
     return {"ok": True, "run_id": rid}
+
+
+#: Output lines a provision status answer carries, newest last.
+_PROVISION_TAIL_LINES = 40
+
+
+async def _pod_provision_status(name: str, run_id: str) -> dict | None:
+    """The state of provision run *run_id* for *name*, or None when it is not that run.
+
+    Only the run this process recorded for that worktree answers, so a run id from
+    another worktree or another process reads as unknown. Lines are redacted.
+    """
+    async with fleet_state._PROVISION_LOCK:
+        if fleet_state._PROVISION_INFLIGHT.get(name) != run_id:
+            return None
+    async with runtime._RUNS_LOCK:
+        run = runtime._RUNS.get(run_id)
+        if run is None:
+            return None
+        return {
+            "status": run.get("status"),
+            "exit_code": run.get("exit_code"),
+            "output": [
+                runtime._redact(line)
+                for line in list(run.get("output") or [])[-_PROVISION_TAIL_LINES:]
+            ],
+        }
 
 
 async def _pod_provision_dismiss(name: str, run_id: str) -> dict:

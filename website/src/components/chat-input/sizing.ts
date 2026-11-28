@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { markComposerResize } from '../../utils/composerResize'
-import { safeSetItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { useIsTouchDevice } from '../../hooks/useIsTouchDevice'
 import { useMeasuredHeight } from '../../hooks/useMeasuredHeight'
@@ -148,12 +148,12 @@ function measuredAtOtherWidth(el: HTMLTextAreaElement): boolean {
  *  The measurement happens on an off-screen twin (see `measuredContentHeight`),
  *  so this function's only write to the live element is its FINAL height.
  *
- *  `parked` is a hard precondition, not an optimisation. Voice hold mode and the
- *  dictation panel both keep the textarea mounted inside an `sr-only` box (value,
- *  caret and IME state have to survive the swap), and `sr-only` is a 1px clip — a
- *  textarea one pixel wide reports a `scrollHeight` of the better part of a
- *  viewport, which this function would then clamp to `cap` and WRITE BACK as an
- *  inline height. That height outlives the parking (nothing re-measures until
+ *  `parked` is a hard precondition, not an optimisation. Voice hold mode keeps
+ *  the textarea mounted inside an `sr-only` box (value, caret and IME state have
+ *  to survive the swap), and `sr-only` is a 1px clip — a textarea one pixel wide
+ *  reports a `scrollHeight` of the better part of a viewport, which this function
+ *  would then clamp to `cap` and WRITE BACK as an inline height. That height
+ *  outlives the parking (nothing re-measures until
  *  `value` changes again), so a single voice round-trip left the composer stuck
  *  at the 140px ceiling with an empty box, on a surface whose only way to shrink
  *  it — the drag handle's double-click — does not exist under a finger. */
@@ -224,7 +224,7 @@ export function useManualHeight({ wrapperRef, pendingFilesCount, pendingSessions
   /** The persisted drag-to-resize preference. Read `manualHeight` below instead —
    *  this is the raw stored value and is not what the composer renders at. */
   const [manualHeightPref, setManualHeight] = useState<number | null>(() => {
-    const saved = localStorage.getItem(INPUT_HEIGHT_LS_KEY)
+    const saved = safeGetItem(INPUT_HEIGHT_LS_KEY)
     const n = saved ? parseInt(saved, 10) : NaN
     return !isNaN(n) && n >= INPUT_MIN_H ? n : null
   })
@@ -360,18 +360,23 @@ export function useInputAreaKeyboardLift() {
   return { inputAreaRef, keyboardLift }
 }
 
-/** The strips stacked above the textarea (staged files and folders, session
- *  refs): their measured heights, the drag floor they raise, and the manual
- *  height's transient adjustment when one appears or leaves. */
-export function useStripHeights({ pendingFilesCount, pendingDirsCount, hasSessionRefs, setManualHeight, dragMinHRef }: {
+/** The strips stacked above the textarea (the terminal-mode header, staged
+ *  files and folders, session refs, running uploads): their measured heights, the drag floor they raise,
+ *  and the manual height's transient adjustment when one appears or leaves. */
+export function useStripHeights({ terminalActive, pendingFilesCount, pendingDirsCount, hasSessionRefs, uploadsRunning, setManualHeight, dragMinHRef }: {
+  /** A leading `!` has put the composer in terminal mode, which mounts its header row. */
+  terminalActive: boolean
   pendingFilesCount: number
   pendingDirsCount: number
   hasSessionRefs: boolean
+  uploadsRunning: boolean
   setManualHeight: (update: (h: number | null) => number | null) => void
   dragMinHRef: React.MutableRefObject<number>
 }) {
   const [fileStripRef, fileStripH] = useMeasuredHeight<HTMLDivElement>()
   const [sessionStripRef, sessionStripH] = useMeasuredHeight<HTMLDivElement>()
+  const [uploadStripRef, uploadStripH] = useMeasuredHeight<HTMLDivElement>()
+  const [terminalHeaderRef, terminalHeaderH] = useMeasuredHeight<HTMLDivElement>()
   /** Combined height of every strip currently stacked above the textarea,
    *  MEASURED rather than predicted from the strips' Tailwind classes. The
    *  manual-resize floor and the transient height adjustment below both work off
@@ -384,7 +389,7 @@ export function useStripHeights({ pendingFilesCount, pendingDirsCount, hasSessio
    *  is simply taller when measured, instead of needing a second predicted
    *  height, which is how the third constant came to exist in the first place.
    */
-  const stripH = fileStripH + sessionStripH
+  const stripH = terminalHeaderH + fileStripH + sessionStripH + uploadStripH
   /** Whether `stripH` describes what is actually on screen right now.
    *
    *  A measured height arrives one commit AFTER the strip mounts: the ref
@@ -394,15 +399,15 @@ export function useStripHeights({ pendingFilesCount, pendingDirsCount, hasSessio
    *  on every mount that already had something staged. Waiting for a mounted
    *  strip to report a non-zero box makes the first value a BASELINE rather
    *  than a change. */
-  const stripsMounted = pendingFilesCount > 0 || pendingDirsCount > 0 || hasSessionRefs
+  const stripsMounted = terminalActive || pendingFilesCount > 0 || pendingDirsCount > 0 || hasSessionRefs || uploadsRunning
   const stripHSettled = stripsMounted ? stripH > 0 : stripH === 0
   const prevStripH = useRef<number | null>(null)
   const dragMinH = INPUT_DRAG_MIN_H + stripH
   dragMinHRef.current = dragMinH
   // Adjust height transiently when a strip appears/disappears (not persisted —
-  // staged files and session refs are both session-scoped). Diffing the TOTAL
-  // rather than a per-strip boolean keeps the arithmetic correct when both
-  // strips change in the same commit (e.g. send clears files and refs at once).
+  // terminal mode, staged files, session refs and uploads are session-scoped). Diffing the
+  // TOTAL keeps the arithmetic correct when several strips change in the
+  // same commit (e.g. an upload completes and stages its file).
   useLayoutEffect(() => {
     if (!stripHSettled) return
     const prev = prevStripH.current
@@ -413,7 +418,7 @@ export function useStripHeights({ pendingFilesCount, pendingDirsCount, hasSessio
     setManualHeight(h => h !== null ? Math.max(INPUT_DRAG_MIN_H, h + (stripH - prev)) : h)
   }, [stripH, stripHSettled, setManualHeight])
 
-  return { fileStripRef, sessionStripRef, stripH }
+  return { terminalHeaderRef, fileStripRef, sessionStripRef, uploadStripRef, stripH }
 }
 
 /** Content-driven height for the textarea: every re-measure, and the paste
@@ -448,6 +453,11 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
 
   // Auto-resize textarea to fit content.
   const lastMeasuredValueRef = useRef(value)
+  // The first measurement after mount waits for the next frame: measuring
+  // reads layout, and inside the commit that mounts the composer (opening a
+  // session) that forces a layout of the whole page. The frame runs before
+  // the first paint, so the box is never drawn at the wrong height.
+  const firstMeasureRef = useRef(true)
   useEffect(() => {
     // A changed value here was set by the parent (the user's own edits already
     // followed the caret in handleInput); an unchanged one means the cap, the
@@ -455,7 +465,13 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
     // in. See `applyHeight` for why only the former must not follow the caret.
     const valueChanged = lastMeasuredValueRef.current !== value
     lastMeasuredValueRef.current = value
-    if (inputRef.current && !dragging.current) applyHeight(inputRef.current, manualHeight, prefillHint, textareaParked, !valueChanged)
+    const measure = () => {
+      if (inputRef.current && !dragging.current) applyHeight(inputRef.current, manualHeight, prefillHint, textareaParked, !valueChanged)
+    }
+    if (!firstMeasureRef.current) { measure(); return }
+    firstMeasureRef.current = false
+    const frame = requestAnimationFrame(measure)
+    return () => cancelAnimationFrame(frame)
   }, [value, prefillHint, manualHeight, textareaParked, boxMounted, inputRef, dragging])
 
   // A pre-filled prompt is read from its first line. When the seed REPLACES what
@@ -529,7 +545,11 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
   // is NOT followed here — a placeholder only shows over an empty box, so there is
   // no line of the user's to keep in view, and this effect also runs on a
   // parent-driven value change, where snapping is what the seeded-prompt rule forbids.
+  // Skipped on mount: the value effect's first measurement (next frame) reads
+  // the placeholder too.
+  const placeholderMountRef = useRef(true)
   useEffect(() => {
+    if (placeholderMountRef.current) { placeholderMountRef.current = false; return }
     const el = inputRef.current
     if (el && !dragging.current) applyHeight(el, manualHeight, prefillHint, parkedRef.current, false)
   }, [activePlaceholder, manualHeight, prefillHint, inputRef, dragging])

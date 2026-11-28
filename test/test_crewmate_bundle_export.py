@@ -524,6 +524,31 @@ def test_a_script_path_outside_the_cron_folder_is_refused(spec: str, tmp_path: P
     )
 
 
+def test_the_extended_spelling_of_a_cron_script_travels(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew import cron_script
+
+    root = _crons_root()
+    (root / "notes.py").write_text("def run(): pass\n", encoding="utf-8", newline="")
+    prefixed = "\\\\?\\" + str(root.resolve() / "notes.py")
+    monkeypatch.setattr(cron_script, "resolve_script_path", lambda spec: (spec, "run"))
+    assert ex.read_cron_script(prefixed, root) == ("notes.py", "run", "def run(): pass\n")
+    # A folder only the extended spelling reaches (``crons.``) stays home, though
+    # its plain spelling, the script's name and its suffix all pass. Modelled
+    # lexically: an ordinary Windows mkdir would trim the dot.
+    dotted = Path(str(root.resolve()) + ".")
+
+    class _DottedRoot:
+        def resolve(self) -> Path:
+            return dotted
+
+    monkeypatch.setattr(ex, "_read_capped", lambda *_a, **_k: b"def run(): pass\n")
+    plain = str(dotted / "notes.py")
+    expected = ("notes.py", "run", "def run(): pass\n")
+    assert ex.read_cron_script(plain, _DottedRoot()) == expected  # type: ignore[arg-type]
+    refused = ex.read_cron_script("\\\\?\\" + plain, _DottedRoot())  # type: ignore[arg-type]
+    assert isinstance(refused, ex.LeftOut) and refused.reason == ex.REASON_SCRIPT_REFUSED
+
+
 @pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
 def test_a_linked_script_and_a_script_holding_a_credential_stay_home() -> None:
     root = _crons_root()

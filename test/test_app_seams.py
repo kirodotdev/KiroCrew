@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from kiro_crew.apps import seams
+from kiro_crew.testing.wait import default_timeout
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,7 +29,7 @@ def _fresh_process(code: str) -> subprocess.CompletedProcess[str]:
         text=True,
         encoding="utf-8",
         check=False,
-        timeout=120,
+        timeout=default_timeout(),
         cwd=ROOT,
     )
 
@@ -40,6 +41,24 @@ def registry(monkeypatch):
     monkeypatch.setattr(seams, "_providers", dict(seams._providers))
     monkeypatch.setattr(seams, "_builtin_providers", dict(seams._builtin_providers))
     return seams._providers
+
+
+@pytest.fixture()
+def unloaded_registry(monkeypatch):
+    """An empty registry whose next lookup imports every builtin seams module again."""
+    from kiro_crew.apps import builtins
+
+    seams.crew_runtime()  # so every module the load imports is one teardown puts back
+    monkeypatch.setattr(seams, "_builtins_loaded", False)
+    monkeypatch.setattr(seams, "_providers", {})
+    monkeypatch.setattr(seams, "_builtin_providers", {})
+    monkeypatch.setattr(seams, "_worker_slot_modes", {})
+    for name in builtins.BUILTIN_NAMES:
+        package = f"{builtins.__name__}.{name}"
+        module = f"{package}.{seams.BUILTIN_SEAMS_MODULE}"
+        if module in sys.modules:
+            monkeypatch.delitem(sys.modules, module)
+            monkeypatch.delattr(sys.modules[package], seams.BUILTIN_SEAMS_MODULE)
 
 
 class TestTheRegistry:
@@ -104,11 +123,11 @@ async def resolve_consent_target():
 
 
 class TestAnInstalledCopyOfABuiltin:
-    """An adopted former built-in registers over the builtin's provider from ``on_startup``.
+    """An adopted former built-in registers in place of the builtin's provider from ``on_startup``.
 
     Its provider imports the copy's own modules at call time, so once a disable,
     update or uninstall unloads them it cannot answer, while the builtin's
-    provider it replaced answers whether or not the app is enabled.
+    provider it stands in for answers whether or not the app is enabled.
     """
 
     def test_unloading_the_copy_hands_the_seam_back_to_the_builtin(
@@ -141,6 +160,20 @@ class TestAnInstalledCopyOfABuiltin:
         assert policy is not None
         assert asyncio.run(policy.resolve_consent_target()) == ("wheel", "r")
 
+    def test_a_copy_that_registers_before_the_first_lookup_keeps_the_seam(self, unloaded_registry):
+        copy = object()
+        seams.register(seams.SEAM_AWS_ACCOUNT_POLICY, "aws-control", copy)
+        assert seams.aws_account_policy() is copy, "the builtin load replaced the copy"
+        seams.release_app("aws-control")
+        wheel = seams.aws_account_policy()
+        assert type(wheel).__module__ == "kiro_crew.apps.builtins.aws_control.seams", wheel
+
+    def test_a_copy_unloaded_before_the_first_lookup_hands_the_seam_back(self, unloaded_registry):
+        seams.register(seams.SEAM_AWS_ACCOUNT_POLICY, "aws-control", object())
+        seams.release_app("aws-control")
+        wheel = seams.aws_account_policy()
+        assert type(wheel).__module__ == "kiro_crew.apps.builtins.aws_control.seams", wheel
+
     def test_a_seam_no_builtin_provides_stays_with_its_app(self, registry):
         marker = object()
         seams.register("probe", "app-a", marker)
@@ -154,17 +187,11 @@ class TestAnInstalledCopyOfABuiltin:
         assert {k: v for k, v in registry.items() if k != "probe"} == before
         assert seams.provider("probe") == 1
 
-    def test_the_load_records_every_provider_it_registers(self):
+    def test_the_load_records_every_provider_it_registers(self, unloaded_registry):
         """Each shipped builtin's provider is kept for a hand-back, not only aws-control's."""
-        code = (
-            "from kiro_crew.apps import seams\n"
-            "seams.crew_runtime()\n"
-            "assert seams._providers, 'no builtin registered a seam'\n"
-            "assert seams._builtin_providers == seams._providers\n"
-            "print('ok')\n"
-        )
-        out = _fresh_process(code)
-        assert out.returncode == 0 and out.stdout.strip() == "ok", out.stderr
+        seams.crew_runtime()
+        assert seams._providers, "no builtin registered a seam"
+        assert seams._builtin_providers == seams._providers
 
 
 @pytest.fixture()

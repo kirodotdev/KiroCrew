@@ -20,8 +20,10 @@
     "Facts: transcript (interrupted / interrupted_long_ago / start_failed / finished / empty), running",
     "(the slot's own turn task is live), reserved (a turn admission is held but",
     "no turn has started), linked_turn_running (a channel-path turn holds the",
-    "linked session), subagents_running, under_construction, executor, mode,",
-    "agent and created_by (the Crew Mode lineage: a worker carries `crew_root`).",
+    "linked session), subagents_running, under_construction, executor,",
+    "cron_run_read_only (a cron run's transcript reopened read-only: its row",
+    "carries `cron_run_read_only: true`), mode, agent and created_by (the Crew",
+    "Mode lineage: a worker carries `crew_root`).",
     "A case's `crew_mode` is the pressing tab's Crew Mode preview: with it on,",
     "the sidebar's crewModeView leaves out a worker whose root is listed, and",
     "the press sends {crew_mode: true} so the server leaves it out too.",
@@ -87,6 +89,11 @@
           "key": "archive",
           "facts": {"transcript": "interrupted", "executor": "remote"},
           "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "remote"}
+        },
+        {
+          "key": "cron_0a1b2c3d_writer",
+          "facts": {"transcript": "interrupted", "cron_run_read_only": true},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "local", "cron_run_read_only": true}
         },
         {
           "key": "dm",

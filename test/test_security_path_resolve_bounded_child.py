@@ -26,6 +26,7 @@ import pytest
 from security_path_resolve_bounded_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _REAL_BLOCKED_IN_FILESYSTEM,
     _fresh_resolver_state,
+    _lift_resolver_budgets,
     _StalledResolver,
 )
 
@@ -104,7 +105,7 @@ def test_the_discriminator_reads_a_running_thread_as_not_blocked() -> None:
     assert _REAL_BLOCKED_IN_FILESYSTEM(proc_syscall(2**31 - 1)) is True
 
 
-def test_a_saturated_pool_refuses_without_charging_or_tracking(caplog) -> None:
+def test_a_saturated_pool_refuses_without_charging_or_tracking(caplog, monkeypatch) -> None:
     # THE QUEUED ARM, end to end on the real pool.  kirodotdev/KiroCrew#9482:
     # simultaneous cron fires lease both children, so a third resolution times
     # out having never been TAKEN by a child.  Lease wait is evidence about
@@ -124,6 +125,7 @@ def test_a_saturated_pool_refuses_without_charging_or_tracking(caplog) -> None:
             pool._free.put(child)
     # The pool freed: the very next call under the SAME prefix resolves
     # normally, with no inherited backoff from the refusal above.
+    _lift_resolver_budgets(monkeypatch)
     forms = security._candidate_forms("/home/someone/ws/file")
     assert os.path.normpath("/home/someone/ws/file") in forms
 

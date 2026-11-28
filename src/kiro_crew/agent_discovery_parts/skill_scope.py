@@ -187,6 +187,7 @@ def agent_skill_globs(
     strict: bool = False,
     inherit_defaults: bool = False,
     session_key: str = "",
+    member_id: str | None = None,
 ) -> list[str]:
     """Return fnmatch globs for the skills mapped to *agent*, or ``[]``.
 
@@ -202,7 +203,8 @@ def agent_skill_globs(
     snapshot for user-level agents; the selected path anchors relative skill URIs.
     Project agents keep precedence over the user-level pin.
     The crewmate conductor and worker resolve from the crewmate folder; *session_key*
-    names the worker's crewmate (``mate_worker.mate_service_scope_spec``).
+    names the worker's crewmate (``mate_worker.mate_service_scope_spec``), or
+    *member_id* does for a worker whose session is not opened yet.
     """
     if not agent:
         return []
@@ -210,7 +212,11 @@ def agent_skill_globs(
 
     data: dict[str, Any] | None
     path: Path | None
-    mate = mate_service_scope_spec(agent, session_key) if agents_dir is None else None
+    mate = (
+        mate_service_scope_spec(agent, session_key, member_id=member_id)
+        if agents_dir is None
+        else None
+    )
     if mate is not None:
         data, path = mate
         if data is None:
@@ -299,6 +305,31 @@ def served_provider_label(provider: object) -> str | None:
         return None
 
 
+#: A skill whose detail lives in a second skill, and that second skill. ``living-ui``
+#: sends an author to ``living-ui-blocks`` for its helper code, which a crewmate
+#: with no file tool reads only by key, so a scope that maps the first maps both.
+_COMPANION_SKILLS = {"living-ui": "living-ui-blocks"}
+
+
+def with_companion_skills(globs: list[str]) -> list[str]:
+    """*globs* plus the companion of every skill a glob names by its ``SKILL.md``.
+
+    A glob keeps the separator it was written with: a home-relative mapping on
+    Windows expands with ``\\``, so both separators are matched, and the
+    companion is spelled with the one the glob used.
+    """
+    out = list(globs)
+    for glob in globs:
+        for skill, companion in _COMPANION_SKILLS.items():
+            for sep in ("/", "\\"):
+                tail = f"{sep}{skill}{sep}SKILL.md"
+                if glob.endswith(tail):
+                    extra = f"{glob[: -len(tail)]}{sep}{companion}{sep}SKILL.md"
+                    if extra not in out:
+                        out.append(extra)
+    return out
+
+
 # This is called on the discovery/expansion worker, never on the event loop.
 def session_skill_globs(
     session_key: str,
@@ -318,10 +349,10 @@ def session_skill_globs(
 
     execution = read_session_execution(session_key) if session_key else None
     template = execution.template_id if execution and execution.template_id else fallback_agent
-    from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP
+    from kiro_crew.context import label_inherits_kiro_defaults
     from kiro_crew.skill_scope_pin import pinned_skill_globs
 
-    inherit = provider_type == PROVIDER_ACP
+    inherit = label_inherits_kiro_defaults(provider_type)
     pinned = pinned_skill_globs(
         session_key, project_dir=project_dir, strict=True, inherit_defaults=inherit
     )
@@ -336,4 +367,33 @@ def session_skill_globs(
             session_key=session_key,
         )
     )
-    return None if template in WHOLE_CATALOG_TEMPLATES and not mapped else mapped
+    if template in WHOLE_CATALOG_TEMPLATES and not mapped:
+        return None
+    return with_companion_skills(mapped)
+
+
+def child_skill_globs(
+    template: str,
+    member_id: str | None,
+    *,
+    project_dir: str | Path | None = None,
+    provider_type: str | None = None,
+) -> list[str] | None:
+    """:func:`session_skill_globs` for a session that is not opened yet.
+
+    The scope a child running *template* on *member_id*'s record will have, read by
+    the same rule: a Bot's worker from that Bot's merged kit, any other template from
+    its own spec. A newborn holds no pin, so none is consulted.
+    """
+    from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP
+
+    mapped = agent_skill_globs(
+        template,
+        project_dir=project_dir,
+        strict=True,
+        inherit_defaults=provider_type == PROVIDER_ACP,
+        member_id=member_id,
+    )
+    if template in WHOLE_CATALOG_TEMPLATES and not mapped:
+        return None
+    return with_companion_skills(mapped)

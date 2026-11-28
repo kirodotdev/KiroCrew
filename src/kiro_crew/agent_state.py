@@ -35,8 +35,8 @@ State file (``~/.kiro/crew/agent_model_state.json``, honoring ``KIROCREW_HOME``)
     }
 
 This is a near-leaf module: it imports only the stdlib plus the leaf
-``config.paths`` and ``atomic_write`` helpers, so it never participates in the
-``agent`` <-> ``config.loader`` import cycle.
+``config.paths``, ``atomic_write`` and ``unchanged_file`` helpers, so it never
+participates in the ``agent`` <-> ``config.loader`` import cycle.
 """
 
 from __future__ import annotations
@@ -56,6 +56,7 @@ from kiro_crew.agent_capabilities_resources import object_resource_key
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.bounded_read import bounded_read
 from kiro_crew.config.paths import config_dir
+from kiro_crew.unchanged_file import already_holds
 
 logger = logging.getLogger(__name__)
 
@@ -180,9 +181,17 @@ STATE_MAX_BYTES = 8 * 1024 * 1024
 
 def _write(data: dict) -> None:
     payload = json.dumps(data, indent=2, sort_keys=True, allow_nan=False) + "\n"
-    if len(payload.encode("utf-8")) > STATE_MAX_BYTES:
+    encoded = payload.encode("utf-8")
+    if len(encoded) > STATE_MAX_BYTES:
         raise ValueError("agent_state_too_large")
-    atomic_write(_state_path(), payload, restrict_to_owner=True)
+    path = _state_path()
+    # Every sandboxed spawn pins this file read-only, and a rename-in-place write
+    # gives it a new inode even when nothing changed, which refuses any spawn that
+    # starts in that second. Each agent-config rebuild writes here, so an unchanged
+    # document is left as it is.
+    if already_holds(path, encoded, mode=0o600):
+        return
+    atomic_write(path, payload, restrict_to_owner=True)
 
 
 # Schema-v1 section names live with their strict reader, below the resolver in
@@ -640,7 +649,12 @@ def begin_managed_write(name: str, pending: str, *, current: str | None = None) 
             entry = {}
         if isinstance(current, str) and current:
             entry[_MANAGED_DIGEST] = current
-        entry[_MANAGED_DIGEST_PENDING] = str(pending)
+        # Bytes that reproduce the finalized digest keep the file confirmable at every
+        # instant without a pending record, so an unchanged refresh leaves the sidecar
+        # untouched. A pending already recorded is still overwritten, so finalize never
+        # promotes a stale one.
+        if str(pending) != entry.get(_MANAGED_DIGEST) or _MANAGED_DIGEST_PENDING in entry:
+            entry[_MANAGED_DIGEST_PENDING] = str(pending)
         data[name] = entry
         _write(data)
 

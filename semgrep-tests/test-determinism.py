@@ -20,6 +20,8 @@ from unittest.mock import patch
 import pytest
 import pytest_asyncio
 
+from kiro_crew.testing.module_table import patched_sys_modules
+
 
 def test_sleeps(patched, done, subject):
     # ruleid: kirocrew.test-sleep-as-barrier
@@ -87,6 +89,47 @@ def test_reload(module):
     # An eviction is not a reload; test/test_flake_pattern_ratchet.py's K5 counts it.
     # ok: kirocrew.test-in-process-reload
     del sys.modules["json"]
+
+
+def test_module_table_patches(monkeypatch, fake):
+    # ruleid: kirocrew.test-sys-modules-patch-dict
+    with patch.dict("sys.modules", {"pip": None}):
+        pass
+    # ruleid: kirocrew.test-sys-modules-patch-dict
+    with patch.dict(sys.modules, {"pip": fake}):
+        pass
+    # ruleid: kirocrew.test-sys-modules-patch-dict
+    with mock.patch.dict(sys.modules):
+        pass
+    # ruleid: kirocrew.test-sys-modules-patch-dict
+    unittest.mock.patch.dict("sys.modules", {"pip": None}, clear=True)
+    # The call may span lines; the first argument is what is matched.
+    # ruleid: kirocrew.test-sys-modules-patch-dict
+    with patch.dict(
+        "sys.modules",
+        {"pip": None},
+    ):
+        pass
+    # ruleid: kirocrew.test-sys-modules-patch-dict
+    with mock.patch.dict(
+        sys.modules, {"pip": fake}
+    ):
+        pass
+    # ruleid: kirocrew.test-sys-modules-patch-dict
+    sys.modules.clear()
+    # Key-by-key restores never empty the table (D11).
+    # ok: kirocrew.test-sys-modules-patch-dict
+    with patched_sys_modules({"pip": None}):
+        pass
+    # ok: kirocrew.test-sys-modules-patch-dict
+    monkeypatch.setitem(sys.modules, "pip", fake)
+    # Another dict is not the module table.
+    # ok: kirocrew.test-sys-modules-patch-dict
+    with patch.dict(os.environ, {"A": "1"}):
+        pass
+    # ok: kirocrew.test-sys-modules-patch-dict
+    with patch.dict("os.environ", {"A": "1"}):
+        pass
 
 
 def test_clock_patches(monkeypatch, subject):

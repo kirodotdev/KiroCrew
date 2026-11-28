@@ -1,0 +1,83 @@
+name: Verify CLI Publish (no publish)
+
+# The nightly's CLI lane up to its gate, and nothing after it: build the pure
+# wheel and the four platform wheels exactly as nightly.yml does, then run
+# publish-cli.yml with `verify_only: true`, which runs its "Verify platform
+# wheels" gate and skips the publish job.
+#
+# Why it exists: a fix to the CLI lane (build-wheel.yml,
+# build-platform-wheels.yml, publish-cli.yml's gate, scripts/kas_platform_wheel.py)
+# could only be proven by a whole nightly after merge, about 150 minutes. This
+# runs the same chain in about 15, from any branch, and docs/ci's rule for
+# nightly-only workflows allows dispatching it because it publishes nothing:
+#   - no `secrets:` are passed, so publish-cli.yml has no role to assume;
+#   - the publish job is skipped by `verify_only` (and it would also need the
+#     `prod` environment, whose deployment policy admits only main and v* tags);
+#   - the version is a throwaway `.dev<stamp>` that no channel ever lists.
+#
+# The id-token / attestations grants on the `verify` caller are not used by any
+# job that runs: publish-cli.yml declares them at workflow level for its publish
+# job, and a caller that grants less fails the call at startup.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-cli-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  version:
+    name: Compute Verify Version
+    # Same runner choice and the same reason as nightly.yml's `version` job:
+    # a dispatch actor need not be on the fleet allowlist, and the LABEL (not
+    # `group:`) keeps a fork on the hosted image.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    outputs:
+      wheel_version: ${{ steps.stamp.outputs.wheel_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: src/kiro_crew/__init__.py
+          persist-credentials: false
+
+      - name: Compute version
+        id: stamp
+        run: |
+          set -euo pipefail
+          BASE=$(grep -m1 '__version__' src/kiro_crew/__init__.py | sed -E 's/.*= *"([^"]+)".*/\1/')
+          # Same PEP 440 shape as the nightly wheel (<base>.dev<YYYYMMDDHHMMSS>);
+          # it is never uploaded anywhere, so it only has to build.
+          echo "wheel_version=${BASE}.dev$(date -u +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
+
+  build-wheel:
+    name: Build Wheel
+    needs: [version]
+    uses: ./.github/workflows/build-wheel.yml
+    with:
+      wheel_version: ${{ needs.version.outputs.wheel_version }}
+      build_channel: nightly
+
+  build-platform-wheels:
+    name: Build Platform Wheels
+    needs: [build-wheel]
+    uses: ./.github/workflows/build-platform-wheels.yml
+
+  verify:
+    name: Verify CLI publish gate
+    needs: [version, build-wheel, build-platform-wheels]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-cli.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.wheel_version }}
+      wheel_artifact: cli-wheel
+      verify_only: true
+    # Deliberately no `secrets:`: this caller never publishes.

@@ -17,7 +17,7 @@ import { ApiError } from '../api/apiError'
 import { pendingRefresh } from '../api/refreshOnce'
 import { retryDelayPolicy, retryPolicy } from '../api/queryClient'
 import { reportSeamCollision } from '../apps/seamCollision'
-import { safeSetItem } from '../utils/safeStorage'
+import { safeGetItem, safeRemoveItem, safeSetItem } from '../utils/safeStorage'
 import {
   normalizeThemeSchedule,
   readStoredThemeSchedule,
@@ -862,10 +862,10 @@ const EMPTY_THEMES: ThemeEntry[] = []
  */
 function useThemeState(): ThemeContextValue {
   const [mode, setMode] = useState<ModePreference>(
-    () => (localStorage.getItem('mc-theme') as ModePreference) || 'system'
+    () => (safeGetItem('mc-theme') as ModePreference) || 'system'
   )
   const [colorTheme, setColorThemeState] = useState<ColorTheme>(
-    () => (localStorage.getItem('mc-color-theme') as ColorTheme) || DEFAULT_COLOR_THEME
+    () => (safeGetItem('mc-color-theme') as ColorTheme) || DEFAULT_COLOR_THEME
   )
   const [resolved, setResolved] = useState<ResolvedMode>(() => resolveMode(mode))
   // The per-slug detail the hook applies. Seeded from the render cache so a
@@ -898,7 +898,7 @@ function useThemeState(): ThemeContextValue {
     setCustomThemeDataMap(next)
     return true
   }, [])
-  const [onboarded, setOnboarded] = useState(() => !!localStorage.getItem('mc-onboarded'))
+  const [onboarded, setOnboarded] = useState(() => !!safeGetItem('mc-onboarded'))
   // Active installed theme's branding for shell text, left-rail logo, and favicon.
   const [brandName, setBrandName] = useState<string | null>(null)
   const [brandLogo, setBrandLogo] = useState<string | null>(null)
@@ -917,16 +917,23 @@ function useThemeState(): ThemeContextValue {
   const switchingRef = useRef(false)
   const dropReportRef = useRef<OverridesDropReport | null>(null)
   // Current colorTheme, read synchronously in setColorTheme (via a ref so its
-  // identity stays stable) to no-op a same-value re-select.
+  // identity stays stable) to no-op a same-value re-select, and by setMode_ to
+  // broadcast the colour it leaves unchanged.
   const colorThemeRef = useRef(colorTheme)
   useEffect(() => {
     colorThemeRef.current = colorTheme
   }, [colorTheme])
+  // Current mode, which setColorTheme broadcasts unchanged: storage may be
+  // blocked, and a default broadcast would reset the appearance.
+  const modeRef = useRef(mode)
+  useEffect(() => {
+    modeRef.current = mode
+  }, [mode])
   const [importOnboarded, setImportOnboarded] = useState(
-    () => !!localStorage.getItem('mc-import-onboarded') || !!localStorage.getItem('mc-onboarded'),
+    () => !!safeGetItem('mc-import-onboarded') || !!safeGetItem('mc-onboarded'),
   )
   const legacyOnboardedRef = useRef(
-    !!localStorage.getItem('mc-onboarded') && !localStorage.getItem('mc-import-onboarded'),
+    !!safeGetItem('mc-onboarded') && !safeGetItem('mc-import-onboarded'),
   )
   const legacyMigrationStartedRef = useRef(false)
   const [themeBootReady, setThemeBootReady] = useState(false)
@@ -1225,14 +1232,14 @@ function useThemeState(): ThemeContextValue {
         if (data.onboarded) {
           safeSetItem('mc-onboarded', '1')
         } else {
-          localStorage.removeItem('mc-onboarded')
+          safeRemoveItem('mc-onboarded')
         }
       }
       if (typeof data.import_onboarded === 'boolean') {
         if (data.import_onboarded) {
           safeSetItem('mc-import-onboarded', '1')
         } else {
-          localStorage.removeItem('mc-import-onboarded')
+          safeRemoveItem('mc-import-onboarded')
         }
       }
     }
@@ -1286,13 +1293,14 @@ function useThemeState(): ThemeContextValue {
     bridge?.setThemeMode?.(mode === 'schedule' ? resolved : mode)
   }, [mode, resolved, modeOverride])
 
-  // Sync the Windows titleBarOverlay colors whenever the resolved dark/light
+  // Sync the Windows titleBarOverlay colors whenever the painted dark/light
   // mode changes. The overlay strip must match the dashboard chrome at all
-  // times; sending on `resolved` (not `mode`) handles Auto switching correctly.
+  // times, a Remote Crew's lent mode included; the shell stores it on this
+  // window only, so no other window and no native theme takes it.
   useEffect(() => {
     const bridge = window.electronAPI
-    bridge?.setTitleBarOverlayTheme?.(resolved)
-  }, [resolved])
+    bridge?.setTitleBarOverlayTheme?.(painted)
+  }, [painted])
 
   // Read the target token, not body.backgroundColor: the body's colour
   // transition can still be between palettes when this frame runs.
@@ -1363,8 +1371,7 @@ function useThemeState(): ThemeContextValue {
     safeSetItem('mc-theme', pref)
     setMode(pref)
     setResolved(resolveMode(pref))
-    const ct = (localStorage.getItem('mc-color-theme') as ColorTheme) || DEFAULT_COLOR_THEME
-    broadcast(pref, ct)
+    broadcast(pref, colorThemeRef.current)
     persistTheme({ mode: pref })
   }, [persistTheme])
 
@@ -1400,8 +1407,7 @@ function useThemeState(): ThemeContextValue {
       setThemeSwitching(true)
     }
     setColorThemeState(t)
-    const m = (localStorage.getItem('mc-theme') as ModePreference) || 'system'
-    broadcast(m, t)
+    broadcast(modeRef.current, t)
     persistTheme({ color: t })
   }, [persistTheme, queryClient])
 

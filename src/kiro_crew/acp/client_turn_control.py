@@ -31,8 +31,11 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Collection
 from kiro_crew import mediated_request_capability
 from kiro_crew import sel as sel_module
 from kiro_crew.acp import batch_guard, launch_tuning, pi_steer_turn, transport_framing
-from kiro_crew.acp.client_claude_session import (
+from kiro_crew.acp.client_claude_session import (  # noqa: F401 -- CLAUDE_ACP_TESTED_VERSION
     CLAUDE_ACP_STEERING_MIN_VERSION,
+    CLAUDE_ACP_TESTED_INSTALL,
+    CLAUDE_ACP_TESTED_RANGE,
+    CLAUDE_ACP_TESTED_VERSION,
     _adapter_version_at_least,
 )
 from kiro_crew.acp.client_timeouts import (
@@ -164,12 +167,12 @@ def steer_version_issue(backend: str, agent_version: str) -> str:
 
 
 #: The goose release Crew's goose contract was recorded on: the goose capture README
-#: (``test/fixtures/acp_frames/goose/README.md``) names 1.50.1 for every capture but
-#: ``effort-live.jsonl`` (1.54.0, effort only), ``handshake-live.jsonl`` reports it,
-#: and ``agent_sdk/backends.py`` declares the VERIFIED RANGE 1.50.x (the range
-#: ``GOOSE_VERIFIED_VERSION_PREFIX`` logs against). Steer and effort were also measured
-#: on 1.54.0, but the routing contract was not. Lower bound inclusive, upper
-#: exclusive. goose is not in the real-adapter lane, so nothing measures another line.
+#: (``test/fixtures/acp_frames/goose/README.md``) names 1.50.1 for every capture,
+#: ``handshake-live.jsonl`` reports it, and ``agent_sdk/backends.py`` declares the
+#: VERIFIED RANGE 1.50.x (the range ``GOOSE_VERIFIED_VERSION_PREFIX`` logs against).
+#: Steer was also measured on 1.54.0, but the routing contract was not. Lower bound
+#: inclusive, upper exclusive. ``test_real_adapter_fixture_pins.py`` holds every goose
+#: capture to the lane pin.
 GOOSE_TESTED_VERSION = "1.50.1"
 GOOSE_TESTED_RANGE = ((1, 50, 0), (1, 51, 0))
 
@@ -178,12 +181,6 @@ GOOSE_TESTED_RANGE = ((1, 50, 0), (1, 51, 0))
 #: it. codex-acp numbers its releases by semver, so the tested range is its major.
 CODEX_ACP_TESTED_VERSION = "2.3.0"
 CODEX_ACP_TESTED_RANGE = ((2, 0, 0), (3, 0, 0))
-
-#: The claude-agent-acp release the Real Adapter Contract lane pins in
-#: ``test/real_adapters/package.json``, which the live claude captures report. Its
-#: releases are 0.x, where each minor line can break, so the tested range is 0.94.x.
-CLAUDE_ACP_TESTED_VERSION = "0.94.0"
-CLAUDE_ACP_TESTED_RANGE = ((0, 94, 0), (0, 95, 0))
 
 #: The pi-acp release the same lane pins (spawning pi 1.4.0), which the live pi captures
 #: report. It is 0.0.x, where each patch can break, so the range is that release.
@@ -222,11 +219,7 @@ _TESTED_VERSION_RANGES: dict[str, tuple[tuple[tuple[int, int, int], tuple[int, i
         f"npm i -g {ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_CODEX]}"
         f"@{CODEX_ACP_TESTED_RANGE[0][0]}",
     ),
-    ACP_BACKEND_CLAUDE: (
-        CLAUDE_ACP_TESTED_RANGE,
-        f"npm i -g {ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_CLAUDE]}"
-        f"@{CLAUDE_ACP_TESTED_VERSION}",
-    ),
+    ACP_BACKEND_CLAUDE: (CLAUDE_ACP_TESTED_RANGE, CLAUDE_ACP_TESTED_INSTALL),
     ACP_BACKEND_PI: (
         PI_ACP_TESTED_RANGE,
         f"npm i -g {ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_PI]}@{PI_ACP_TESTED_VERSION}",
@@ -986,7 +979,10 @@ def _release_accepted_steers(self: AcpClient, req_id: int, reason: str, refusal:
     """
     accepted = getattr(self, "_steers_accepted", None) or []
     self._steers_accepted = []
-    self._held_steer_unsent().update(text for _, text in self._held_steers())
+    unresolved = self._held_steer_writes()
+    self._held_steer_unsent().update(
+        text for _, text in self._held_steers() if text not in unresolved
+    )
     self._steers_held = []
     if self._steering_turn_req == req_id:
         self._steering_turn_req = None

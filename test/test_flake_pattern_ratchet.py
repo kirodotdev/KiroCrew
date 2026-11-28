@@ -33,6 +33,7 @@ import pytest
 import yaml
 from flake_pattern_js_detectors import JS_DETECTORS
 from flake_pattern_k8 import K8_CASES, k8_duration_bound
+from flake_pattern_read_after_exists import K23_CASES, K23_TRIGGERS, k23_read_after_exists_wait
 from flake_pattern_registry_pin import J7_CASES, K22_CASES, K22_TRIGGERS, k22_registry_pin
 from flake_pattern_shared_total import (
     K21_CASES,
@@ -322,6 +323,8 @@ def _restores_sys_modules(fn: ast.AST) -> bool:
                     return True
         if isinstance(node, ast.Call):
             name = _dotted(node.func)
+            if name.endswith("patched_sys_modules"):
+                return True
             if name.endswith(("setitem", "patch.dict", "delitem")) and node.args:
                 if _dotted(node.args[0]) == "sys.modules":
                     return True
@@ -911,6 +914,7 @@ PY_TRIGGERS: dict[str, tuple[str, ...]] = {
     "K18-xfail-strict-false": ("xfail",),
     "K19-short-literal-duration-arg": ("(",),
     "K20-on-loop-session-write": ("update_metadata",),
+    "K23-read-after-exists-wait": K23_TRIGGERS,
     "K21-shared-total-pin": K21_TRIGGERS,
     "K22-registry-pin": K22_TRIGGERS,
 }
@@ -935,6 +939,7 @@ PY_DETECTORS: dict[str, Callable[..., Iterable[ast.AST]]] = {
     "K18-xfail-strict-false": _k18_xfail_strict_false,
     "K19-short-literal-duration-arg": _k19_short_literal_duration_arg,
     "K20-on-loop-session-write": _k20_on_loop_session_write,
+    "K23-read-after-exists-wait": k23_read_after_exists_wait,
     "K21-shared-total-pin": k21_shared_total_pin,
     "K22-registry-pin": k22_registry_pin,
 }
@@ -1229,7 +1234,8 @@ PY_CASES: dict[str, tuple[tuple[str, ...], str]] = {
         ),
         # A restore in the same function, and the reload the reload rule refuses.
         "import importlib\nimport sys\ndef test_x(monkeypatch):\n    del sys.modules['m']\n"
-        "    sys.modules['m'] = saved\ndef test_y():\n    importlib.reload(mod)\n",
+        "    sys.modules['m'] = saved\ndef test_y():\n    importlib.reload(mod)\n"
+        "def test_z():\n    with patched_sys_modules():\n        del sys.modules['m']\n",
     ),
     "K6-raw-environ-write": (
         ("import os\ndef test_x():\n    os.environ['A'] = '1'\n",),
@@ -1396,6 +1402,7 @@ PY_CASES: dict[str, tuple[tuple[str, ...], str]] = {
         "    await asyncio.to_thread(lambda: log.update_metadata(k, {}))\n"
         "    def seed():\n        log.update_metadata(k, {})\n",
     ),
+    "K23-read-after-exists-wait": K23_CASES,
     "K21-shared-total-pin": K21_CASES,
     "K22-registry-pin": K22_CASES,
 }

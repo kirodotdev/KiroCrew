@@ -146,7 +146,7 @@ class TestRestoreRecentSessions:
         assert state._slots["nomode"].mode == ""
 
     def test_trust_flags_not_restored(self, tmp_path, monkeypatch):
-        """Trust flags in metadata are NOT restored — security boundary."""
+        """Agent-writable transcript metadata never restores trust; only ``kept-grants`` does."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         _write_session(
             tmp_path,

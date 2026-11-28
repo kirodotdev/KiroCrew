@@ -119,7 +119,10 @@ class KasRoute:
     bundle: bool
     reason: str = ""
     #: On the launcher relay: whether Crew's vault answers the engine's credential
-    #: callback too, so either sign-in can be the one that failed.
+    #: callback too, so either sign-in can be the one that failed. On a relay
+    #: :func:`resolve_kas_route` predicts with the automatic switch open: whether
+    #: the spawn enters through ``kiro-cli-chat`` on Crew's vault, so Crew's
+    #: sign-in alone starts it. A spawn records it only on the launcher relay.
     crew_auth: bool = False
 
     @property
@@ -169,6 +172,19 @@ class KasRoute:
 RELAY = KasRoute(bundle=False)
 
 
+def kiro_cli_api_key_set(environ: Mapping[str, str]) -> bool:
+    """Whether a ``KIRO_API_KEY`` reaches kiro-cli: inherited, or in the data home's ``.env``.
+
+    The key is a whole kiro-cli login on its own, with nothing in kiro-cli's
+    identity store. Blocking file IO; raises when the ``.env`` cannot be read.
+    """
+    from kiro_crew.config.loader import CRED_KIRO_API_KEY, read_env_file_credential
+
+    if (environ.get(CRED_KIRO_API_KEY) or "").strip():
+        return True
+    return bool(read_env_file_credential(CRED_KIRO_API_KEY))
+
+
 def kiro_cli_signed_out(*, environ: Mapping[str, str], home: Path) -> bool:
     """Whether kiro-cli's own sign-in is PROVEN absent on this host.
 
@@ -178,12 +194,8 @@ def kiro_cli_signed_out(*, environ: Mapping[str, str], home: Path) -> bool:
     a store that will not open, or a login this reader cannot identify, keeps
     the relay. Blocking file IO, SEL-audited by the store reader.
     """
-    from kiro_crew.config.loader import CRED_KIRO_API_KEY, read_env_file_credential
-
-    if (environ.get(CRED_KIRO_API_KEY) or "").strip():
-        return False
     try:
-        if read_env_file_credential(CRED_KIRO_API_KEY):
+        if kiro_cli_api_key_set(environ):
             return False
         from kiro_crew.kiro_prerequisite import (
             identity_fingerprint,
@@ -444,7 +456,10 @@ def resolve_kas_route(
     *pin* is the session's own Bot pin as stored (``crewmate_harness.route_pin``),
     judged by rule 2 as the spawn judges it; ``""`` asks about the installation.
     With the ``chat_runtime_sharing`` preview on, the bundle route is chosen
-    before the relay rules (:func:`sharing_preview_selects_bundle`).
+    before the relay rules (:func:`sharing_preview_selects_bundle`). With the
+    automatic switch open, the relay carries ``crew_auth`` when the vault holds
+    an identity and the spawn skips the launcher (:func:`crew_entry_skips_launcher`);
+    a stored Kiro CLI pick answers the plain relay.
 
     """
     from kiro_crew.config.loader import KiroCrewConfig
@@ -485,7 +500,10 @@ def resolve_kas_route(
         vault_identity=vault_identity,
         crew_entry_skips_launcher=skips_launcher,
     )
-    return KasRoute(bundle=True, reason=reason) if reason else RELAY
+    if reason:
+        return KasRoute(bundle=True, reason=reason)
+    # The harness swaps in the chat binary only for a vault spawn that skips the launcher.
+    return KasRoute(bundle=False, crew_auth=True) if vault_identity and skips_launcher else RELAY
 
 
 def relay_can_run(*, environ: Mapping[str, str] | None = None, home: Path | None = None) -> bool:

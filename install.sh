@@ -180,7 +180,7 @@ source_lane_notice() {
         branch:*)
             warn "This clone is on branch ${BOLD}${_lane_ref#branch:}${RESET}: the install follows that branch, not a release lane." ;;
         detached:*)
-            warn "This clone is pinned at ${BOLD}${_lane_ref#detached:}${RESET} (detached HEAD): git pull and kirocrew update cannot update it." ;;
+            warn "This clone is pinned at ${BOLD}${_lane_ref#detached:}${RESET} (detached HEAD): git pull cannot update it; a release-tag clone updates with kirocrew update --release VERSION." ;;
         *)
             warn "This is a from-source install: it follows the clone, not a release lane." ;;
     esac
@@ -956,6 +956,7 @@ echo "       ${GREEN}kirocrew setup${RESET}"
 echo ""
 echo "    ${CYAN}4.${RESET} Start the dashboard:"
 echo "       ${GREEN}kirocrew gateway${RESET}"
+echo "       Stop it with ${GREEN}kirocrew stop${RESET}."
 echo ""
 echo "    ${CYAN}5.${RESET} Open ${CYAN}http://localhost:${KIROCREW_PORT}${RESET} in your browser"
 echo ""
@@ -983,7 +984,7 @@ case "$(source_checkout_ref)" in
         detail "when it is only behind; a clone both ahead and behind is refused, and --force"
         detail "discards its local commits." ;;
     detached:*)
-        detail "A detached checkout has no branch to update from: switch to a branch"
-        detail "(git switch main) before updating, or use the one-line install." ;;
+        detail "A detached checkout has no branch to pull: switch to a branch"
+        detail "(git switch main) to follow one, or use the one-line install." ;;
 esac
 echo ""

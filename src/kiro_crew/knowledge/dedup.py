@@ -201,6 +201,26 @@ class DocRef:
         return (self.source_id, self.file_path or self.content_hash or "")
 
 
+def _collapse_whitespace_runs(text: str) -> str:
+    """Replace each maximal run of whitespace characters with one space.
+
+    ``_COPY_MODIFIER_RE`` holds two adjacent whitespace quantifiers, so its cost
+    grows with the cube of a whitespace run. After this pass no run is longer
+    than one character, which bounds that work for any document name.
+    """
+    out: list[str] = []
+    in_run = False
+    for ch in text:
+        if ch.isspace():
+            if not in_run:
+                out.append(" ")
+                in_run = True
+        else:
+            out.append(ch)
+            in_run = False
+    return "".join(out)
+
+
 def normalize_filename(name: str, date_re: re.Pattern[str] = _DATE_TOKEN_RE) -> str:
     """Lowercase, drop the extension, strip copy/date modifiers, collapse separators.
 
@@ -213,7 +233,7 @@ def normalize_filename(name: str, date_re: re.Pattern[str] = _DATE_TOKEN_RE) -> 
     stem = name.replace("\\", "/").rsplit("/", 1)[-1]
     if "." in stem:
         stem = stem.rsplit(".", 1)[0]
-    stem = stem.lower()
+    stem = _collapse_whitespace_runs(stem.lower())
     stem = _COPY_MODIFIER_RE.sub(" ", stem)
     stem = date_re.sub(" ", stem)
     stem = _SEP_RE.sub(" ", stem).strip()

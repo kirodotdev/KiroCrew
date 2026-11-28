@@ -767,6 +767,10 @@ async def spawn_backend(
         try:
             backend_tmp = await asyncio.to_thread(allocate_backend_tmp, pool_key.stable_hash())
             spawn_env.update(tmp_env(backend_tmp))
+            # Imported here so the facade's star-import surface stays as it was.
+            from kiro_crew.mcp_gateway.backend_tmp import warn_low_socket_room
+
+            warn_low_socket_room(backend_tmp)
         except OSError:
             has_inherited_temp = any(key.upper() in CANONICAL_TEMP_KEYS for key in spawn_env)
             fallback = "inherited temp" if has_inherited_temp else "platform default"
@@ -1015,6 +1019,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_gateway.backend_stubs import (  # noqa: F401
         _STUB_INBOX_MAXSIZE,
         _TOOL_SURFACE_PROBE_TIMEOUT_SECS,
+        _relabel_stub,
     )
     from kiro_crew.mcp_gateway.backend_wire import (  # noqa: F401
         _JSONRPC_SERVER_ERROR,

@@ -88,6 +88,7 @@ _LOCAL_CREDENTIAL_EXACT = frozenset(
         "/api/auth/refresh",
         # Authenticated by the local secret (X-Local-Secret) for the CLI.
         "/api/logout",
+        "/api/logout/link",
         "/api/update/revalidate",
         # The secrets vault.
         "/api/secrets",

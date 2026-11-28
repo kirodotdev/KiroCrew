@@ -47,3 +47,26 @@ test("a continuing error is logged again after the repeat interval", () => {
   probeLog("/api/apps returned HTTP 403");
   assert.equal(messages.length, 3);
 });
+
+test("an unchanged known state is not logged again after the repeat interval", () => {
+  const { probeLog, messages, advance } = probeHarness();
+  for (let i = 0; i < 12; i += 1) {
+    probeLog("mochi installed but disabled");
+    advance(300_000);
+  }
+  assert.deepEqual(messages, ["Mochi pet probe: mochi installed but disabled"]);
+});
+
+test("an error between unchanged known states does not re-log the state", () => {
+  const { probeLog, messages, advance } = probeHarness();
+  for (let i = 0; i < 5; i += 1) {
+    probeLog("/api/apps returned HTTP 403");
+    advance(5_000);
+    probeLog("mochi installed but disabled");
+    advance(80_000);
+    probeLog("mochi installed but disabled");
+    advance(231_000);
+  }
+  assert.equal(messages.filter((m) => m.endsWith("installed but disabled")).length, 1);
+  assert.equal(messages.filter((m) => m.endsWith("HTTP 403")).length, 5);
+});

@@ -33,6 +33,7 @@ import {
 } from '../../lib/sttProviders'
 import { parseErrorCode, parseErrorField, reportForError, sendErrorToChat } from '../../utils/errorReport'
 import { PttTestStrip } from '../../components/PttTestStrip'
+import { PointerHoldConfig } from './SttPointerHoldSettings'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import SttRetentionNote from './SttRetentionNote'
 import SpeechProviderNotice from '../../components/SpeechProviderNotice'
@@ -48,6 +49,7 @@ import {
   isBareModifier,
   IS_MAC,
   loadPttConfig,
+  PTT_CHANGED_EVENT,
   type PttMode,
   savePttConfig,
   SELECTABLE_BARE_CODES,
@@ -57,6 +59,7 @@ import {
 import { i18nT } from '../../i18n/t'
 import { WorkConfirmDeclined } from '../../utils/workInFlight'
 import { useRestartRefusal } from '../../hooks/useRestartRefusal'
+import { useAppStore } from '../../store'
 import ErrorNotice from '../../components/ErrorNotice'
 import { errMessage } from '../../utils/thunkError'
 
@@ -669,7 +672,7 @@ function PushToTalkConfig() {
   // A save the browser refuses (storage full) stores nothing, so the form keeps
   // showing the stored binding and says why the change did not take.
   const patch = (next: Partial<typeof cfg>) => {
-    const merged = { ...cfg, ...next }
+    const merged = { ...loadPttConfig(), ...next }
     if (!savePttConfig(merged)) {
       setSaveError(i18nT('pages.settings.sttSettings.ptt_save_refused'))
       return
@@ -677,6 +680,17 @@ function PushToTalkConfig() {
     setSaveError(null)
     setCfg(merged)
   }
+  // The pointer-hold section and another browser tab edit the same stored
+  // record, so every signal re-reads the complete current record.
+  useEffect(() => {
+    const onChange = () => setCfg(loadPttConfig())
+    window.addEventListener(PTT_CHANGED_EVENT, onChange)
+    window.addEventListener('storage', onChange)
+    return () => {
+      window.removeEventListener(PTT_CHANGED_EVENT, onChange)
+      window.removeEventListener('storage', onChange)
+    }
+  }, [])
 
   const bare = isBareModifier(cfg.binding)
   // A chord binding (the Windows/Linux default) has no entry in the bare-key
@@ -996,6 +1010,8 @@ export default function SttSettings({ cardIndex }: {
     onSettled: () => qc.invalidateQueries({ queryKey: ['sttStatus'] }),
     onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.download_failed')),
   })
+  // Read at failure time, not from this render's closure.
+  const appStore = useAppStore()
   const restartRefusal = useRestartRefusal(detail => {
     setRestarting(false)
     setErr(detail || i18nT('pages.settings.aboutPanel.restart_failed'))
@@ -1005,13 +1021,14 @@ export default function SttSettings({ cardIndex }: {
     onMutate: () => restartRefusal.begin(),
     onSuccess: () => setRestarting(true),
     onError: (e: unknown) => {
-      // Restarting normally resets the connection before a response arrives.
-      // Only a structured server rejection is a real failure. A declined
-      // "work is running" confirmation is a quiet cancel, not one.
+      // The gateway answers the restart before it restarts, so a request that
+      // fails while this tab's socket is still connected means no restart is
+      // coming. Only a failure after the socket dropped is the restart itself.
+      // A declined "work is running" confirmation is a quiet cancel.
       if (e instanceof WorkConfirmDeclined) return restartRefusal.end()
-      if (e instanceof ApiError) {
+      if (e instanceof ApiError || appStore.getState().dashboard.connected) {
         restartRefusal.end()
-        setErr(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
+        setErr((e instanceof ApiError && e.message) || i18nT('pages.settings.aboutPanel.restart_failed'))
       } else setRestarting(true)
     },
   })
@@ -1309,7 +1326,7 @@ export default function SttSettings({ cardIndex }: {
           <button
             type="button"
             onClick={grantMicAccess}
-            className="-mt-1 mb-1 text-[12px] text-accent hover:underline cursor-pointer bg-transparent border-none p-0 self-start"
+            className="-mt-1 mb-1 text-[12px] text-accent hover:underline cursor-pointer bg-transparent border-none p-0 self-start focus-visible:rounded-md"
           >
             {i18nT('pages.settings.sttSettings.allow_microphone_access_to_show_device_names')}
           </button>
@@ -1661,6 +1678,7 @@ export default function SttSettings({ cardIndex }: {
           )}
 
           {stt.enabled && <PushToTalkConfig />}
+          {stt.enabled && <PointerHoldConfig />}
         </SettingsSection>
 
         {isTranscribe && (
@@ -1785,7 +1803,8 @@ export default function SttSettings({ cardIndex }: {
                     <p className="text-[12px] text-muted">
                       {i18nT('pages.settings.sttSettings.decoder_fetch_prompt')}
                     </p>
-                    <Btn onClick={() => decoderMut.mutate()} disabled={decoderMut.isPending}>
+                    {/* Filled, with the strong edge: the plain edge vanishes on the tint. */}
+                    <Btn className="border-border-strong bg-bg-elevated" onClick={() => decoderMut.mutate()} disabled={decoderMut.isPending}>
                       <Download className="lucide-inline" /> {i18nT('pages.settings.sttSettings.download_decoder')}
                     </Btn>
                   </div>
@@ -1852,7 +1871,7 @@ export default function SttSettings({ cardIndex }: {
                       variant="inline"
                       askAgent={false}
                     />
-                    <Btn onClick={askAgentToFixDecoder}>
+                    <Btn className="border-border-strong bg-bg-elevated" onClick={askAgentToFixDecoder}>
                       <Sparkles className="lucide-inline" /> {i18nT('pages.settings.sttSettings.let_the_agent_fix_it')}
                     </Btn>
                   </div>

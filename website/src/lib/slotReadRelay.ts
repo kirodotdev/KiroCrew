@@ -82,19 +82,8 @@ export const newerTs = (a?: string, b?: string): string | undefined => {
 export const newestServerRowTs = (rows: readonly ChatMessage[]): string | undefined =>
   rows.reduce<string | undefined>((n, m) => (typeof m.meta?.mid === 'string' && m.meta.mid ? newerTs(n, m.ts) : n), undefined)
 
-/** Relay "this slot was read here" to every other open dashboard window.
- *
- *  `readTs` is the read WATERMARK: the newest message timestamp this window
- *  knows for the slot at the moment of the read. Receivers keep any badge
- *  their window recorded for a NEWER message, so an in-flight relay can never
- *  erase a message the reader had not seen (the classic race: A reads N and
- *  switches away, N+1 badges B, A's relay lands after). A coalesced burst
- *  carries the newest watermark seen during the window. */
-export function emitSlotRead(slot: string, readTs?: string): void {
+function queueSlotRead(slot: string, readTs: string | undefined): void {
   if (!slot) return
-  // Every caller reads the slot on screen, so it has also seen any unsaved row
-  // this window received for it; carry that ts so the read covers it.
-  readTs = newerTs(newerTs(readTs, unsavedRowTs.get(slot)), readCoverImpl(slot))
   const entry = pending.get(slot)
   if (entry) {
     entry.again = true  // coalesce into one trailing send at quiet-window end
@@ -113,6 +102,27 @@ export function emitSlotRead(slot: string, readTs?: string): void {
       if (e?.again) sendSlotReadImpl(slot, e.ts)
     }, READ_RELAY_QUIET_MS),
   })
+}
+
+/** Relay "this slot was read here" to every other open dashboard window.
+ *
+ *  `readTs` is the read WATERMARK: the newest message timestamp this window
+ *  knows for the slot at the moment of the read. Receivers keep any badge
+ *  their window recorded for a NEWER message, so an in-flight relay can never
+ *  erase a message the reader had not seen (the classic race: A reads N and
+ *  switches away, N+1 badges B, A's relay lands after). A coalesced burst
+ *  carries the newest watermark seen during the window. */
+export function emitSlotRead(slot: string, readTs?: string): void {
+  if (!slot) return
+  // Every caller reads the slot on screen, so it has also seen any unsaved row
+  // this window received for it; carry that ts so the read covers it.
+  readTs = newerTs(newerTs(readTs, unsavedRowTs.get(slot)), readCoverImpl(slot))
+  queueSlotRead(slot, readTs)
+}
+
+/** Relay a displayed-row watermark without widening it, through the shared per-slot throttle. */
+export function emitExactSlotRead(slot: string, readTs?: string): void {
+  queueSlotRead(slot, readTs)
 }
 
 /** Send a kept read again as kept, adding no unsaved-row ts: a row that arrived after it was kept stays unread. */

@@ -363,26 +363,21 @@ class TestRespawnBackendForStub:
         await _drain_task(got_task)
 
     @pytest.mark.asyncio
-    async def test_a_recorded_hazard_makes_the_respawn_come_back_private(
-        self, monkeypatch, tmp_path
+    @pytest.mark.parametrize("other_hazard", [False, True])
+    async def test_roots_observation_respawns_private_only_with_another_hazard(
+        self, monkeypatch, tmp_path, other_hazard
     ):
-        """The retreat's hole if the respawn inherited the shared binding blindly.
-
-        No new register re-decides pooling, so re-pooling would share the server just
-        seen misbehaving. A private respawn releases no reservation: only
-        ``pool.get_or_create`` reserves, and a release would unprotect another connection.
-        """
+        """Roots alone preserve sharing; an unroutable request still retreats."""
         from kiro_crew.mcp_gateway import hazards
 
         key = _pool_key(server="respawn-hazard-mcp")
         ledger = hazards.HazardLedger(tmp_path / hazards.HAZARDS_FILENAME)
-        ledger.record(
-            "respawn-hazard-mcp",
-            hazards.HAZARD_UNROUTABLE_SERVER_REQUEST,
-            hazards.launch_identity(
-                key.command_args_hash, key.effective_env_hash, key.binary_version
-            ),
+        identity = hazards.launch_identity(
+            key.command_args_hash, key.effective_env_hash, key.binary_version
         )
+        ledger.record("respawn-hazard-mcp", hazards.HAZARD_ROOTS_REQUESTED, identity)
+        if other_hazard:
+            ledger.record("respawn-hazard-mcp", hazards.HAZARD_UNROUTABLE_SERVER_REQUEST, identity)
         monkeypatch.setattr(hazards, "_sink", ledger)
 
         pool = BackendPool(max_backends=2)
@@ -410,9 +405,19 @@ class TestRespawnBackendForStub:
         )
 
         assert out is not None
-        assert acquire.await_args.kwargs["exclusive_stub_uuid"] == "stub-hz1"
-        pool.unreserve.assert_not_called()
-        await _drain_task(out[2])
+        try:
+            assert acquire.await_args.kwargs["exclusive_stub_uuid"] == (
+                "stub-hz1" if other_hazard else ""
+            )
+            if other_hazard:
+                pool.unreserve.assert_not_called()
+            else:
+                pool.unreserve.assert_called_once_with(key)
+            assert hazards.HAZARD_ROOTS_REQUESTED in ledger.codes_for(
+                "respawn-hazard-mcp", identity
+            )
+        finally:
+            await _drain_task(out[2])
 
     @pytest.mark.asyncio
     async def test_replay_skipped_when_owner_rekeyed_mid_respawn(self, monkeypatch):

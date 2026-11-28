@@ -46,6 +46,7 @@ import type { ApprovalTarget, ChatSlot } from '../types'
 import { approvalGoneKey, coordinatorTarget, nativeTarget } from '../types/approvalTarget'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { reportForError, type ErrorReport } from '../utils/errorReport'
+import { mintSendId } from '../utils/sendDelivery'
 import { sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { useAppIdentity } from './identity'
 import { AppSdkContext, apiPathAllowed, permissionDenied } from './scopedApi'
@@ -91,6 +92,10 @@ export interface HostSession {
   readonly waitingForInput: boolean
   /** The tool approval the session waits on, or null. */
   readonly pendingApproval: HostSessionApproval | null
+  /** True while the session waits on something only the full chat can show or
+   *  answer: a change card, a guide offer, or a browser sign-in or other `ask`.
+   *  `ChatEmbed` draws none of these, so send the person to the session. */
+  readonly needsFullChat: boolean
   /** When the session last moved, in epoch milliseconds; the list is newest first by it. */
   readonly lastActive: number
 }
@@ -214,6 +219,7 @@ export function useHostSessions(): HostSessions {
           lastMessage: sl.last_message || '',
           waitingForInput: !!sl.waiting_for_input,
           pendingApproval,
+          needsFullChat: sl.needs_full_chat === true,
           lastActive: recencyEpoch(sl),
         })
       })
@@ -222,7 +228,9 @@ export function useHostSessions(): HostSessions {
   const send = useCallback(async (sessionKey: string, message: string, opts?: { steer?: boolean }) => {
     const refused = firstRefused(HOST_SESSIONS_PATHS.send)
     if (refused) throw refuse(refused)
-    const receipt = await sendTurn({ message, slot: sessionKey, steer: !!opts?.steer })
+    // The send id is what makes the gateway echo the row to every tab that has this
+    // session open; no composer drew the app's message, so nothing else would.
+    const receipt = await sendTurn({ message, slot: sessionKey, steer: !!opts?.steer, meta: { sendId: mintSendId() } })
     return receipt.reason !== undefined ? { status: receipt.status, reason: receipt.reason } : { status: receipt.status }
   }, [firstRefused, refuse])
 

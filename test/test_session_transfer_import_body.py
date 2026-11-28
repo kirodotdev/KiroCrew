@@ -66,6 +66,25 @@ async def test_import_still_accepts_a_plain_json_body(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("compress", [False, True], ids=["plain", "gzip"])
+async def test_import_accepts_a_body_saved_with_a_utf8_byte_order_mark(monkeypatch, compress):
+    """A ``.json`` unpacked from an export by hand and saved again as "UTF-8 with
+    BOM" (Notepad, Windows PowerShell 5.1 ``Set-Content -Encoding UTF8``) starts
+    with ``EF BB BF``. It imports like the same document without the mark, sent
+    plain or compressed again, because both bodies reach the same parse."""
+    import gzip as _gzip
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    marked = b"\xef\xbb\xbf" + json.dumps(_valid()).encode("utf-8")
+    body = _gzip.compress(marked) if compress else marked
+    resp = await _run_import(st, monkeypatch, None, gz=body)
+
+    assert resp.status == 200, resp.body
+    assert json.loads(resp.body)["messages"] == 1
+
+
+@pytest.mark.asyncio
 async def test_import_sniffs_the_magic_and_not_the_content_type(monkeypatch):
     """A browser uploading a ``.gz`` off disk sends whatever its platform guesses
     for the type — often ``application/octet-stream``, sometimes nothing. The
@@ -857,8 +876,14 @@ def test_a_long_backslash_run_is_measured_in_bounded_memory(tmp_path, monkeypatc
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
-    # A few chunk-sized buffers, far below the 1 MiB run.
-    assert peak < chunk * 32, peak
+    # A few chunk-sized buffers, far below the 1 MiB run. The file object's own read
+    # buffer is traced with them, and it is ``io.DEFAULT_BUFFER_SIZE``: 8 KiB up to
+    # CPython 3.13, inside the allowance, and 128 KiB from 3.14, allowed for on top.
+    allowance = chunk * 32
+    if io.DEFAULT_BUFFER_SIZE >= allowance:
+        allowance += io.DEFAULT_BUFFER_SIZE
+    assert allowance < chunk * 256 // 2
+    assert peak < allowance, peak
 
 
 @pytest.mark.parametrize(

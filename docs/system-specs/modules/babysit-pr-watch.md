@@ -5,7 +5,9 @@
 The agent-facing babysit flow prefers `monitor_watch`. It creates a durable,
 typed structured monitor through a session-bound directive. The controller probes
 the provider before invoking the model, persists canonical observations and
-budgets, and wakes the owning session only for a new actionable fingerprint.
+budgets, and wakes the owning session for a new actionable fingerprint, and once
+when a pending pull request's checks finish green outside draft or, on GitHub, a
+person other than its author writes (`monitor-architecture.md`).
 Provider-fact-only GitHub review readiness therefore spends no agent turn while
 the pull request is unchanged.
 
@@ -289,7 +291,11 @@ sides of the contract. The `fired` state event carries the cleared deadline, so
 the turn-end re-arm that sets the next one (`_arm_and_announce_deadline`, also
 used when a re-arm was deferred past the fire window) emits `updated`, and the
 dashboard countdown never reads "not yet scheduled" between cycles;
-`test_turn_end_after_fire_announces_the_new_deadline` pins it. Channel-bound loops re-arm after their unattended turn
+`test_turn_end_after_fire_announces_the_new_deadline` pins it. A quiet gated
+tick runs no turn, so no turn end announces the deadline it sets: the quiet
+branch emits `updated` itself when that deadline moved, and a pushed quiet tick
+that keeps the earlier deadline publishes nothing;
+`test_quiet_gated_tick_announces_the_new_deadline` pins both. Channel-bound loops re-arm after their unattended turn
 in `AutoNudgeService._run_fire_cycle` (`autonudge_service/firing.py`) because they do not
 use the dashboard
 turn-lifecycle hooks.
@@ -302,7 +308,10 @@ rejected. The operator ceiling is `monitoring.max_runtime_secs`; setting 2592000
 permits a 30-day request without extending existing loops. The cap is a runaway backstop, not evidence that the watched work
 completed: `AutoNudgeService._timer` (`autonudge_service/firing.py`) deactivates a capped
 loop and emits
-`expired`.
+`expired`. The `expired` notice (`_notify_nudge_expired` in
+`slack/gateway_runtime/nudge_wiring.py`) says which bound or outcome stopped the loop
+and ends with the pull request a gated loop watched (`autonudge_judge.watched_pr_subject`),
+so a person with several loops can tell which watch ended.
 
 `autonudge.runtime_budget_exceeded` (a module function in `autonudge_service/model.py`)
 measures a configured wall-clock

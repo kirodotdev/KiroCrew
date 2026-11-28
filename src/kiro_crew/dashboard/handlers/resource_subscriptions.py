@@ -422,9 +422,10 @@ async def _host_owner_verified(request: web.Request) -> bool:
     (``member_memory_auth.local_owner_bootstrap_provenance``): the peer pid comes
     from the socket, never from a header, and on Linux it must share the
     gateway's user and mount namespaces, on macOS it must not be sandboxed. An
-    app backend is code the owner enabled, not the owner, so it is refused as the
-    mint refuses it. The check reads ``/proc`` or runs ``lsof``, so it runs off
-    the event loop.
+    app backend is code the owner enabled, not the owner, so this route refuses
+    it (``provenance.app``), though the mint admits one and only records
+    ``token-issued app=<name>``. The check reads ``/proc`` or runs ``lsof``, so it
+    runs off the event loop.
     """
     from kiro_crew.executors import local_auth_executor
     from kiro_crew.member_memory_auth import local_owner_bootstrap_provenance

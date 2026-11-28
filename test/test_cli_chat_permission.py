@@ -24,6 +24,7 @@ from cli_helpers import (  # noqa: F401 -- the autouse fixture registers by impo
 )
 from redaction_structured_cases import github_classic
 
+from kiro_crew.hooks import GATE_TIERS
 from kiro_crew.testing.wait import async_wait_until, default_timeout
 
 #: A credential the plan redacts: a GitHub classic token with a valid checksum.
@@ -63,6 +64,9 @@ class TestChatPermissionRequest(_TestChatPermissionRequestHarness):
         # being protected, and an audit record must not restate it.
         assert sels[0]["error"] == "hook_deny"
         assert "169.254.169.254" not in json.dumps(sels[0])
+        # The row names the real gate's rule that refused, from the gate's own table.
+        rules = {t.name for t in GATE_TIERS} | {r.name for t in GATE_TIERS for r in t.rules}
+        assert sels[0]["metadata"]["rule_id"] in rules
         # The reason still reaches the terminal, and it has to be the REAL one:
         # `is_shell` with no command also denies, via the gate's deny-by-default
         # backstop, so "it was denied" would pass just as well when the command

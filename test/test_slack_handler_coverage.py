@@ -161,6 +161,26 @@ class TestYoloCommand:
         assert "already off" in _texts(slack)
 
     @pytest.mark.asyncio
+    async def test_off_is_confirmed_only_once_its_record_is_gone_for_good(
+        self, slack, sessions, owner, monkeypatch
+    ):
+        from kiro_crew import kept_grants
+
+        await _slash("!yolo on", slack, sessions)
+        slack.actions.clear()
+        seen_at_sync: list[tuple[bool, bool]] = []
+
+        async def _settled() -> bool:
+            seen_at_sync.append((h.is_yolo_mode(), "disabled" in _texts(slack)))
+            return True
+
+        monkeypatch.setattr(kept_grants, "settle", _settled, raising=False)
+        await _slash("!yolo off", slack, sessions)
+        # Off already, and not yet confirmed, when the removal is made durable.
+        assert seen_at_sync == [(False, False)]
+        assert "disabled" in _texts(slack)
+
+    @pytest.mark.asyncio
     async def test_renew_requires_active_grant(self, slack, sessions, owner):
         await _slash("!yolo renew", slack, sessions)
         assert "not active" in _texts(slack)
@@ -254,6 +274,24 @@ class TestVoiceCommand:
         assert h._vc.global_enabled is True
         await _slash("!voice global", slack, sessions)
         assert h._vc.global_enabled is False
+
+    @pytest.mark.asyncio
+    async def test_global_on_and_off_set_the_saved_value(self, slack, sessions, owner):
+        await _slash("!voice global off", slack, sessions)
+        assert h._vc.global_enabled is False
+        assert json.loads(h.config_path().read_text())["voice_reply"]["enabled"] is False
+        await _slash("!voice global on", slack, sessions)
+        await _slash("!voice global on", slack, sessions)
+        assert h._vc.global_enabled is True
+        await _slash("!voice global of", slack, sessions)
+        assert h._vc.global_enabled is True
+        assert json.loads(h.config_path().read_text())["voice_reply"]["enabled"] is True
+        assert "Use `!voice global on`" in _texts(slack)
+
+    @pytest.mark.asyncio
+    async def test_voice_posts_no_deprecation_note(self, slack, sessions, owner):
+        await _slash("!voice off", slack, sessions)
+        assert "deprecated" not in _texts(slack)
 
     @pytest.mark.asyncio
     async def test_invalid_engine_rejected(self, slack, sessions, owner):
@@ -588,6 +626,95 @@ class TestChannelCommand:
         slack.actions.clear()
         await _slash("!channel agent off", slack, sessions)
         assert "default" in _texts(slack)
+
+    @pytest.mark.asyncio
+    async def test_agent_subcommand_pins_a_bot(
+        self, slack, sessions, owner, agents_dir, monkeypatch
+    ):
+        """A Bot is a ``config.agents`` record with no spec file of its own name."""
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig, config_path
+        from kiro_crew.config.sections import KiroCrewAgentConfig
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents["research"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", display_name="Research Bot"
+        )
+        monkeypatch.setattr(live, "snapshot", lambda: cfg)
+
+        await _slash("!channel agent research-bot", slack, sessions)
+        assert "Unknown agent" in _texts(slack)
+        assert "`research` (Research Bot)" in _texts(slack)
+        assert "`default`" not in _texts(slack).split("Crew Bots:")[1]
+
+        slack.actions.clear()
+        await _slash("!channel agent Research", slack, sessions)
+        assert "Agent for this channel: *research*" in _texts(slack)
+        saved = json.loads(config_path().read_text(encoding="utf-8"))
+        assert saved["slack"]["channels"]["C1"]["agent"] == "research"
+
+    @pytest.mark.asyncio
+    async def test_agent_subcommand_takes_a_multi_word_bot_name(
+        self, slack, sessions, owner, agents_dir, monkeypatch
+    ):
+        """The whole remainder names the Bot, not only its first word."""
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig, config_path
+        from kiro_crew.config.sections import KiroCrewAgentConfig
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents["Research"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+        cfg.agents["research"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", display_name="Research Bot"
+        )
+        monkeypatch.setattr(live, "snapshot", lambda: cfg)
+
+        await _slash("!channel agent Research Bot", slack, sessions)
+        assert "Agent for this channel: *research*" in _texts(slack)
+        saved = json.loads(config_path().read_text(encoding="utf-8"))
+        assert saved["slack"]["channels"]["C1"]["agent"] == "research"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("typed", "saved_agent", "hinted"),
+        [("research", "research", True), ("demo", "demo", False), ("off", "", False)],
+    )
+    async def test_agent_subcommand_names_channel_bot_only_for_a_bot(
+        self, slack, sessions, owner, agents_dir, monkeypatch, typed, saved_agent, hinted
+    ):
+        """A Bot key's reply names `!channel bot`; a plain agent and `off` reply as before."""
+        from unittest.mock import MagicMock
+
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig, config_path
+        from kiro_crew.config.sections import KiroCrewAgentConfig
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents["research"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+        monkeypatch.setattr(live, "snapshot", lambda: cfg)
+        audit = MagicMock()
+        monkeypatch.setattr(h, "sel", lambda: audit)
+        # The hint names `!channel bot`, which needs the dashboard (its Bot chat lives there).
+        monkeypatch.setattr(h, "_dashboard_state", MagicMock())
+
+        await _slash(f"!channel agent {typed}", slack, sessions)
+
+        label = f"*{saved_agent}*" if saved_agent else "default"
+        text = _texts(slack)
+        assert f"Agent for this channel: {label}" in text
+        assert ("`!channel agent off` and then `!channel bot research`" in text) is hinted
+        assert ("own session" in text) is hinted
+        if not hinted:
+            assert text.rstrip().endswith(f"Agent for this channel: {label}")
+        saved = json.loads(config_path().read_text(encoding="utf-8"))
+        assert saved["slack"]["channels"]["C1"]["agent"] == saved_agent
+        audit.log_api_access.assert_called_once_with(
+            caller="U1",
+            operation="slack.channel_agent",
+            outcome="allowed",
+            source="slack",
+            resources=f"C1:{saved_agent or 'default'}",
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────

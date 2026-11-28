@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKENDS_COMPACTION_REPORTED
+from kiro_crew.acp.types import ACP_BACKENDS_COMPACTION_REPORTED
 
 if TYPE_CHECKING:
     from kiro_crew.acp.session_provider import AcpSessionProvider
@@ -54,7 +54,9 @@ def member_dispatch_mounted(self: AcpSessionProvider) -> bool | None:
 
 
 def native_steering(self: AcpSessionProvider) -> bool:
-    return self.backend == ACP_BACKEND_KAS
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
+
+    return capabilities_for(self.backend).loads_steering_natively
 
 
 def reports_compaction(self: AcpSessionProvider) -> bool:

@@ -32,12 +32,15 @@ grammar, sources, name-from-location rule and retained record of
 leave its app's data directory or reach another app's. The backend's lift drops every
 core leaf of any disposition and anything beneath another mask, so a declaration cannot
 lift a core fence. The retained record, ``apps/.<name>-agent-readonly-dirs.json``, keeps
-the fence on data a default uninstall leaves behind and on the data an update holds
-aside in ``apps/.<name>-data-tmp/``.
+the fence on data a default uninstall leaves behind, on the data while an update has
+the old manifest out, and on data held aside in ``apps/.<name>-data-tmp/``.
 
-The residual is the credential masks' one: the installed tree is sandbox-writable, so an
-agent that rewrites an installed app's ``app.json`` drops its declaration from the next
-spawn.
+The agent cannot rewrite the declaration away: every installed app's ``app.json`` is
+refused to its file tools and sealed read-only in its sandbox
+(:mod:`kiro_crew.app_manifest_files`), and the write gate also refuses the retained
+records of either declaration while they hold a fence (one that declares an entry or does
+not read cleanly). The residual is the credential masks' one: the rest of the installed
+tree, those records included, is sandbox-writable.
 
 Process state only (the shared engine's parsed-manifest cache); no per-caller data.
 """
@@ -122,17 +125,23 @@ def write_protected_home_paths() -> tuple[str, ...]:
     The shipped built-ins' declarations, plus the installed apps' as the strict reader
     gives them (:func:`kiro_crew.apps.credential_masks.tool_gate_crew_leaves`): where an
     installed declaration cannot be read cleanly, that app's whole data directory (at
-    both places) is a row, and an ``apps/`` that cannot be listed is one.
+    both places) is a row, and an ``apps/`` that cannot be listed is one. So is every
+    installed manifest and retained record that holds an ``agentReadOnlyDirs`` or
+    ``credentialMasks`` fence (:func:`credential_masks.tool_gate_declarations`), so a
+    file tool cannot rewrite the fence away; they stay readable.
     """
     # Imported at call time, so loading this module never loads the security package.
     from kiro_crew.security.paths_lists import _CREW_HOME_PREFIXES
 
-    installed = credential_masks.tool_gate_crew_leaves(KIND)
+    installed, sources = credential_masks.tool_gate_declarations(KIND)
+    _, mask_sources = credential_masks.tool_gate_declarations()
     leaves = sorted(
         {
             *credential_masks.declared_crew_leaves(installed=False, kind=KIND),
             *installed.declared,
             *installed.unreadable,
+            *sources,
+            *mask_sources,
         }
     )
     return tuple(f"{prefix}/{leaf}" for leaf in leaves for prefix in _CREW_HOME_PREFIXES)

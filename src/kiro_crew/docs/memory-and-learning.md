@@ -136,13 +136,13 @@ Switches that change what is written or injected:
 | `memory.lesson_extraction_enabled: false` | No extracted lessons; other writes and `learn_add` unchanged | Unchanged |
 | `memory.kind_routing: "enforce"` (default) | Consolidation skips a `state` fact; facts and events are written as before (`"off"` writes every fact) | Unchanged |
 | `memory.extraction_instructions: "<text>"` | Consolidation is asked to follow your text about what to keep and what never to store; an empty value (default) changes nothing | Unchanged |
-| `memory.lesson_origin_gate: "enforce"` | A lesson from turns no person sent is saved as an `on_topic` finding, never a standing rule (`"shadow"` only counts; default `"off"` does neither) | Unchanged |
+| `memory.lesson_origin_gate: "enforce"` | A lesson from turns no person sent is saved as an `on_topic` finding, never a standing rule; a span with a message from you keeps its tiers, and judging each lesson by your own words is `memory.lesson_tier_policy` (`"shadow"` only counts; default `"off"` does neither) | Unchanged |
 | `memory.fact_origin_gate: "enforce"` | Consolidation of turns no person sent writes no `pref.*` or `user.*` fact and leaves the preferences file alone; `project.*` facts and episodes are written as before (`"shadow"` only counts; default `"off"` does neither) | Unchanged |
-| `memory.lesson_tier_policy: "enforce"` | A new consolidation lesson is a standing rule only when your own words in a message back it; otherwise it is saved as an `on_topic` finding (`"shadow"` only counts; default `"off"` does neither) | Unchanged |
+| `memory.lesson_tier_policy: "enforce"` | A new consolidation lesson is a standing rule only when your own words in a message say what the rule says; otherwise it is saved as an `on_topic` finding (`"shadow"` only counts, with one extra small model call per pass that has an `always` lesson; default `"off"` does neither) | Unchanged |
 | `memory.lesson_fold: "enforce"` (default) | Unchanged | A rule that repeats another one takes no room in the rule block; the block says how many were folded, `learn_list` shows all, and rules you taught are never folded (`"off"` keeps every copy) |
 | `memory.rule_authority_order: "enforce"` (default) | Unchanged | Rules saved as yours (`learn_add`, dashboard, CLI) come first in the rule block, then inferred rules (`"off"` keeps the old order) |
 | `memory.member_lesson_dedup: "enforce"` | A private store skips a lesson that copies a stored one, and retires a new near-copy before a dashboard turn sees it (turning it off restores them); lessons you taught are never folded (`"shadow"` only counts; default `"off"` does neither) | Unchanged |
-| `memory.relevance_rule: "enforce"` | Unchanged | Past findings, task facts and project and history sections join a new session only when they share a word of 3 or more letters, or a two-character Chinese or Japanese pair, with your first message; a fact also needs the private store's evidence check. The rule block is unchanged (`"shadow"` only records what would change; default `"off"` does neither) |
+| `memory.relevance_rule: "enforce"` (default) | Unchanged | Past findings, task facts and project and history sections join a new session only when they share a word of 3 or more letters, or a two-character Chinese, Japanese or Korean pair, with your first message; a fact also needs the private store's evidence check. The rule block is unchanged (`"off"` lets any shared word in, even a short one) |
 | `memory.dream: "propose"` | While no chat runs, an offline pass lists copies, near-copies, work status and old untagged rules it would clean up; read the list with `kirocrew memory dream list`. Nothing is applied, and lessons you taught are never proposed for change | Unchanged |
 | `memory.inject_memory: false` | Unchanged | Stored memory block withheld |
 | `memory.inject_lessons: false` | Unchanged | Lessons and user-profile blocks withheld |
@@ -151,6 +151,13 @@ Incognito sessions still read stored memory but write none, and Temporary
 sessions neither read nor write it, whatever these keys say. The keys apply to
 every surface (dashboard, channels, cron, sub-agents) at once, where a memory
 mode is chosen per session.
+
+To withhold stored memory and lessons from one agent only, set
+`"includeCrossSessionContext": false` in that agent's spec: its sessions are
+built as if `memory.inject_memory` and `memory.inject_lessons` were both off.
+Nothing is written differently, and `memory_recall` still answers an agent
+whose tools include it
+([Agent Spec Field Reference](agent-spec-fields.md#session-context)).
 
 To see what the `"shadow"` (and `"propose"`) stages above have recorded, run
 `kirocrew memory shadow report`. Per stage it prints the flag, when its window
@@ -177,6 +184,16 @@ and session starts and reports the next UTC midnight as `window_start`. This
 conservatively undercounts readiness by at most one day, avoiding counters that
 mix policy versions. A start exactly at UTC midnight keeps that day.
 
+`memory.inject_lessons_per_turn` adds lessons rather than dropping them, so its
+row reads the other way round. Seen is the follow-up turns it checked and changed
+is the lessons `enforce` would have added. Its miss is a would-add lesson that
+the same session later recalled or re-taught: a lesson `off` held back that the
+session needed. Its control is a hashed sample of the session-start lessons,
+scored the same way. It passes when at least one would-add lesson was needed and
+its rate is no lower than the control's. A line under the table counts the
+would-add lessons by tier and source, including `legacy` rows labelled
+`user_explicit`.
+
 ## Memory Modes
 
 Each session can operate in one of three memory modes:
@@ -186,6 +203,12 @@ Each session can operate in one of three memory modes:
 | **Persistent** (factory default) | ✅ | ✅ | ✅ | Normal work |
 | **Incognito** | ✅ | ❌ | ❌ | Sensitive tasks — reads context but blocks learn_add and consolidation |
 | **Temporary** | ❌ | ❌ | ❌ | Isolated experiments — no memory interaction at all |
+
+A fork can be more private than the chat it comes from: a reply's **More** menu
+offers **Fork as incognito** and **Fork as temporary**, listing only the modes
+stricter than the chat's own. The new chat keeps the conversation up to that
+reply, and nothing done in it reaches memory or lessons. A fork is never less
+private than its chat.
 
 For new dashboard chats, choose the default under **Settings → Chat → Sessions →
 Default Memory Mode**. The choice is stored as
@@ -233,7 +256,7 @@ Just tell it naturally:
 - "Prefer ruff over flake8 for linting"
 
 Kiro Crew saves these via the `learn_add` MCP tool. View them with `learn_list`
-or in the Lessons table of the Memory page (**Settings → Overview → Memory**).
+or in the Lessons table of the Memory page (**Settings → Memory**).
 
 To change whether a saved lesson applies in every session (`always`) or only
 when the task is about it (`on_topic`), ask Kiro Crew: the `learn_update` tool
@@ -329,7 +352,7 @@ Kiro Crew automatically consolidates conversations into memory:
 - **Daily history + lessons**: after 3 hours idle per session (`memory.history_idle_hours`)
 
 No manual action needed — it happens in the background. The manual trigger
-(**Summarize now** on the Memory page, **Settings → Overview → Memory**, or `POST /api/memory/consolidate`) refuses
+(**Summarize now** on the Memory page, **Settings → Memory**, or `POST /api/memory/consolidate`) refuses
 an Incognito or Temporary session with a 403 no matter which session triggers it,
 and the background paths skip those sessions — including a Slack or Telegram
 thread marked `!incognito` / `!temporary`, whose mode is recorded in the thread's
@@ -368,6 +391,12 @@ scheduled jobs.
   exits 1. The `markdown` collection is never imported, and a private Bot (V2)
   store refuses the import: use the dashboard copy, which keeps provenance.
   Embeddings are built later by the gateway; `memory stats` shows the progress.
+- `kirocrew memory import-text <file> [--store <name>] [--yes | --dry-run]` — save what
+  another assistant wrote about you: one fact per line or bullet (200 per run, file up to
+  256 KiB). It lists facts the default store, or the named one, does not hold and you have
+  not forgotten, and saves the numbers you confirm (`--yes`: all; no terminal: none). It
+  never replaces a stored fact and makes no network or model call. `--store` is checked
+  like `memory import --store`: a private Bot (V2) store is refused.
 
 ## Comparing Memory Providers
 
@@ -387,5 +416,5 @@ answering and grading may take. Nothing runs until you start the planned run.
 
 ## Editing Memory
 
-- **Dashboard**: **Settings → Overview → Memory**, then edit preferences.md or projects.md
+- **Dashboard**: **Settings → Memory**, then edit preferences.md or projects.md
 - **Chat**: ask Kiro Crew to remember or correct a fact through its memory tools

@@ -45,7 +45,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -54,6 +54,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_HARNESS_MANAGED_COMPACTION,
 )
+from kiro_crew.config.paths import data_home
 from kiro_crew.config.sections import CONTEXT_WARN_MARGIN_PCT
 from kiro_crew.cron import (
     CronStoreBusy,
@@ -63,6 +64,7 @@ from kiro_crew.cron import (
     get_local_tz,
     job_zone_name,
 )
+from kiro_crew.cron_inflight import running_note, running_since_by_job
 from kiro_crew.messaging.queue_drain import entries_queued_by
 from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface
 from kiro_crew.messaging.turn_bracket import arm_cancelled_turn
@@ -291,11 +293,39 @@ def parse_yolo_action(arg: str) -> str:
     return words[0] if words else ""
 
 
+#: The reply to someone other than the owner who tries to change the grant.
+YOLO_OWNER_ONLY = "⛔ Only the owner can change YOLO."
+
+
+def is_channel_owner(
+    identities: Iterable[object], *, owner: object, allowed: Iterable[object]
+) -> bool:
+    """Whether any of *identities* is this channel's owner. Case-insensitive.
+
+    The owner is the identity the channel's own owner setting names
+    (``telegram.owner_user_id``, ``teams.owner_id``, ``webex.owner_email``). With
+    that unset, it is the one identity on the allow-list, the rule the channels'
+    session resume already uses; with several and none named, nobody is.
+    """
+
+    def _norm(value: object) -> str:
+        return "" if value in (None, 0) else str(value).strip().lower()
+
+    named = _norm(owner)
+    if not named:
+        roster = {v for v in map(_norm, allowed) if v}
+        if len(roster) != 1:
+            return False
+        named = next(iter(roster))
+    return named in {v for v in map(_norm, identities) if v}
+
+
 async def run_yolo_command(
     arg: str,
     *,
     source: str,
     caller: str,
+    caller_is_owner: bool,
     phrasing: YoloPhrasing,
 ) -> str:
     """Report or change the process-wide auto-approve grant; return the reply.
@@ -315,6 +345,10 @@ async def run_yolo_command(
     latency on the gateway's single event loop and stall every other
     conversation and heartbeat task on a slow disk.
 
+    Only the owner changes the grant: *caller_is_owner* is the channel's answer
+    (see :func:`is_channel_owner`), and anyone else is refused and audited. Any
+    allow-listed caller may still read the status.
+
     The SEL row is written HERE so its shape cannot drift per channel. A caller
     that wants the outcome should read the reply rather than re-audit.
     """
@@ -324,6 +358,17 @@ async def run_yolo_command(
     if action not in YOLO_ACTIONS:
         status = f"ON 🟢 ({describe_grant_lifetime()})" if so.is_active() else "OFF 🔴"
         return f"YOLO is {status}.\nUsage: {phrasing.usage}"
+
+    if not caller_is_owner:
+        sel().log_api_access(
+            caller=caller,
+            operation=f"{source}.yolo_mode",
+            outcome="denied",
+            source=source,
+            resources=f"yolo_{action}",
+            error="not_owner",
+        )
+        return YOLO_OWNER_ONLY
 
     outcome = "allowed"
     if action == YOLO_ON:
@@ -338,12 +383,16 @@ async def run_yolo_command(
             reply = "❌ Couldn't turn YOLO on (audit system unavailable)."
             outcome = "denied"
     elif action == YOLO_OFF:
+        from kiro_crew import kept_grants
+
         # Unconditional: deactivate() also zeroes the deadline of a grant that
         # already lapsed, which closes the renew grace window so a later
         # "/yolo renew" cannot resurrect it, and records the operator's decision
         # either way.
         await asyncio.to_thread(so.deactivate, source)
         reply = "🔴 YOLO OFF — tools ask for approval again."
+        if not await kept_grants.settle():  # the answer waits for the disk
+            reply = f"{reply}\n⚠️ {kept_grants.NOT_SAVED}"
     else:
         renewed = (await asyncio.to_thread(so.renew, source)).renewed
         reply = (
@@ -430,6 +479,24 @@ def format_ttl(ttl_secs: int) -> str:
     if hours:
         return f"{hours}h"
     return f"{mins}m"
+
+
+COMPACT_FOCUS_LIMIT = 500
+
+
+def clean_compact_focus(text: str, limit: int = COMPACT_FOCUS_LIMIT) -> str:
+    """One clean line of what a person typed after ``/compact``, or ``""`` when nothing.
+
+    Every channel reads the words after its command token and hands them to
+    ``provider.compact(...)`` as the focus the compaction should keep. Runs of
+    whitespace (newlines and tabs included) collapse to single spaces, other
+    control characters are dropped, and the result is cut at *limit* characters
+    so a pasted wall of text cannot become the compaction prompt. An empty result
+    means a bare ``/compact``: the caller then calls ``provider.compact()`` with
+    no argument, exactly as before.
+    """
+    line = " ".join(text.split())
+    return "".join(ch for ch in line if ch.isprintable())[: max(limit, 0)].rstrip()
 
 
 def compact_unsupported_backend(provider: Any) -> str | None:
@@ -922,7 +989,7 @@ def _relative(delta: float) -> str:
     return "now"
 
 
-def _cron_list(cron_service: "CronService | Any") -> str:
+def _cron_list(cron_service: "CronService | Any", running: dict[str, float]) -> str:
     jobs = cron_service.list_jobs(include_disabled=True)
     if not jobs:
         return "No cron jobs scheduled."
@@ -937,6 +1004,9 @@ def _cron_list(cron_service: "CronService | Any") -> str:
             last = " ✓"
         elif job.last_status == "error":
             last = " ❌"
+        started = running.get(job.id)
+        if started:
+            last += f" {running_note(started)}"
         nxt = compute_next_run_ts(job, now=now)
         next_part = f" | ⏭ {_relative(nxt - now)}" if nxt is not None else ""
         message = _redact(job.message)[:_CRON_MESSAGE_PREVIEW_CHARS]
@@ -1013,7 +1083,9 @@ async def cron_command_reply(
         return None
     action = parts[1]
     if action == "list":
-        return _cron_list(cron_service)
+        # The run markers are files on disk: read them off the gateway loop.
+        running = await asyncio.to_thread(running_since_by_job, data_home())
+        return _cron_list(cron_service, running)
     if len(parts) < 3:
         return None
     job_id = parts[2]

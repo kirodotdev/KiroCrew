@@ -49,7 +49,8 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import pinned_fs, platform_compat
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.dashboard.urls import dashboard_socket_name
 from kiro_crew.platform_compat import IS_LINUX, IS_MACOS, IS_WINDOWS, file_lock, open_lock_file
 from kiro_crew.pod import env_overrides, launchd
@@ -180,6 +181,18 @@ def validate_name(name: str) -> str:
     return name
 
 
+def validate_new_name(name: str) -> str:
+    """:func:`validate_name`, plus a Windows device stem refusal, for a verb creating a pod.
+
+    ``nul`` or ``con.x`` can be no home, env file or ``feat/<name>`` ref on Windows. Verbs
+    on an existing pod keep :func:`validate_name`, so one made before stays stoppable.
+    """
+    validate_name(name)
+    if name.split(".", 1)[0].lower() in WINDOWS_DEVICE_STEMS:
+        raise PodError(f"invalid pod name {name!r}")
+    return name
+
+
 # Per-pod env file (pinned CHECKOUT= / PORT= / SEED= / APPROVAL= / CRONS= /
 # EMBEDDINGS=). Values are single-quoted on write and unquoted on read; unknown
 # keys are preserved on merge.
@@ -290,15 +303,41 @@ def read_env_file(cfg: PodConfig, name: str) -> dict[str, str]:
     reading it as ``{}`` would launch the pod without the operator's variables,
     and :func:`write_env_file` would then overwrite the file it could not read.
     """
-    # Imported here: the config loader is a heavy import the pod CLI does not
-    # otherwise need at module load.
-    from kiro_crew.config.loader import EnvFileWideEncodingError, decode_env_bytes
-
     path = cfg.env_file(name)
     try:
         raw = path.read_bytes()
     except OSError:
         return {}
+    return _decode_env_file(path, raw)
+
+
+def _read_env_bytes_for_write(path: Path) -> bytes | None:
+    """The env file's bytes, ``None`` when it does not exist, else :class:`PodError`.
+
+    The base of a merge-write must be the file's real contents: merging onto the
+    ``{}`` that :func:`read_env_file` answers for an unreadable file would publish
+    only the update and drop ``CHECKOUT``, ``PORT``, ``SEED`` and ``APPROVAL``,
+    and a dropped ``APPROVAL`` lands the next boot on auto-approve. So the read
+    rides out a Windows sharing hold (:func:`read_bytes_with_retry`), and any
+    other failure than a missing file is refused before anything is written.
+    """
+    try:
+        return read_bytes_with_retry(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise PodError(
+            f"pod env file {path} cannot be read ({exc.strerror or exc}); "
+            "it was left unchanged, run the command again"
+        ) from exc
+
+
+def _decode_env_file(path: Path, raw: bytes) -> dict[str, str]:
+    """Decode and parse env-file *raw* bytes read from *path* (see :func:`read_env_file`)."""
+    # Imported here: the config loader is a heavy import the pod CLI does not
+    # otherwise need at module load.
+    from kiro_crew.config.loader import EnvFileWideEncodingError, decode_env_bytes
+
     try:
         # The product writes this file as UTF-8, so a file without a mark is
         # read as UTF-8 first; only bytes that are not valid UTF-8 (a file saved
@@ -358,7 +397,9 @@ def write_env_file(cfg: PodConfig, name: str, updates: dict[str, str]) -> None:
         if not env_overrides.is_single_line_env_value(val):
             raise PodError(f"pod env value for {key!r} must be single-line")
     with pod_name_mutex(cfg, name):
-        data = read_env_file(cfg, name)
+        path = cfg.env_file(name)
+        raw = _read_env_bytes_for_write(path)
+        data = {} if raw is None else _decode_env_file(path, raw)
         data.update(updates)
         for key, val in data.items():
             if not env_overrides.is_single_line_env_value(val):
@@ -777,6 +818,19 @@ def probe_user_bus() -> UserBusProbe:
     return UserBusProbe(USER_BUS_ERROR, sock, detail)
 
 
+#: The next step for an agent session, whose sandboxed shell is the usual caller
+#: that a pod command refuses. The Dev Fleet pod tools run in the gateway, which
+#: holds the host bus and mints the pod token itself. A session lists its tools
+#: when it starts, so one already open when the app is enabled does not get them.
+#: shortcut: names only the tools the adoption-pinned Dev Fleet release declares,
+#: name the newer pod tools here once the app repo ships them and the pin is bumped.
+AGENT_POD_TOOLS_HINT = (
+    "From an agent session, use the pod_up tool instead (pod_status, pod_restart "
+    "and pod_down too). They need the Dev Fleet app turned on in Apps, and they "
+    "appear only in a chat started after it is turned on."
+)
+
+
 def _no_user_manager_remedy() -> str:
     """The remedy for a host with no per-user systemd instance running.
 
@@ -807,7 +861,8 @@ def user_bus_failure_message(result: UserBusProbe) -> str:
         message = (
             f"Cannot reach the systemd user bus at {result.socket} ({reason}). "
             "An outer layer, such as a container or launcher shim, blocks this "
-            "process from reaching the user bus. Run pod commands from a host shell."
+            "process from reaching the user bus. Run pod commands from a host shell.\n"
+            + AGENT_POD_TOOLS_HINT
         )
     elif result.status == USER_BUS_NO_SESSION:
         message = (
@@ -1059,16 +1114,15 @@ def recent_journal(
         secs, usecs = divmod(since[JOURNAL_SINCE_USEC], 1_000_000)
         bound.append(f"--since=@{secs}.{usecs:06d}")
     unit = pod_unit(cfg, name)
+    journalctl_bin = platform_compat.trusted_system_bin("journalctl")
+    if journalctl_bin is None:
+        return "(could not read the pod journal: no journalctl in the trusted system directories)"
     try:
-        cp = subprocess.run(
-            ["journalctl", "--user", "-u", unit, "-n", str(lines), "--no-pager", *bound],
-            capture_output=True,
+        # _run decodes as UTF-8: journalctl prints the journal's UTF-8 raw even
+        # under the LC_ALL=C it pins, and a boot failure may name a non-ASCII path.
+        cp = _run(
+            [journalctl_bin, "--user", "-u", unit, "-n", str(lines), "--no-pager", *bound],
             timeout=10,
-            env=_systemctl_env(),
-            # The journal stores UTF-8 and journalctl prints it raw, even under the
-            # LC_ALL=C that _systemctl_env pins, so a locale decode can garble or
-            # raise on a non-ASCII path in the very boot failure this surfaces.
-            **UTF8_TEXT,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         # Said, not raised: `pod up` prints this tail and must still stop the unit.
@@ -1299,6 +1353,32 @@ def sanitized_seed_config(seed_dir: Path) -> dict | None:
     return data
 
 
+def _share_host_kas_engines(env: dict[str, str]) -> None:
+    """Let the pod run a KAS engine the host already installed, instead of fetching it.
+
+    The pod's data home starts with no ``engines/kas``, so its first KAS chat would
+    download the pinned engine again (hundreds of MB). ``KIROCREW_BUNDLED_KAS_DIR``
+    is the root ``acp.kas_bundle.installed_bundle`` asks after the pod's own, so
+    pointing it at the host's ``engines/kas`` lets a pod whose pin the host has
+    installed run that copy; any other pin is fetched into the pod's home as before.
+    A root the environment already names (the desktop app's staged engine) is kept.
+
+    This saves a download and is not a boundary: the pod's gateway runs the
+    worktree's code as the operator outside the agent sandbox, so it can write
+    that directory like any other. Only the sandboxed agents inside the pod see
+    the root read-only (``sandbox_tiers``).
+    """
+    from kiro_crew.constants import BUNDLED_KAS_DIR_ENV
+
+    if (env.get(BUNDLED_KAS_DIR_ENV) or "").strip():
+        return
+    from kiro_crew.agent_sdk.kas_bundle import kas_engines_root
+
+    root = kas_engines_root()
+    if root.is_dir():
+        env[BUNDLED_KAS_DIR_ENV] = str(root)
+
+
 def build_pod_env(
     cfg: PodConfig,
     home_dir: Path,
@@ -1450,6 +1530,14 @@ def build_pod_env(
     # Same cross-plane guard for the companion host evidence (exported only
     # for specific-interface binds — see dashboard.server).
     env.pop("KIROCREW_BOUND_HOST", None)
+    # An agent session's temp dir is its scratch under the caller's data home,
+    # which every sandbox masks; a `pod exec` child that works there (`eval`
+    # builds its workspace under TMPDIR) would hand its agent a missing cwd.
+    # Only values under that scratch root go; the user's own temp dir stays.
+    from kiro_crew.agent_scratch import drop_inherited_scratch_env
+
+    drop_inherited_scratch_env(env)
+    _share_host_kas_engines(env)
     if skip_model_download:
         # Set AFTER the scrub loop so no present-or-future scrub pattern can strip
         # the guarantee back out.

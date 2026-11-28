@@ -70,12 +70,13 @@ from kiro_crew.sandbox_leaves import (
 #:    its leave-it-alone branch: the seed is not refreshed, and nothing is overwritten
 #:    or unlinked. A writer that rewrites in place (``atomic_write.rewrite_in_place``:
 #:    ``decisions_consent.json``, ``shared_crew_preview.json``,
-#:    ``credential_redaction.json``, ``mcp_body_fields.json``) keeps the inode, so
-#:    its reader then sees the owner's record under the seal; one that publishes by
-#:    rename detaches the seal in a running sandbox until it respawns (the
-#:    ``config.json`` residual in ``security.md``). The empty ``profiles`` dir is
-#:    exempt from the concern entirely: a directory bind shows live contents, so a
-#:    profile added later is visible.
+#:    ``credential_redaction.json``, ``mcp_body_fields.json``,
+#:    ``ssh_auth_sock_consent.json``) keeps the inode, so its reader then sees the
+#:    owner's record under the seal; one that publishes by rename detaches the seal
+#:    in a running sandbox until it respawns (the ``config.json`` residual in
+#:    ``security.md``). The empty ``profiles`` dir is exempt from the concern
+#:    entirely: a directory bind shows live contents, so a profile added later is
+#:    visible.
 #:
 #: DELIBERATELY EXCLUDED:
 #:
@@ -404,6 +405,11 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # by rename, which detaches this seal in a running sandbox (the ``config.json``
     # residual below), so in-sandbox readers see the saved rules, never a pinned ``{}``.
     "denied_commands.json",
+    # The MCP page's server store, absent until the first server is added: while absent
+    # a sandbox could create it holding a server of its choosing. Every reader answers
+    # ``{}`` as an absent file (no servers), which is criterion 1; a reader frozen at
+    # ``{}`` lists fewer servers than are there, which is criterion 2.
+    "mcp.json",
     "decisions_consent.json",
     # The owner's memory egress consent: absent until the first remote provider is
     # chosen, and while absent a sandbox could create it holding a grant. Its writer
@@ -427,6 +433,11 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # Without this entry the Linux mount seal skips the absent leaf, the default
     # before any switch-off, leaving it creatable from inside.
     "chat_steering_off.json",
+    # The owner's YOLO confirmation acknowledgement: ``yolo_ack.read_acknowledged``
+    # reads an absent record, ``{}`` and an unreadable one alike as not acknowledged
+    # (criterion 1); the writer rewrites it in place, so the read-only mount stays on
+    # the same inode, and no in-sandbox code reads it (criterion 2).
+    "yolo_ack.json",
     # The Shared Crew preview switch: ``preview.read_stored`` reads an absent,
     # empty and unreadable store alike as OFF, so a pre-created ``{}`` means
     # exactly what an absent file means (criterion 1); the writer rewrites an
@@ -437,9 +448,10 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # Consent to forward SSH_AUTH_SOCK: ``ssh_auth_sock_consent.is_granted``
     # reports no consent for an absent, empty, AND unreadable store alike, so a
     # pre-created ``{}`` means exactly "not forwarded" (criterion 1); the writer
-    # publishes through ``atomic_write`` (new inode), so a sandboxed reader frozen
-    # at ``{}`` under-reports consent, which is narrower than the truth
-    # (criterion 2). Without this entry the Linux mount seal skips the absent leaf
+    # rewrites an existing record in place (``atomic_write.rewrite_in_place``), so
+    # the read-only mount stays on the same inode and a sandboxed reader sees the
+    # owner's choice, never a writable copy (criterion 2). Without this entry the
+    # Linux mount seal skips the absent leaf
     # -- the DEFAULT before any grant -- leaving it creatable from inside the
     # namespace sandbox.
     "ssh_auth_sock_consent.json",
@@ -613,6 +625,9 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # Released-session entries, for the same reason: created on the first release,
     # and an entry has the gateway delete the record it names.
     "released-sessions",
+    # The kept-grant records and the user-stop mark, for the same reason: created on
+    # the first grant or stop, and a record is what the next boot restores.
+    "kept-grants",
     # Append-only per-unit crew logs, and the hazard is the sharpest here: the
     # record is the AUTHORITY a reader trusts instead of re-deriving, and the
     # store creates this root on its first write. A sandbox spawned before that

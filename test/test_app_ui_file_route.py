@@ -964,3 +964,37 @@ async def test_a_file_truncated_mid_stream_never_completes_a_gzip_body(
         assert resp.headers["Content-Encoding"] == "gzip"
         with pytest.raises(ClientPayloadError):
             await resp.read()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "encoded",
+    [
+        "%5C%5Chost.invalid%5Cshare%5Cx.js",  # \\host\share\x.js: UNC, drops the ui root
+        "%5C%5C%3F%5CUNC%5Chost.invalid%5Cshare%5Cx.js",  # \\?\UNC\host\share\x.js
+        "chunks%5Cx.js",  # any backslash
+        "C%3A/Windows/x.js",  # a drive drops the ui root too
+        "asset.js%3Azone",  # an NTFS stream name
+    ],
+)
+async def test_a_backslash_or_colon_path_is_refused_before_any_filesystem_call(
+    ui_root: Path, monkeypatch: pytest.MonkeyPatch, encoded: str
+) -> None:
+    """On Windows the join and the resolve of a UNC name open SMB to its host."""
+    reached: list[str] = []
+
+    def tripwire(name: str, file_path: str) -> str:
+        reached.append(file_path)
+        return "not_found"
+
+    monkeypatch.setattr(app_routes, "_open_ui_file", tripwire)
+    status, _ = await _get(f"/apps/{APP}/ui/{encoded}")
+    assert status == 400
+    assert reached == []
+
+
+@pytest.mark.asyncio
+async def test_a_forward_slash_asset_still_serves_beside_the_screen(ui_root: Path) -> None:
+    status, body = await _get(f"/apps/{APP}/ui/chunks/lazy.mjs")
+    assert status == 200
+    assert body == b"chunk-bytes"

@@ -9,7 +9,7 @@ import { reconcileSubagentQueuedFromSlots, refreshSlot, warmSlotCache, wireTurnI
 import type { ChatSlot, ChatFolder } from '../../types'
 import type { FrameData } from './frames'
 import type { StreamBuffers } from './streamBuffers'
-import { clearIdleRowRefreshes, recordIdleRowRefresh } from './idleRowRefresh'
+import { clearIdleRowRefreshes, recordIdleRowRefresh, settleIdleRowRefresh, type WireIdentity } from './idleRowRefresh'
 import { clearBehindReads, reReadPanesBehindServer, settleStatusOfIdleRows } from './paneResync'
 import { CHAT_FOLDERS_WRITE_KEY } from '../../api/chatFoldersWrite'
 import { observedPaneSlots } from '../../api/slotMessagesQuery'
@@ -104,10 +104,13 @@ export function useSlotListSync(
   return useMemo<SlotListSync>(() => {
     const sweepSlotStorage = createSlotStorageSweep()
     // Warm an on-screen pane that is not the active slot. A failed warm drops
-    // the idle-row record, so a `_done` that follows warms as before.
-    const warmOtherPane = (slot: string): void => {
+    // the idle-row record, so a `_done` that follows warms as before; when that
+    // `_done` came first and skipped its read for this warm, read again (#39620).
+    const warmOtherPane = (slot: string, identity: WireIdentity | null = null): void => {
       void dispatch(warmSlotCache(slot)).then((result) => {
-        if (warmSlotCache.rejected.match(result)) recordIdleRowRefresh(slot, null)
+        const failed = warmSlotCache.rejected.match(result)
+        if (!identity) { if (failed) recordIdleRowRefresh(slot, null); return }
+        if (settleIdleRowRefresh(slot, identity, failed)) void dispatch(warmSlotCache(slot))
       })
     }
     let stopConfigWait = (): void => {}
@@ -290,9 +293,9 @@ export function useSlotListSync(
       // The panes this frame re-read, so the behind-the-server check below
       // does not read one of them twice.
       const readThisFrame = new Set<string>()
-      const warmPane = (slot: string): void => {
+      const warmPane = (slot: string, identity: WireIdentity | null = null): void => {
         readThisFrame.add(slot)
-        warmOtherPane(slot)
+        warmOtherPane(slot, identity)
       }
       if (activeSlotEnded && activeKey && afterSettle.activeSlot === activeKey
           && (beforeSettle.slotState !== 'idle' || beforeSettle.slotRunning || missedWholeTurn)
@@ -468,7 +471,7 @@ export function useSlotListSync(
           continue
         }
         recordIdleRowRefresh(slot, identity)
-        warmPane(slot)
+        warmPane(slot, identity)
       }
       if (Array.isArray(data)) {
         // A turn whose `_done` this tab never got leaves its live status

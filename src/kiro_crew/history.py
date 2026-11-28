@@ -139,6 +139,7 @@ from kiro_crew.history_files import (  # noqa: F401 - facade re-exports
     _safe_key,
     _safe_mtime,
     _sessions_dir,
+    archive_segments_of,
     can_hold_tab_id_index_entry,
     transcript_lock_stems,
     transcript_stem,
@@ -731,7 +732,12 @@ class ConversationLog:
         return self._listing_index.warm(should_stop)
 
     def list_sessions_status(self) -> tuple[list[dict], bool]:
-        return self._catalog_projection.list_sessions_status()
+        """:meth:`list_sessions_indexed` plus whether the listing is complete.
+
+        Both answer as the direct scan answers them (see
+        ``SessionListingIndex.list_sessions_status``), as current as :meth:`list_sessions_indexed`.
+        """
+        return self._listing_index.list_sessions_status()
 
     def newest_session_stems(self, max_entries: int) -> tuple[list[tuple[str, float]], bool]:
         return self._catalog_projection.newest_session_stems(max_entries)
@@ -890,9 +896,8 @@ class ConversationLog:
 
         removed = bool(deleted)
         archive_dir = _archive_dir(self._dir)
-        stem = _safe_key(key) + ARCHIVE_SEGMENT_DELIMITER
         if archive_dir.exists():
-            for archived in archive_dir.glob(f"{stem}*.jsonl"):
+            for archived in archive_segments_of(archive_dir, _safe_key(key)):
                 archived.unlink()
                 removed = True
         lock_path = self._lock_path(key)

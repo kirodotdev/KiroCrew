@@ -40,6 +40,7 @@ import {
   CHAINED_CREW_REFUSED_MESSAGE,
   chainAdoptionPlan,
   chainRefusalCode,
+  isChainCycleRefusal,
   readChainedCrewNotice,
 } from '../lib/chainAnnounce'
 import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
@@ -68,6 +69,7 @@ import { NATIVE_NOTIFY_TYPE, parseNativeNotifyEnvelope, postRelayedNativeNotific
 import {
   PANE_CLIPBOARD_IMAGE_TYPE, PANE_CLIPBOARD_RESULT_TYPE, PANE_CLIPBOARD_VERSION, parsePaneClipboardImageRequest,
 } from '../lib/paneClipboardRelay'
+import { CREW_POPOUT_VERSION } from '../lib/crewPopout'
 import { hasGesture } from '../hooks/useFrameOpenLink'
 import { copyImageToClipboard } from '../utils/clipboard'
 import { copyImageWithText } from '../pages/chat/share/shareSupport'
@@ -82,7 +84,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useRelayViewerCrews } from '../hooks/useRelayViewerCrews'
 import { OPEN_RELAY_CREW_PARAM, paneRelayCrews, pickRelayFromPane } from '../lib/paneRelayCrews'
 import { relayPaneBridge } from '../lib/relayCrewPanes'
-import { LINUX_CAPTION_CONTROLS_WIDTH, LINUX_CAPTION_RESERVE_PX, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
+import { LINUX_CAPTION_CONTROLS_WIDTH, LINUX_CAPTION_RESERVE_PX, TRAFFIC_LIGHT_INSET_PX, winDragReservePx } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
 import { PANE_ACTIVE_SLOT_TYPE, PANE_SLOT_HINT_PARAM, readPaneSlot, rememberPaneSlot } from '../lib/paneLastSlot'
 import ErrorNotice from './ErrorNotice'
@@ -97,6 +99,10 @@ import { useChatCompleteNotify } from '../hooks/chatCompleteNotify'
 import { useCrewWarmSet } from '../hooks/useCrewWarmSet'
 
 import { i18nT } from '../i18n/t'
+// What a pane's frame delegates; why each grant, at the pane's <iframe> below.
+// The framed crew pop-out (pages/CrewPopoutFrame.tsx) delegates the same.
+export const PANE_FRAME_ALLOW = ['microphone', 'fullscreen', 'clipboard-write', 'display-capture'].join('; ')
+
 // Refresh the embedded token once elapsed reaches this fraction of its TTL
 // (mirrors the gateway's default 80% threshold). Proactive refresh reloads the
 // out-of-view iframe with a fresh token well before the gateway's TTL cap.
@@ -154,25 +160,26 @@ const NO_RELAY_TABS: RelayTab[] = []
 
 
 /**
- * The live `--mc-win-caption-reserve` the main process sets inline on this
- * document's <html> (pushWinCaptionReserve in electron/runtime/window/chrome.js),
- * followed across every rewrite (zoom step, reload) so it can be relayed into
- * embedded panes, which are separate documents and never inherit it. Empty when
- * there is no Windows inset or the main process has not pushed a value yet.
+ * A live reserve the main process sets inline on this document's <html>
+ * (pushWinCaptionReserve in electron/runtime/window/chrome.js), followed across
+ * every rewrite (zoom step, reload): `--mc-win-caption-reserve` is relayed into
+ * embedded panes, which are separate documents and never inherit it, and
+ * `--mc-win-drag-reserve` re-clips the host drag strips. Empty when there is no
+ * Windows inset or the main process has not pushed a value yet.
  */
-function useWinCaptionReserve(enabled: boolean): string {
-  const read = () => document.documentElement.style.getPropertyValue('--mc-win-caption-reserve').trim()
-  const [value, setValue] = useState(() => (enabled ? read() : ''))
+function useWinRootReserve(enabled: boolean, name: string): string {
+  const [value, setValue] = useState(() => (enabled ? document.documentElement.style.getPropertyValue(name).trim() : ''))
   useEffect(() => {
     if (!enabled) {
       setValue('')
       return
     }
+    const read = () => document.documentElement.style.getPropertyValue(name).trim()
     setValue(read())
     const observer = new MutationObserver(() => setValue(read()))
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] })
     return () => observer.disconnect()
-  }, [enabled])
+  }, [enabled, name])
   return value
 }
 
@@ -202,7 +209,9 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         ...(winInset ? { paddingRight: 'var(--mc-win-caption-reserve)' } : null),
       }
     : undefined
-  const winCaptionReserve = useWinCaptionReserve(winInset)
+  const winCaptionReserve = useWinRootReserve(winInset, '--mc-win-caption-reserve')
+  // Where Windows drag strips stop: the caption buttons' zoom-aware width.
+  const winDragReserve = winDragReservePx(useWinRootReserve(winInset, '--mc-win-drag-reserve'))
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   const warm = useAppSelector(s => s.instances.warm)
@@ -260,6 +269,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // had, as the top bar's group does: a pick still opens from the top bar, whose
   // refusal notice says when the Crew cannot be reached.
   const relayCrews = relayViewer.hidden || relayViewer.crews.length === 0 ? NO_RELAY_CREWS : relayViewer.crews
+  const relayCrewsFailed = !relayViewer.hidden && relayViewer.failed
   const relayTabs = useAppSelector(s => s.instances.relayTabs ?? NO_RELAY_TABS)
   const relayActive = useAppSelector(s => s.instances.relayActive ?? null)
   // A Remote Crew the SSH pane in front picks opens as the top bar's note Open does:
@@ -485,7 +495,18 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           // promised top-level tab missing and the crew reachable only from the
           // Remote Crew list. The announcing pane's user connected it there; this
           // is the same intent arriving here.
-          await api.connectInstance(added.id)
+          await api.connectInstance(added.id).catch(async (err: unknown) => {
+            if (isChainCycleRefusal(err)) {
+              // A loop does not clear on a retry, so a kept row is a crew in Remote
+              // Crew that can never connect. Take it back out; the catch below
+              // tells the pane why.
+              await api.removeInstance(added.id).catch((removeErr: unknown) =>
+                paneLog('chain-loop-remove-failed', { id: added.id, error: (removeErr as Error)?.message || 'unknown' }),
+              )
+              void queryClient.invalidateQueries({ queryKey: ['instances'] })
+            }
+            throw err
+          })
         }
         void queryClient.invalidateQueries({ queryKey: ['instances'] })
       } catch (err) {
@@ -1259,7 +1280,8 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // only then can the id be checked against the switcher: a crew that is gone
   // (deleted, disconnected, no longer a tab) falls back to Local. A pick the
   // user made before that poll answered wins over the stored one (a crew deep
-  // link arriving first clears the stored id: lib/crewDeepLink.ts). The connect
+  // link, native or on the address, arriving first clears the stored id:
+  // lib/crewDeepLink.ts). The connect
   // goes through the viewport's own connectMutation (the one Retry and the
   // panel use), with the same condition as a tab click: no warm iframe yet, or
   // the listed status is not connected. Its error and pending state reach the
@@ -1437,14 +1459,18 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // message from the pane is not allowed to start.
         // Only to the pane in front, the one whose switcher is on screen.
         relayCrews: relayPaneBridge() && id === activeId ? paneRelayCrews(relayCrews, relayTabs, relayActive) : [],
+        // Its switcher says so too: the top bar's notice is hidden behind the pane.
+        relayCrewsFailed: !!relayPaneBridge() && id === activeId && relayCrewsFailed,
         stableOrder,
         chatCompleteNotify,
         // This host performs image copies for the pane (mc-clipboard-image).
         // Advertised so a pane relays only to a host that will answer.
         clipboardRelay: PANE_CLIPBOARD_VERSION,
+        // This host serves /popout/crew, the window a desktop pane's pop-out opens.
+        crewPopout: CREW_POPOUT_VERSION,
       }
     },
-    [instancesQuery.data, warm, unread, activeId, macInset, winInset, linuxInset, winCaptionReserve, focusMode, pinnedCrews, relayCrews, relayTabs, relayActive, stableOrder, chatCompleteNotify],
+    [instancesQuery.data, warm, unread, activeId, macInset, winInset, linuxInset, winCaptionReserve, focusMode, pinnedCrews, relayCrews, relayCrewsFailed, relayTabs, relayActive, stableOrder, chatCompleteNotify],
   )
 
   // Post the model into one embedded pane, addressed to its exact loopback
@@ -1616,7 +1642,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const overlayDragStrip = isElectron
     ? (() => {
         const rightBound = isWinElectron
-          ? Math.max(0, window.innerWidth - WIN_CAPTION_OVERLAY_WIDTH)
+          ? Math.max(0, window.innerWidth - winDragReserve)
           : isLinuxFramelessElectron
             ? Math.max(0, window.innerWidth - LINUX_CAPTION_CONTROLS_WIDTH)
             : Number.POSITIVE_INFINITY
@@ -1688,7 +1714,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           // left as a maintainer decision.
           // allowFullScreen mirrors the legacy attribute some engines still
           // require alongside the Permissions-Policy delegation.
-          allow="microphone; fullscreen; clipboard-write; display-capture"
+          allow={PANE_FRAME_ALLOW}
           allowFullScreen
           onLoad={e => {
             // Fires for the initial about:blank too, which is why a load event is
@@ -1731,7 +1757,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           // platform, so clip here — otherwise a drag strip overlays Close and
           // a click there drags the window instead.
           const rightBound = isWinElectron
-            ? Math.max(0, window.innerWidth - WIN_CAPTION_OVERLAY_WIDTH)
+            ? Math.max(0, window.innerWidth - winDragReserve)
             : isLinuxFramelessElectron
               ? Math.max(0, window.innerWidth - LINUX_CAPTION_CONTROLS_WIDTH)
               : Number.POSITIVE_INFINITY

@@ -275,9 +275,12 @@ async def _record_explicit_agent_selection(
         raise cancelled
     # The backend and model selection read the worker set in memory: a worker
     # switched to an ordinary template leaves it at the commit, not at its next turn.
+    # So does a counted session's Bot seat, once the new record carries no member id.
+    from kiro_crew.dashboard.state import refresh_bot_session
     from kiro_crew.mate_worker import note_worker_session
 
     note_worker_session(session_key, bindings.execution_context)
+    refresh_bot_session(session_key, bindings.execution_context)
     return change
 
 
@@ -358,7 +361,7 @@ def _switch_target_busy(
 
     Every switch handler that resets the live session (agent, model, bulk
     model, reasoning effort, workspace) refuses BEFORE it commits so nothing
-    needs rolling back. The refusal reads three signals, and each one sees a
+    needs rolling back. The refusal reads four signals, and each one sees a
     window the others miss:
 
     * ``slot.running`` -- set at dispatch, BEFORE the multi-second
@@ -373,6 +376,13 @@ def _switch_target_busy(
       caller-side guards defend against test doubles that are not
       ``LLMProvider`` instances, and the base default is False so no real
       provider is missed.
+    * a replay gap on *session_key* (``SessionManager.has_open_replay_gap``):
+      a cron or channel turn that re-projects its KAS batch, or a channel
+      replay, pops the session and starts its successor while it keeps the
+      key. No provider is registered and no slot runs it, so the two signals
+      above read idle. A switch let through there commits, resets a session
+      that is not there, and tells the tab the next reply runs the new value,
+      while the successor starts on the turn's own bindings.
     * every OTHER running slot's turn key -- ``_cancel_target`` of each
       slot whose ``task`` is live: the identity its in-flight turn published
       (``_active_turn_session_key``), falling back to its routing when the
@@ -408,6 +418,10 @@ def _switch_target_busy(
     if slot.running and not own_turn:
         return True
     if isinstance(provider, LLMProvider) and provider.has_active_turn():
+        return True
+    # ``is True``: a session-manager double answers a truthy mock.
+    gap_probe = getattr(getattr(state, "sessions", None), "has_open_replay_gap", None)
+    if callable(gap_probe) and gap_probe(session_key) is True:
         return True
     # list(): the scan is read-only and message dispatch may register a slot
     # while it runs (the same snapshot every other slot-table scan takes).

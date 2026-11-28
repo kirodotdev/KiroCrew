@@ -317,8 +317,10 @@ async def test_rows_only_defers_by_the_line_tab_id_not_by_the_flag_alone(tmp_pat
     assert meta.get("tab_id") == slot._tab_id
 
     # Re-stamp the line as another writer's and the identical call defers instead.
-    state.conversation_log.update_metadata(
-        HKEY, {"tab_id": "0123456789ab", "title": "THEIRS", "folder_id": "folder-theirs"}
+    await asyncio.to_thread(
+        state.conversation_log.update_metadata,
+        HKEY,
+        {"tab_id": "0123456789ab", "title": "THEIRS", "folder_id": "folder-theirs"},
     )
     _leave_an_acknowledged_edit(slot, title="MINE AGAIN", folder="folder-mine-again")
     assert await handlers.save_slot_off_loop(
@@ -352,7 +354,8 @@ async def test_rows_only_defers_dismissed_source_links_to_another_writer(tmp_pat
     slot.invalidate_source_links()
 
     # The line on disk is ANOTHER writer's (foreign tab_id) holding dismissal B.
-    state.conversation_log.update_metadata(
+    await asyncio.to_thread(
+        state.conversation_log.update_metadata,
         HKEY,
         {"tab_id": "0123456789ab", "dismissed_source_links": ["gh:issue:acme:widgets:477:issue"]},
     )

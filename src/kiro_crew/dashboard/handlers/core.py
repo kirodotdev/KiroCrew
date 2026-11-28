@@ -476,7 +476,7 @@ async def api_ready(request: web.Request) -> web.Response:
     # readiness is not a prerequisite for serving the dashboard — a signed-out
     # user is meant to get in and see the reauthentication banner — and gating
     # this endpoint on it would only delay first paint. (It would also not do
-    # what it looks like: the desktop splash polls /api/status and accepts any
+    # what it looks like: the desktop splash polls /api/live and accepts any
     # status < 500, so a 503 here is invisible to it.)
     # Require the literal bool set at the final startup boundary. This stays
     # fail-closed for partial/mocked state objects and cannot become truthy just
@@ -801,6 +801,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CODE_STT_FAILED,
         _CODE_STT_MISSING_AUDIO,
         _CODE_STT_UNAVAILABLE,
+        OWNER_ONLY_SPEECH_FIELDS,
         _audit_custom_model_disclosure,
         _audit_stt_custom_model_write_allowed,
         _audit_stt_refusal,
@@ -811,6 +812,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _stt_background_tasks,
         _stt_custom_model_refusal,
         _stt_positive_int,
+        deny_non_owner_speech_fields,
     )
     from kiro_crew.dashboard.handlers.core_stt_settings import (
         _LANGUAGE_IDENTIFYING_PROVIDERS,
@@ -1038,17 +1040,12 @@ async def api_session_agent_stream(request: web.Request) -> web.StreamResponse:
     return resp
 
 
-async def api_logout(request: web.Request) -> web.Response:
-    """POST /api/logout — revoke all active dashboard sessions.
+def _local_cli_caller_refusal(request: web.Request) -> web.Response | None:
+    """The 403 for a ``kirocrew logout`` call that is not this owner's CLI, else ``None``.
 
-    Called by ``kirocrew logout`` CLI. Admits a loopback origin OR a
-    kernel-attested same-user AF_UNIX peer (``_unix_peer_is_self``, which the
-    owner-only socket transport arrives as, with an empty ``request.remote``),
-    plus the local secret — same auth as /api/token/local — to prevent
-    unauthorized revocation.
+    Shared by ``/api/logout`` and ``/api/logout/link``, so the two cannot drift apart.
     """
     import kiro_crew.dashboard.handlers as _h  # noqa: F811
-    from kiro_crew.dashboard.token_auth import revoke_all_sessions_async  # noqa: F811
 
     # Reachable over loopback TCP or the dashboard's AF_UNIX socket. A unix peer
     # has an EMPTY request.remote, so the loopback test alone would 403 the
@@ -1076,6 +1073,46 @@ async def api_logout(request: web.Request) -> web.Response:
             resources="invalid-secret",
         )
         return web.json_response({"error": "invalid secret"}, status=403)
+    return None
+
+
+async def api_logout_link(request: web.Request) -> web.Response:
+    """POST /api/logout/link — revoke one link's credential family (``kirocrew logout --link``).
+
+    Its own route rather than a body on ``/api/logout``: a gateway that predates it
+    answers 404 here and changes no session, where ``/api/logout`` would ignore the
+    body and revoke them all. Same caller check as ``/api/logout``.
+    """
+    refusal = _local_cli_caller_refusal(request)
+    if refusal is not None:
+        return refusal
+    try:
+        body = await request.json() if request.can_read_body else None
+    except (ValueError, TypeError):
+        body = None
+    link = body.get("link") if isinstance(body, dict) else None
+    if not isinstance(link, str) or not link.strip():
+        return web.json_response(
+            {"error": "link must be a dashboard link or its token", "code": "invalid_link"},
+            status=400,
+        )
+    return await _logout_link(request, link)
+
+
+async def api_logout(request: web.Request) -> web.Response:
+    """POST /api/logout — revoke all active dashboard sessions.
+
+    Called by ``kirocrew logout`` CLI. Admits a loopback origin OR a
+    kernel-attested same-user AF_UNIX peer (``_unix_peer_is_self``, which the
+    owner-only socket transport arrives as, with an empty ``request.remote``),
+    plus the local secret — same auth as /api/token/local — to prevent
+    unauthorized revocation.
+    """
+    from kiro_crew.dashboard.token_auth import revoke_all_sessions_async  # noqa: F811
+
+    refusal = _local_cli_caller_refusal(request)
+    if refusal is not None:
+        return refusal
 
     # Fail-closed: the counter bump raises when neither the live nor the
     # persisted counter can be read (bumping from an assumed base could persist a LOWER
@@ -1111,6 +1148,56 @@ async def api_logout(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def _logout_link(request: web.Request, link: str) -> web.Response:
+    """Revoke one link's credential family for an already-authorized ``/api/logout/link``."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from kiro_crew.dashboard.token_auth_tokens import LegacyFamilyLink, revoke_token_family
+
+    token = link.strip()
+    try:
+        if "token=" in token:
+            token = (parse_qs(urlsplit(token).query).get("token") or [""])[0]
+    except ValueError:
+        return web.json_response(
+            {"error": "not a dashboard link signed by this gateway", "code": "invalid_link"},
+            status=400,
+        )
+    try:
+        revoked = await asyncio.to_thread(revoke_token_family, token)
+    except LegacyFamilyLink:
+        return web.json_response(
+            {
+                "error": "this link was minted before per-link revocation, so its sessions "
+                "cannot be found; run `kirocrew logout` to revoke every session",
+                "code": "legacy_link",
+            },
+            status=400,
+        )
+    except OSError:
+        logger.warning("logout --link failed: could not persist the revocation", exc_info=True)
+        return web.json_response(
+            {
+                "error": "could not persist the link revocation; logout not completed",
+                "code": "revocation_persist_failed",
+            },
+            status=500,
+        )
+    if not revoked:
+        return web.json_response(
+            {"error": "not a dashboard link signed by this gateway", "code": "invalid_link"},
+            status=400,
+        )
+    _sel().log_api_access(
+        caller=request.remote or "unknown",
+        operation="logout",
+        outcome="success",
+        source="cli",
+        resources="link-family-revoked",
+    )
+    return web.json_response({"ok": True, "scope": "link"})
+
+
 async def api_shutdown(request: web.Request) -> web.Response:
     """POST /api/shutdown — gracefully stop the gateway process.
 
@@ -1121,7 +1208,10 @@ async def api_shutdown(request: web.Request) -> web.Response:
     exits the process.
 
     Intended for the desktop app to call before installing an auto-update, so
-    the Squirrel bundle swap never races a live gateway. Requires loopback (or a
+    the Squirrel bundle swap never races a live gateway, and on Quit, when the
+    body carries ``{"user_stop": true}``: that is a stop the user chose, so it
+    writes the user-stop mark first and the next boot ends the kept YOLO and chat
+    trust (``kept_grants``). Requires loopback (or a
     kernel-attested same-user AF_UNIX peer, ``_unix_peer_is_self``, which is how
     ``kirocrew stop``'s owner-verified socket send arrives, with an empty
     ``request.remote``) plus the local secret (same auth as
@@ -1153,13 +1243,28 @@ async def api_shutdown(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "invalid secret"}, status=403)
 
+    # ``{"user_stop": true}`` says the user chose this stop (the desktop Quit), so the
+    # grants this gateway holds end with it (``kept_grants``). Any other body -- the
+    # desktop's stop before an update, the CLI's fallback, which marks the stop itself
+    # -- keeps them, as every exit the user did not choose does.
+    user_stop = False
+    if request.can_read_body:
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        user_stop = isinstance(body, dict) and body.get("user_stop") is True
     _sel().log_api_access(
         caller=request.remote or "unknown",
         operation="shutdown",
         outcome="success",
         source="local-app",
-        resources="gateway",
+        resources="gateway, user_stop" if user_stop else "gateway",
     )
+    if user_stop:
+        from kiro_crew import kept_grants
+
+        await asyncio.to_thread(kept_grants.mark_user_stop, "desktop")
     logger.info("shutdown requested via /api/shutdown — triggering graceful stop")
 
     # Fire the shutdown only AFTER this 200 has flushed to the client, so the

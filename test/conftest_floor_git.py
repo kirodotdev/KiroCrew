@@ -130,3 +130,19 @@ def _git_maintenance_off(_floor_monkeypatch, _git_global_config) -> None:
     """
     for name, value in _git_maintenance_off_entries(os.environ).items():
         _floor_monkeypatch.setenv(name, value)
+
+
+@floor_guard
+def _no_gateway_checkout_from_the_source_tree(_floor_monkeypatch) -> None:
+    """No sandbox plan built by a test, on any testpath, gathers the suite's checkout.
+
+    Building the plan resolves the gateway checkouts' git layout, and that gather
+    creates ``hooks/``, ``info/`` and ``config.worktree`` in each checkout's git
+    directory when they are missing. The source checkout the suite imports from is
+    one of those checkouts, so a plain plan test would write into it. A test about
+    the layout points ``KIROCREW_PROJECT_DIR`` at a repository under ``tmp_path``.
+    Imported at call time, since this module's module-level imports stay stdlib-only.
+    """
+    from kiro_crew import sandbox_git_control
+
+    _floor_monkeypatch.setattr(sandbox_git_control, "_source_checkout_root", lambda: None)

@@ -45,10 +45,10 @@ read the agent does not already have (``list_sessions`` in ``kirocrew-core`` is
 always available and already returns every session's title and key), they cannot
 delete a conversation or a folder that holds anything, and the worst outcome is
 a sidebar the user has to tidy. Contrast the keystone leaves in ``security.py``
-(``computer_use.json``, ``browser-mode-enabled``, the Ops Mission Control mode):
-each grants reach OUTSIDE Kiro Crew — desktop input synthesis, the operator's
-logged-in browser, writes against production incident tooling — or is the
-security floor itself, and each is therefore stored where the agent cannot write.
+(``computer_use.json``, the Ops Mission Control mode): each grants reach OUTSIDE
+Kiro Crew — desktop input synthesis, writes against production incident tooling —
+or is the security floor itself, and each is therefore stored where the agent
+cannot write.
 
 The rule that follows, and the reason the tool set is ratcheted in
 ``test_mcp_dashboard_registration.py``: a capability whose blast radius DOES
@@ -808,6 +808,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _worker_capabilities_line,
 )
 from kiro_crew.mcp_dashboard_session_tools import (  # noqa: E402, F401
+    _TRIGGER_SKILLS_PROPERTY,
     _session_tools,
 )
 from kiro_crew.mcp_dashboard_tag_runs import (  # noqa: E402, F401
@@ -939,10 +940,9 @@ def run_mcp_server() -> None:
     # An enforced harness hands this server a one-time pickup in place of the secret
     # it withholds (``agent_ipc_client``); redeem it before the first request, as
     # ``kirocrew-core`` does, since listing the tools already reads the tool policy.
-    from kiro_crew.agent_ipc_client import redeem_at_startup
-    from kiro_crew.port_resolution import resolve_client_port_src
+    from kiro_crew.agent_ipc_client import redeem_server_pickup
 
-    redeem_at_startup(lambda: resolve_client_port_src(None)[0])
+    redeem_server_pickup()
     run_mcp_stdio_loop(
         SERVER_NAME,
         SERVER_VERSION,
@@ -987,6 +987,11 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
         _subtree_holds_foreign_folder,
     )
     from kiro_crew.mcp_crew_list import crew_list_tool  # noqa: F401
+    from kiro_crew.mcp_session_once import (  # noqa: F401
+        _post_once,
+        lost_reply_error,
+        possible_double,
+    )
     from kiro_crew.mcp_tools.dashboard_client import DashboardClient, DashboardError  # noqa: F401
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401
     from kiro_crew.sel import sel  # noqa: F401
@@ -994,5 +999,7 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
         BROADCAST_RESPONSE_MARGIN_SECS,
         BROADCAST_TARGET_ALLOWANCE_SECS,
         MAX_BROADCAST_TARGETS,
+        MAX_TRIGGER_SKILL_KEY_LEN,
+        MAX_TRIGGER_SKILLS,
         SLACK_THREAD_TS_RE,
     )

@@ -4,6 +4,7 @@
  * first, newest unread first, and no folder position is ever written.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { Profiler } from 'react'
 import { render, fireEvent, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -139,11 +140,11 @@ const SLOTS = [
 ] as unknown as ChatSlot[]
 const UNREAD = ['s-b', 's-d']
 
-function renderSidebar(folders: ChatFolder[], unread: string[] = UNREAD) {
+function renderSidebar(folders: ChatFolder[], unread: string[] = UNREAD, onCommit: () => void = () => {}, slots: ChatSlot[] = SLOTS) {
   const store = createTestStore({
     dashboard: {
-      status: {}, connected: true, slots: SLOTS, approvalMode: 'normal',
-      channelTrusted: false, refreshTrigger: 0, unreadSlots: UNREAD, updateProgress: null,
+      status: {}, connected: true, slots, approvalMode: 'normal',
+      channelTrusted: false, refreshTrigger: 0, unreadSlots: unread, updateProgress: null,
       slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
@@ -160,10 +161,12 @@ function renderSidebar(folders: ChatFolder[], unread: string[] = UNREAD) {
       <Provider store={store}>
         <ThemeProvider>
           <MemoryRouter>
-            <ChatSidebar
-              slots={SLOTS} activeSlot={null} unreadSlots={u}
-              history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
-            />
+            <Profiler id="sidebar" onRender={() => onCommit()}>
+              <ChatSidebar
+                slots={slots} activeSlot={null} unreadSlots={u}
+                history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
+              />
+            </Profiler>
           </MemoryRouter>
         </ThemeProvider>
       </Provider>
@@ -222,6 +225,55 @@ describe('chat sidebar — move folders with unread chats to the top', () => {
     expect(patchConfig).not.toHaveBeenCalled()
   })
 
+  it('sits behind a separator under the folder modes and names its note as its description', async () => {
+    localStorage.setItem('mc-sidebar-folders-unread-first', '1')
+    const view = renderSidebar(FOLDERS)
+    fireEvent.keyDown(view.getByLabelText('Sort and filter sessions'), { key: 'Enter' })
+    const item = await view.findByTestId('folder-order-unread-first')
+    expect(item.previousElementSibling).toHaveAttribute('role', 'separator')
+    expect(item).toHaveAccessibleDescription('Folders cannot be dragged into place while this is on')
+  })
+
+  it.each([['off', false], ['on', true]])('%s, the pointer crossing the list re-renders the sidebar only while the option is on', (_state, on) => {
+    if (on) localStorage.setItem('mc-sidebar-folders-unread-first', '1')
+    const onCommit = vi.fn()
+    const view = renderSidebar(FOLDERS, UNREAD, onCommit)
+    const list = view.getByRole('region', { name: 'Sessions' })
+    onCommit.mockClear()
+    fireEvent.pointerEnter(list)
+    fireEvent.pointerLeave(list)
+    expect(onCommit.mock.calls.length > 0).toBe(on)
+  })
+
+  it('turned on from the menu while the pointer is over the list, the order holds until it leaves', async () => {
+    const view = renderSidebar(FOLDERS)
+    const list = view.getByRole('region', { name: 'Sessions' })
+    fireEvent.pointerEnter(list)
+    fireEvent.keyDown(view.getByLabelText('Sort and filter sessions'), { key: 'Enter' })
+    fireEvent.click(await view.findByTestId('folder-order-unread-first'))
+    await waitFor(() => expect(drawnFolderIds(view.container)).toEqual(['fd', 'fb', 'fa', 'fc']))
+    // D's chat is read now; the live order would be B first and D back in place.
+    view.setUnread(['s-b'])
+    expect(drawnFolderIds(view.container)).toEqual(['fd', 'fb', 'fa', 'fc'])
+    fireEvent.pointerLeave(list)
+    expect(drawnFolderIds(view.container)).toEqual(['fb', 'fa', 'fc', 'fd'])
+  })
+
+  it('on, a hover holds the order last drawn, not the one the sidebar mounted with', () => {
+    localStorage.setItem('mc-sidebar-folders-unread-first', '1')
+    const view = renderSidebar(FOLDERS)
+    const list = view.getByRole('region', { name: 'Sessions' })
+    // D's chat is read before the pointer arrives, so B floats alone.
+    view.setUnread(['s-b'])
+    expect(drawnFolderIds(view.container)).toEqual(['fb', 'fa', 'fc', 'fd'])
+    fireEvent.pointerEnter(list)
+    expect(drawnFolderIds(view.container)).toEqual(['fb', 'fa', 'fc', 'fd'])
+    view.setUnread(['s-b', 's-d'])
+    expect(drawnFolderIds(view.container)).toEqual(['fb', 'fa', 'fc', 'fd'])
+    fireEvent.pointerLeave(list)
+    expect(drawnFolderIds(view.container)).toEqual(['fd', 'fb', 'fa', 'fc'])
+  })
+
   it('flipping the toggle while the pointer is over the list applies at once, both ways', async () => {
     const view = renderSidebar(FOLDERS)
     // The menu sits inside the list region, so the pointer is over the list when it is used.
@@ -276,6 +328,91 @@ describe('chat sidebar — move folders with unread chats to the top', () => {
     expect(drawnFolderIds(view.container)).toEqual(['fd', 'fb', 'fa', 'fc'])
     fireEvent.pointerLeave(list)
     expect(drawnFolderIds(view.container)).toEqual(['fb', 'fa', 'fc', 'fd'])
+  })
+
+  it('on, a touch tap holds the order after the finger leaves, until a press outside the list', () => {
+    localStorage.setItem('mc-sidebar-folders-unread-first', '1')
+    const view = renderSidebar(FOLDERS)
+    const list = view.getByRole('region', { name: 'Sessions' })
+    expect(drawnFolderIds(view.container)).toEqual(['fd', 'fb', 'fa', 'fc'])
+    // A tap: the browser fires pointerleave right after pointerup, before the click.
+    fireEvent.pointerDown(view.container.querySelector('[data-folder-row="fd"]')!, { pointerType: 'touch' })
+    fireEvent.pointerLeave(list, { pointerType: 'touch' })
+    // D's chat is read now; the live order would be B first and D back in place.
+    view.setUnread(['s-b'])
+    expect(drawnFolderIds(view.container)).toEqual(['fd', 'fb', 'fa', 'fc'])
+    fireEvent.pointerDown(document.body, { pointerType: 'touch' })
+    expect(drawnFolderIds(view.container)).toEqual(['fb', 'fa', 'fc', 'fd'])
+  })
+
+  it('on, a keyboard open with the pointer outside the list holds the order until a key press outside it', () => {
+    localStorage.setItem('mc-sidebar-folders-unread-first', '1')
+    const view = renderSidebar(FOLDERS.map(f => (f.id === 'fd' ? { ...f, collapsed: false } : f)))
+    expect(drawnFolderIds(view.container)).toEqual(['fd', 'fb', 'fa', 'fc'])
+    const row = view.container.querySelector('[data-session-row="s-d"]') as HTMLElement
+    expect(row, 'D is expanded, so its chat row renders').toBeTruthy()
+    fireEvent.keyDown(row, { key: 'Enter' })
+    view.setUnread(['s-b'])
+    expect(drawnFolderIds(view.container)).toEqual(['fd', 'fb', 'fa', 'fc'])
+    fireEvent.keyDown(document.body, { key: 'a' })
+    expect(drawnFolderIds(view.container)).toEqual(['fb', 'fa', 'fc', 'fd'])
+  })
+
+  it('on, a key press inside the list holds only until a mouse leaves the list', () => {
+    localStorage.setItem('mc-sidebar-folders-unread-first', '1')
+    const view = renderSidebar(FOLDERS)
+    const list = view.getByRole('region', { name: 'Sessions' })
+    fireEvent.pointerEnter(list, { pointerType: 'mouse' })
+    fireEvent.keyDown(view.getByLabelText('Sort and filter sessions'), { key: 'Tab' })
+    view.setUnread(['s-b'])
+    expect(drawnFolderIds(view.container)).toEqual(['fd', 'fb', 'fa', 'fc'])
+    fireEvent.pointerLeave(list, { pointerType: 'mouse' })
+    expect(drawnFolderIds(view.container)).toEqual(['fb', 'fa', 'fc', 'fd'])
+  })
+
+  it('on, a press inside a menu the list opened is inside the list and does not release the hold', async () => {
+    localStorage.setItem('mc-sidebar-folders-unread-first', '1')
+    const view = renderSidebar(FOLDERS)
+    fireEvent.keyDown(view.getByLabelText('Sort and filter sessions'), { key: 'Enter' })
+    const item = await view.findByTestId('folder-order-unread-first')
+    view.setUnread(['s-b'])
+    fireEvent.pointerDown(item, { pointerType: 'touch' })
+    expect(drawnFolderIds(view.container)).toEqual(['fd', 'fb', 'fa', 'fc'])
+  })
+
+  it('on, the filter menu Folders list and the hidden-folder reveal keep the stored order', async () => {
+    localStorage.setItem('mc-sidebar-folders-unread-first', '1')
+    localStorage.setItem('mc-flat-hidden-folders', JSON.stringify(['fb', 'fd']))
+    const view = renderSidebar(FOLDERS)
+    fireEvent.click(view.getByTestId('hidden-reveal-root').querySelector('button')!)
+    const revealed = [...view.getByTestId('hidden-reveal-root').querySelectorAll('[data-folder-row]')]
+      .map(el => el.getAttribute('data-folder-row'))
+    expect(revealed).toEqual(['fb', 'fd'])
+    fireEvent.keyDown(view.getByLabelText('Sort and filter sessions'), { key: 'Enter' })
+    await view.findByTestId('folder-filter-fa')
+    const rows = [...document.querySelectorAll('[data-testid^="folder-filter-f"]')]
+      .map(el => el.getAttribute('data-testid'))
+      .filter(id => /^folder-filter-f[a-d]$/.test(id ?? ''))
+    expect(rows).toEqual(['folder-filter-fa', 'folder-filter-fb', 'folder-filter-fc', 'folder-filter-fd'])
+  })
+
+  it('on, a folder\'s locked Hide item names the same pinned subfolder as the filter menu', async () => {
+    localStorage.setItem('mc-sidebar-folders-unread-first', '1')
+    const folders: ChatFolder[] = [
+      { id: 'p', name: 'P', order: 0, collapsed: false },
+      { id: 'c1', name: 'C1', order: 0, parent_id: 'p', pinned: true, collapsed: true },
+      { id: 'c2', name: 'C2', order: 1, parent_id: 'p', pinned: true, collapsed: true },
+    ]
+    const slots = [{ key: 's-c2', folder_id: 'c2', last_turn_ts: '2026-10-29T10:00:00Z' }] as unknown as ChatSlot[]
+    const view = renderSidebar(folders, ['s-c2'], undefined, slots)
+    // C2 holds the unread chat, so it is drawn above C1.
+    expect(drawnFolderIds(view.container)).toEqual(['p', 'c2', 'c1'])
+    const holds = 'P contains the pinned folder C1, so it stays listed.'
+    fireEvent.keyDown(view.getByLabelText('Sort and filter sessions'), { key: 'Enter' })
+    expect((await view.findByTestId('folder-filter-reason-p')).textContent).toBe(holds)
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+    fireEvent.keyDown(view.getByTestId('folder-menu-p'), { key: 'Enter' })
+    expect(view.getByTestId('folder-visibility-p').textContent).toContain(holds)
   })
 
   it('on, a board card dragged natively holds the folder order until the drag ends', () => {

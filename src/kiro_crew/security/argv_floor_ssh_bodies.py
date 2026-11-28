@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import re
 
-from .argv_floor_self import _quoted_assignment_scripts
+from .argv_floor_self import _heredoc_data_view, _quoted_assignment_scripts, _shell_payload_sources
 from .argv_floor_ssh import (
     _EMPTY_EXPANSION_RE,
+    _HEREDOC_RESET,
     _MAIN_READING,
     _is_ssh_to_self,
     _may_name_ssh_verb,
@@ -27,12 +28,15 @@ from .argv_floor_ssh import (
     _splice_static_substitutions,
 )
 from .shell_commands import (
+    _double_quoted_substitution_spans,
     _heredoc_body_substitutions,
+    _is_message_line,
     _without_quoted_heredoc_text,
     read_commands,
 )
 from .shell_normalizer import (
     _backtick_closer,
+    _cased_payload,
     _iter_shell_chars,
     _matching_close_paren,
     _nested_shell_payloads,
@@ -102,7 +106,7 @@ def _line_may_name_ssh_verb(text_lower: str) -> bool:
     return any(_may_name_ssh_verb(_resolve_line_assignments(t)) for t in (raw, spliced))
 
 
-def _substitution_reaches_self(text_lower: str) -> bool:
+def _substitution_reaches_self(text_lower: str, raw_text: "str | None" = None) -> bool:
     """True if a substitution body that bash runs in *text_lower* reaches this host,
     judged as a command line of its own.
 
@@ -110,21 +114,35 @@ def _substitution_reaches_self(text_lower: str) -> bool:
     never resolve (one holding ``$``, a backtick or a paren) is replaced by one word,
     and is judged on its own when its turn comes. So each level is read once, and the
     work grows linearly with the nesting depth.
+
+    *raw_text* is *text_lower* as written. A body is judged with its words as written,
+    as the line itself is (``sudo -H`` takes no value, ``sudo -h`` does), where they
+    read to the same spans and bodies; elsewhere, in a shell payload, and when it holds
+    ``<<``, it is judged lowered.
     """
     if not _line_may_name_ssh_verb(text_lower):
         return False
-    seen: set[tuple[str, bool]] = set()
-    # (text, judge it, allow join): the caller judged the line itself.
-    work = [(text_lower, False, True)]
+    seen: "set[tuple[str, str | None, bool]]" = set()
+    # (text, as written, judge it, allow join): the caller judged the line itself.
+    work: "list[tuple[str, str | None, bool, bool]]" = [(text_lower, raw_text, False, True)]
     while work:
-        text, judge, allow_join = work.pop()
+        text, cased, judge, allow_join = work.pop()
         live = "$(" in text or "`" in text
         subs = _live_substitutions(text) if live else []
-        view = text
+        written = subs if not live or cased is None or cased == text else _live_substitutions(cased)
+        if cased is not None and (
+            cased.lower() != text or [(s, e, b.lower()) for s, e, b in written] != subs
+        ):
+            cased, written = None, subs
+        view, cased_view = text, cased
         for start, end, body in reversed(subs):
             if any(c in body for c in "$`()"):
                 view = view[:start] + "_" + view[end:]
-        if judge and _is_ssh_to_self(view):
+                if cased_view is not None:
+                    cased_view = cased_view[:start] + "_" + cased_view[end:]
+        # What a body prints is the line's to run (``eval "$(cat <<EOF ...)"``), so a
+        # body holding ``<<`` gets no here-document data view.
+        if judge and _is_ssh_to_self(view, raw_text=None if "<<" in view else cased_view):
             return True
         if live:
             # A payload with no substitution opener holds no body; the line's own
@@ -134,15 +152,72 @@ def _substitution_reaches_self(text_lower: str) -> bool:
             nested = _nested_shell_payloads(
                 _self_tokens(text), allow_join=allow_join, joined_out=joined_here
             )
-            fresh = [p for p in nested if (p, False) not in seen]
-            seen.update((p, False) for p in fresh)
-            work += [(p, False, p not in joined_here) for p in fresh]
-        for _start, _end, body in subs:
-            body = _without_quoted_heredoc_text(body)
-            if (body, True) not in seen:
-                seen.add((body, True))
-                work.append((body, True, True))
+            fresh = [p for p in nested if (p, None, False) not in seen]
+            seen.update((p, None, False) for p in fresh)
+            work += [(p, None, False, p not in joined_here) for p in fresh]
+        message = bool(subs) and _is_message_line(text, [(s, e) for s, e, _b in subs])
+        for (_start, _end, body), (_s, _e, cased_body) in zip(subs, written):
+            body = _without_quoted_heredoc_text(body, message)
+            kept = None if cased is None else _without_quoted_heredoc_text(cased_body, message)
+            if (body, kept, True) not in seen:
+                seen.add((body, kept, True))
+                work.append((body, kept, True, True))
     return False
+
+
+# A backslash before a path-name character: on Windows PowerShell runs the line, and
+# there it separates path components (``C:\Windows\System32\OpenSSH\ssh.exe``,
+# ``.\ssh.exe``) instead of escaping the next character as POSIX shell rules do.
+_PATH_SEPARATOR_BACKSLASH_RE = re.compile(r"\\(?=[\w.?*\[-])")
+# The word at a command start, past a PowerShell call operator ``&``. A quoted word is
+# taken whole (it may hold blanks).
+_PROGRAM_WORD_RE = re.compile(r"""[ \t]*(?:&[ \t]*)?('[^']*'|"[^"]*"|[^\s;&|()<>'"]+)""")
+_COMMAND_SEPARATORS = frozenset(";&|\n(")
+
+
+def _with_backslash_path_separators(text: str) -> str:
+    """*text* with each backslash before a path-name character read as ``/``, in the
+    word where each command starts.
+
+    The tokenizer drops an unquoted backslash and keeps a quoted one, and the program
+    basename splits on ``/`` only, so neither reading isolates ``ssh.exe`` at the end of
+    a Windows path. A backslash before a quote, a blank, a separator or another
+    backslash is left as written, so the quoting the tokenizer reads is unchanged. An
+    argument keeps its POSIX reading, so a file operand (``git add tools\\ssh.exe``) is
+    not read as a program. A command starts at the line's start or after an unquoted,
+    unescaped ``; & | ( newline``, so a separator inside a quoted argument
+    (``git commit -m 'a; C:\\x\\ssh.exe'``) starts nothing. One pass, linear in *text*.
+    """
+    out: list[str] = []
+    i, n, quote, at_start = 0, len(text), "", True
+    while i < n:
+        if at_start:
+            at_start = False
+            match = _PROGRAM_WORD_RE.match(text, i)
+            if match is not None:
+                word = match.group(1)
+                out.append(text[i : match.start(1)])
+                out.append(_PATH_SEPARATOR_BACKSLASH_RE.sub("/", word))
+                i = match.end()
+                continue
+        ch = text[i]
+        if quote == '"' and ch == "\\":
+            out.append(text[i : i + 2])
+            i += 2
+            continue
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch == "\\":
+            out.append(text[i : i + 2])
+            i += 2
+            continue
+        elif ch in "'\"":
+            quote = ch
+        elif ch in _COMMAND_SEPARATORS:
+            at_start = True
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _reaches_self_over_ssh(text_lower: str, raw_text: "str | None" = None) -> bool:
@@ -150,19 +225,83 @@ def _reaches_self_over_ssh(text_lower: str, raw_text: "str | None" = None) -> bo
     read whole (the separator mask would turn a script's own separators into data),
     and on each substitution body bash runs in it or in those scripts. Either the
     quote-aware reading or main's splice reading (*_MAIN_READING*) of the line refusing
-    refuses; the bodies are judged once, in the quote-aware reading. *raw_text* is the
-    command as submitted, for the wrapper option words of the line itself."""
+    refuses, and so does the line read with Windows path backslashes as ``/``
+    (:func:`_with_backslash_path_separators`); the bodies are judged once, in the
+    quote-aware reading. *raw_text* is the command as submitted, for the wrapper option
+    words of the line and its bodies."""
     scripts = _quoted_assignment_scripts(text_lower)
     if _is_ssh_to_self(text_lower, own_line=True, raw_text=raw_text) or any(
         map(_is_ssh_to_self, scripts)
     ):
         return True
-    if _substitution_reaches_self(text_lower) or any(map(_substitution_reaches_self, scripts)):
+    if _substitution_reaches_self(text_lower, raw_text) or any(
+        map(_substitution_reaches_self, scripts)
+    ):
         return True
+    # Extra pass, ADDED to the readings above: escape the quote an own-line body
+    # leaves open so the text after the closing line reads unquoted, catching a
+    # self-ssh a pairing quote would otherwise bury. Run only when a here-document
+    # is present; the readings above and the main reading below keep a body's
+    # quotes as origin/main read them, so this pass only adds a denial.
+    if "<<" in text_lower:
+        token = _HEREDOC_RESET.set(True)
+        try:
+            if _is_ssh_to_self(text_lower, own_line=True, raw_text=raw_text) or any(
+                map(_is_ssh_to_self, scripts)
+            ):
+                return True
+        finally:
+            _HEREDOC_RESET.reset(token)
+    # Extra pass, ADDED to the readings above: a nested shell payload that spans
+    # lines is read as a command line of its own. The line's frame walk reads the
+    # payload from text whose quoted newlines are masked to data, so a command on a
+    # later line of the payload, or one bash runs from a here-document the payload
+    # opens, is not seen there. As for a substitution body, the text of a quoted-tag
+    # body a bare ``cat`` prints is cut first; the rest is found on the words as
+    # written, so a body no program runs stays data. The payloads are found in the
+    # self floor's here-document data view, under the guards ``_is_ssh_to_self``
+    # takes it with, so a payload written in a body no program runs is not read.
+    if "\n" in text_lower:
+        cased = raw_text if raw_text is not None and raw_text.lower() == text_lower else None
+        view = text_lower
+        if (
+            cased is not None
+            and "\r" not in text_lower
+            and not any("<<" in ln and ln.endswith("\\") for ln in text_lower.split("\n"))
+        ):
+            view = _heredoc_data_view(cased).lower()
+        # Body bounds are found on the words as written (bash closes a heredoc only on its
+        # tag with case); a message line's body is read to its ``)`` when the flag cuts text.
+        same = cased if cased is not None and len(cased) == len(text_lower) else None
+        spans = _double_quoted_substitution_spans(same) if same else []
+        message = bool(spans) and _is_message_line(text_lower, [(a, e) for a, e, _p in spans])
+        bounds = {a + 2: e - p for a, e, p in spans if message}
+        for source in _shell_payload_sources(view):
+            if source == view or "\n" not in source:
+                continue
+            at = len(text_lower) - len(source)
+            body = text_lower[at : bounds.get(at, at)] if text_lower.endswith(source) else ""
+            if _without_quoted_heredoc_text(body, True) != _without_quoted_heredoc_text(body):
+                source = body
+            payload_cased = _cased_payload(cased, text_lower, source)
+            if payload_cased is not None:
+                payload_cased = _without_quoted_heredoc_text(payload_cased)
+            payload = _without_quoted_heredoc_text(source)
+            if _is_ssh_to_self(payload, raw_text=payload_cased):
+                return True
     token = _MAIN_READING.set(True)
     try:
-        return _is_ssh_to_self(text_lower, own_line=True, raw_text=raw_text) or any(
+        if _is_ssh_to_self(text_lower, own_line=True, raw_text=raw_text) or any(
             map(_is_ssh_to_self, scripts)
-        )
+        ):
+            return True
     finally:
         _MAIN_READING.reset(token)
+    # shortcut: only a command's first word and only the line itself get the path reading,
+    # not an argument (``cmd /c C:\\...\\ssh.exe``), a quoted script or a substitution body;
+    # widen it if a Windows path there is reported.
+    path_text = _with_backslash_path_separators(text_lower)
+    if path_text == text_lower:
+        return False
+    path_raw = None if raw_text is None else _with_backslash_path_separators(raw_text)
+    return _is_ssh_to_self(path_text, own_line=True, raw_text=path_raw)

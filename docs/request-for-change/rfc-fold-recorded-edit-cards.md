@@ -1,26 +1,29 @@
 ---
 title: Edit cards fold once the turn's changed-files card records them
-status: partial
+status: implemented
 author: iamwhatever
 created: 2026-10-16
-last-audited: 2026-11-20
-audited-at: 0c5d8bd5f3
+last-audited: 2026-11-24
+audited-at: 50fe0f6cf2
 doc-pr: 21354
 implementation-prs: [25650]
-tracking-issues: [21336]
+tracking-issues: [21336, 42036]
 supersedes: []
 superseded-by: []
 ---
 
 # RFC: Edit cards fold once the turn's changed-files card records them
 
-- Status: partial. The snapshot half of §2 (v3 `str_replace`, `fs_write` and
-  `fs_append` record file changes in `_snapshot_write_target`,
+- Status: implemented. The snapshot half of §2 (v3 `str_replace`, `fs_write`
+  and `fs_append` record file changes in `_snapshot_write_target`,
   `src/kiro_crew/dashboard/chat_turn/file_changes.py`) landed in
   [#25650](https://github.com/kirodotdev/KiroCrew/pull/25650) (merged
-  2026-10-29). The fold half is not built: no `file_change_recorded` stamp
-  exists on main and `isDiffCardItem` in `website/src/pages/chat/TurnBlock.tsx`
-  still keeps every diff card out of both folds. Checked at `fc89562d69`.
+  2026-10-29). The fold half followed under
+  [#42036](https://github.com/kirodotdev/KiroCrew/issues/42036): both write
+  sites in `src/kiro_crew/dashboard/chat_turn/tool_rows.py` stamp
+  `meta.file_change_recorded` on a row whose write was snapshotted, and
+  `isDiffCardItem` in `website/src/pages/chat/TurnBlock.tsx` lets a stamped
+  row fold. Checked at `50fe0f6cf2`.
   Accepted as the product owner's decision, given 2026-10-16 on
   [#21336](https://github.com/kirodotdev/KiroCrew/issues/21336). It amends the
   fold rule of [rfc-tool-derived-diff-cards.md](rfc-tool-derived-diff-cards.md)

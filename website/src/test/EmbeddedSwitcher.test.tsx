@@ -9,7 +9,7 @@ import { readIndexCss } from './indexCssSource'
 import InstanceTabBar from '../components/InstanceTabBar'
 import EmbeddedHostBridge, { parseHostModel } from '../components/EmbeddedHostBridge'
 import type { HostModel } from '../store/instancesSlice'
-import { isDesktopAppPane, noteHostOrigin } from '../lib/hostRelay'
+import { getCrewPopoutHub, isDesktopAppPane, noteHostOrigin } from '../lib/hostRelay'
 
 // Embedded panes never hit the instances API; mock it to a no-op so the import
 // is inert and any accidental call is observable.
@@ -97,6 +97,27 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     expect(screen.getByRole('menuitem', { name: 'Build', description: 'Connected' })).toBeTruthy()
     await userEvent.click(screen.getByRole('menuitem', { name: 'Connect Team Lab' }))
     expect(post).toHaveBeenCalledWith(expect.objectContaining({ type: 'mc-switch-instance', id: 'relay:ep-1' }), HUB)
+  })
+
+  it("says when the window's Remote Crews read failed, with or without rows (#40306)", async () => {
+    const relay = { crewType: 'TEAM', presence: 'CONNECTED', relayConnectionStatus: 'CONNECTED', lastSeenAt: null, current: false, open: false }
+    const store = createTestStore({
+      instances: { warm: {}, activeId: null, mru: [], unread: {}, host: model({ relayCrews: [], relayCrewsFailed: true }) },
+    })
+    const { unmount } = renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    expect(await screen.findByText("Couldn't load your Shared Crews.", {}, { timeout: 5000 })).toBeTruthy()
+    unmount()
+    const kept = createTestStore({
+      instances: {
+        warm: {}, activeId: null, mru: [], unread: {},
+        host: model({ relayCrews: [{ ...relay, endpointId: 'ep-1', name: 'Team Lab' }], relayCrewsFailed: true }),
+      },
+    })
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store: kept })
+    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    expect(await screen.findByText(/Couldn't refresh your Shared Crews/, {}, { timeout: 5000 })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Connect Team Lab' })).toBeTruthy()
   })
 
   it('shows no Remote Crews group when the window relays none (an older host)', async () => {
@@ -592,14 +613,18 @@ describe('EmbeddedHostBridge (option B relay)', () => {
 
     sendModel({})
     expect(clipboardRelayAvailable()).toBe(false)
+    expect(getCrewPopoutHub()).toBeNull()
     sendModel({ clipboardRelay: 1 })
     expect(clipboardRelayAvailable()).toBe(true)
+    sendModel({ crewPopout: 1 })
+    expect(getCrewPopoutHub()).toBe('http://localhost:8080')
     // A model from a non-loopback origin never becomes a relay target.
     sendModel({ clipboardRelay: 1 }, 'https://example.com')
     expect(clipboardRelayAvailable()).toBe(false)
-    sendModel({ clipboardRelay: 1 })
+    sendModel({ clipboardRelay: 1, crewPopout: 1 })
     view.unmount()
     expect(clipboardRelayAvailable()).toBe(false)
+    expect(getCrewPopoutHub()).toBeNull()
   })
 
   it('keeps the pane\'s own focus mode when an older host sends a model without the field', async () => {

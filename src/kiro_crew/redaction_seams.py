@@ -198,6 +198,12 @@ ALWAYS_REDACTED_SITES: Mapping[str, str] = MappingProxyType(
         "dashboard/chat_turn/turn_spec_hooks.py": (
             "_turn_stop_hook builds the Stop hook payload: a hook is a sink no seam lists"
         ),
+        "dashboard/engine_subagent_cards.py": (
+            "cut_unsplit: decides whether a display cut of a KAS engine sub-agent's text "
+            "splits a credential, and stores the text masked only then; the owner's view "
+            "is as written in every other case, and every other reader's pass runs after "
+            "the cut"
+        ),
         "dashboard/file_api/channel_upload.py": (
             "_gate_upload_file decides whether a file, by its name or its text, may leave "
             "for a channel: a safety decision"

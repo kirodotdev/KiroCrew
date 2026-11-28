@@ -118,6 +118,7 @@ def _build_member_section(
     include_briefing: bool = True,
     desk_withheld: bool = False,
     dispatch_mounted: bool | None = None,
+    briefing_out: list[str] | None = None,
 ) -> str:
     """Assemble the four-layer identity for a member's bound execution.
 
@@ -129,6 +130,7 @@ def _build_member_section(
         include_briefing=include_briefing,
         desk_withheld=desk_withheld,
         dispatch_mounted=dispatch_mounted,
+        briefing_out=briefing_out,
     )
 
 
@@ -154,6 +156,7 @@ def _build_v2_essentials(
     desk_withheld: bool = False,
     provider_type: str | None = None,
     dispatch_mounted: bool | None = None,
+    briefing_out: list[str] | None = None,
 ) -> str:
     """Refresh complete member essentials without opening learned memory.
 
@@ -180,4 +183,5 @@ def _build_v2_essentials(
         desk_withheld=desk_withheld,
         provider_type=provider_type,
         dispatch_mounted=dispatch_mounted,
+        briefing_out=briefing_out,
     )

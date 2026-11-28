@@ -20,7 +20,7 @@ CASES = json.loads(FIXTURE.read_text(encoding="utf-8"))["cases"]
 
 
 def test_the_fixture_has_enough_cases_to_mean_something() -> None:
-    assert len(CASES) >= 21
+    assert len(CASES) >= 25
     assert all(len(c["rows"]) == len(c["hidden"]) for c in CASES)
     # Both verdicts occur on the indexed rows, so an all-false predicate fails.
     assert {c["hidden"][-1] for c in CASES} == {True, False}

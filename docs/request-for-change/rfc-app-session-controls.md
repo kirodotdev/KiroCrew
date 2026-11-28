@@ -182,6 +182,11 @@ export interface SessionControlContext {
   folderName?: string
   /** Working directory recorded for the session, when known. */
   cwd: string
+  /**
+   * The Bot whose own thread this chat is, by its display name, so a control
+   * can say who the user is talking to. Undefined in every other chat.
+   */
+  member?: { name: string }
 }
 ```
 

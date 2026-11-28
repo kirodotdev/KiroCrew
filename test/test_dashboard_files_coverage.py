@@ -1695,6 +1695,7 @@ class TestDashboardConfigPut:
             "restore_sessions",
             "merge_queued_messages",
             "tail_fork_enabled",
+            "fork_inherits_pin",
             "folder_suggestions_enabled",
             "folder_suggestions_auto_apply",
             "project_tags_enabled",
@@ -1705,6 +1706,7 @@ class TestDashboardConfigPut:
             "mcp_app_panel",
             "side_panel_always_open",
             "side_panel_pin_summary",
+            "show_bot_sessions_in_list",
             "new_chat_crew_mode",
             "auto_open_conductor_board",
         ]
@@ -1725,6 +1727,7 @@ class TestDashboardConfigPut:
             "mcp_app_panel": "invalid_mcp_app_panel",
             "side_panel_always_open": "invalid_side_panel_always_open",
             "side_panel_pin_summary": "invalid_side_panel_pin_summary",
+            "show_bot_sessions_in_list": "invalid_show_bot_sessions_in_list",
             "new_chat_crew_mode": "invalid_new_chat_crew_mode",
             "auto_open_conductor_board": "invalid_auto_open_conductor_board",
         }
@@ -1732,6 +1735,18 @@ class TestDashboardConfigPut:
             for field, code in coded.items():
                 resp = await client.put("/api/dashboard/config", json={field: 1})
                 assert (await resp.json())["code"] == code, field
+
+    @pytest.mark.asyncio
+    async def test_default_approval_mode_takes_normal_or_reads_only(self, config_client_app):
+        async with TestClient(TestServer(config_client_app)) as client:
+            for bad in ("trust", "yolo", "", 1, None):
+                resp = await client.put(
+                    "/api/dashboard/config", json={"default_approval_mode": bad}
+                )
+                assert resp.status == 400, bad
+                assert (await resp.json())["code"] == "invalid_default_approval_mode", bad
+            got = await (await client.get("/api/dashboard/config")).json()
+            assert got["default_approval_mode"] == "normal"
 
     @pytest.mark.asyncio
     async def test_restore_window_minutes_is_clamped(self, config_client_app):
@@ -1800,12 +1815,14 @@ class TestDashboardConfigPut:
             "restore_window_minutes": 30,
             "merge_queued_messages": True,
             "default_memory_mode": "temporary",
+            "default_approval_mode": "trust_reads",
             "widget_density": "less",
             "verbosity": "answer_only",
             "quick_send": True,
             "session_grid": True,
             "mcp_app_panel": True,
             "tail_fork_enabled": True,
+            "fork_inherits_pin": False,
             "link_previews": True,
             "folder_suggestions_enabled": True,
             "folder_suggestions_auto_apply": True,
@@ -1813,6 +1830,7 @@ class TestDashboardConfigPut:
             "topic_tags_enabled": True,
             "side_panel_always_open": True,
             "side_panel_pin_summary": True,
+            "show_bot_sessions_in_list": True,
             "new_chat_crew_mode": True,
             "auto_open_conductor_board": False,
         }

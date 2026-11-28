@@ -322,10 +322,7 @@ async def _fetch(download: DownloadFn, url: str, suffix: str) -> str:
     try:
         await download(url, dest)
     except BaseException:
-        try:
-            os.unlink(dest)
-        except OSError:
-            pass
+        unlink_temp(dest)
         raise
     return dest
 
@@ -372,10 +369,7 @@ def _write_whole_text(text: str) -> str:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
             fh.write(text)
     except BaseException:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+        unlink_temp(path)
         raise
     return path
 
@@ -656,10 +650,7 @@ async def ingest_attachments(
             finally:
                 # Anything not handed to the caller is deleted here.
                 if dest:
-                    try:
-                        os.unlink(dest)
-                    except OSError:
-                        pass
+                    unlink_temp(dest)
     except BaseException:
         await cleanup_offloaded(out.temp_paths)
         raise
@@ -673,13 +664,30 @@ async def ingest_attachments(
     return out
 
 
+def unlink_temp(path: str) -> None:
+    """Delete one attachment temp file; a refused delete leaves one warning.
+
+    A missing file is silent. Any other ``OSError`` (a Windows scanner holding
+    the file, a read-only folder) leaves the file and logs its error class,
+    ``errno`` and ``winerror`` -- never the path: the file is the user's upload.
+    """
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning(
+            "could not delete an attachment temp file: %s errno=%s winerror=%s",
+            type(exc).__name__,
+            exc.errno,
+            getattr(exc, "winerror", None),
+        )
+
+
 def cleanup(paths: list[str]) -> None:
     """Best-effort deletion of temp paths handed back by :func:`ingest_attachments`."""
     for p in paths:
-        try:
-            os.unlink(p)
-        except OSError:
-            pass
+        unlink_temp(p)
 
 
 async def cleanup_offloaded(paths: list[str]) -> None:

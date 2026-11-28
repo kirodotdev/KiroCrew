@@ -309,7 +309,7 @@ def _replay(path: str, backend: str, tmp_path, args):
 
 
 def _goose_event(args, tmp_path):
-    """goose 1.57.0 in approve mode: identity on ``_meta.goose.toolCall``, and both
+    """goose 1.50.1 in approve mode: identity on ``_meta.goose.toolCall``, and both
     frames' ``rawInput`` is the ``arguments`` its MCP server received."""
     return _replay("goose/crew-oauth-bridge-args-live.jsonl", ACP_BACKEND_GOOSE, tmp_path, args)
 
@@ -461,6 +461,191 @@ async def test_allow_always_on_a_bridged_server_is_answered_once(tmp_path, bridg
 
     client._send_response = AsyncMock(side_effect=_send)
     assert await client.approve_tool(42, always=True) is True
+    assert sent_with == [{"outcome": {"outcome": OUTCOME_SELECTED, "optionId": sent}}]
+    if bridged:
+        assert crew_oauth_proxy.consume_approval(SESSION, "crew-probe", "crew_probe_echo", {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bridged", [True, False])
+@pytest.mark.parametrize("always", [True, False])
+async def test_an_unrecorded_approval_answers_with_an_option_the_frame_offered(
+    tmp_path, bridged, always
+):
+    """claude-agent-acp refuses any optionId it did not offer ("Permission option
+    was not offered: allow_once"): with no recorded allow id for the request, the
+    answer is still the live frame's own one-call allow, never the canonical literal."""
+    if bridged:
+        _register("crew-probe")
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+    client._session_key = SESSION
+    event = _claude_event({})
+    offered = [o["id"] for o in event.options]
+    assert "allow_once" not in offered and "allow-once" in offered
+    client._permission_gate_events[42] = event
+    sent_with: list = []
+
+    async def _send(request_id, payload, **recheck):
+        if "before_write" in recheck:
+            recheck["before_write"]()
+        sent_with.append(payload)
+
+    client._send_response = AsyncMock(side_effect=_send)
+    assert await client.approve_tool(42, always=always) is True
+    # A bridged tool is still answered once (``once_for_always``).
+    sent = "allow-with-updates" if always and not bridged else "allow-once"
+    assert sent in offered
+    assert sent_with == [{"outcome": {"outcome": OUTCOME_SELECTED, "optionId": sent}}]
+    if bridged:
+        assert crew_oauth_proxy.consume_approval(SESSION, "crew-probe", "crew_probe_echo", {})
+
+
+@pytest.mark.asyncio
+async def test_a_canonical_id_offered_as_allow_always_is_refused_on_a_bridged_tool(tmp_path):
+    """An ``allow_once`` id whose kind is allow-always would grant the tool for good,
+    which the proxy cannot tell from an asked call: with no one-call allow, refused."""
+    _register("crew-probe")
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+    client._session_key = SESSION
+    event = _claude_event({})
+    event.options = [{"id": "allow_once", "label": "Always"}, {"id": "reject", "label": "No"}]
+    event.offered_allow = {"always": "allow_once"}
+    client._permission_gate_events[42] = event
+    client._permission_options[42] = {"reject": "reject"}
+    sent_with: list = []
+
+    async def _send(request_id, payload, **recheck):
+        sent_with.append(payload)
+
+    client._send_response = AsyncMock(side_effect=_send)
+    assert await client.approve_tool(42) is False
+    assert sent_with == [{"outcome": {"outcome": OUTCOME_SELECTED, "optionId": "reject"}}]
+    assert not crew_oauth_proxy.consume_approval(SESSION, "crew-probe", "crew_probe_echo", {})
+    assert 42 not in client._permission_gate_events and 42 not in client._permission_options
+
+
+def _offered(*options: dict):
+    """The permission event built from a frame offering *options*."""
+    frame = {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "session/request_permission",
+        "params": {"sessionId": "s", "toolCall": {"toolCallId": "t"}, "options": list(options)},
+    }
+    event, _ = d.build_permission_event(JsonRpcMessage.from_dict(frame), **_caches())
+    return event
+
+
+def test_offered_allow_id_answers_by_the_offered_kind_and_never_picks_a_reject():
+    claude = _offered(
+        {"optionId": "allow-once", "name": "Yes", "kind": "allow_once"},
+        {"optionId": "allow-with-updates", "name": "Always", "kind": "allow_always"},
+        {"optionId": "reject", "name": "No", "kind": "reject_once"},
+    )
+    pick = d.offered_allow_id
+    assert pick("allow-with-updates", claude, always=True) == "allow-with-updates"
+    assert pick("allow_once", claude, always=False) == "allow-once"
+    assert pick("allow_always", claude, always=True) == "allow-with-updates"
+    # An opaque id is read by its explicit kind.
+    opaque = _offered({"optionId": "proceed", "kind": "allow_once"}, {"optionId": "stop"})
+    assert pick("allow_once", opaque, always=False) == "proceed"
+    assert pick("allow_always", opaque, always=True) == "proceed"
+    # An explicit kind outranks a familiar-looking id: this "allow-once" is a reject.
+    contradicts = _offered(
+        {"optionId": "allow-once", "kind": "reject_once"}, {"optionId": "go", "kind": "allow_once"}
+    )
+    assert pick("allow_once", contradicts, always=False) == "go"
+    lone_reject = _offered({"optionId": "allow-once", "kind": "reject_once"})
+    assert pick("allow_once", lone_reject, always=False) == "allow_once"
+    # A canonical id is matched by its kind too, never by its spelling.
+    canonical_reject = _offered(
+        {"optionId": "allow_once", "kind": "reject_once"},
+        {"optionId": "proceed", "kind": "allow_once"},
+    )
+    assert pick("allow_once", canonical_reject, always=False) == "proceed"
+    canonical_always = _offered({"optionId": "allow_once", "kind": "allow_always"})
+    assert pick("allow_once", canonical_always, always=False) is None
+    assert pick("allow_once", canonical_always, always=True) == "allow_once"
+    canonical_once = _offered(
+        {"optionId": "allow_always", "kind": "allow_once"}, {"optionId": "x", "kind": "reject_once"}
+    )
+    assert pick("allow_always", canonical_once, always=True) == "allow_always"
+    assert pick("allow_always", canonical_once, always=False) == "allow_always"
+    # A one-call id spelled like the other literal is never read as an allow-always.
+    both = _offered(
+        {"optionId": "allow_always", "kind": "allow_once"},
+        {"optionId": "persist", "kind": "allow_always"},
+    )
+    assert pick("allow_always", both, always=False) == "allow_always"
+    assert pick("allow_once", both, always=False) == "allow_always"
+    assert pick("allow_always", both, always=True) == "persist"
+    # An explicit id is read by the kind the frame offered it as; a one-call reading wins.
+    asks = d.asks_allow_always
+    assert asks("allow_always", both, always=True) is False
+    assert asks("persist", both, always=False) is True
+    assert asks("allow_once", canonical_always, always=True) is False
+    assert asks("allow_always", None, always=False) is True
+    assert asks("other", claude, always=True) is False
+    assert asks(None, claude, always=True) is True
+    # A kindless frame keeps the well-known id table.
+    assert pick("allow_once", _offered({"optionId": "allow"}), always=False) == "allow"
+    # Nothing to map to, or not a canonical literal: left as it was.
+    assert pick("allow_once", None, always=False) == "allow_once"
+    assert pick("reject", claude, always=False) == "reject"
+    assert pick("allow_once", _offered(), always=False) == "allow_once"
+
+
+def _spelled_like_always_event():
+    """A frame whose one-call allow is offered under the id ``allow_always``."""
+    return _offered(
+        {"optionId": "allow_always", "name": "Yes", "kind": "allow_once"},
+        {"optionId": "persist", "name": "Always", "kind": "allow_always"},
+        {"optionId": "reject", "name": "No", "kind": "reject_once"},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bridged, always, option_id, sent",
+    [
+        (False, False, None, "allow_always"),
+        (False, True, None, "persist"),
+        (True, False, None, "allow_always"),
+        (True, True, None, "allow_always"),
+        # The caller picked the frame's own one-call option by its id.
+        (False, False, "allow_always", "allow_always"),
+        (True, False, "allow_always", "allow_always"),
+        (False, False, "persist", "persist"),
+        (True, False, "persist", "allow_always"),
+    ],
+)
+async def test_a_one_call_id_spelled_like_always_is_sent_once_by_the_client(
+    tmp_path, bridged, always, option_id, sent
+):
+    """A one-call approval, or a bridged tool's downgrade, resolves to the one-call
+    id ``allow_always``; it is sent as is, never re-read as the allow-always ``persist``."""
+    if bridged:
+        _register("crew-probe")
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+    client._session_key = SESSION
+    event = _claude_event({})
+    spelled = _spelled_like_always_event()
+    event.options, event.offered_allow = spelled.options, spelled.offered_allow
+    client._permission_gate_events[42] = event
+    client._permission_options[42] = {
+        "once": "allow_always",
+        "always": "persist",
+        "reject": "reject",
+    }
+    sent_with: list = []
+
+    async def _send(request_id, payload, **recheck):
+        if "before_write" in recheck:
+            recheck["before_write"]()
+        sent_with.append(payload)
+
+    client._send_response = AsyncMock(side_effect=_send)
+    assert await client.approve_tool(42, option_id, always=always) is True
     assert sent_with == [{"outcome": {"outcome": OUTCOME_SELECTED, "optionId": sent}}]
     if bridged:
         assert crew_oauth_proxy.consume_approval(SESSION, "crew-probe", "crew_probe_echo", {})

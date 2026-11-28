@@ -14,6 +14,7 @@ row waiting only for a stagger tick behind the cap) keeps the existing text.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from kiro_crew import mcp_shared
@@ -493,6 +494,19 @@ class TestSpawnStatusAndListShowAQueuedRun:
         ):
             out = spawn_tools.spawn_list("spawn_list", {})
         assert out.splitlines()[0] == "No subagents running."
+
+    def test_spawn_list_reports_a_failed_gateway_read(self) -> None:
+        """A read that failed is not an empty list: the caller must not be told
+        its runs do not exist, so the error is reported as ``spawn_status`` does.
+        The roster is read from disk, not the gateway, so it is still listed."""
+        with (
+            patch.object(spawn_tools.mcp_core, "_get", return_value={"error": "timed out"}),
+            patch.object(
+                spawn_tools.mcp_core, "list_agents", return_value=[SimpleNamespace(name="scout")]
+            ),
+        ):
+            out = spawn_tools.spawn_list("spawn_list", {})
+        assert out.splitlines() == ["Error: timed out", "", "Available agents: scout"]
 
 
 class TestSpawnSubAgentsReleasesDeferredMembers:

@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from kiro_crew import edition, github_runner
 from kiro_crew.dashboard.tailnet_proxy_proof import loopback_client_is_daemon
-from kiro_crew.dashboard.urls import is_loopback
+from kiro_crew.dashboard.urls import is_loopback, tailnet_https_origin
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform.governance_profiles import (
@@ -405,14 +405,13 @@ def dns_name_from_status(status: object) -> str | None:
     return name
 
 
-def tailnet_origin() -> str | None:
-    """The HTTPS origin to trust for this machine's tailnet name, or ``None``.
+def tailnet_origin(https_port: int = 443) -> str | None:
+    """The HTTPS origin for this machine's tailnet name served on *https_port*, or ``None``.
 
-    No port: ``tailscale serve`` fronts the dashboard on 443, so the browser's
-    ``Origin`` carries no port component.
+    Carries the port only when it is not 443 (:func:`urls.tailnet_https_origin`).
     """
     name = self_dns_name()
-    return f"https://{name}" if name else None
+    return tailnet_https_origin(name, https_port) if name else None
 
 
 #: ``BackendState`` values that mean the daemon is running but this machine is
@@ -420,7 +419,7 @@ def tailnet_origin() -> str | None:
 #: not-signed-in half is listed because that is the one an operator fixes by
 #: signing in, and treating an unknown future value as "signed in" would send
 #: them to the wrong remedy.
-_BACKEND_STATES_NEEDING_LOGIN = frozenset({"NeedsLogin", "NoState", "NeedsMachineAuth"})
+_BACKEND_STATES_NEEDING_LOGIN = frozenset({"NeedsLogin", "NoState"})
 
 
 @dataclass(frozen=True)
@@ -440,6 +439,9 @@ class DaemonProbe:
     * ``stopped=True`` — the daemon answers but Tailscale is stopped
       (``BackendState "Stopped"``, e.g. after ``tailscale down``); bring it up.
     * ``logged_in=False`` — signed out; sign in.
+    * ``needs_approval=True`` — signed in, but the tailnet requires device
+      approval and an admin has not approved this machine; another sign-in
+      cannot help. ``logged_in`` stays ``False``: nothing on the tailnet works yet.
     * all true but ``name=""`` — signed in, but MagicDNS is off for the tailnet.
     * ``https_enabled=False`` — the tailnet has not granted certificate
       provisioning for this machine's MagicDNS name yet.
@@ -480,8 +482,10 @@ class DaemonProbe:
     #: field. It must not be treated as ``False``: older clients may still be
     #: able to publish, and the authoritative ``tailscale serve`` write will
     #: report any unmet requirement. ``False`` is reserved for an explicit
-    #: ``CertDomains`` list that does not contain this host.
+    #: ``CertDomains`` (``null`` or a list) that does not contain this host.
     https_enabled: bool | None = None
+    #: ``BackendState "NeedsMachineAuth"``.
+    needs_approval: bool = False
 
 
 def _count_peers(status: dict) -> tuple[int, int]:
@@ -548,6 +552,18 @@ def probe_daemon() -> DaemonProbe:
             detail="Tailscale is stopped, so this machine is not connected to its tailnet.",
             stopped=True,
         )
+    if backend_state == "NeedsMachineAuth":
+        return DaemonProbe(
+            name="",
+            installed=True,
+            reachable=True,
+            logged_in=False,
+            detail=(
+                "This machine is signed in to Tailscale and is waiting for an admin "
+                "to approve it."
+            ),
+            needs_approval=True,
+        )
     logged_in = not (
         isinstance(backend_state, str) and backend_state in _BACKEND_STATES_NEEDING_LOGIN
     )
@@ -578,13 +594,15 @@ def probe_daemon() -> DaemonProbe:
         )
     # Tailscale's public ``ipnstate.Status`` contract defines CertDomains as the
     # DNS names for which the control plane will help provision TLS certificates.
-    # An explicit empty/mismatching list is therefore a reliable first-use HTTPS
-    # prerequisite; an absent or malformed field stays unknown so an older CLI is
-    # allowed to reach the authoritative Serve attempt instead of being blocked
-    # forever by a field it never emitted.
+    # It is a Go slice without ``omitempty``, so a tailnet without HTTPS sends
+    # ``"CertDomains": null``: a present null or a list without this host means
+    # HTTPS is off. An ABSENT or malformed field stays unknown, so an older CLI
+    # that never emitted it still reaches the authoritative Serve write.
     raw_cert_domains = status.get("CertDomains")
     https_enabled: bool | None = None
-    if isinstance(raw_cert_domains, list):
+    if "CertDomains" in status and raw_cert_domains is None:
+        https_enabled = False
+    elif isinstance(raw_cert_domains, list):
         cert_domains = {
             value.strip().rstrip(".").lower()
             for value in raw_cert_domains
@@ -805,6 +823,8 @@ class TailnetOriginState:
 
     host: str = ""
     resolved_at: int = 0
+    #: The ``dashboard.tailscale.https_port`` read at startup, which the origin carries.
+    https_port: int = 443
     load_enabled: Callable[[], bool] | None = field(
         default=None,
         repr=False,
@@ -833,6 +853,14 @@ def running_tailnet_origin(
     except (TypeError, ValueError):
         resolved_at = 0
     return host, resolved_at
+
+
+def running_tailnet_https_port(app: web.Application | Mapping[str, object]) -> int:
+    """The HTTPS port the running gateway's tailnet origin was built from."""
+    state = app.get(_ORIGIN_RUNTIME_STATE_KEY)
+    if isinstance(state, TailnetOriginState):
+        return state.https_port
+    return 443
 
 
 async def _origin_configured_enabled(load_enabled: Callable[[], bool]) -> bool | None:
@@ -907,13 +935,13 @@ async def _recover_tailnet_origin(app: web.Application, state: TailnetOriginStat
             )
             return
 
-        allowed_origins.add(f"https://{host}")
+        origin = tailnet_https_origin(host, state.https_port)
+        allowed_origins.add(origin)
         state.host = host
         state.resolved_at = _origin_resolved_now()
         logger.info(
-            "tailnet origin recovered in background: trusting https://%s "
-            "(bind and auth unchanged)",
-            host,
+            "tailnet origin recovered in background: trusting %s (bind and auth unchanged)",
+            origin,
         )
         return
 
@@ -969,6 +997,7 @@ def install_tailnet_origin_recovery(
     enabled: bool,
     initial_host: str,
     load_enabled: Callable[[], bool],
+    https_port: int = 443,
 ) -> None:
     """Seed runtime state and register recovery for an unresolved opt-in."""
 
@@ -981,6 +1010,7 @@ def install_tailnet_origin_recovery(
     state = TailnetOriginState(
         host=initial_host,
         resolved_at=resolved_at,
+        https_port=https_port,
         load_enabled=load_enabled,
     )
     app[_ORIGIN_RUNTIME_STATE_KEY] = state
@@ -1223,8 +1253,14 @@ def _forwarded_peer_candidate(request: web.Request, trust: TailnetTrust) -> str 
     """The cheap, synchronous gate: RFC §2 conditions (a)–(d), fail-closed.
 
     Returns the single forwarded tailnet address worth asking the daemon
-    about, or ``None``. No I/O — safe to run inline on the event loop.
+    about, or ``None``. No I/O — safe to run inline on the event loop. A
+    request that arrived on the entry port (``origin.is_entry_request``) is
+    ``None`` whatever headers it carries: the socket decides, not a header.
     """
+    from kiro_crew.dashboard.origin import is_entry_request
+
+    if is_entry_request(request):
+        return None
     # (b) explicit opt-in AND a non-empty allowlist. Identity trust is never
     # inferred, and an empty allowlist means trust was refused at config load.
     # An UNREADABLE policy also enforces: the allowlist is unknown, and
@@ -1281,7 +1317,14 @@ def is_forwarded_tailnet_request(request: web.Request, trust: TailnetTrust) -> b
 
     Synchronous and I/O-free -- the daemon is not consulted, so this is safe to
     ask inline on the event loop.
+
+    A request that arrived on the entry port (``origin.is_entry_request``) is
+    never a forwarded tailnet request, whatever headers it carries.
     """
+    from kiro_crew.dashboard.origin import is_entry_request
+
+    if is_entry_request(request):
+        return False
     # Same opt-in gate _forwarded_peer_candidate applies, repeated rather than
     # inherited: without it an ordinary install (no identity policy at all)
     # would start answering True and make the caller's deny branch reachable.

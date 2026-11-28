@@ -14,6 +14,7 @@ import { createChatForView, showCreatedChat } from '../../lib/createdChatView'
 import { useAskingNavigate, useIsCurrentUrl, useMayLeaveForNavigation, useNavigationStakeNow } from '../NavigationLeaveGuard'
 import { crewModeAgent, crewModeEnabled, gatewayRunsCrewMode } from '../../lib/crewMode'
 import { ApiError } from '../../api/apiError'
+import { readAfterRenewal } from '../../api/readAfterRenewal'
 import { appPathname } from '../../lib/basePath'
 import { isChatPath } from '../../hooks/notificationBanner'
 import { i18nT } from '../../i18n/t'
@@ -45,8 +46,9 @@ export function useMilestones({ enabled = true }: { enabled?: boolean } = {}) {
   return useQuery<Milestones>({
     queryKey: [...MILESTONES_QUERY_KEY, sessionKey ?? ''],
     // `enabled` is read at render, so a read already queued by the time the
-    // first 404 lands could still go out; the function itself refuses too.
-    queryFn: () => (routeMissing ? Promise.reject(new ApiError(404, 'milestones route missing')) : api.milestones(sessionKey)).catch((e: unknown) => {
+    // first 404 lands could still go out; the function itself refuses too. A
+    // read refused at a lapsed sign-in is read once more after the renewal.
+    queryFn: () => (routeMissing ? Promise.reject(new ApiError(404, 'milestones route missing')) : readAfterRenewal(() => api.milestones(sessionKey))).catch((e: unknown) => {
       if (e instanceof ApiError && e.status === 404) routeMissing = true
       throw e
     }),
@@ -440,7 +442,7 @@ export function useRunStarter() {
     // the user opened meanwhile wins (`shown` is false). A fill-in prompt is
     // staged as the keyed prefill before the chat opens, so it lands once, on
     // the commit that opens it, and never over text typed while it loads.
-    const view = await createChatForView(dispatch, store.getState, { defaultFolder: true, ...agent, ...(send ? {} : { prefill: prompt }) })
+    const view = await createChatForView(dispatch, store.getState, { defaultFolder: true, startModeDefault: true, ...agent, ...(send ? {} : { prefill: prompt }) })
     if (!view.shown) return
     // A yes to the first ask covers this navigate; with nothing at stake then,
     // the live guard is asked now (a draft can start during the create).

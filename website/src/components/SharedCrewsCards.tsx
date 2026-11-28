@@ -23,6 +23,7 @@ import { ArrowRight, ExternalLink, Users } from 'lucide-react'
 import type { RelayCrewEntry } from '../api/client'
 import {
   clearRelayCrewsUnseen, isRelayCrewOnline, isSignedOutRefusal, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText, relayRefusalText, useRelayViewerCrews,
+  RELAY_DOMAIN_SETTING,
 } from '../hooks/useRelayViewerCrews'
 import { useAppDispatch } from '../store'
 import { relayPaneBridge } from '../lib/relayCrewPanes'
@@ -116,7 +117,7 @@ function SharedCrewRow({ crew, refusal, onOpen }: {
 
 export default function SharedCrewsCards() {
   const { t } = useTranslation()
-  const { hidden, crews, account, failed } = useRelayViewerCrews()
+  const { hidden, crews, account, failed, offDomain } = useRelayViewerCrews()
   // Which account the list was read for: said here, not in the Crew switcher,
   // whose Remote Crews group lists every remote Crew. Left out for an account
   // with no label; no e-mail, the gateway sends none.
@@ -152,8 +153,10 @@ export default function SharedCrewsCards() {
           {provider && <p className="text-[12px] text-muted mb-2 break-words" data-testid="shared-crews-account">{t('app.signed_in_with', { provider })}</p>}
           {/* askAgent on: this tab's drafts live in the store. The rows below are the last list loaded. */}
           {failed && <ErrorNotice variant="inline" impact={crews.length > 0 ? 'partial' : 'blocking'} message={t(crews.length > 0 ? 'components.relayCrews.refresh_failed' : 'components.relayCrews.refusal_list_generic')} className="pb-2" testId="shared-crews-refresh-failed" askAgent />}
+          {/* askAgent on, as above: a wrong dev setting is one the agent can find and explain. */}
+          {offDomain && <ErrorNotice variant="inline" impact="partial" message={t('components.relayCrews.off_domain', { setting: RELAY_DOMAIN_SETTING })} className="pb-2" testId="shared-crews-off-domain" askAgent />}
           {crews.length === 0 ? (
-            !failed && <div className="text-[13px] text-muted py-1" data-testid="shared-crews-empty">{t('components.sharedCrews.empty')}</div>
+            !failed && !offDomain && <div className="text-[13px] text-muted py-1" data-testid="shared-crews-empty">{t('components.sharedCrews.empty')}</div>
           ) : (
             <ul aria-label={t('components.sharedCrews.section_title')} className="divide-y divide-border">
               {crews.map(c => (

@@ -18,7 +18,9 @@ The tool runs in the ``kirocrew-core`` shim and posts one op to
 
 from __future__ import annotations
 
+import base64
 import io
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -26,6 +28,8 @@ from redaction_structured_cases import github_classic
 
 from kiro_crew.browser_harness import ops as harness_ops
 from kiro_crew.mcp_tools import browser as mod
+from kiro_crew.testing.links import make_dir_link
+from kiro_crew.validation import build_tool_response
 
 # A GitHub token with a valid checksum, which the redactor masks.
 _TOKEN = github_classic(seed=41)
@@ -495,6 +499,106 @@ def test_screenshot_result_is_the_path_and_how_to_show_it() -> None:
     ]
 
 
+def _shots() -> Path:
+    from kiro_crew.config.paths import config_dir
+
+    shots = harness_ops.screenshot_dir(config_dir())
+    shots.mkdir(parents=True, exist_ok=True)
+    return shots
+
+
+def _png(path: Path) -> Path:
+    from PIL import Image
+
+    Image.new("RGB", (8, 6), (200, 30, 30)).save(path, format="PNG")
+    return path
+
+
+def _inline_frame(monkeypatch: pytest.MonkeyPatch, path: Path, inline: Any = True) -> dict:
+    monkeypatch.setattr(mod, "_post_command", _capture_post([], 200, _ok({"path": str(path)})))
+    return build_tool_response(
+        mod.browser("browser", {"op": "screenshot", "args": {"inline": inline}})
+    )
+
+
+def test_an_inline_screenshot_sends_the_image_after_the_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _png(_shots() / f"sent-{tmp_path.name}.png")
+    monkeypatch.setattr(mod, "_post_command", _capture_post([], 200, _ok({"path": str(path)})))
+    plain = build_tool_response(mod.browser("browser", {"op": "screenshot"}))
+    inline = _inline_frame(monkeypatch, path)
+    assert plain["content"][0]["text"].startswith(f"Browser screenshot saved: {path}")
+    assert inline["content"][:1] == plain["content"], "the path text is unchanged, and first"
+    data = base64.b64encode(path.read_bytes()).decode()
+    assert inline["content"][1:] == [{"type": "image", "data": data, "mimeType": "image/png"}]
+
+
+def test_an_inline_screenshot_run_after_a_hand_back_sends_the_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _png(_shots() / f"held-{tmp_path.name}.png")
+    monkeypatch.setattr(mod.mcp_core, "time", _Clock())
+    monkeypatch.setattr(mod.mcp_core, "_post", lambda *a, **k: {})
+    monkeypatch.setattr(mod, "_post_handback", lambda *a, **k: (200, {"released": True}))
+    answers = [(200, _HELD), (200, _ok({"path": str(path)}))]
+    monkeypatch.setattr(mod, "_post_command", lambda *a, **k: answers.pop(0))
+    parked = mod.browser("browser", {"op": "screenshot", "args": {"inline": True}})
+    assert isinstance(parked, mod.DeferredTool)
+    frame = build_tool_response(parked.step())
+    assert [block["type"] for block in frame["content"]] == ["text", "image"]
+
+
+_LEFT_OUT = "Warning: `inline` left out: the image could not be read or fitted"
+
+
+def test_an_inline_screenshot_it_cannot_read_is_the_path_and_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = _shots() / f"gone-{tmp_path.name}.png"
+    (only,) = _inline_frame(monkeypatch, gone)["content"]
+    assert only["text"].startswith(f"Browser screenshot saved: {gone}")
+    assert only["text"].endswith(_LEFT_OUT)
+
+
+def test_an_inline_screenshot_never_follows_a_link_planted_in_the_leaf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The agent's sandbox can write the leaf; this process runs outside that sandbox."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _png(outside / "outside.png")
+    planted = _shots() / f"planted-{tmp_path.name}"
+    make_dir_link(planted, outside)
+    (only,) = _inline_frame(monkeypatch, planted / "outside.png")["content"]
+    assert only["text"].endswith(_LEFT_OUT)
+
+
+def test_an_inline_screenshot_refuses_a_screenshot_folder_replaced_by_a_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A folder replaced by a link would otherwise move the pin to wherever it points."""
+    from kiro_crew.browser_snapshots import SNAPSHOT_DIR_NAME
+
+    home, elsewhere = tmp_path / "home", tmp_path / "elsewhere"
+    home.mkdir()
+    elsewhere.mkdir()
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    leaf = home / SNAPSHOT_DIR_NAME
+    make_dir_link(leaf, elsewhere)
+    _png(elsewhere / "shot.png")
+    (only,) = _inline_frame(monkeypatch, leaf / "shot.png")["content"]
+    assert only["text"].endswith(_LEFT_OUT)
+
+
+def test_a_non_boolean_inline_is_ignored_with_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _png(_shots() / f"word-{tmp_path.name}.png")
+    (only,) = _inline_frame(monkeypatch, path, inline="true")["content"]
+    assert only["text"].endswith("Warning: `inline` ignored: it must be true or false")
+
+
 def test_snapshot_result_renders_the_outline_and_redacts() -> None:
     result = {
         "ok": True,
@@ -645,3 +749,11 @@ def test_a_huge_popup_note_is_capped_in_the_screenshot_and_failure_text() -> Non
     )
     assert failed is not None and failed.startswith("Error (wait_timeout): e")
     assert len(failed) <= len("Error (wait_timeout): e") + mod._RESULT_CAP
+
+
+def test_a_sign_in_reason_reaches_the_agent_on_a_refusal_and_on_a_snapshot() -> None:
+    block = {"outcome": "not_signed", "reason": "not_signed_in", "host": "app.example.com"}
+    refused = {"ok": False, "code": "nav_error", "error": "net::ERR_ABORTED", "sign_in": block}
+    assert "not_signed_in" in mod._settle("navigate", 200, refused)
+    shot = {"ok": True, "result": {"snapshot": "x", "url": "https://a.test/", "sign_in": block}}
+    assert "not_signed_in" in mod._settle("snapshot", 200, shot)

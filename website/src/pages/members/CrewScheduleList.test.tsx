@@ -89,11 +89,62 @@ describe('CrewScheduleList rows', () => {
     const notice = screen.getByTestId('crew-schedule-run-error')
     expect(screen.getAllByTestId('crew-schedule-run-error')).toHaveLength(1)
     expect(notice).toHaveAttribute('role', 'alert')
-    expect(notice).toHaveTextContent("A schedule's last run failed.")
+    // Names the first failed job (list order) and counts the rest.
+    expect(notice).toHaveTextContent('“bad” and 1 other schedule failed on their last run.')
     expect(within(notice).getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
     expect(notice.closest('button')).toBeNull()
     const list = rows()[0].closest('ul')!
     expect(list.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('names a single failed job and opens its run log from the notice', () => {
+    const { onOpenJob } = setup([
+      job({ id: 'ok', name: 'ok', last_run_ts: NOW - 3600, last_status: 'ok' }),
+      job({ id: 'bad', name: 'nightly digest', last_run_ts: NOW - 3600, last_status: 'error' }),
+    ])
+    const notice = screen.getByTestId('crew-schedule-run-error')
+    expect(notice).toHaveTextContent('“nightly digest” failed on its last run.')
+    fireEvent.click(within(notice).getByRole('button', { name: 'Open run log' }))
+    expect(onOpenJob).toHaveBeenCalledWith('bad', 'logs')
+  })
+
+  it('raises no notice for a job the user paused, but keeps its row mark', () => {
+    setup([
+      job({ id: 'p', name: 'paused by me', enabled: false, user_paused: true, last_run_ts: NOW - 86400, last_status: 'error', consecutive_failures: 1 }),
+    ])
+    expect(rowByName('paused by me')).toHaveTextContent('failed')
+    expect(within(rowByName('paused by me')).getByTestId('crew-schedule-state')).toHaveTextContent(/^Paused$/)
+    expect(screen.queryByTestId('crew-schedule-run-error')).toBeNull()
+  })
+
+  it('says why an auto-paused job stopped and names it first, with the log and the hand-off', () => {
+    const { onOpenJob } = setup([
+      job({ id: 'a', name: 'board sync', enabled: false, user_paused: false, last_run_ts: NOW - 86400, last_status: 'error', consecutive_failures: 5 }),
+      job({ id: 'b', name: 'active one', enabled: true, next_run_ts: NOW + 60, last_run_ts: NOW - 60, last_status: 'error' }),
+    ])
+    const row = rowByName('board sync')
+    expect(row).toHaveAttribute('data-state', 'auto-paused')
+    expect(within(row).getByTestId('crew-schedule-state')).toHaveTextContent('Paused after 5 failures')
+    // The stopped job is named first, even though it sorts last in the list.
+    const notice = screen.getByTestId('crew-schedule-run-error')
+    expect(notice).toHaveTextContent('“board sync” and 1 other schedule failed on their last run.')
+    // Two controls: the run log (whose dialog carries Resume) and the hand-off.
+    expect(within(notice).getAllByRole('button').map((b) => b.textContent)).toEqual(['Open run log', 'Ask the agent'])
+    fireEvent.click(within(notice).getByRole('button', { name: 'Open run log' }))
+    expect(onOpenJob).toHaveBeenCalledWith('a', 'logs')
+  })
+
+  it('keeps a fired one-shot that failed in the notice', () => {
+    setup([
+      job({ id: 'o', name: 'one shot', enabled: false, user_paused: true, parked_after_run: true, last_run_ts: NOW - 60, last_status: 'error', consecutive_failures: 1 }),
+    ])
+    expect(screen.getByTestId('crew-schedule-run-error')).toHaveTextContent('“one shot” failed on its last run.')
+  })
+
+  it('raises no notice when a later run succeeded', () => {
+    // `last_status` is the latest run's; an older failure is gone once one passes.
+    setup([job({ id: 'r', name: 'recovered', last_run_ts: NOW - 60, last_status: 'ok', consecutive_failures: 0 })])
+    expect(screen.queryByTestId('crew-schedule-run-error')).toBeNull()
   })
 
   it('shows the next run only for an enabled schedule with a future time', () => {

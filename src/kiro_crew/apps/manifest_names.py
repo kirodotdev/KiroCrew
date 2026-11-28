@@ -91,7 +91,7 @@ UNPORTABLE_APP_NAMES = WINDOWS_DEVICE_STEMS
 
 # Longest admissible app name, in characters (the kebab grammar is ASCII, so
 # also in bytes). The gateway builds path components from the name plus a
-# suffix: ``<name>.lock``, ``.<name>-data-tmp``, ``.<name>-update-old-<pid>-<hex>``
+# suffix: ``<name>.lock``, ``.<name>-data-tmp``, ``.<name>-update-{new,out,old}-<pid>-<hex>``
 # and, longest, ``.<name>-deps-doomed.kirocrew-deps-staging-<pid>-<hex>``, which
 # adds up to 55 characters with a 10-digit process id. NTFS, APFS, ext4 and
 # other common filesystems cap one component at 255, so a name near that limit
@@ -101,6 +101,22 @@ UNPORTABLE_APP_NAMES = WINDOWS_DEVICE_STEMS
 # door (an installed app would lose its name); raising it later costs nothing.
 # ``test_app_name_length`` builds every derived component at this length.
 APP_NAME_MAX_LENGTH = 128
+
+
+def is_app_dir_name(name: str) -> bool:
+    """Whether *name*, joined onto the apps folder, stays a direct child of it (or the folder).
+
+    Refuses ``.``, ``..`` and any name holding ``/``, ``\\`` or NUL, and nothing
+    else: an installed name from before :func:`app_name_error`, the gateway's own
+    ``.``-prefixed sidecar names and the empty name (which :func:`app_name_error`
+    refuses at admission) still pass. A route's ``{name}`` is decoded by the router,
+    so ``a%2F..%2Fb`` arrives as ``a/../b``.
+    """
+    return (
+        isinstance(name, str)
+        and name not in (".", "..")
+        and not any(ch in name for ch in ("/", "\\", "\x00"))
+    )
 
 
 def app_name_error(name: str) -> str | None:

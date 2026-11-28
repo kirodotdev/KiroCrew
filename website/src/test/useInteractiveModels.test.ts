@@ -100,6 +100,20 @@ describe('interactive model visibility', () => {
       .toEqual(['auto', 'model-b'])
   })
 
+  it('hides a model the account hid on top of the local list, keeping auto and the active model', () => {
+    // The account's hide (the engine's hiddenByAccount mark) and Crew's own list
+    // apply together; a hidden model the slot runs stays offered.
+    const models = [
+      MODELS[0],
+      { ...MODELS[1], hiddenByAccount: true },
+      MODELS[2],
+      { name: 'model-c', description: 'C', hiddenByAccount: true },
+    ]
+    expect(filterInteractiveModels(models, ['model-b']).map(model => model.name)).toEqual(['auto'])
+    expect(filterInteractiveModels(models, []).map(model => model.name)).toEqual(['auto', 'model-b'])
+    expect(filterInteractiveModels(models, [], ['model-c']).map(model => model.name)).toEqual(['auto', 'model-b', 'model-c'])
+  })
+
   it('offers one Codex model row per base model when effort variants are advertised', () => {
     const codexModels = [
       { name: 'gpt-6-sol[low]', description: 'Fast' },

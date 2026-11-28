@@ -15,7 +15,9 @@ dashboard reading the work board on a timer pays it on every cold cell. The valu
 wants is a function of entries this process has just written, so it can be folded then
 -- and the read becomes a memo lookup.
 
-WHAT IS ON THE APPEND PATH. One :meth:`queue.Queue.put_nowait`. Not the slot lookup,
+WHAT IS ON THE APPEND PATH. One :meth:`queue.Queue.put_nowait`, and one
+:func:`~kiro_crew.config.paths.data_home` call to stamp the wake with the committing
+thread's home (a memo hit after the append that resolved it). Not the slot lookup,
 not the fold, not the frame: those are the worker's, because each of them reads a file
 or builds a value and the thread that just committed an entry is either the event loop
 or the one writer thread every session's appends are serialized through. A full queue
@@ -84,8 +86,10 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Final, NamedTuple
 
+from kiro_crew.config import paths as _paths
 from kiro_crew.crew_log.errors import CrewLogError
 
 logger = logging.getLogger(__name__)
@@ -169,12 +173,23 @@ class _Wake(NamedTuple):
 
     ``seq`` is carried so a wake is self-describing in a log line and so the worker can
     tell a wake it has already folded past from one it has not, without opening the file.
+
+    ``home`` is the data home the committing thread resolved. The worker folds the wake
+    with that home pinned (:func:`~kiro_crew.config.paths.run_with_data_home`), so nothing
+    the fold calls reads ``KIROCREW_HOME`` on the worker's thread. It travels with each
+    wake rather than once per thread because the worker outlives any one caller.
     """
 
     unit_id: str
     entry_type: str
     seq: int
     board: str = ""
+    home: "Path | None" = None
+
+
+#: A coalesced wake's key, ``(home, unit, board, type)``, and a closer's, ``(home, unit)``.
+_WakeKey = tuple["Path | None", str, str, str]
+_CloserKey = tuple["Path | None", str]
 
 
 #: Put on the queue by :func:`stop_for_tests` to wake a worker parked in ``get``. A
@@ -276,8 +291,11 @@ def note_commit(unit_id: str, entry_type: str, seq: int, board: str = "") -> Non
     every type that has no board field and wrong for a worker's report, so the emitter
     passes it wherever the entry carries it.
 
-    The ONE call the append path makes, and it is one ``put_nowait`` plus a membership
-    test against a frozen set. It never blocks, never opens a file and never raises: a
+    The ONE call the append path makes, and it is one ``put_nowait``, a membership test
+    against a frozen set, and one ``data_home()`` call for the wake's home. That call is
+    a memo hit after the append that just resolved the home; on a miss it resolves the
+    home as the append did, and if it raises the wake carries no home and the worker
+    resolves it as before. It never blocks and never raises: a
     caller that has just committed an entry has already done the thing that mattered,
     and a failure to tell a cache about it must not reach that caller.
 
@@ -295,7 +313,12 @@ def note_commit(unit_id: str, entry_type: str, seq: int, board: str = "") -> Non
             # against is going away; a wake arriving now is a leak, not a request
             # (:func:`retire_for_tests`).
             return
-        _enqueue(_Wake(unit_id, entry_type, int(seq), board))
+        home: "Path | None"
+        try:
+            home = _paths.data_home()
+        except Exception:  # an unresolvable home must not lose the wake
+            home = None
+        _enqueue(_Wake(unit_id, entry_type, int(seq), board, home))
     except queue.Full:
         _count_drop(unit_id, entry_type)
     except Exception:  # pragma: no cover - the append path must not see this
@@ -551,11 +574,32 @@ def _run() -> None:
             # :func:`_publish_fold`'s fan-out, so this loop names none of them.
             with _fold_gate:
                 try:
-                    _fold_batch(batch, closers)
+                    _fold_coalesced(batch, closers)
                 except Exception:  # pragma: no cover - the loop outlives one bad batch
                     _log_exc(logging.WARNING, "crew log eager fold batch failed")
         finally:
             _settle(taken)
+
+
+def _fold_coalesced(batch: "dict[_WakeKey, _Wake]", closers: "dict[_CloserKey, int]") -> None:
+    """Fold what :func:`_coalesce` returned: one :func:`_fold_batch` per home, pinned to it.
+
+    The home is stripped from every key, so :func:`_fold_batch` sees the batch keyed by
+    (unit, board, type) and the closers by unit. Each home's share runs inside
+    :func:`~kiro_crew.config.paths.run_with_data_home`, so the fold never reads
+    ``KIROCREW_HOME`` on this thread. A real gateway has one home, so this is one call.
+    A share that raises is logged and the next home's share still folds.
+    """
+    for home in dict.fromkeys(key[0] for key in batch):
+        share = {key[1:]: wake for key, wake in batch.items() if key[0] == home}
+        shut = {key[1]: seq for key, seq in closers.items() if key[0] == home}
+        try:
+            if home is None:  # the committing thread could not resolve one
+                _fold_batch(share, shut)
+            else:
+                _paths.run_with_data_home(home, _fold_batch, share, shut)
+        except Exception:  # pragma: no cover - one home's failure must not skip the next
+            _log_exc(logging.WARNING, "crew log eager fold batch failed")
 
 
 @contextmanager
@@ -616,8 +660,11 @@ def _await_wake() -> "_Wake | None":
 
 def _coalesce(
     first: _Wake,
-) -> "tuple[dict[tuple[str, str, str], _Wake], dict[str, int], int]":
-    """*first* plus everything queued: the newest wake per (unit, board, type), the closers, the count.
+) -> "tuple[dict[_WakeKey, _Wake], dict[_CloserKey, int], int]":
+    """*first* plus everything queued: the newest wake per (home, unit, board, type), the closers, the count.
+
+    Every key leads with the wake's HOME, so wakes committed under two homes never merge;
+    :func:`_fold_coalesced` strips it and folds each home's share pinned to it.
 
     Keyed by TYPE too, because the type is what decides which slot folds a wake moves
     (``touched_by_type``). One wake per (unit, board) would let a ``panel/published``
@@ -627,8 +674,8 @@ def _coalesce(
 
     The CLOSERS ride separately because a closer and a later entry mean opposite things
     about one memo, and an append after a closer is accepted, so the batch has to carry
-    both and let :func:`_fold_batch` apply them in commit order. They are keyed by UNIT
-    alone: closing is a fact about a unit, and the closer's own wake carries no board
+    both and let :func:`_fold_batch` apply them in commit order. They are keyed by
+    (home, unit), never by board: closing is a fact about a unit, and the closer's own wake carries no board
     because its entry type has no board field -- so a closer keyed like the other wakes
     would never be found for the entries it outranks.
 
@@ -636,16 +683,16 @@ def _coalesce(
     into one entry: settling by the batch's length would leave :func:`drain` waiting
     forever for the ones it merged away.
     """
-    # Keyed by (unit, board, type) rather than by unit: one unit can append to more than one
-    # board -- a worker bound to two conductors reports to both -- and collapsing those
-    # onto the unit would fold one board and silently drop the other.
-    batch: dict[tuple[str, str, str], _Wake] = {}
-    closers: dict[str, int] = {}
+    # Keyed by (home, unit, board, type) rather than by unit: one unit can append to more
+    # than one board -- a worker bound to two conductors reports to both -- and collapsing
+    # those onto the unit would fold one board and silently drop the other.
+    batch: dict[_WakeKey, _Wake] = {}
+    closers: dict[_CloserKey, int] = {}
     taken = 1
     pending = _queue
     wake: "_Wake | None" = first
     while wake is not None:
-        slot_key = (wake.unit_id, wake.board, wake.entry_type)
+        slot_key = (wake.home, wake.unit_id, wake.board, wake.entry_type)
         held = batch.get(slot_key)
         if held is None or wake.seq >= held.seq:
             batch[slot_key] = wake
@@ -654,7 +701,8 @@ def _coalesce(
         # closer is accepted, so which applies is decided by commit order in
         # :func:`_fold_batch` and not by which wake won the key here.
         if wake.entry_type == _CLOSED_TYPE:
-            closers[wake.unit_id] = max(closers.get(wake.unit_id, 0), wake.seq)
+            unit_key = (wake.home, wake.unit_id)
+            closers[unit_key] = max(closers.get(unit_key, 0), wake.seq)
         if pending is None:
             break
         try:

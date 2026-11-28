@@ -162,6 +162,28 @@ caller started, or an Install press), answers `browser_repairing` ("being
 installed; try again in a minute"), which the tool passes to the agent as
 written.
 
+**No start while the venv is rebuilt.** A job that installs the Harness clears
+the venv in place, so a daemon or worker spawned then would find no interpreter.
+The job sets the supervisor's `installing_harness` from its `creating_venv` stage
+until the first stage past `installing_harness`; while it is set, a start sets the
+status to `disconnected` with "Browser Harness is being reinstalled; try again
+when it finishes" (`HARNESS_REINSTALLING_DETAIL`) and raises
+`HarnessNotInstalled`. A spawn whose venv interpreter vanished between the
+install read and the spawn (`FileNotFoundError`) answers the same. Before either
+arm that clears the venv (a rebuild, a copy from the runtime) removes the marker,
+the job waits for `HarnessSupervisor.stop_for_harness_rebuild`: it sets
+`installing_harness` and runs the ordinary stop, which ends the browser session
+(the agent's tabs, the relay, Kiro's Chromium) with the daemon and helper worker
+started from the venv's interpreter, or reclaims a daemon a previous gateway left,
+waiting up to `_STOP_GRACE_SECS` for that process (by the pid its ping reply
+carries) to exit, since it still runs its shutdown cleanup after its socket stops
+answering. Left running, they lose their packages to the clear on POSIX, and on
+Windows the clear fails part-way on the interpreter they hold. The rebuild stop
+returns only after a helper call still holding the call lock lets go of it. An
+install stopped while it waits keeps the marker. A repair (`venv --upgrade`) holds starts but stops
+nothing; an install that keeps the venv, and the Chromium download, hold and stop
+nothing.
+
 The daemon starts with a scrubbed environment built by one function and pinned
 by one test:
 
@@ -198,11 +220,36 @@ prefix as their working directory, because a pod gateway's cwd is the agent's
 workspace and a `pip/` package written there would otherwise run as the owner the
 moment they press Install. Their environment also sets `PIP_CONFIG_FILE` to the
 null device, so pip loads no config file (the user's `~/.config/pip/pip.conf` or
-`~/.pip/pip.conf`, `/etc/pip.conf`, the venv's own) and installs from its default
-index, PyPI: an `index-url` in the user's file, such as a CodeArtifact repository
-whose login has expired, would otherwise answer 401 for every locked wheel and
-fail the install with pip's raw output. A mirror set in pip's config or in
-`PIP_INDEX_URL` is therefore not used; the lock's hashes pin every file either
+`~/.pip/pip.conf`, `/etc/pip.conf`, the venv's own). The one exception to the
+`PIP_*` scrub is the first pip install attempt when the user has pip index
+settings: its `PIP_CONFIG_FILE` stays the null device, and it carries whichever
+of the five index keys (`PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL`,
+`PIP_TRUSTED_HOST`, `PIP_CERT`, `PIP_CLIENT_CERT`) are set, as
+`sdk_extras._configured_index_env` reads them: the gateway's own variables of
+those names merged over pip's config, so a network that reaches only a mirror
+can install. That read is a third spawn: `pip config list` by the interpreter
+whose pip installs (the gateway's when it has pip, else the venv's after it has
+its own), with a fixed argv, `-I`, `PYTHON*` scrubbed, stdin from the null
+device, a 15 s timeout, read-only, in the gateway's cwd and with `PIP_*`
+inherited; it runs right before the pip step, after the stage's stop check. The
+first attempt adds `--only-binary :all:`, so pip builds nothing from that index:
+every file it installs is a locked wheel whose sha256 the lock pins (index pages
+and metadata also come from there but never run). Any failed exit of it (no
+route, a 401 or 403, a hash mismatch, no wheel for this host), a timeout of it
+and a spawn of it that cannot start (an index value past the OS's per-string
+exec limit, or one with a NUL, which Python's `Popen` refuses) are logged, and the
+step runs once more exactly as it does with no settings: pip's default index,
+PyPI, sdist builds allowed, a fresh timeout. A stop is not retried. The gateway
+log names each attempt's index by scheme and host only and keeps the first
+attempt's pip output, or why it could not start, redacted
+(`sdk_extras._redact_pip_output`), which is where a mirror's network, TLS or
+proxy reason is; when the second attempt fails too, the error Settings shows is
+its output plus one last line naming the index tried first. This differs from
+the Feishu SDK installer, which retries only on a download failure. A host that
+must build the locked pillow (glibc older than 2.27) and reaches only a mirror
+still cannot install: its first attempt is certain to fail, and the error shown
+is the second's. With no pip index settings the step is one run, as above; the
+lock's hashes pin every file either
 way. `NO_PROXY`/`no_proxy` always carry `127.0.0.1,localhost`: neither `urllib`
 nor `websockets` bypasses a proxy for loopback on its own, and a shell with
 `HTTPS_PROXY` set would send the relay URL (secret and all) to the proxy host. A
@@ -214,7 +261,10 @@ whole script unscrubbed.
 carries none unless its runtime bundles the harness), so each helper call runs in
 a worker the venv's interpreter executes
 (`<prefix>/bin/python -I browser_harness/helper_worker.py`, JSON lines on its
-pipes, one call at a time behind a lock, `CALL_TIMEOUT_SECS = 90`). The pipe is
+pipes, one call at a time behind a lock, `CALL_TIMEOUT_SECS = 90`). A call whose
+handle a stop or restart retired before it got that lock, or while it was starting
+a worker under it, raises `BrowserRestarted`; a worker it was starting is stopped
+first. The pipe is
 read with an 8 MiB line limit (`WORKER_LINE_LIMIT`; asyncio's 64 KiB default is
 smaller than an ordinary snapshot) and the worker refuses to write a reply over
 4 MiB (`REPLY_CAP_BYTES`, an error reply instead); a line that still overruns is
@@ -249,12 +299,19 @@ equal by a test):
 | `page_clock` | `state` (`hold`, `run`, `release`) | the worker's own event breakpoints on the page's timer and animation-frame callbacks (`reflex` `virtual_time`) |
 | `cdp` | `method, params=None` | the worker's own call of Harness `cdp(method, **params)` on the daemon's current tab, for the `cdp` op; a param named `session_id` or `_response_timeout` (the helper's own arguments) is refused |
 | `http_get` | `url, headers=None, timeout` | `_local_http_get` (Harness `http_get`'s plain `urllib` GET from the worker, redirects not followed, body read at most 512 KiB, no browser; `BROWSER_USE_API_KEY` is scrubbed, so never Browser Use's fetch proxy), for the `http_get` op |
-| `set_files` | `expression, files` | the worker's own `DOM.setFileInputFiles`: `expression` (the walker's `fileInput(ref, true)`) is evaluated in the walker's isolated world and must give a node, and `files` is 1 to 10 paths, the gateway's staged copies (the `upload` op) |
+| `set_files` | `expression, files` | the worker's own `DOM.setFileInputFiles`: `expression` (the walker's `fileInput(ref, true)`) is evaluated in the walker's isolated world and must give a node, and `files` is 1 to 100 paths, the gateway's staged copies (the `upload` op). For a `webkitdirectory` node (read on the node in that world) it first sends `Page.bringToFront`, since the full Chrome build lists a staged folder into a folder field only for the active tab and Harness opens its tabs in the background, and, before the set, through `Runtime.callFunctionOn` on the node in that world, sets a flag on the node's wrapper there to false and adds a capture-phase `input` listener to the node's root (its document or shadow root, ahead of the page's own listeners on the field) that sets it true on the browser's own event whose target is the node (`isTrusted`; one the page dispatches is ignored) and then removes itself (the page cannot read or write the flag itself, and the reset keeps a flag an earlier upload left in the reused world from counting); it then reads that flag for up to 3 s, not the node's `files`, which the page's own `change` handler may already have cleared: a flag still false is `folder_field_unsupported`, nothing reported set; a flag read that fails because a new document replaced the page after the set (the top frame's `loaderId`, read just before the set, changed: the page navigated, as one that submits on its own `change` does) counts as filled |
+| `chooser_files` | `x, y, files, folder=False` | the worker's own `upload via: chooser`: `Page.setInterceptFileChooserDialog` on for this call only, a click at `x, y`, then the first `Page.fileChooserOpened` within 3 s gets `DOM.setFileInputFiles` by its `backendNodeId`; `no_chooser`, `not_multiple` (2+ paths on `selectSingle`) and `not_folder_input` (`folder` on an input without `webkitdirectory`, read by `DOM.describeNode`) set nothing (the `upload` op itself never sends a folder this way: `_fits` refuses it first); a chooser opened in a frame that is not the tab's top frame or of its origin (`Page.getFrameTree`) is `frame_refused`; interception off in `finally` |
+| `drop_files` | `x, y, files` | the worker's own `upload via: drop`: no press; `Input.dispatchDragEvent` `dragEnter`, `dragOver`, `drop` at `x, y` carrying the staged paths; the browser's own hit test (`DOM.getNodeForLocation`, through every shadow root, closed ones too, honouring `pointer-events: none` as the drop does) must find a node in the tab's top frame that is not itself a frame element (`IFRAME`, `FRAME`, `OBJECT`, `EMBED`, `PORTAL`, `FENCEDFRAME`), checked again before each of the three events (the page's own drag handlers run in between; a failed check after `dragEnter` sends `dragCancel`), else `frame_refused` |
+
+`ops._page` interprets frame refs by default. Its keyword-only `frame_refs=False`
+keeps arguments literal in the top document while retaining URL refusal and
+isolated-world dispatch. App browser recipes use that mode for every walker call
+([app-kit-platform](app-kit-platform.md), browser recipes).
 
 `run.py`, Harness's MCP server, `upload_file` and the agent-helper loader are not
 reachable through it (`fill_input` is, and only the `fill` op calls it, always on
 `:focus`); the `upload` op uses the
-worker's own `set_files`, never Harness's `upload_file`. A helper's failure comes back
+worker's own `set_files`, `chooser_files` and `drop_files`, never Harness's `upload_file`. A helper's failure comes back
 as `HelperError` with Harness's own one-line message; `HarnessNotInstalled` and
 `BrowserUnavailable` come out of `ensure()`.
 
@@ -280,7 +337,16 @@ own (`relay.request_browser_close`, to the URL in `DevToolsActivePort`) and wait
 to `_STOP_GRACE_SECS` for the process to exit, so Chromium writes its profile
 (`exit_type` `Normal`) and keeps recent cookies. A browser that ignores the request,
 or has no live port, gets the forced tree kill after that wait. macOS and Linux are
-unchanged. The gateway also
+unchanged. A gateway that exits without this teardown leaves Kiro's Chromium
+running on Windows, and Chromium hands a second browser on the same profile to
+the first one. So before a Windows launch (`earlier_chromium.prepare_profile`) the
+supervisor looks for a browser an earlier run left, and addresses it only when
+the profile's `lockfile` exists, `DevToolsActivePort` names a live port, and the
+endpoint at that file's browser path answers `Browser.getVersion` as Chromium. That
+browser gets `Browser.close`, and the launch waits for its port to close and its
+lock to go, then clears the session files so its tabs do not reopen. A browser that
+still holds its port or lock at the deadline fails the start with a message naming
+it, and its port file is removed. Nothing here signals a process. The gateway also
 reclaims a stray daemon from a previous life at startup, then runs the startup
 auto-install (see the driver section).
 
@@ -344,7 +410,8 @@ person's browser usable. If Kiro's Chromium is not downloaded yet, the start
 fails saying so, and Settings shows Install on the main card. A hand pick of
 `user_chrome` never falls back: it fails with the remote-debugging step.
 
-A Kiro's Chromium that exits before the daemon answers fails the start at once
+A Kiro's Chromium that exits before its debugging port opens, or before the
+daemon answers, fails the start at once
 with `Kiro's Chromium exited with code <n>`. On macOS and Linux its stderr goes
 to a pipe of the gateway's own, drained for the browser's whole life (only the
 newest 4 KiB kept, in memory), and its last stderr lines follow, redacted, so a
@@ -472,37 +539,107 @@ the block in `needs_refresh`, as does the provider's own `status()` answering
 reduced to `{needs_refresh, message}`; `message` is edition-authored text
 (printable, at most 200 characters) Settings shows as-is.
 
-**Finishing a sign-in.** A provider may also have the OPTIONAL method
-`complete_sign_in(target, url) -> str | None` (not a Protocol member; read with
-`getattr`; the public Default has none, so nothing below runs there;
-[platform-context](platform-context.md)). `browser_harness/sign_in.py` wraps the
-op's own task (`run_op`): after a `navigate` that committed, it asks the provider
-only when the page is `https`, its host is in BOTH `domains()` and
-`browser.credentials.domains`, the browser is Kiro's own Chromium with
-`browser.credentials.enabled` on (read through the supervisor's own credential
-settings, so the apply and this question agree), and the
-person does not hold the tab. `target.reason` is `sign_in`; `domains()` and the
-method run in one worker thread bounded at 15 s (`budgets.SIGN_IN_PROVIDER_S`).
-Once per op: a completion that lands on a sign-in page again is not asked again;
-`tabs new`, `back` and a click that reaches a sign-in page are not covered. A
-returned URL is opened in the same tab only when it is `https`, has no userinfo,
-no control character, backslash or space, is at most the navigate cap, has a host
-in both domain lists, and passes the route's committed-URL gate
-(`OpContext.url_allowed`); the opened page's landing is judged by that gate again
-(a refused one is blanked, as for any navigate). The opening is bounded at 20 s
-(`budgets.SIGN_IN_NAV_S`); the route adds both bounds to every `navigate`'s budget
-(`budgets.SIGN_IN_WORST_S`), and so to the lock wait and the shim's timeout. It
-runs inside the op's task, so a takeover cancels it like any op. The navigate
-never fails because of it: the result gains `sign_in: {outcome, provider}`, where
-`outcome` is `not_offered`, `provider_timeout`, `provider_failed`,
-`provider_bad_shape`, `url_refused`, `held`, `nav_failed`, `redirect_refused` or
-`completed`. **The URL never leaves the gateway as data:** after a completion the
-agent is told the final page as origin and path only (query and fragment dropped,
-then the exfiltration and credential redactors), the live card's step reads
-"Finish sign-in on <host>", a refusal names the host only, and each asked
-completion writes ONE SEL row (`browser_harness.sign_in`, caller `gateway`):
-provider name, both hosts and the outcome. Nothing is set or kept: the site sets
-its own cookies, which the stale-cookie deletes above never touch.
+**Signing one origin in.** A provider may also have two OPTIONAL methods
+(not Protocol members; read with `getattr`; the public Default has neither, so
+nothing below runs there; [platform-context](platform-context.md)):
+`sign_in_hosts()`, the exact hosts the browser must never reach (the sign-in
+service), and `sign_in_for_origin(target, origin, sign_in_url, *, site_cookies)`.
+`browser_harness/sign_in_guard.py` owns it. After each credential apply
+(`sign_in_guard.reconcile`) the guard is on only for Kiro's own Chromium with
+`browser.credentials.enabled` on and a provider with both methods and a valid
+host, and off (`Fetch.disable`) otherwise. A `domains()` call that fails or times
+out keeps it on with no signable domain: everything stays blocked, nothing is signed. Turning it on, off or to other hosts is `prepare` (synchronous: the supervisor
+holds the guard before any await) then `converge`, which sends each session only
+the `Fetch` state it does not hold yet and records it only once the browser
+answered; the relay hooks stay until every session's interception is off. A run
+cut short (the 8 s re-pull budget) leaves the credential key unapplied, so the
+next navigation runs it again and finishes what is left (an unsettled guard is
+owed that run even with no applied key). At a browser start a run that does not
+land fails the start, so no op runs on a browser without its interception. While on, every agent tab's resident
+relay session (the one `set_appearance` and `resize` use, adopted once per tab;
+the daemon hears of a new tab only after it) carries `Fetch.enable` with two
+kinds of pattern: every `Document` response, and every request to a sign-in host
+on any scheme and port (`*://<host>*`; `classify` keeps the exact host).
+A 3xx whose `Location` is a sign-in host is failed (`Aborted`); every request to a
+sign-in host, of any type, is failed (`BlockedByClient`). So an agent tab never
+sends a request there and the sign-in service never sets a cookie through it.
+Pausing every document response costs one gateway round trip per page load; the
+narrower choice (pausing only sign-in-host requests and reading the redirect from
+`Network.requestWillBeSent`) would lose the failed redirect's `Set-Cookie`, which
+the provider needs. Only a
+tab's main frame is signed; a frame is blocked only. The origin is that of the URL
+whose response redirected (or of the page the tab is on, for a script that went to
+the sign-in host itself), never the sign-in URL, and it must be `https`, in both
+domain lists, not a sign-in host, and either a host the agent asked for in the
+op now running (its `navigate` URL, or a `tabs new` URL for the tab it opens; a
+`tabs new` that reuses a blank current tab counts for that tab). A redirect to
+another host, even a listed one, gets nothing unless that host was signed before or a host already
+signed in that browser context (`origin_not_requested` otherwise). The sign is
+registered before its request is answered, so the op that waits for it
+(`settle`) always sees it. One sign runs per context and host; a host
+signed under 30 s ago that bounces again is not signed again
+(`still_redirected`); a second tab that bounces for the same host meanwhile waits
+on that sign and is opened again with it. The provider gets the origin, the sign-in URL and the site's
+own cookies for that host (the context's jar plus the failed redirect's
+`Set-Cookie`, which the failure would otherwise lose), in a worker thread bounded
+at 15 s; `target.reason` is `navigate` or `renew`. Its cookies are kept only when
+each names the origin's host exactly or no domain (`cross_host` when none is
+left), written host-only (`url=origin`), `secure`, as session cookies into that
+tab's browser context, then read back by name, host, path and value: every cookie must have landed and
+an older one of the same name does not count (`readback_missing`).
+The switch, both domain lists, the caller's URL gate and the governance ceiling's
+browse decision (the
+gateway's and the chat whose op last ran on the tab, which a popup takes from its
+opener; a tab no chat is known for is never signed, since a renewal runs outside
+any op's gate; that caller's URL gate, `OpContext.url_allowed`, must also allow the
+page or a page of the same origin it already passed, the op's URL or the tab's
+page, so an app is signed only on its own sites while a same-origin login hop
+such as `/oauth2/start` still counts) are
+read as they are NOW before the provider is asked and again once it answers, together
+with whether the person holds the tab: a takeover (`held`) or a settings change
+meanwhile (`origin_not_requested`) writes nothing. A
+renewal re-opens the page in the tab, unless an op that can move the page (not a
+read-only one) started on that tab since it bounced (a click or navigate meanwhile keeps its page: `moved_on`). It re-opens the
+bounced page when the caller's URL gate allows it, else the same-origin page the
+tab showed; with neither the result is `nav_failed` and the agent opens it. While that page
+loads, a main-frame document the caller's gate refuses (a redirect off its sites)
+is failed, as an op's committed-URL check would refuse it; a `navigate` (`browser_harness/sign_in.py`)
+opens its URL again through `navigate_to` (bounded by `budgets.SIGN_IN_NAV_S`), so
+the agent gets a judged landing; only a sign whose bounce happened during that
+navigate re-runs it, never a renewal already in flight.
+After every op and every sign, each cookie on a sign-in host, or a parent-domain cookie
+one would be sent on a domain outside both domain lists, is deleted from every
+context (`SignInGuard.sweep`), and the bulk `cookies()` pull never sets one, nor a
+cookie with an explicit `domain` that a sign-in host would be sent (a parent
+domain). The
+op result carries `sign_in: {outcome, reason, provider, host, note}`: `outcome`
+is `signed_in`, `not_signed` or `held` (the person holds the tab or a tab it was
+opened from; nothing is asked); `reason` is a provider code (`not_signed_in`, `device_check_failed`,
+`signer_missing`, `signer_timeout`, `refused`, `other`; anything else reads as
+`other`) or a core one (`origin_not_requested`, `provider_timeout`,
+`provider_failed`, `provider_bad_shape`, `cross_host`, `readback_missing`,
+`still_redirected`, `nav_failed`, `moved_on`, `resubmit`: a bounced form post is
+never re-sent as a GET); `note` is a fixed sentence or the
+provider's
+`message`, through the exfiltration-URL and credential redactors whole, then cut
+to 200 printable characters. A renewal between
+ops shows on the tab's next op. The `browser` tool prints the block on every
+answer, a refusal and the snapshot, screenshot and read formats included
+(`mcp_tools/browser._popup_note`). Each sign writes ONE SEL row
+(`browser_harness.sign_in`, caller `gateway`): provider, host, outcome, reason and
+cookie count, never a URL or value. The cookies a sign set are remembered without
+values in the guard's own `PlacedCookies` (keyed by the host their `url` names) and,
+once `sign_in_guard.halt` has turned the guard off and cancelled every sign in
+flight (an op that ends, or a takeover that cuts it, cancels its own signs the same
+way), deleted before Kiro's Chromium stops, and purged from the profile after, like the
+bulk ones. Browser-wide as well, `Fetch.enable` on the browser target itself (no session)
+holds the same sign-in-host request patterns, so a target with no guarded session
+yet (a popup's first request before the relay adopts it, a worker, a
+cross-process frame) is failed too, never signed (`SignInGuard.on_browser_paused`;
+the relay hands those pauses to the guard and to no daemon client). An agent tab's
+own session sees its requests first, so its signing is unchanged. Not covered: a
+tab whose adoption failed is blocked but never signed; the sweep catches any
+cookie on a sign-in host.
 
 **File hygiene for providers.** `browser_harness/credential_files.py` is the
 generic reader an edition's provider uses for its source file:
@@ -568,7 +705,10 @@ it to be single-use.
   reach the daemon's shared event buffer.
 - **Agent tabs stay live.** Every target the daemon creates gets focus emulation,
   so a tab behind another tab keeps painting and Harness's input calls on it do
-  not hang. The user's own tabs are never attached.
+  not hang. The user's own tabs are never attached. That one relay-owned session
+  per agent tab (attached once, `_adopt_once`) also carries the `set_appearance`
+  and `resize` overrides (`CdpRelay.emulate`, only `EMULATE_METHODS`, refused for
+  a target outside the ledger).
 - **Tab ledger.** Each target the agent creates is recorded at the create reply,
   whether or not the page then loads; `tabs` lists only those and session end
   closes only those. A chat whose session ends -- its tab closed, archived as
@@ -888,7 +1028,11 @@ the end; a re-posted op held again starts a new hold on both sides): a poll afte
 answers `hold_over: true`, and the shim's own deadline is `HOLD_GRACE_S` later,
 only for a gateway that stopped answering. Either way the agent is told
 `user_in_control` ("held for 10 minutes; tell them you are waiting and end your
-turn"). An op the claim cut short mid-flight answers `interrupted` with `hold`:
+turn"). A hand-back that finds an op parked (`LiveSession.parked`) inside the hold,
+sending no words to chat, resumes every call parked there, one polling after the
+end too (`LiveSession.hold_handed_back`, kept until the next claim or turn, or a
+hand-back whose words go to chat). An op the claim cut short mid-flight
+answers `interrupted` with `hold`:
 the tool waits for the hand-back and then tells the agent to snapshot first; the op
 is never re-run blind. A cancelled tool call stops stepping. The turn's thinking
 line reads "Waiting for you to hand the browser back". Esc or "Hand back"
@@ -1094,7 +1238,13 @@ the person's: a later turn that never browses ends without folding it
 live, and **Close live view** in its menu (`POST /api/browser/live/close`,
 `LiveHub.close_view`) folds it back to the done line. A turn that browses after a
 reopen opens a NEW turn (`_open_turn` checks `turn_over`), the running stream
-carries over to it, and that turn's end folds it as usual; an agent op while the
+carries over to it, and that turn's end folds it as usual. The card opens that
+turn with no picture and Chrome sends no frame of a still page, so `turn_started`
+publishes the new turn and then restarts the cast (`LiveStream.restart`), which
+Chrome answers with the current picture at once; a view no card sees is left
+stopped. Chrome draws no frame at all of a tab it hides (a background tab, a
+covered or minimised window) and says so with `Page.screencastVisibilityChanged`,
+which the stream logs at info; an agent op while the
 person holds the reopened tab is held for the hand-back like any other. The done
 line keeps two actions: Open live and Replay when the tab is open (Open in Chrome
 moves into the live view's menu), else Replay and Open in Chrome.
@@ -1108,7 +1258,12 @@ turn that folds gets its own reopen. While that reopen is due or unanswered the
 view keeps its live face on the last frame, with no Take over, instead of the
 done face; a refusal or a closed tab ends the hold. The `turn_id` is the one the
 view already holds for its Show the live page button; the route and its checks
-are unchanged.
+are unchanged. A view reports on screen for each new turn in one write, never
+off and on again: the gateway may take two such writes in either order, and an
+off taken last stops the cast under a view that is on screen. Below the picture
+the view lists the turn's `steps` (the chat card's step strip), the latest five,
+newest last, behind a toggle that counts them all; nothing is listed while the
+person is in control.
 
 **Sign-in from the Secrets vault** (`browser_harness/vault_fill.py`). The agent's
 side does not change:
@@ -1291,7 +1446,8 @@ args, *, state, caller)`, which answers `(body, http_status)`. The route only
 authenticates and validates the body, then calls it; an app's `PagePort`
 (`apps/browser_page_port.py`, handed out by `ctx.browser.page(slot)`) calls the same function with the slot's own
 runtime key (`dashboard:<slot>`), so the Bot and an app share every gate from one
-copy, in this order: the `capabilities.browse` check for that key; the navigate gate
+copy (all but the gateway's own origins, which only the route's request carries),
+in this order: the `capabilities.browse` check for that key; the navigate gate
 on the address the op asks to open (`navigate`, and `tabs new` with a URL), which
 answers `url_blocked` before the browser starts, so a refused address is never
 requested even by a caller inside the gateway that skips the shim; an app slot's
@@ -1393,20 +1549,21 @@ the last navigate or snapshot.
 | `read` | the page's text in the walker's isolated world: the root's `innerText`, the whole page and not only the viewport, followed by the text of each open shadow root and same-origin frame `innerText` skips (Chromium's `innerText` does not enter a shadow root); an element with a box gives its `innerText`; any other element, and a shadow root, is read child by child, and a text node counts only when its range draws a box, so a `display:none` ref, a hidden frame's body and an unassigned slottable give no text while a `display: contents` element's children still do (an element with no box would fall back to `textContent`, script bodies included). So an unselected tab panel (`hidden` or `display:none`) and the body of a closed `details` are left out of the text (checked in headless Chromium); click the tab or open the section first. A frame this world cannot read (cross-origin, or an `object` / `embed`) is counted as `scanFrames` counts it, in a `note`, never read. The gateway redacts credentials and exfiltration URLs and neutralizes fence look-alikes in the whole content before it pages it, so a token cannot straddle two pages and the shim never grows a page past its cap; the shim puts the page, and the page title, between the untrusted-page fences (`context_assembly/markers.py`) with every fence look-alike neutralized, so a forged note or hand-back line stays inside; the URL in the header is neutralized too. `ref` scopes it to one element (`ref_stale` when gone; a cross-origin frame ref is `bad_ref`); `offset` pages it, `READ_CONTENT_CAP` characters a result so the shim's header still fits its 20,000 cap, with `total`, `next_offset` while more remains, and `digest`, a hash of the whole redacted content that changes when the page changed between calls. The page side stops at 2,000,000 characters, or sooner once the JSON-escaped content (6 bytes per non-ASCII unit) would pass 3.5 MiB under the worker's 4 MiB reply cap, and says `truncated`. A `format` other than absent or `text` is refused with `bad_format`; a negative, non-integer or past-the-end `offset` is `bad_offset` |
 | `click` | a ref or `x`,`y`; `clicks: 2` is a double click and `clicks: 3` a triple click (Harness `click_at_xy` sends one press and release with that `clickCount`; on real Chromium it selects the paragraph). A ref is scrolled into view once, then re-measured without scrolling every 0.1 s until two reads in a row agree within 1 px (at most 6 re-reads), so a page that moves its layout on scroll is clicked where the target settled; a ref that measures empty to the end is refused `ref_stale` |
 | `drag`, `hover`, `scroll` | ref or coordinates (`mouse_move` / `drag` helpers); a ref settles as for `click` |
-| `type` | refuses a password field twice: by the ref's type and by whatever holds focus when the text would land. `type {ref?, steps: [{text} | {key, modifiers?}]}` (`browser_harness/type_steps.py`, reached from `ops.py` by a call-time import) runs its steps in order in one op: `ref` is focused once, each text step runs the focused-field checks above and each key step `press_key`'s guards, and the first refusal, a `dialog_open` included, ends it with the step's 0-based index as `step` and at the front of its `error`. A malformed list (not 1 to `STEPS_CAP` (50) steps, a step that is neither shape, a key step whose key `press_key` would refuse as unknown, `text` or a truthy `submit` beside `steps`) is refused `bad_steps` before anything runs; `TEXT_CAP` bounds the text of all steps together. A `\t` in `text` inserts a tab character, not the Tab key |
-| `paste` | `text` plus optional `html`, behind the same focus refusals as `type`. The walker dispatches one `paste` event on the field carrying both as `text/html` and `text/plain`, so the page's own editor builds the table or headings as it would from a clipboard paste; the clipboard itself is never written, and nothing on Kiro Crew's side parses or inserts the HTML. A script's paste event inserts nothing by itself, so when the page does not cancel it the focus refusals run again (on `ref` focused again, or on whatever then holds focus when no `ref` was given), the plain `text` is typed (`type_text`) and the result says `handled: false`. Focus inside a cross-origin frame is reached only through the field's frame ref (`f<n>e<n>`), else `focus_in_frame` |
+| `type` | refuses a password field twice: by the ref's type and by whatever holds focus when the text would land. `type {ref?, steps: [{text} | {key, modifiers?}]}` (`browser_harness/type_steps.py`, reached from `ops.py` by a call-time import) runs its steps in order in one op: `ref` is focused once, each text step runs the focused-field checks above and each key step `press_key`'s guards, and the first refusal, a `dialog_open` included, ends it with the step's 0-based index as `step` and at the front of its `error`. A malformed list (not 1 to `STEPS_CAP` (50) steps, a step that is neither shape, a key step whose key `press_key` would refuse as unknown, `text` or a truthy `submit` beside `steps`) is refused `bad_steps` before anything runs; `TEXT_CAP` bounds the text of all steps together. A `\t` in `text` inserts a tab character, not the Tab key. Harness's daemon reads each request as one line of at most 64 KiB, and a character costs its JSON-escaped size there (six bytes when non-ASCII), so a text longer than `daemon_line.TYPE_CHUNK_BYTES` (the line less a 1 KiB envelope) encoded is typed in several `type_text` calls, in order (`browser_harness/daemon_line.py`); a text within it is still one call. The focused-field checks run again before each later piece (on `ref` focused again when given), and a refusal there ends the op with `chars_typed`, a count its `error` names too |
+| `paste` | `text` plus optional `html`, behind the same focus refusals as `type`. The walker dispatches one `paste` event on the field carrying both as `text/html` and `text/plain`, so the page's own editor builds the table or headings as it would from a clipboard paste; the clipboard itself is never written, and nothing on Kiro Crew's side parses or inserts the HTML. A script's paste event inserts nothing by itself, so when the page does not cancel it the focus refusals run again (on `ref` focused again, or on whatever then holds focus when no `ref` was given), the plain `text` is typed (`type_text`) and the result says `handled: false`. Focus inside a cross-origin frame is reached only through the field's frame ref (`f<n>e<n>`), else `focus_in_frame`. Both arguments ride the walker's own request line to the daemon, so besides `TEXT_CAP` characters each, once the focus refusals pass, the walker call is measured as the daemon receives it (`daemon_line.expression_fits`: the expression JSON-encoded, plus `ENVELOPE_BYTES` for the request around it) and refused `bad_text` when it passes 64 KiB, before the paste reaches the page. A frame ref's paste goes through the gateway's session, not the daemon, and is not measured |
 | `fill` | `{ref, text, clear?}` (`browser_harness/helper_ops.py`): `ref` is focused and judged with `type`'s refusals (`password_field`, `asked_field`, `focus_in_frame`; a cross-origin frame ref is `bad_ref`), then the `fill_input` helper runs on `:focus`, so it reaches exactly that field. `clear` (default true) empties it first. Real key events, then `input` and `change`, so a framework-managed field (React, Vue) sees the value `type` may not deliver. `:focus` needs the tab to hold focus, which the relay's focus emulation gives every agent tab. At most `FILL_CAP` (1,000) characters, one key press each (about 6 ms a key on a plain page in headless Chromium); a slow op. In a same-origin frame or a shadow root the `input` and `change` events go to the frame or host element |
-| `press_key`, `select_option`, `wait_for` (text / textGone / time / load), `console` | as named. `press_key`'s named keys (`browser_harness/keys.py`) include F1-F12, Insert and ContextMenu; Harness has no key code for them, so the page sees `key` and `code` with `keyCode` 0, and ContextMenu opens no menu (a right click does) |
+| `press_key`, `select_option`, `wait_for` (text / textGone / time / load), `console` | as named. `press_key`'s named keys (`browser_harness/keys.py`) include F1-F12, Insert and ContextMenu; Harness has no key code for them, so the page sees `key` and `code` with `keyCode` 0, and ContextMenu opens no menu (a right click does). Any other key, a DOM code name such as `BracketLeft` included, is refused `bad_key` by `press_key`, `dispatch_key` and `reflex` `keys`, and `bad_steps` by a `type` step, with one error text (`keys.unknown_key_error`) that lists the named keys and says a character is sent as itself (`[`) |
 | `dispatch_key` | `{selector, key, event?}` (`helper_ops.py`): a script-made `keydown`, `keypress` (default) or `keyup` on the first element a CSS selector of at most 500 characters matches. It types no text. `not_found` when nothing matches within 0.5 s (`wait_for_element` first) |
 | `wait_for_element`, `wait_for_network_idle` | `{selector, visible?, timeout?}` and `{timeout?, idle_ms?}` (`helper_ops.py`): Harness's waits of the same names, `timeout` in seconds as `wait_for` reads it (default 5, at most 30), `idle_ms` 50 to 10,000 (default 500); `wait_timeout` when the time runs out. Both are read-only |
-| `upload` | `{ref, path}` (`browser_harness/upload.py`, reached from `ops.py` by a call-time import) puts ONE local file into a page's file input. The walker's `fileInput` first checks that `ref` is a visible, enabled `<input type=file>` (`not_file_input`, `disabled`, `not_visible`, `ref_stale`; a cross-origin frame ref is `bad_ref`); the snapshot marks such an input `[file]`. Then the gateway checks `path`: absolute (`bad_path`), and `lstat` must find one regular file, not a link (`path_symlink`), a folder or a device (`path_not_file`), that exists (`path_missing`), is readable (`path_unreadable`) and is at most `UPLOAD_MAX_BYTES` (25 MiB, `file_too_large`). It copies the file with `hooks.safe_copy_file_nolink`, which opens it once without following a final link, refuses it unless the descriptor holds a regular file with one link whose OPENED real path is outside every sensitive location (`path_refused`, so a folder swapped for a link between the check and the open is caught), and streams that descriptor into a fresh owner-only folder under the hidden IPC leaf (`OpContext.upload_dir`, `<ipc>/uploads/<random>/<name>`), so the page sees the original file name and the browser reads only the bytes that were checked; the newest `UPLOAD_KEEP` (20) copies are kept for a form that submits later; each upload first prunes copies past 24 hours, so copies wait for the next upload to be pruned. The `set_files` helper hands the copy to `DOM.setFileInputFiles`, which fires the page's own `input` and `change` events. One SEL `api_access` row per attempt that reaches the path check (`operation=browser.upload`, the path, the size, an outcome word), never the content. `path` may also be a list of 1 to `UPLOAD_MAX_FILES` (10) paths for an input the walker reports `multiple` (else `not_multiple`, before any file is read); it stays under `path` so the tool gate's path keystone judges every one. Each passes the same checks, all are copied into ONE staging folder, each in a numbered sub-folder of its own so two names the disk treats as one (case, Unicode normalization) never replace each other (`stage_many`; nothing is staged when any is refused), two with one name (compared without case) are `duplicate_name`, the shared path screen (`hooks.validate_file_path`) runs before any disk probe, so a network path is never touched, and together they are at most 25 MiB. One SEL row per file. `upload` is an acting op: it is never in the shim's read-only set, and the `app-browser-sites` grant never approves it (`browser_sites.CARD_ONLY_OPS`). Like `js`, `cdp` and `http_get` it waits on the op route's own Allow / Deny card every call, which lists the field and every path (`browser_card_ask`), so it asks on the default spec too. A file chooser a button opens with no `<input type=file>` in the DOM, a drop zone and folders are not covered |
-| `screenshot` | writes a PNG under the screenshot directory below and returns its absolute path |
+| `upload` | `{ref, path, via?}` (`browser_harness/upload.py`, reached from `ops.py` by a call-time import) gives a page local files. `via` is `input` (the default, described here), `chooser` or `drop`, below. The walker's `fileInput` first checks that `ref` is a visible, enabled `<input type=file>` (`not_file_input`, `disabled`, `not_visible`, `ref_stale`; a cross-origin frame ref is `bad_ref`); the snapshot marks such an input `[file]`. Then the gateway checks `path`: absolute (`bad_path`), and `lstat` must find one regular file, not a link (`path_symlink`), a folder or a device (`path_not_file`), that exists (`path_missing`), is readable (`path_unreadable`) and is at most `UPLOAD_MAX_BYTES` (25 MiB, `file_too_large`). It copies the file with `hooks.safe_copy_file_nolink`, which opens it once without following a final link, refuses it unless the descriptor holds a regular file with one link whose OPENED real path is outside every sensitive location (`path_refused`, so a folder swapped for a link between the check and the open is caught), and streams that descriptor into a fresh owner-only folder under the hidden IPC leaf (`OpContext.upload_dir`, `<ipc>/uploads/<random>/<name>`), so the page sees the original file name and the browser reads only the bytes that were checked; the newest `UPLOAD_KEEP` (20) copies are kept for a form that submits later; each upload first prunes copies past 24 hours, so copies wait for the next upload to be pruned. The `set_files` helper hands the copy to `DOM.setFileInputFiles`, which fires the page's own `input` and `change` events. One SEL `api_access` row per attempt that reaches the path check (`operation=browser.upload`, the path, the size, an outcome word), never the content. `path` may also be a list of 1 to `UPLOAD_MAX_FILES` (10) paths for an input the walker reports `multiple` (else `not_multiple`, before any file is read); it stays under `path` so the tool gate's path keystone judges every one. Each passes the same checks, all are copied into ONE staging folder, each in a numbered sub-folder of its own so two names the disk treats as one (case, Unicode normalization) never replace each other (`stage`; nothing is staged when any is refused), two with one name (compared without case) are `duplicate_name`, the shared path screen (`hooks.validate_file_path`) runs before any disk probe, so a network path is never touched, and together they are at most 25 MiB. One SEL row per file. A `path` entry may also be a folder or a glob (owner's decision `docs/decisions/2026-11-20-browser-upload-takes-folders-globs-pickers-and-drops.md`). A leading `~` is the user's home; the entry must then be absolute. Folders and globs share one expander (`upload._Walk`): it lists one folder at a time with `os.scandir`, screens each folder before listing it (so a refusal names that folder, never a child of it), and skips and counts in the answer's `skipped` every dot entry, link, Windows name-surrogate reparse point (`platform_compat.lstat_is_name_surrogate`) and anything not a regular file or folder, never following one; the entry budget is charged as each folder is read, so a huge folder stops at the cap. A folder expands to every regular file under it, keeps its layout under its own name (`<stage>/<n>/<folder>/<rel>`), and is handed to the browser as that one staged folder: onto a drop zone (`via: drop`), or, alone, into a field the walker reports `directory` (`webkitdirectory`), where the browser lists it and each file's `webkitRelativePath` is `<folder>/<path inside>` (`photos/a.png`, `photos/sub/b.png`); the answer's `files` lists the same paths. A folder field whose own `input` event the browser does not fire (the `set_files` read-back of a flag its armed listener sets, not of the field's `files`) is `folder_field_unsupported`: the staged copy is dropped and each file's SEL row carries that outcome. A folder for a plain field is `not_folder_input`; a chooser refuses a folder too, since its input is never read back. Each names `via: drop` or a glob such as `<folder>/*`. An entry that exists is always itself, so `photo [1].png` is that file; only an entry that does not exist is read as a glob (`*`, `?`, `[` in any part after a fixed folder, on Windows the path `normpath`ed first so forward slashes split, as Windows itself folds `..`; on POSIX the fixed folder is kept as written, so `link/..` is the link target's parent, as the kernel opens it; `**`, a `..` after a pattern part that does not exist as written (on Windows, any) and a pattern that folds to no part are `bad_path`; a `..` after literal parts only is a real folder) matches each part with `fnmatch` and gives the matching regular files, sorted; a matched folder in the last part is skipped and counted; none is `no_match`. Every file found is first asked of the governance ceiling's `filesystem.read` for the caller, and so is every folder before it is listed, so no later refusal names a file, folder or size under a denied path; it then passes the same `_check_path` and copy as a listed one. That check is `OpContext.read_allowed` (fail-closed, naming the caller as the tool gate does: session, the slot's agent and app; the gate judged only the entries as written), and one protected or denied file or folder refuses the whole call (`path_refused`, naming no file under a denied path). One call is at most `UPLOAD_MAX_TREE_FILES` (100) files (`too_many_files`) and 25 MiB together, summed by `lstat` before any copy (`file_too_large`), reads at most 10,000 entries across all its folders and globs and walks at most 64 folders deep (`too_deep`; the walk keeps its own stack), and delivered names, and every folder inside a folder, are unique without case or Unicode form (`duplicate_name`). An upload with no card (below) answers `needs_card` for any path in the strict sandbox's hidden folders (the platform seam's `strict_dirs()`: `~/.config/gh`, all of `~/.docker` and `~/.kube`, and the rest, plus the kernel's `/proc`, `/sys` and `/dev`, where `/proc/self/environ` reads as a regular file holding the gateway's environment; each root and each path taken both as spelled and resolved, so a home that is a link is covered), compared without case, and asks `hooks.safe_copy_file_nolink` to refuse them again on the real path of the descriptor it opened (`refuse=`), so a parent folder swapped for a link after the walk cannot carry the copy there. It also re-reads the tab's host after staging and right before the files go (`trust_scope_changed`), since a chooser or a drop acts on whatever page is then there. `via: chooser`: the ref is resolved like a click target and the `chooser_files` helper clicks it with file-chooser interception on, then answers the chooser it opens (a hidden input, or one the page made and never attached), so no native dialog shows; `no_chooser`, `not_multiple` and `not_folder_input` come from what the chooser reports, and a chooser that opens in a frame of another origin is `frame_refused` (a ref wrapping a cross-origin iframe would otherwise hand a third party the files). `via: chooser` and `via: drop` also take `x`, `y` (the pixels `click` takes, `ops._point`) instead of a ref, because a drop zone is often a plain element with listeners that the snapshot gives no ref; the answer then carries `at` instead of `ref`, and the card names the point ("the point (x, y) on the page"). `via: drop`: the `drop_files` helper drops the staged paths on the ref's centre (a staged folder arrives as a folder entry), and a point over a frame is `frame_refused`. The card names the `via` and marks an entry that is a folder ("folder: every file inside except hidden files and links") or a pattern ("pattern: every matching file"). Before it asks, the card expands the entries with the same walker and governance read check the op uses (`upload.card_preview`; a refusal there is answered at once, with no card) and ends with one line naming what goes: "Sends N files, X KB: " and the first `upload.CARD_NAMES` (5) names, the rest counted as "and M more" (`upload.card_summary`). The ask record keeps that list, and the Allow hands it down as `OpContext.upload_groups` (`browser_card_ask.approved_upload`, read before the answer is spent), so the op sends exactly the files the person saw and never expands the entries again: a file added to a folder after the card is not sent. Before staging, each listed file is asked of `read_allowed` again (`upload._still_allowed`), since the policy may change while the card waits; staging still checks each copy on its opened real path and the 25 MiB total. The 500-character cap is on the call as written; the summary line, bounded by its 5 names of at most 60 characters, is added after it. An approved upload whose card kept no list is `approval_mismatch`. `upload` is an acting op (`op_classes._ACT_OPS`): it is never in the shim's read-only set, and the `app-browser-sites` grant never approves it (`browser_sites.gate_grants` names it). It waits on the op route's own Allow / Deny card, which lists the field and every entry as given (`browser_card_ask`), so it asks on the default spec too, except where the caller's slot (never an app's slot) holds a live `act` site grant for the host the chat is on (`browser_card_ask.upload_grant_host`): that grant covers it, the route hands that host down to the op, which re-reads the bound tab's host before the files go (`trust_scope_changed`), and the op answers `needs_card` for a strict-tier hidden path (`OpContext.upload_grant_host`), which the route turns into the person's card, so the grant never covers those folders and never strands the call either. The route decides from the caller's session key and slot, not `browser_host_trust._eligible`: a subagent or a native child posting under the chat's own key acts on the chat's own tab, the page the grant names, and the host re-check holds it there |
+| `screenshot` | writes a PNG under the screenshot directory below and returns its absolute path. `inline: true` is the `browser` tool's own option, ignored by the gateway: after the op succeeds, `mcp_tools/browser.py` reads that file back with `hooks.safe_read_file_bytes_nolink`: only a regular file whose real path is inside the screenshot directory, the directory spelled literally (its parent resolved) so one replaced by a link fails the pin, because the agent's sandbox can write it while the shim runs outside it. It fits the image to the inline-image budget (`imaging.downscale_image_block`) and answers with a `validation.TextWithImage`, so one image block follows the path text, on the direct answer and after a hand-back alike; a file it cannot read or fit leaves the path text with a warning, and so does an `inline` other than true, false or null (null reads as absent). Without `inline` the answer is the path text alone |
 | `tabs` | lists, switches and closes `relay.agent_targets()` only, the popups the caller's tabs opened included (`browser_harness/tabs_op.py`). `close` runs Harness `close_tab`; when it closed the tab the daemon was on, the daemon moves to the newest other agent tab, or to a new blank one when none is left, and the answer names it as `current` |
 | `dialog` | reports the page's open JavaScript dialog (kind, text, default answer) and, with `action` `accept` or `dismiss`, answers it (`text` goes to a prompt on accept only) |
 | `ask` | a quick ask the person answers on the live card; served by the route (`dashboard/handlers/browser_ask.run_ask`), and `run_op` refuses it |
 | `reflex` | a loop of the ops above over a closed move set, judged by the decision seam, in `step`, `realtime` or `virtual_time` mode; `not_available` when it is off ("The fast loop" below) |
-| `js`, `cdp`, `http_get` | Harness's own helpers, called as they are (`browser_harness/raw_ops.py`, reached from `ops.py` by a call-time import; the owner's decision `docs/decisions/2026-11-19-the-browser-tool-runs-harness-js-cdp-and-http-get.md`). `js {expression, target_id?}` evaluates the expression in the bound tab, or in `target_id`, which must be one of the caller's tabs (`agent_targets`) or an out-of-process iframe whose `Target.getTargets` `parentId` chain reaches one of them (`raw_ops._frames_of`) and that is still in the browser, else `not_agent_tab`; that target's own URL must pass the navigate gate (empty or `about:blank` passes), before the script and again after it (a value read from a target that moved is withheld), else `url_blocked`, since the committed-URL checks judge only the bound tab and a background tab or popup can have moved; `bad_expression` past `TEXT_CAP`. `cdp {method, params?}` sends one `Domain.method` (`bad_method`) on the bound tab's session: it takes no session id (`session_id` or `params.sessionId` is `not_agent_tab`, since no ledger says whose tab a session is on), a `params.targetId` must be one of the caller's tabs (`not_agent_tab`), and `params` may not carry the helper's own argument names (`bad_params`); a method that hands the browser a path on this computer (`DOM.setFileInputFiles`, `Input.dispatchDragEvent`, `Network.loadNetworkResource`, `Page.setDownloadBehavior`, `Browser.setDownloadBehavior`, and the tunnels `Target.sendMessageToTarget` and `Target.exposeDevToolsProtocol`, whose inner commands this list never sees) is `local_path`, since the browser runs outside the agent's sandbox and `upload` is the checked way to give a page a file. `http_get {url, headers?, timeout?}` fetches a public http(s) URL with no browser and answers a redirect as `{status, location}` without following it: the navigate gate reads its `url` in the shim and the route (`browser_sites.browser_call_url`, so an app slot's sites hold it too) and `ctx.url_allowed` once more (`url_blocked`); at most 32 headers with no line break (`bad_headers`); `timeout` is capped at 15 s, under the route's 20 s budget. All three are acting ops (`op_classes._ACT_OPS`), so the shim's hand-back wait holds them and a site's `read` grant never covers them. Each asks a person on its own card every call, whatever the agent's spec auto-approves or trust the chat holds: the op route opens an Allow / Deny agent ask on the caller's dashboard slot and answers `needs_approval` with its `ask_id`, the tool parks on that ask (`mcp_tools/browser._CardWait`) and posts the call again with `approval`, and the route runs it only on an Allow given for that same session and call digest, spending the answer (`dashboard/handlers/browser_card_ask.py`; `approval_mismatch`, `not_allowed`; `needs_person` with no dashboard slot or window, or for a Crew Mode worker). The card shows the whole call (the script, the method and its params, or the address with its query and headers), refused past 500 characters (`too_long_for_card`), and the Allow choice says what the step can do (Security, "Agent runs its own script or CDP command"), and no site grant names them (`op_classes.card_only`). Each writes one SEL `api_access` row (`operation=browser.<op>`, outcome `invoked`; `method=` for `cdp`, `url=` cut to scheme, host and path for `http_get`), never the expression, params, headers or result. The result is `{result}`: JSON text (a string as it is) redacted for credentials and exfiltration URLs and fence-neutralized whole, then cut at `READ_CONTENT_CAP`, with `truncated` and `total` past it; the shim puts it between the untrusted-page fences. A `js` or `cdp` reply past Harness's own 64 KiB IPC line fails as Harness's error. The pre- and post-op committed-URL checks below run as for any op, so a `cdp` `Page.navigate` that lands off the gate is blanked |
+| `js`, `cdp`, `http_get` | Harness's own helpers, called as they are (`browser_harness/raw_ops.py`, reached from `ops.py` by a call-time import; the owner's decision `docs/decisions/2026-11-19-the-browser-tool-runs-harness-js-cdp-and-http-get.md`). `js {expression, target_id?}` evaluates the expression in the bound tab, or in `target_id`, which must be one of the caller's tabs (`agent_targets`) or an out-of-process iframe whose `Target.getTargets` `parentId` chain reaches one of them (`raw_ops._frames_of`) and that is still in the browser, else `not_agent_tab`; that target's own URL must pass the navigate gate (empty or `about:blank` passes), before the script and again after it (a value read from a target that moved is withheld), else `url_blocked`, since the committed-URL checks judge only the bound tab and a background tab or popup can have moved; `bad_expression` past `TEXT_CAP`. `cdp {method, params?}` sends one `Domain.method` (`bad_method`) on the bound tab's session: it takes no session id (`session_id` or `params.sessionId` is `not_agent_tab`, since no ledger says whose tab a session is on), a `params.targetId` must be one of the caller's tabs (`not_agent_tab`), and `params` may not carry the helper's own argument names (`bad_params`); a method that hands the browser a path on this computer (`DOM.setFileInputFiles`, `Input.dispatchDragEvent`, `Network.loadNetworkResource`, `Page.setDownloadBehavior`, `Browser.setDownloadBehavior`, and the tunnels `Target.sendMessageToTarget` and `Target.exposeDevToolsProtocol`, whose inner commands this list never sees) is `local_path`, since the browser runs outside the agent's sandbox and `upload` is the checked way to give a page a file. `http_get {url, headers?, timeout?}` fetches a public http(s) URL with no browser and answers a redirect as `{status, location}` without following it: the navigate gate reads its `url` in the shim and the route (`browser_sites.browser_call_url`, so an app slot's sites hold it too) and `ctx.url_allowed` once more (`url_blocked`); at most 32 headers with no line break (`bad_headers`); `timeout` is capped at 15 s, under the route's 20 s budget. All three are acting ops (`op_classes._ACT_OPS`), so the shim's hand-back wait holds them and a site's `read` grant never covers them. `cdp` and `http_get` ask a person on their own card every call, whatever the agent's spec auto-approves or trust the chat holds; `js` asks the same way except on a person's dashboard slot that trusts all tools or that a live YOLO reaches (`browser_card_ask.trusts_all_tools`, the permission path's own `_slot_is_trusted` and `is_yolo_active` with `yolo_reaches`), and in the current tab of a host that slot holds an `act` grant for (`browser_card_ask.site_grant_host`, re-checked against the bound tab's real host, `trust_scope_changed`), never on an app's slot or in a Dashboard card's turn (`card_send.card_turn_seen`, the turn's live mark or the request's arrival mark, as the permission path's `_card_turn`) (the owner's decision `docs/decisions/2026-11-25-browser-js-runs-with-no-card-under-yolo-trust-or-site-trust.md`). The op route opens an Allow / Deny agent ask on the caller's dashboard slot and answers `needs_approval` with its `ask_id`, the tool parks on that ask (`mcp_tools/browser._CardWait`) and posts the call again with `approval`, and the route runs it only on an Allow given for that same session and call digest, spending the answer (`dashboard/handlers/browser_card_ask.py`; `approval_mismatch`, `not_allowed`; `needs_person` with no dashboard slot or window, or for a Crew Mode worker). The card shows the whole call (the script, the method and its params, or the address with its query and headers), refused past 500 characters (`too_long_for_card`), and the Allow choice says what the step can do (Security, "Agent runs its own script or CDP command"), and no site grant names `cdp` or `http_get` (`op_classes.card_only`), nor a `js` that names a `target_id`. Each writes one SEL `api_access` row (`operation=browser.<op>`, outcome `invoked`; `method=` for `cdp`, `url=` cut to scheme, host and path for `http_get`), never the expression, params, headers or result. The result is `{result}`: JSON text (a string as it is) redacted for credentials and exfiltration URLs and fence-neutralized whole, then cut at `READ_CONTENT_CAP`, with `truncated` and `total` past it; the shim puts it between the untrusted-page fences. A `js` or `cdp` reply past Harness's own 64 KiB IPC line fails as Harness's error. The pre- and post-op committed-URL checks below run as for any op, so a `cdp` `Page.navigate` that lands off the gate is blanked |
 | `iframe_target` | `{url_substr}` (`browser_harness/raw_ops.py`): Harness's `iframe_target`, held to the caller. It lists the browser's targets with `Target.getTargets` (through the worker's `cdp` helper) and answers the first `iframe` target whose URL contains `url_substr` and whose `parentId` chain, through other iframes, reaches one of the caller's tabs (`agent_targets`): `{target_id, url}` (the URL cut to scheme, host and path), or `target_id: null`. A frame of the person's own tabs is never answered, nor a frame whose URL the navigate gate refuses. A same-site frame has no target of its own (the snapshot's frame refs reach it). A read op (`op_classes.READ_ONLY_OPS`); `bad_url_substr` past 2,048 characters |
+| `set_appearance`, `resize` | `{scheme: light \| dark \| reset}` and `{width, height}` or `{reset: true}` (`browser_harness/emulation.py`; the owner's decision `docs/decisions/2026-11-23-the-browser-tool-sets-dark-mode-and-viewport-size.md`). `set_appearance` sets `prefers-color-scheme` with `Emulation.setEmulatedMedia` (`reset` sends no features); `resize` sets the viewport in CSS pixels with `Emulation.setDeviceMetricsOverride` (`deviceScaleFactor` 0, `mobile` false), width 320 to 3,840 and height 240 to 2,160 whole numbers, and `reset` alone sends `Emulation.clearDeviceMetricsOverride` (`bad_scheme`, `bad_size`). The bound tab (`current_tab`) must be in `agent_targets`, else `not_agent_tab`. Neither goes through Harness: Chrome keeps an Emulation override per CDP session and a reset from another session leaves it (checked on Chromium 154), and Harness attaches a new session on every `switch_tab` without detaching the old one, so the route's `OpContext.emulate` sends on the relay's own session of the tab (`CdpRelay.emulate`, through `_GatedRelay`, which asks the ceiling first), the one every set and reset of that tab share. Closing the tab, which a chat's end does, drops every override with that session; the person's own tabs have no such session. Host class `read` (`op_classes._OPEN_OPS`, beside `scroll`): they press, type and send nothing, but the page's own script may react, so they are not `READ_ONLY_OPS` and the hand-back wait holds them. Not in `_PAGE_TARGETED_OPS`: they name no ref or point, so after a popup they run on the new tab like `navigate` |
 
 Every op calls `live_hub.step`; `run_op`'s own `in_control` check is the backstop
 under the route's fence (the route holds the op until the hand-back, see Takeover).
@@ -1483,6 +1640,13 @@ A `target` with no hook to resolve it (`OpContext.decisions` unset, or every gat
 closed) is refused `needs_ref` without touching the page, so the agent is told to
 pass a `ref` rather than having text typed into whatever holds focus.
 
+A provider that typically answers after the 500 ms text wait (its declared
+`latency_ms` above it, read through `decide.capabilities`; a local preset declares
+its own measured median where that is slower, `decisions.md` section 16) is not
+asked for a pick or a check either: the op takes a timeout's path at once, with no
+outline read and no request. `reflex` still runs, its wait sized from the same
+figure.
+
 Cost when off: no network, no governance probe and no page call. Only the ops above
 pay one keystone read off the event loop (`gate.is_enabled`), and none when the
 configured provider is `none`. Each request is capped at 500 ms (text) or 800 ms
@@ -1548,8 +1712,9 @@ The loop reads the provider's capabilities (`decide.capabilities`, which is
 `gate.capabilities`), never its name: a provider that takes one request at a time
 runs `realtime` as `virtual_time`, one with no image support runs `see` on state
 only, and a slow one gets a per-call ceiling of three times its declared latency
-(still clamped by the gate). Each is said in `notes`. The timed modes open the
-provider's connection first (`decide.warm`, which is `gate.warm`).
+(a local preset's own median where that is slower; still clamped by the gate).
+Each is said in `notes`. The timed modes open the provider's connection first
+(`decide.warm`, which is `gate.warm`).
 
 `virtual_time` is not CDP virtual time. Chromium's `Emulation.setVirtualTimePolicy`
 cannot be handed back: `advance` without a budget fast-forwards an idle page
@@ -1650,6 +1815,26 @@ key. Link and history landings are checked again before a page read, input or
 live-card follow with the same gate, so an unlisted private destination is blanked
 and refused rather than being operated through a link.
 
+The dashboard is refused under every name the gateway trusts as itself, not only
+its loopback port: a public URL whose origin (scheme, host, port, compared after
+the gate's own host folding) is in the gateway's live `allowed_origins` is
+refused. That set holds whichever of these the gateway trusts at the time:
+`dashboard.url` (and its host on the served port), a connected tunnel, the tailnet
+name, `KIROCREW_CORS_ORIGINS` entries, and the machine host name in a build that
+is not local-only; governance may drop any of them (an LTS build keeps only the
+ones a policy names). That set is what the CSRF and WebSocket checks accept as the
+owner's dashboard, and the agent's browser may be the person's own signed-in
+Chrome, so such a tab would act as the owner. Only the gateway knows that set (a
+tunnel or tailnet name joins at runtime), so the gateway judges the URL
+`navigate`, `tabs new` or `http_get` asks for (`url_blocked`) before it is
+requested, as well as every landing. An operator-listed loopback origin keeps its
+own rule above. The set comes from the route's request, so it is the Bot's: an
+app's own `PagePort` ops (one door, above) do not carry it, since an app's
+in-gateway code runs trusted and this gate is no boundary against it. **Accepted
+residual:** an address that reaches the gateway but is not one of those origins
+(another scheme or port on a trusted host, say) passes the gate, on the request
+and on every landing.
+
 Passwords never pass the model: `type` and `paste` refuse a password field, the
 frame masks one, and logins happen during takeover.
 
@@ -1665,19 +1850,20 @@ method (play, pause, seek, volume, state of the main `<video>`/`<audio>`) in the
 isolated world after the same page check (`browser_harness/media.py`). When the app
 declares `backend.hooks.on_browser_media_ended`, `handlers/browser_media_watch.py` makes
 that same `state` read every 3 s on the slot's tab after the agent's first successful op,
-never queueing for the op lock (a busy tick is skipped), and hands each ending to the
-owning app's backend ([app-kit-platform §45](app-kit-platform.md)).
+never queueing for the op lock (a busy tick is skipped), and hands each ending the
+walker counted (a new `endId`; the walker's `mediaEnds` also counts a source taken away
+at the end) to the owning app's backend ([app-kit-platform §45](app-kit-platform.md)).
 
 **A person's site grant.** A chat's own `browser` card offers, inside its Trust
 menu, a grant on the site the call acts on: "Trust reading pages on `<host>`" on a
-reading op, "Trust reading, clicking and typing on `<host>`" on an acting op, each
+reading op, "Trust reading, clicking, typing and uploading on `<host>`" on an acting op, each
 for this session only: a site grant has no lifetime choice, and the approve route
 refuses one with `ttl_unsupported`. Which ops are which is
 `browser_harness/op_classes.host_trust_class` (`read`: the read-only ops,
-`navigate`, `tabs new`, `scroll`; `act`: `click`, `type`, `paste`,
+`navigate`, `tabs new`, `scroll`, `set_appearance`, `resize`; `act`: `click`, `type`, `paste`,
 `press_key`, `fill`, `dispatch_key`, `hover`, `select_option`, `drag`, `dialog`,
-`back`, `tabs switch`; `tabs list` and `iframe_target`, which answer from every tab the agent owns, `ask`, `reflex`
-and every call of `op_classes.card_only`: `upload`, `js`, `cdp`, `http_get` and `tabs close` never). The grant rides the command trust tier, and its
+`back`, `tabs switch`, `upload`; `tabs list` and `iframe_target`, which answer from every tab the agent owns, `ask`, `reflex`
+and every call of `op_classes.card_only`: `cdp`, `http_get` and `tabs close`, and a `js` that names a `target_id`, never; a `js` in the current tab is `act`). An `act` grant also lifts the in-band card of `upload` and of a current-tab `js` on that host, outside a Dashboard card's turn (`browser_card_ask.site_grant_host`); "Trust all tools" lifts it for `js` only. The grant rides the command trust tier, and its
 rules, the host source and the route's `trust_scope_changed` re-check are in
 [security](security.md) ("A browser site grant"). "Trust all tools" stays offered.
 
@@ -1794,8 +1980,9 @@ The config section is `browser`: `choice`, `isolation`, `report_changes`,
 `live.enabled`, `live.quality`, `live.max_fps`, `live.mask_passwords`,
 `credentials.enabled`, `credentials.domains`, `recording.enabled`,
 `recording.max_session_mb`, `recording.max_total_mb`, and `run.max_ops` /
-`run.max_repeats` (0, the default, sets no limit; past a limit the chat's next op
-is refused `run_budget`, and a takeover or a new chat counts again from zero).
+`run.max_repeats` / `run.max_minutes` (0, the default, sets no limit; past a limit the
+chat's next op is refused `run_budget`, and a takeover or a new chat counts again from
+zero; the minutes run from the run's first op on a monotonic clock).
 `dashboard.browser_local_origins` stays where it is.
 
 #### Retired keys
@@ -1805,8 +1992,9 @@ agent browser this stack replaced. They are no longer fields. A `config.json`
 that still carries them loads, logs ONE warning naming each one whose value
 differs from the default older builds wrote into every config they saved
 (`use_builtin_browser: true`, `browser_view_port: 0`; `config/resolution.py`,
-`warn_retired_section_keys`), and drops them on the next save
-(`_SECTION_KEYS_DELIBERATELY_DROPPED`). `PUT /api/dashboard/config`
+`warn_retired_section_keys`), and drops them on the next save or locked write
+to `config.json` (`_SECTION_KEYS_DELIBERATELY_DROPPED`, `update_config_locked`).
+`PUT /api/dashboard/config`
 no longer accepts `use_builtin_browser`, and the change-card catalog no longer
 offers `browser.use-the-built-in-browser`.
 
@@ -1847,7 +2035,11 @@ leaves the screen while it holds focus (an overlay, an inactive tab, a collapsed
 panel, close), the manager in `website/electron/browser-view.js` hands focus
 back to the dashboard view (`focusHost`), and on window focus `reclaimFocus`
 does the same for a hidden view that still holds it. Without this every
-dashboard text input would look alive and receive no keystrokes.
+dashboard text input would look alive and receive no keystrokes. A hand-back
+writes one `[browser-panel]` line naming its trigger, and nothing about the page:
+to the console every time, and to `gateway-launch.log` at most once a minute per
+trigger per panel (`website/electron/runtime/window/browser-panels.js`), so a
+hidden page that keeps taking focus cannot flood the file.
 
 ### Doctor
 
@@ -1862,12 +2054,12 @@ modifies it, and the row is silent when the directory is absent.
 | Risk | Control |
 |---|---|
 | The relay can reach the user's whole Chrome | the agent gets only the listed ops, on tabs it created; the relay never attaches the user's tabs. **Accepted residual:** CDP is browser-wide, so a bug in the tab filter would let the agent act on a tab the user opened; tests pin the filter and the card always shows which tab is live |
-| Agent runs its own script or CDP command | `js`, `cdp` and `http_get` (the owner's decision, 2026-11-19: "改成这三个每次都弹卡") ask a person on a card every call, and the card does not come from the host: the default spec auto-approves the whole `@kirocrew-core` server (`allowedTools`), so no permission request is raised for a `browser` call. Every call of the three reaches `run_browser_op`, whatever surface or approval let the tool call through, and the route opens its own Allow / Deny card there and runs the call only on an Allow for that session and call digest, once (`browser_card_ask`): no site grant, "Trust all tools", trust-reads, YOLO, trusted pattern, hook auto-approve or app `browserSites` grant answers it, and a session with no dashboard slot or window to answer (the heartbeat, a channel, an unattended task, a Crew Mode worker) is refused. The card shows the whole call, redacted as every question card is, and refuses one too long to show (`too_long_for_card`), and says what the op can do (`cdp`: every site's cookies, every tab); `capabilities.browse` holds them at the route and every helper; a named tab must be the caller's (`js` `target_id`, `cdp` `params.targetId`), a `js` target's own URL passes the navigate gate, and `cdp` takes no session id, so neither attaches the user's tabs by name; the committed-URL check runs before and after; SEL records the op and the `cdp` method, never the script, params or result; the result is redacted and capped. **Accepted residual:** CDP is browser-wide. A `cdp` command that names no tab still reaches the whole browser: `Storage.getCookies` reads every site's cookies in the user's own Chrome, `Target.getTargets` lists the user's tabs, `Browser.close` closes it, `Target.setAutoAttach` can pause new tabs; a `js` expression reads what its page holds, a filled password field included. Redaction masks credential-shaped text, not every secret |
+| Agent runs its own script or CDP command | `js`, `cdp` and `http_get` (the owner's decision, 2026-11-19: "改成这三个每次都弹卡") ask a person on a card every call, except `js` (the owner's decision, 2026-11-25: "YOLO和trust情况下 browser 用JS不需要approval", `docs/decisions/2026-11-25-browser-js-runs-with-no-card-under-yolo-trust-or-site-trust.md`) on a person's chat that trusts all tools or that YOLO reaches, or in the current tab of a site that chat holds an `act` grant for, and the card does not come from the host: the default spec auto-approves the whole `@kirocrew-core` server (`allowedTools`), so no permission request is raised for a `browser` call. Every call of the three reaches `run_browser_op`, whatever surface or approval let the tool call through, and the route opens its own Allow / Deny card there and runs the call only on an Allow for that session and call digest, once (`browser_card_ask`): for `cdp` and `http_get` no site grant, "Trust all tools", trust-reads, YOLO, trusted pattern, hook auto-approve or app `browserSites` grant answers it, and for `js` only the exceptions above do, and a session with no dashboard slot or window to answer (the heartbeat, a channel, an unattended task, a Crew Mode worker) is refused. The card shows the whole call, redacted as every question card is, and refuses one too long to show (`too_long_for_card`), and says what the op can do (`cdp`: every site's cookies, every tab); `capabilities.browse` holds them at the route and every helper; a named tab must be the caller's (`js` `target_id`, `cdp` `params.targetId`), a `js` target's own URL passes the navigate gate, and `cdp` takes no session id, so neither attaches the user's tabs by name; the committed-URL check runs before and after; SEL records the op and the `cdp` method, never the script, params or result; the result is redacted and capped. **Accepted residual:** CDP is browser-wide. A `cdp` command that names no tab still reaches the whole browser: `Storage.getCookies` reads every site's cookies in the user's own Chrome, `Target.getTargets` lists the user's tabs, `Browser.close` closes it, `Target.setAutoAttach` can pause new tabs; a `js` expression reads what its page holds, a filled password field included. Redaction masks credential-shaped text, not every secret. **Accepted residual** (owner's decision): under "Trust all tools", YOLO or a site's `act` grant, a page that injects instructions can make the agent run any script in its own tab without asking |
 | Agent fetches a URL outside the browser | `http_get` is plain HTTP from the helper worker with none of the browser's cookies; the navigate gate reads its URL in the shim, at the route and in the op, so loopback, private, link-local and non-http(s) URLs are refused, and an app slot's sites hold it; SEL records the URL without its query, never headers or body. A redirect is not followed (`helper_worker._local_http_get`): the answer is its `status` and `location`, so the next hop is another `http_get`, gated and asked again. At most 512 KiB of the body is read. **Accepted residual:** the gate judges a host name without resolving it, so a public name that resolves to a private address is fetched, as for `navigate` (`url_gate.py`); no browser login rides along |
 | Harness sends data out | five environment fences, a pinned version, a test on the fence; no CLI, MCP server or update check runs |
 | Agent claims input | `/api/browser/input/*` and `/api/browser/live/*` refuse the internal secret |
 | Agent types a password | `type`, `paste` and printable `press_key` refuse password fields, resolved through open shadow roots; the frame masks them (boxes clipped to the frame, shadow roots walked) |
-| Agent sends a local file to a page | `upload` takes 1 to 10 files (several only for a `multiple` input) into a visible `<input type=file>` the agent named by ref, each judged by the path keystone and checked as one file is. The gate's path keystone (`param-paths`) reads `args.path` before the card; the gateway checks it again (absolute, a regular file with one link not reached through a final link, 25 MiB cap, and `hooks.safe_copy_file_nolink`'s sensitive-path check on the real path of the descriptor it opened, so a swapped folder link is caught) and gives the browser a copy read through that descriptor into the hidden IPC leaf, so a link or file swapped in after the check never reaches the page. It is an acting op with no read-only or host-trust grant of its own, and an app's `browserSites` grant never covers it: the person approves it on the op route's own card, every call, which lists every path (`browser_card_ask`), so the default spec's `@kirocrew-core` grant does not skip it. SEL records the path and size, never the content. **Accepted residual:** an approved upload can send any ordinary file the gateway's user can read to the page that is open, as a person choosing that file would |
+| Agent sends a local file to a page | `upload` takes 1 to 10 entries (files, folders or globs; at most 100 files once expanded) into a visible `<input type=file>`, the chooser a click on the ref opens, or a drop on the ref, each entry judged by the path keystone and every file checked as one file is; inside a folder or a glob links are skipped, never followed, and one protected file refuses the call. The gate's path keystone (`param-paths`) reads `args.path` before the card; the gateway checks it again (absolute, a regular file with one link not reached through a final link, 25 MiB cap, and `hooks.safe_copy_file_nolink`'s sensitive-path check on the real path of the descriptor it opened, so a swapped folder link is caught) and gives the browser a copy read through that descriptor into the hidden IPC leaf, so a link or file swapped in after the check never reaches the page. It is an acting op, and an app's `browserSites` grant never covers it: the person approves it on the op route's own card, which lists every entry (`browser_card_ask`), so the default spec's `@kirocrew-core` grant does not skip it, unless the person gave this session an `act` site grant on the host the chat is on (never on an app's slot); the route re-reads the bound tab's host before the files go. Folders and globs skip dot entries and links, and a path in the strict sandbox's hidden folders (`~/.config/gh`, `~/.docker`, `~/.kube`, cloud credentials) never goes without a card: on a grant it is put on the card (`needs_card`), and the floor's sensitive paths stay refused. `via: chooser` and `via: drop` never deliver into a frame of another origin (`frame_refused`). SEL records the path and size, never the content. **Accepted residual:** an approved upload can send any ordinary file the gateway's user can read to the page that is open, as a person choosing that file would. **Accepted residual (owner's decision 2026-11-20):** after an `act` grant on a site, a page on that site that injects an instruction can make the agent upload, with no card, any ordinary file outside those folders that the gateway's user can read, up to 100 files and 25 MiB a call; the session-only grant, the tab re-check, the caps and the SEL row per file bound it |
 | Agent-written HTML reaches a page | `paste` hands it to the page's own paste handler as clipboard data; Kiro Crew never parses or inserts it. **Accepted residual:** a page whose paste handler puts pasted markup into its DOM unsanitised runs it, exactly as it would for markup a person pastes |
 | Frames show logged-in pages | owner websockets only; never written to disk except as a requested `screenshot` |
 | Another local process uses the relay | loopback, ephemeral port, AND a per-start secret on every path (404 without it); the URL with the secret is given only to the daemon. The sandbox does not fence loopback, so the secret, not the port, is the control |
@@ -1875,7 +2067,8 @@ modifies it, and the row is silent when the directory is absent.
 | The daemon's socket leaves the hidden leaf | a data home too deep for the AF_UNIX path limit is refused, never relocated to system temp |
 | Another chat drives the tab a person has taken over | every op binds to the calling session's own tab under one gateway-wide lock; a takeover fences that session's tab, and a tab another session owns is never streamed to this session's card |
 | A takeover lands inside an agent op | the claim and the op route share a per-session fence: the claim cancels the op in flight and is confirmed only once the route has left it |
-| An agent-written `pip/` or `venv/` package in the gateway's cwd runs on Install or the startup auto-install | both installer spawns run `python -I` with `PYTHON*`/`PIP_*` scrubbed and the prefix as cwd |
+| An agent-written `pip/` or `venv/` package in the gateway's cwd runs on Install or the startup auto-install | the venv and pip spawns run `python -I` with `PYTHON*`/`PIP_*` scrubbed (`PIP_CONFIG_FILE` the null device; the first pip attempt adds only whichever of the five index keys the user's pip settings set) and the prefix as cwd; the `pip config list` read that finds those keys runs `-I` with `PYTHON*` scrubbed, so a package in the cwd cannot shadow pip there either |
+| An agent writes a pip config file the owner's pip reads | **Accepted residual, both in-app installers (the browser harness and the Feishu SDK).** A sandboxed agent can write a pip config file (pip's user files `~/.config/pip/pip.conf`, `~/.pip/pip.conf`, macOS `~/Library/Application Support/pip/pip.conf`, Windows `%APPDATA%\pip\pip.ini`, and an unsealed site file `<interpreter prefix>/pip.conf`; pip also reads global files such as `/etc/pip.conf`) and so choose, for the first attempt of an install that runs as the owner outside the sandbox (the startup auto-install too), the index host, extra indexes, `trusted-host`, the CA bundle and the client-certificate path. It cannot change what is installed or run: every file is checked against the shipped hash lock, that attempt installs wheels only, and the fallback is the run with no settings. For the harness installer it can make the first attempt fail (one wasted attempt) or stall it until the 15-minute timeout (then the fallback: a delay, never a failure the run with no settings would not also have; on a network that reaches only the user's mirror, a config pointed elsewhere leaves only that run, which cannot reach pypi.org); point `cert`/`client-cert` at owner files, which the owner's pip loads without printing; with a `client-cert`, make the owner's pip authenticate as the owner (mutual TLS) to a host and URL path the agent picks, for the GET requests pip makes for index pages and files, which the hash lock does not limit (this matters where the agent cannot read that certificate itself, such as a folder the sandbox hides); and with a `file://` index whose link is named like a locked wheel, make the owner's pip hash a file the agent cannot read and print that sha256 in pip's hash-mismatch line ("Got <sha256>"), which reaches the gateway log for both installers (never the harness's install error). The OS sandbox does not fence network egress, so the index host is not a new egress path. The Feishu SDK installer differs in one way: `sdk_extras._lay_down` falls back only on a download failure and not after its 10-minute timeout, so the same settings can make its install fail outright (a hash mismatch, a stall); the harness installer reading the same settings does not change that. [Agents ask before changing gateway-trusted files](../../decisions/2026-11-20-agents-ask-before-changing-gateway-trusted-files.md) covers other files the gateway launches from or trusts; this residual does not supersede it, for the reasons [the decision](../../decisions/2026-11-24-the-browser-harness-installer-tries-the-users-pip-index-first.md) gives |
 | The relay URL (and its secret) goes to a corporate proxy | `NO_PROXY` always carries the loopback names |
 | Agent spells a password one key at a time | `press_key` with a printable key runs the same focused-password-field refusal as `type`; named keys and Ctrl/Meta chords stay allowed so the agent can leave the field |
 | Agent reads Kiro's profile cookies or the daemon's IPC credential | `HIDDEN` leaves in every sandbox mode |
@@ -1883,15 +2076,15 @@ modifies it, and the row is silent when the directory is absent.
 | A provider widens what it may set | off unless `browser.credentials.enabled`; cookies outside BOTH its declared domains and `browser.credentials.domains` are dropped; every cookie is a session cookie; the provider adds no launch switch |
 | A provider sends the tab somewhere the agent did not ask for | only after an agent `navigate` landed on a page of the provider's own (both domain lists, `https`, Kiro's Chromium, the opt-in on); the URL it returns must be `https`, in both domain lists and pass the committed-URL gate, and its landing is gated again; one try per op; the agent, the live card and the SEL see hosts and outcome codes, never the URL's path or query. **Accepted residual:** the single-use URL is visible in the tab's own address and history (Credentials, residual iv) |
 | A provider reads a file the agent planted | `credential_files.read_source_file`: `O_NOFOLLOW`, `fstat` on the open descriptor, owner uid, no group/other bits, size cap |
-| Local addresses | `navigate` keeps the public-only gate plus `dashboard.browser_local_origins`, applied TWICE by one shared predicate (`browser_harness/url_gate.py`): in the shim to the URL asked for, and in the gateway to the URL the navigation (or `back`) committed on, so a public page that redirects to loopback, private or link-local is refused (`redirect_refused`) and the tab moved to `about:blank`. **Accepted residual:** DNS rebinding (a public name resolving to a private address) is not seen by either check; names are not resolved |
+| Local addresses | `navigate` keeps the public-only gate plus `dashboard.browser_local_origins`, applied by one shared predicate (`browser_harness/url_gate.py`): in the shim to the URL asked for, and in the gateway to the URL asked for and the URL the navigation (or `back`) committed on, so a public page that redirects to loopback, private or link-local is refused (`redirect_refused`) and the tab moved to `about:blank`. The gateway adds the origins it trusts as itself (`allowed_origins`), so the dashboard is refused under a tunnel, tailnet or `dashboard.url` name too (`url_blocked` before the request). **Accepted residuals:** DNS rebinding (a public name resolving to a private address) is not seen by either check; names are not resolved. An address that reaches the gateway but is not one of its trusted origins passes |
 | Governance | `capabilities.browse` is checked on every call and a denial never falls back; the gateway asks it again, fail-closed, at every browser route, the engine start and every helper, so a direct POST or a policy pushed mid-session cannot keep a browser running |
 | Page content | treated as untrusted input; a URL, instruction or form target read off a page never decides the next navigation |
 | Agent obtains a vault login through a quick ask | the agent's `ask` and its outcome words are unchanged; the owner's card shows each login's entry name and username, never a password; a vault fill needs the person's click on the owner-only answer route (which refuses the internal secret) and goes through the same bound, re-verified fill; the item is re-read and re-matched against the bound origin at answer time; values never reach a log, the SEL, the replay, the live event, the poll or the tool result |
 | A typed password is kept | only when the person ticked "Save to Secrets store" (off by default) while typing, and only after the fill landed; the save is a new item (never an overwrite) for the bound origin |
 | A saved login is offered on the wrong site | base-domain match by the bundled Public Suffix List (private section included); exact host and port where there is no registrable domain; never an https login on an http page. **Accepted residual:** every host under one registrable domain is treated as one site, as in 1Password's and Bitwarden's defaults |
 | Preview tab | native view, deny-all partition, no agent channel, local origins only |
-| An app's own agent browses without a card per step | only for a session an app owns, while the app is enabled, trusted and holds owner-approved `permissions.browserSites` (the tool gate's `app-browser-sites` row), except a call of `op_classes.card_only`: `upload`, `js`, `cdp`, `http_get` and `tabs close`, which always asks; the op route holds that session to those pages: a request off them is `site_not_allowed`, a landing off them is blanked (`redirect_refused`). **Accepted residual:** the agent types and clicks unasked in a browser holding the owner's logins on those pages; a stronger sandbox is a follow-up |
-| A person's site grant covers more than the site | the key is the host of the page the op acts on (a `navigate`'s own URL, else the chat's current page); a `read` grant never covers an acting op; `ask`, `reflex` and every call of `op_classes.card_only`: `upload`, `js`, `cdp`, `http_get` and `tabs close` always ask; a subagent's call or a harness whose subagent calls are not told apart gets no key; the op route re-reads the tab's address before the op and refuses `trust_scope_changed` off the granted host; a Unicode host is keyed in punycode, as Chromium reports it, so the card cannot show a look-alike; host keys are a namespace of their own, so neither `*` nor a command grant approves a browser call, and a shell command naming `browser-trust:v1:` gets no key; only a call approved by a site grant (the trusted-pattern rung, or the card click that made it) is re-checked, a plain "Allow once" runs as before. A note is never dropped to make room: when a session already holds 16 pending notes (or the store 4096 sessions) the grant does not auto-approve the call, which goes to its card. **Accepted residual:** an `act` grant lets the agent click and type unasked on that site while the browser holds the owner's logins there, as an app's sites do; a `read` grant lets it open any URL on that host, including a GET link that changes something; the host is re-checked once, before the op, so a page that redirects to another public host while the op is starting can take that one step there, as a click approved on its card can today |
+| An app's own agent browses without a card per step | only for a session an app owns, while the app is enabled, trusted and holds owner-approved `permissions.browserSites` (the tool gate's `app-browser-sites` row), except `upload`, `js` and a call of `op_classes.card_only`: `cdp`, `http_get` and `tabs close`, which always ask; the op route holds that session to those pages: a request off them is `site_not_allowed`, a landing off them is blanked (`redirect_refused`). **Accepted residual:** the agent types and clicks unasked in a browser holding the owner's logins on those pages; a stronger sandbox is a follow-up |
+| A person's site grant covers more than the site | the key is the host of the page the op acts on (a `navigate`'s own URL, else the chat's current page); a `read` grant never covers an acting op; `ask`, `reflex` and every call of `op_classes.card_only`: `cdp`, `http_get` and `tabs close`, and a `js` that names a `target_id`, always ask, and an `act` grant also covers `upload` and a current-tab `js` on that host (decided at the op route from the chat's key, so a child posting under that key acts only on the chat's own tab, re-checked against the granted host); a subagent's call or a harness whose subagent calls are not told apart gets no key; the op route re-reads the tab's address before the op and refuses `trust_scope_changed` off the granted host; a Unicode host is keyed in punycode, as Chromium reports it, so the card cannot show a look-alike; host keys are a namespace of their own, so neither `*` nor a command grant approves a browser call, and a shell command naming `browser-trust:v1:` gets no key; only a call approved by a site grant (the trusted-pattern rung, or the card click that made it) is re-checked, a plain "Allow once" runs as before. A note is never dropped to make room: when a session already holds 16 pending notes (or the store 4096 sessions) the grant does not auto-approve the call, which goes to its card. **Accepted residual:** an `act` grant lets the agent click and type unasked on that site while the browser holds the owner's logins there, as an app's sites do; a `read` grant lets it open any URL on that host, including a GET link that changes something; the host is re-checked once, before the op, so a page that redirects to another public host while the op is starting can take that one step there, as a click approved on its card can today |
 | An app page's media buttons | `POST /api/browser/media` refuses the internal secret, non-owners and app tokens, asks `capabilities.browse`, acts only on the tab of a session an app with approved sites owns, never starts the browser, leaves a taken-over tab alone (`user_in_control`, under the takeover fence), and reads only the media element's playback state |
 
 ### What this stack replaced

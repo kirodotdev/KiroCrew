@@ -226,15 +226,17 @@ def _parse_iso(value: Any) -> datetime | None:
 
     Both stores write ``datetime.now().astimezone().isoformat()``, so a stored
     stamp normally carries an offset; a naive one (hand-edited, or written by a
-    build that did not) is read as local time rather than discarded.
+    build that did not) is read as local time rather than discarded. A naive stamp
+    at the edge of the calendar has no local-time reading, so it is no stamp at all
+    and the caller falls back to the file's mtime.
     """
     if not isinstance(value, str) or not value:
         return None
     try:
         parsed = datetime.fromisoformat(value)
-    except ValueError:
+        return parsed.astimezone() if parsed.tzinfo is None else parsed
+    except (ValueError, OverflowError, OSError):
         return None
-    return parsed.astimezone() if parsed.tzinfo is None else parsed
 
 
 def _mtime(path: Path) -> datetime | None:

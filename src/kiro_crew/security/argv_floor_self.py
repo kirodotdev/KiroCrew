@@ -15,8 +15,8 @@ reader of a flat command substitution (``_static_substitution_output``) are reus
 the ssh self-target floor above this module.
 ``kiro_crew.security.argv_floor`` serves every name defined here, and a patch through it
 reaches this module (:mod:`kiro_crew._facade_mirror`). This module reads the shell reader,
-the inline-payload checks and the shared name vocabulary below it, and imports no other
-part of the argv floor.
+the inline-payload checks, the Windows by-name kill reader (``self_kill_windows``) and the
+shared name vocabulary below it, and imports no other part of the argv floor.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from .inline_payload import (
     _decoded_b64_literal_sources,
     _has_self_importing_inline_program,
 )
+from .self_kill_windows import _windows_self_kill
 from .shell_normalizer import (
     _PYTHON_INLINE_PROGRAM_FLAGS,
     _PYTHON_OPERAND_FLAGS,
@@ -180,6 +181,46 @@ def _is_kill_by_name_program(token: str) -> bool:
     return _glob_could_expand_to(base, _KILL_BY_NAME_PROGRAMS)
 
 
+#: An operator expansion (``${w%/}``, ``${!x}``) or a substitution can rewrite a value.
+_VALUE_REWRITE_RE = re.compile(r"\$\{(?![a-z_][a-z0-9_]*\})|\$\(|`", re.IGNORECASE)
+#: What a directory loop's body may run: each moves, links or prints a path, and none
+#: executes, evaluates or stores an argument (``printf -v``, ``eval`` and ``sh`` are out).
+_DIR_LOOP_BODY_PROGRAMS = frozenset(
+    {"ln", "cp", "mv", "mkdir", "rm", "rmdir", "touch", "chmod", "chown", "echo"}
+)
+
+
+def _for_list_directory_globs(tokens: "list[str]", text: str, root: bool) -> "frozenset[int]":
+    """Indexes of list words ending in ``/`` when the frame is ONE plain ``for`` loop.
+
+    Such a glob expands only to directories, so ``for w in /a/*/`` never runs ``*``.
+    Its value could still become a program, so the shape is fixed: the root frame
+    (*root*, the command as typed) is exactly ``for NAME in WORDS; do CMD; ...; done``, each CMD is in
+    ``_DIR_LOOP_BODY_PROGRAMS``, no word holds an operator before its end, and the
+    *text* has no pipe, output redirect, substitution or operator expansion.
+    """
+    if "|" in text or ">" in text or any(_VALUE_REWRITE_RE.search(t) for t in tokens):
+        return frozenset()
+    # Only the ROOT frame: an outer frame of a nested loop could define a function ``ln``.
+    if not root:
+        return frozenset()
+    if len(tokens) < 6 or tokens[0] != "for" or tokens[2] != "in" or tokens[-1] != "done":
+        return frozenset()
+    if not tokens[1].isidentifier() or any(c in t.rstrip(";") for t in tokens for c in ";&\n"):
+        return frozenset()
+    # The list ends at its first ``;``-ended word and ``do`` comes next (no ``{ …; }`` body).
+    do = next((j for j in range(3, len(tokens)) if tokens[j].endswith(";")), len(tokens)) + 1
+    if do >= len(tokens) or tokens[do] != "do":
+        return frozenset()
+    starts = [do + 1] + [j + 1 for j in range(do + 1, len(tokens) - 1) if tokens[j].endswith(";")]
+    for j in starts:
+        if tokens[j] != ";" and _shell_normalizer._program_basename(tokens[j]) not in (
+            _DIR_LOOP_BODY_PROGRAMS | {"done"}
+        ):
+            return frozenset()
+    return frozenset(j for j in range(3, do) if tokens[j].rstrip(";").endswith("/"))
+
+
 # ``env -S`` splits its argument into a command and execs it.
 # Programs that treat their arguments as DATA rather than executing them, so the
 # Control operators that end one command and begin another.  Serves to find the
@@ -255,6 +296,66 @@ def _self_frames(
 def _self_token_frames(text_lower: str, literal_single_quotes: bool = True) -> "list[list[str]]":
     """The command's own argv plus the argv of every nested shell payload."""
     return [tokens for _source, tokens in _self_frames(text_lower, literal_single_quotes)]
+
+
+def _powershell_assignment(tokens: "list[str]", idx: int) -> "re.Match[str] | None":
+    """PowerShell's ``$name = value`` at *idx*, which opens a statement, as ``name=value``.
+
+    Words split on whitespace, so a spaced ``=`` arrives at a word's edge and the word
+    beside it joins on. It binds only as a whole statement: ``[ $t = v ]`` compares in
+    either shell, and ``$out = kirocrew doctor`` runs a command.
+    """
+    word, end = tokens[idx], idx + 1
+    if not word.startswith("$"):
+        return None
+    for nxt in tokens[end : idx + 3]:
+        if not (word.endswith("=") or ("=" not in word and nxt.startswith("="))):
+            break
+        word, end = word + nxt, end + 1
+    after = tokens[end][:1] if end < len(tokens) else ";"
+    if not word.endswith((";", "&", "|")) and after not in ";&|)}#":
+        return None
+    return _shell_normalizer._LOCAL_ASSIGN_RE.match(word[1:])
+
+
+def _powershell_tokens(text_lower: str) -> "list[str] | None":
+    """*text_lower* as PowerShell reads its variables, or ``None`` when it assigns none.
+
+    ``$name = '<literal>'`` or ``$name = $other`` binds the name and a later word that is
+    exactly ``$name`` / ``${name}`` reads it; bash's ``NAME=value`` is a command there.
+    """
+    if "$" not in text_lower or "=" not in text_lower:
+        return None
+    n = _shell_normalizer
+    # Words split on whitespace only, so ``$a='x';$t='y'`` is one word and its second
+    # statement opens nowhere; an unquoted ``;`` or newline is padded to its own word.
+    spaced = "".join(
+        " ; " if step.active and step.char in ";\n" else step.text
+        for step in n._iter_shell_chars(text_lower)
+    )
+    tokens = n._split_shell_words(spaced)
+    values: dict[str, str] = {}
+    out: list[str] = []
+    for idx, token in enumerate(tokens):
+        word = n._dequote_token(token)
+        use = n._VAR_USE_RE.fullmatch(word)
+        opens = not idx or tokens[idx - 1].endswith((";", "&", "|", "{", "("))
+        # An assignment's destination is written, never read, whatever its value.
+        if use and not (opens and "".join(tokens[idx + 1 : idx + 2]).startswith("=")):
+            word = values.get(use.group(1) or use.group(2), word)
+        out.append(word)
+        spoken = _powershell_assignment(tokens, idx) if opens else None
+        if spoken is None:
+            continue
+        raw = spoken.group(2).rstrip(";&|")
+        copy = n._VAR_USE_RE.fullmatch(raw)
+        other = (copy.group(1) or copy.group(2)) if copy else ""
+        # Only a quoted literal holds a string; a bare word after ``=`` runs a command.
+        if len(raw) > 2 and raw[0] in "\"'" and raw[-1] == raw[0] and "$" not in raw:
+            values[spoken.group(1)] = n._dequote_token(raw)
+        elif other in values:
+            values[spoken.group(1)] = values[other]
+    return out if values else None
 
 
 def _shell_payload_sources(text_lower: str) -> "list[str]":
@@ -377,7 +478,14 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
     # next command's payload.
     submitted = raw_text if raw_text is not None else text_lower
     decoded_literals = _decoded_b64_literal_sources(submitted)
-    for tokens in _self_token_frames(text_lower):
+    readings = _self_token_frames(text_lower)
+    # PowerShell's reading of each source is judged BESIDE the bash one, never in its
+    # place: bash runs ``$T = v`` as a command and ``[ $T = v ]`` as a test.
+    for source, _tokens in _self_frames(text_lower):
+        spoken = _powershell_tokens(source)
+        if spoken is not None:
+            readings.append(spoken)
+    for tokens in readings:
         programs = _argv_programs(tokens)
         # The command-level half of ``_data_consumer_exempt`` reads only *tokens*, so its
         # answer is the same for every token in this frame.  Held here and computed at
@@ -386,6 +494,7 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
         # quadratic in the trigger count.  ``None`` until the first trigger token needs
         # it, so a frame carrying none pays nothing.
         disqualified: "bool | None" = None
+        dir_globs: "frozenset[int] | None" = None
         for i, token in enumerate(tokens):
             # AN INLINE PROGRAM THAT NAMES THE MINT SURFACE IS DENIED WITHOUT NEEDING THE VERB
             # AS AN ARGV WORD, and it is checked FIRST because it does not depend on the
@@ -410,6 +519,11 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
             if disqualified is None:
                 disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
             if _data_consumer_exempt(i, token, programs, tokens, command_disqualified=disqualified):
+                continue
+            if dir_globs is None:
+                root = any(s == text_lower and t == tokens for s, t in _self_frames(text_lower))
+                dir_globs = _for_list_directory_globs(tokens, text_lower, root)
+            if i in dir_globs:
                 continue
             # A program token ending with an operator (``kirocrew;``) is NOT skipped: the
             # quotes are already off these tokens, so ``'/tmp/kirocrew;' token`` (a symlink
@@ -857,6 +971,7 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
         programs = _argv_programs(tokens)
         # Once per FRAME, not once per trigger token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
+        dir_globs: "frozenset[int] | None" = None
         for i, token in enumerate(tokens):
             if not _is_kill_by_name_program(token):
                 continue
@@ -864,6 +979,11 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
             if disqualified is None:
                 disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
             if _data_consumer_exempt(i, token, programs, tokens, command_disqualified=disqualified):
+                continue
+            # ``for w in /a/*/`` lists directories, which never run.
+            if dir_globs is None:
+                dir_globs = _for_list_directory_globs(tokens, text_lower, source == text_lower)
+            if i in dir_globs:
                 continue
             # A program token ending with an operator (``pkill;``) is NOT skipped: the
             # quotes are already off, so ``'pkill;' -f kirocrew`` (a symlink literally so
@@ -891,6 +1011,9 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
                 if depth <= 0 and _ends_argv(arg):
                     break
                 depth = max(depth, 0)
+        # ``taskkill``, ``Stop-Process`` and ``wmic`` name their target in one place.
+        if _windows_self_kill(tokens):
+            return whole
     # Bare ``kill`` whose PID comes out of a substitution naming the product.
     # The VERB is matched on tokens (so ``/usr/bin/kill``, ``$(which kill)`` and a
     # quoted spelling all count -- a raw-text pattern anchored on separators sees
@@ -1440,7 +1563,18 @@ def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> boo
     if not _self_floor_can_fire(text_lower):
         return False
     view = _shell_join_continuations(_heredoc_data_view(text_lower))
-    for tokens in _self_token_frames(view):
+    # The blunt continuation fold above keeps the self views fail-closed, but it
+    # strips the last ``\`` before a newline even in an even run, so a proved
+    # message value such as ``"\\<newline>`kirocrew restart`"`` loses its LIVE
+    # backtick to a ``\```. The quote/escape walk in ``_substitution_bodies`` reads
+    # that backtick as the substitution bash runs, so enumerate the un-folded frames
+    # as well; checking more frames only adds denials.
+    unfolded = _heredoc_data_view(text_lower)
+    frames = _self_token_frames(view)
+    if unfolded != view:
+        seen = {tuple(tokens) for tokens in frames}
+        frames = frames + [t for t in _self_token_frames(unfolded) if tuple(t) not in seen]
+    for tokens in frames:
         programs = _argv_programs(tokens)
         # Once per FRAME, not once per token, to keep the floor linear in token count.
         scan = _self_module_flag_scan(tokens)

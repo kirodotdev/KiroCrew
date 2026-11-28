@@ -1098,6 +1098,28 @@ describe('KiroPrerequisiteGate agent choice', () => {
     await waitFor(() => expect(api.patchConfig).toHaveBeenCalledWith('agent.acp_backend', 'kiro'))
   })
 
+  // The card never reads which agent is configured, so its first line names
+  // no default: the "Use other coding agents" notice is the one place that
+  // names the configured agent (docs/decisions/2026-11-14-the-kiro-cli-setup-card-does-not-name-a-default-agent.md).
+  it.each(['kas', 'kiro', 'claude'] as const)(
+    'says only that Kiro CLI is not installed, naming no default agent, with %s configured',
+    async (backend) => {
+      vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ installed: false }))
+      vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: backend } })
+      vi.mocked(api.acpBackends).mockResolvedValue({
+        backends: backend === 'claude' ? [probe({ installed: 'missing', install_command: 'npm install -g x' })] : [],
+      })
+      const { queryClient } = renderSettled()
+      await settle(queryClient)
+
+      const card = (await screen.findByRole('heading', { name: 'Get Kiro CLI' })).closest('div.card-glow')
+      expect(card).not.toBeNull()
+      expect((card as HTMLElement).querySelector('p')).toHaveTextContent(/^Kiro CLI isn't installed on this host yet\.$/)
+      expect(screen.queryAllByText(/default agent/i)).toHaveLength(0)
+      expect(document.body).not.toHaveTextContent(/default agent/i)
+    },
+  )
+
   it.each([false, true])('surfaces a config read failure without bypassing the Kiro checks (installed: %s)', async (installed) => {
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ installed }))
     vi.mocked(api.kirocrewConfig).mockRejectedValue(new ApiError(500, 'Config read failed'))

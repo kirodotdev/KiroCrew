@@ -35,6 +35,14 @@ function renderWith(content: string, opts: { sessions?: Map<string, string> | un
 }
 
 describe('closed-session chip', () => {
+  it('a closed title-derived key (#41426) runs no probe and stays plain', () => {
+    // Only `chat-<n>-<ts>` keys are probed; any other shape chips only while open.
+    const TITLE = '_nightly-report-run_the_report_skill_'
+    renderWith(`Earlier: \`${TITLE}\`.`)
+    expect(screen.getByText(TITLE)).not.toHaveAttribute('data-session-key')
+    expect(lookup).not.toHaveBeenCalled()
+  })
+
   it('a backticked closed key becomes a chip that resumes it', async () => {
     renderWith(`Earlier: \`${CLOSED}\`.`)
     await vi.waitFor(() => expect(screen.getByText(CLOSED)).toHaveAttribute('data-session-key', CLOSED))

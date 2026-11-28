@@ -20,12 +20,19 @@ defines it (the sub-agent readers: :mod:`kiro_crew.subagent_standalone`).
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from typing import Any
 
 from kiro_crew import resource_status as host_status
 from kiro_crew import subagent_standalone
-from kiro_crew.agent_discovery import is_internal_agent_spec, list_agents
+from kiro_crew.agent_discovery import (
+    SCOPE_GLOBAL,
+    _kiro_agents_dir,
+    _read_agent_spec,
+    is_internal_agent_spec,
+    list_agents,
+    spec_is_toolless,
+)
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS
 from kiro_crew.execution_context import read_session_execution
@@ -33,11 +40,17 @@ from kiro_crew.mcp_core_parts.identity import _resolve_session_key
 from kiro_crew.mcp_listing_relay import built_for_a_tool_server
 from kiro_crew.mcp_tools.catalog import loaded_binding
 from kiro_crew.spawn_label import SPAWN_LABEL_MAX_CHARS
+from kiro_crew.validation import MAX_LONG_STRING
 
 # Roster carried in the spawn_run parameter descriptions. Kept small on purpose:
 # a tool description is always-on context in every session, so this buys
 # self-correction for a few dozen characters, not a full agent listing.
 _MAX_ROSTER_NAMES = 8
+
+# The bound the validator holds every brief field to (``core_agent_schemas``), named
+# as learn_add names its own: the model cannot measure its text, so it is told the
+# bound before it writes, not by a refusal.
+_BRIEF_LIMIT = f" HARD LIMIT: {MAX_LONG_STRING} characters; put a longer brief in a file."
 
 #: The import path and patch surface of the identity resolver and the agent scan. Importing
 #: it loads every tool handler, so the two names are read from it only once it is loaded.
@@ -94,6 +107,87 @@ def _parent_allowlist_filter(names: Iterable[str]) -> tuple[list[str], bool]:
     return [n for n in names if all(matches(n, al) for al in allowlists)], True
 
 
+#: The mark a roster puts after an agent whose spec mounts no tool at all.
+_TOOLLESS_MARK = " (no tools)"
+
+
+def _toolless_agent_names(rows: Iterable[Any]) -> set[str]:
+    """The names of the user-level *rows* whose spec mounts nothing (``spec_is_toolless``).
+
+    The spec judged is the one a spawn of that name runs: the declared-name resolver
+    with ``agent.spec_pins`` applied (``declared_spec_claim``), not the file a roster
+    row kept, which may be another claimant's. Each file in the user-level folder is
+    read once through the hardened spec reader. A row with no file name, a name the
+    resolver refuses (an ambiguous or broken pin), or a spec that cannot be read, is
+    not tool-less (no mark is the safe answer). A name no file declares falls back to
+    the row's own file. A row of another scope is not judged and stays unmarked: the
+    rosters list the user-level folder only, and the resolver judges only specs in
+    that folder. Blocking: the caller holds the roster's own ``try``.
+    """
+    from kiro_crew.agent_discovery import (
+        AgentSpecPinError,
+        AmbiguousAgentSpecError,
+        declared_spec_claim,
+    )
+    from kiro_crew.agent_spec_format import iter_agent_spec_files
+
+    agents_dir = _kiro_agents_dir()
+    parsed: list[tuple[Any, Any]] | None = None
+    by_file: dict[str, Any] = {}
+    names: set[str] = set()
+    for row in rows:
+        name, filename = getattr(row, "name", ""), getattr(row, "filename", "")
+        if not (isinstance(name, str) and name and isinstance(filename, str) and filename):
+            continue
+        if getattr(row, "scope", SCOPE_GLOBAL) != SCOPE_GLOBAL:
+            continue
+        if parsed is None:
+            parsed = [
+                (_read_agent_spec(path, operation="spawn_roster", source="subagent"), path)
+                for path in iter_agent_spec_files(agents_dir)
+            ]
+            by_file = {path.name: spec for spec, path in parsed}
+        try:
+            claim = declared_spec_claim(
+                agents_dir,
+                name,
+                operation="spawn_roster",
+                source="subagent",
+                parsed_rows=parsed,
+            )
+        except (AgentSpecPinError, AmbiguousAgentSpecError):
+            continue
+        spec = claim.spec if claim is not None else by_file.get(filename)
+        if spec_is_toolless(spec):
+            names.add(name)
+    return names
+
+
+def _roster_with_tools_first(
+    names: list[str],
+    toolless: Collection[str],
+    *,
+    limit: int | None,
+    exclude: Iterable[str] | None = None,
+) -> tuple[list[str], int]:
+    """*names* rendered as a roster: agents with tools first, *toolless* ones marked last.
+
+    A tool-less agent (:func:`_toolless_agent_names`) can only answer in text, and a bare
+    name in front of a model reads like any other child, so a file job sent to one was
+    lost. Each part keeps the caller's order and goes through ``visible_agent_names``
+    (grammar, redaction, bound), the tool-less part taking what the bound leaves, so a cap
+    cuts tool-less names first. Returns ``(shown, withheld)``.
+    """
+    visible = _subagent_reader("visible_agent_names")
+    kwargs: dict[str, Any] = {} if exclude is None else {"exclude": exclude}
+    with_tools, withheld = visible([n for n in names if n not in toolless], limit=limit, **kwargs)
+    if not toolless:
+        return with_tools, withheld
+    room = None if limit is None else max(limit - len(with_tools), 0)
+    marked, withheld_marked = visible([n for n in names if n in toolless], limit=room, **kwargs)
+    return [*with_tools, *(n + _TOOLLESS_MARK for n in marked)], withheld + withheld_marked
+
+
 def _agent_roster_hint() -> str:
     """Valid agent names, for the ``agent``/``agents`` parameter descriptions.
 
@@ -126,14 +220,15 @@ def _agent_roster_hint() -> str:
         # spec forbids spawning are dropped FIRST: advertising them would send
         # the model straight into the gate's refusal. So are Kiro Crew's own
         # generated specs (``is_internal_agent_spec``), which the gate refuses.
-        names, restricted = _parent_allowlist_filter(
-            sorted(
-                a.name
-                for a in loaded_binding(_CORE, "list_agents", list_agents)()
-                if a.name and not is_internal_agent_spec(a)
-            )
+        rows = [
+            a
+            for a in loaded_binding(_CORE, "list_agents", list_agents)()
+            if a.name and not is_internal_agent_spec(a)
+        ]
+        names, restricted = _parent_allowlist_filter(sorted(a.name for a in rows))
+        shown, withheld = _roster_with_tools_first(
+            names, _toolless_agent_names(rows), limit=_MAX_ROSTER_NAMES
         )
-        shown, withheld = _subagent_reader("visible_agent_names")(names, limit=_MAX_ROSTER_NAMES)
     except Exception:
         return ""  # never let a directory read break the tool advertisement
     if not shown:
@@ -141,7 +236,7 @@ def _agent_roster_hint() -> str:
         # caller needs: naming any agent will be refused, so say so rather than
         # advertising nothing and letting it guess.
         return (
-            " This agent's toolsSettings.subagent.availableAgents allows none of the "
+            " This agent's availableAgents allows none of the "
             "installed agents, so every spawn is refused; ask the operator to widen the list."
             if restricted
             else ""
@@ -150,7 +245,7 @@ def _agent_roster_hint() -> str:
     if withheld:
         hint += f" (+{withheld} more)"
     if restricted:
-        hint += " (restricted by this agent's toolsSettings.subagent.availableAgents)"
+        hint += " (restricted by this agent's availableAgents)"
     return hint + "."
 
 
@@ -159,12 +254,13 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
 
     ``names_only`` is set by the in-process discovery read (via
     ``mcp_tools.build_tool_names``), which keeps only tool NAMES and discards
-    every description. Under it the two reads that exist solely to fill a
-    description -- the live sub-agent cap and the agents-directory roster scan --
-    are skipped, so a names-only caller never performs on-loop work for text it
-    throws away. The returned names and their order are unchanged; only the two
-    descriptions that would have carried those values are left without them.
-    This is why neither read needs a ``get_running_loop`` guard of its own.
+    every description. Under it the three reads that exist solely to fill a
+    description -- the live sub-agent cap, the agents-directory roster scan and
+    the cwd roots -- are skipped, so a names-only caller never performs on-loop
+    work for text it throws away. The returned names and their order are
+    unchanged; only the descriptions that would have carried those values are
+    left without them. This is why no read needs a ``get_running_loop`` guard of
+    its own.
     """
     # Advertise the concurrent sub-agent cap so the model fans out with
     # confidence instead of self-limiting. The cap IN FORCE is preferred:
@@ -191,13 +287,28 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
         "queues automatically; capacity is a ceiling, not a target. Keep dependent "
         "tasks for a later batch."
     )
-    # A names-only caller discards every description, so neither the live cap
-    # nor the roster scan below runs for it: the two values exist only to fill
-    # text it throws away. This is the whole reason those reads need no
-    # running-loop skip -- the names path never reaches them.
+    # A names-only caller discards every description, so none of the live cap,
+    # the cwd roots or the roster scan below runs for it: the three values exist
+    # only to fill text it throws away. This is the whole reason those reads need
+    # no running-loop skip -- the names path never reaches them.
     _cap_hint = ""
     _agent_hint = ""
+    _cwd_hint = ""
     if not names_only:
+        # Both spawn ``cwd`` descriptions end with the roots the admission gate hands
+        # ``validate_cwd``, so the model sees the rule before a refusal teaches it. An
+        # unreadable config names the setting and no roots: the gate then refuses
+        # every cwd too.
+        try:
+            _roots = list(KiroCrewConfig.load().agent.subagent_cwd_allowed_roots)
+        except Exception:
+            _cwd_hint = " Must be under an agent.subagent_cwd_allowed_roots entry."
+        else:
+            _cwd_hint = (
+                f" Must be under agent.subagent_cwd_allowed_roots: [{', '.join(_roots)}]."
+                if _roots
+                else " Disabled: agent.subagent_cwd_allowed_roots is empty."
+            )
         # A list the gateway builds for a tool server to relay reads as that server's
         # own, so it prints the ceiling sentence below, never the gateway's.
         _live_cap = 0 if built_for_a_tool_server() else host_status.adaptive_exec_cap()
@@ -283,7 +394,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 " do not start a new spawn until all of them have been"
                 " delivered and processed."
                 " A shared-session spawn costs about 200ms and little memory; a per-spawn"
-                " model or reasoning_effort runs each subagent in its own process"
+                " model or reasoning_effort can run each subagent in its own process"
                 " (~3-5s, ~0.55 GB), so check resource_status before a wide wave."
                 " A memory-pressure refusal means take a lighter path; an unknown agent"
                 " name means pick from the returned roster. awaiting_approval means the"
@@ -295,18 +406,27 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 "properties": {
                     "task": {
                         "type": "string",
+                        "maxLength": MAX_LONG_STRING,
                         "description": (
                             "A bounded assignment with goal, ready inputs, ownership, "
                             "verifiable outputs and stop conditions. Never forward the whole "
                             "request to an equivalent worker merely to wait and relay."
+                            + _BRIEF_LIMIT
                         ),
                     },
                     "tasks": {
                         "type": "array",
                         "items": {
                             "type": ["string", "object"],
+                            # maxLength binds the string arm only; the object arm's
+                            # bound is on its task property.
+                            "maxLength": MAX_LONG_STRING,
                             "properties": {
-                                "task": {"type": "string"},
+                                "task": {
+                                    "type": "string",
+                                    "maxLength": MAX_LONG_STRING,
+                                    "description": "The task brief." + _BRIEF_LIMIT,
+                                },
                                 "model": {"type": "string"},
                                 "reasoning_effort": {"type": "string"},
                                 "backend": {"type": "string"},
@@ -372,9 +492,16 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "Optional absolute path to launch the subagent subprocess in, "
                             "instead of the default sandbox. Enables cwd-relative resource globs "
                             "(.kiro/steering, AGENTS.md, CLAUDE.md) to resolve against this directory. "
-                            "Must be under a configured subagent_cwd_allowed_roots entry "
-                            "(default: [~/workspace, ~/workspaces, ~/workplace, "
-                            "~/workplaces]). Applies to all tasks in a batch spawn."
+                            "Applies to all tasks in a batch spawn." + _cwd_hint
+                        ),
+                    },
+                    "isolate": {
+                        "type": "string",
+                        "enum": ["worktree"],
+                        "description": (
+                            "Optional. 'worktree' gives each task its own git worktree of "
+                            "cwd's repository, detached at HEAD; uncommitted changes are "
+                            "not copied. Needs 'cwd'."
                         ),
                     },
                     "model": {
@@ -386,7 +513,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "the kiro backend list them with "
                             "`kiro-cli chat --list-models --format json`; another backend "
                             "(e.g. codex) accepts only ids from its own model list and "
-                            "refuses ids from kiro's catalog. Setting it forces the "
+                            "refuses ids from kiro's catalog. Setting it can force the "
                             "dedicated-process path (~3-5s start, ~0.55 GB per subagent)."
                         ),
                     },
@@ -492,7 +619,10 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     },
                     "task": {
                         "type": "string",
-                        "description": "Follow-up task/instruction for the subagent",
+                        "maxLength": MAX_LONG_STRING,
+                        "description": (
+                            "Follow-up task/instruction for the subagent." + _BRIEF_LIMIT
+                        ),
                     },
                     "agent": {"type": "string", "description": "Agent name override"},
                     "max_turns": {
@@ -530,7 +660,10 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     },
                     "message": {
                         "type": "string",
-                        "description": "Instruction to inject into the running turn",
+                        "maxLength": MAX_LONG_STRING,
+                        "description": (
+                            "Instruction to inject into the running turn." + _BRIEF_LIMIT
+                        ),
                     },
                     "mode": {
                         "type": "string",
@@ -663,8 +796,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     "cwd": {
                         "type": "string",
                         "description": (
-                            "Optional absolute path to launch sub-agents in. "
-                            "Must be under a configured subagent_cwd_allowed_roots entry."
+                            "Optional absolute path to launch sub-agents in." + _cwd_hint
                         ),
                     },
                     "silent": {

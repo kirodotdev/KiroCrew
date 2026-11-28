@@ -49,16 +49,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   loadPttConfig,
-  PTT_CHANGED_EVENT,
   type PttConfig,
 } from '../lib/pushToTalk'
 import {
-  createPttSession,
   type PttPhase,
-  type PttSession,
   type StopIntent,
   type VoiceControls,
 } from '../lib/pttSession'
+import { usePttGestureSession } from './usePttGestureSession'
 
 /**
  * Upward travel, in CSS px, that arms the discard.
@@ -313,35 +311,13 @@ export function useTouchPushToTalk(
    *     come from the mic button, a surface this hook never sees, so an
    *     abandoned startup must be invalidated by sequence.
    *   - `onOwnerChange` mirrors ownership into the render-visible `owns`.
+   *
+   * Built by {@link usePttGestureSession}, which `usePointerHoldToTalk` shares,
+   * together with the config listener and `clearTimers` below it.
    */
-  const sessionRef = useRef<PttSession<'gesture'> | null>(null)
-  if (!sessionRef.current) {
-    sessionRef.current = createPttSession<'gesture'>({
-      voice: () => voiceRef.current,
-      phase: () => phaseRef.current,
-      setPhase,
-      resetToIdle: () => { coreSeamsRef.current.resetToIdle() },
-      disarm: (commit) => { coreSeamsRef.current.disarm(commit) },
-      disownPendingOnRelinquish: true,
-      onOwnerChange: (owner) => setOwns(owner !== null),
-    })
-  }
-  const session = sessionRef.current
-
-  useEffect(() => {
-    const onChange = () => setCfg(loadPttConfig())
-    window.addEventListener(PTT_CHANGED_EVENT, onChange)
-    window.addEventListener('storage', onChange)
-    return () => {
-      window.removeEventListener(PTT_CHANGED_EVENT, onChange)
-      window.removeEventListener('storage', onChange)
-    }
-  }, [])
-
-  const clearTimers = useCallback(() => {
-    if (armTimerRef.current) { clearTimeout(armTimerRef.current); armTimerRef.current = null }
-    session.clearCapTimer()
-  }, [session])
+  const { session, clearTimers } = usePttGestureSession({
+    voiceRef, phaseRef, setPhase, coreSeamsRef, armTimerRef, setOwns, setCfg,
+  })
 
   /**
    * Return the machine to idle, clearing EVERY piece of per-gesture state.

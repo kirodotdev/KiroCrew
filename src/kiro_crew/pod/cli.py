@@ -13,12 +13,14 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Callable, NoReturn
+from typing import Callable, Iterator, NoReturn
 
+from kiro_crew import platform_compat
 from kiro_crew.pod import env_overrides as pod_env_overrides
 from kiro_crew.pod import limits as pod_limits
 from kiro_crew.pod import provision as prov
@@ -55,6 +57,34 @@ def _audit(operation: str, outcome: str, resources: str = "", error: str = "") -
 def _die(msg: str) -> NoReturn:
     print(f"pod: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+@contextlib.contextmanager
+def _provision_lock(cfg: PodConfig, name: str) -> Iterator[None]:
+    """Exclude overlapping builds without holding the pod's lifecycle mutex."""
+    cfg.pods_dir.mkdir(parents=True, exist_ok=True)
+    # Keep the file: unlinking it lets contenders lock different inodes.
+    with platform_compat.open_lock_file(cfg.pods_dir / f"{name}.provision.lock") as fd:
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(platform_compat.file_lock(fd, exclusive=True, wait=False))
+            except BlockingIOError:
+                message = (
+                    f"another provision of {name} is already running; "
+                    "wait for it to finish, then run it again"
+                )
+                _audit("pod.provision", "denied", f"name={name}", error=message)
+                _die(message)
+            yield
+
+
+def _shell_quoted(path: Path) -> str:
+    """*path* as one argument of the operator's shell: POSIX quoting, else Windows'."""
+    # Same rule as ``cli_commands_app._shell_quoted``; importing that module would
+    # pull the whole app CLI into ``pod`` for one printed hint.
+    if rt.IS_WINDOWS:
+        return subprocess.list2cmdline([str(path)])
+    return shlex.quote(str(path))
 
 
 # The default health-wait budget for `pod up` is POD_HEALTH_WAIT_SECS_DEFAULT
@@ -450,7 +480,7 @@ def _env_overrides(name: str, args: argparse.Namespace) -> dict[str, str]:
 
 
 def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
-    name = rt.validate_name(args.name)
+    name = rt.validate_new_name(args.name)
     _require_up_user_bus(name)
     limit_updates = _limit_updates(name, args)
     env_overrides = _env_overrides(name, args)
@@ -469,15 +499,16 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
     # idempotent so we build it on demand; the dist is the slow SPA build, so we
     # only run it under explicit --provision consent and otherwise fail loud.
     if getattr(args, "provision", False):
-        if not prov.provision(checkout, build=True):
-            _die(f"provisioning {name!r} failed (see output above)")
+        with _provision_lock(cfg, name):
+            if not prov.provision(checkout, build=True):
+                _die(f"provisioning {name!r} failed (see output above)")
     else:
         if not prov.has_venv(checkout) and not prov.ensure_venv(checkout):
             _die(f"could not build venv for {name!r} (see output above)")
         if not prov.has_dist(checkout):
             _die(
                 f"no built dist for {name!r}.\n"
-                f"  Build it (slow, one-time):  cd {checkout / 'website'}\n"
+                f"  Build it (slow, one-time):  cd {_shell_quoted(checkout / 'website')}\n"
                 f"                              npm run build\n"
                 f"  Or let pod do the full chain: kirocrew pod up {name} --provision"
             )
@@ -1726,11 +1757,12 @@ def _install(cfg: PodConfig, args: argparse.Namespace) -> None:
 
 def _provision(cfg: PodConfig, args: argparse.Namespace) -> None:
     """Build a worktree's venv + dist so it can be podded (the full on-ramp)."""
-    name = rt.validate_name(args.name)
+    name = rt.validate_new_name(args.name)
     checkout = _resolve_or_die(cfg, name)
     build = not getattr(args, "venv_only", False)
-    if not prov.provision(checkout, build=build):
-        _die(f"provisioning {name!r} failed (see output above)")
+    with _provision_lock(cfg, name):
+        if not prov.provision(checkout, build=build):
+            _die(f"provisioning {name!r} failed (see output above)")
     # Pin so a subsequent `up` (and the systemd boot) resolves the same checkout.
     # Under the per-name mutex: unlocked, a concurrent `down` finishing its
     # teardown could unlink this fresh pin.

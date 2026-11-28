@@ -113,6 +113,7 @@ export type {
   KasLoginSources,
   KasLoginDeviceSession,
   KasLoginPollResult,
+  KasLoginProfile,
   KasLoginLoopbackSession,
   AgentImportCategory,
   AgentImportSource,
@@ -166,6 +167,7 @@ export type {
   TailnetMobileMutation,
   MobileConnectMethodsData,
   TailnetMobileConfigure,
+  TailnetMobileOverride,
   TailnetMobileQr,
 } from './client/remoteAccess'
 export type {
@@ -202,6 +204,7 @@ export type {
 export type { MemoryCarveQuery, MemoryCarveResult, RecurringFailure } from './client/memory'
 export { SEARCH_MIN_CHARS } from './client/sessions'
 export type { ArchiveEntry, MessageSearchHit, MessageSearchParams, MessageSearchResponse, MessageSearchResult } from './client/sessions'
+export type { ChatHistoryAroundResponse, ChatHistoryCountsResponse, ChatHistoryHit, ChatHistoryKind, ChatHistorySearchParams, ChatHistorySearchResponse } from './client/chat'
 export type {
   McpShareReason,
   McpShareRecommendation,
@@ -214,6 +217,7 @@ export type {
   CrewmateExportChoices,
   CrewmateExportPreview,
   MemberRosterRow,
+  MemberHeldLimit,
   MemberActivityEntry,
   MemberGoals,
   MemberGoal,
@@ -1350,6 +1354,16 @@ const jRelayViewer = (r: Response) => parseJson(r, RELAY_VIEWER_ROUTINE)
 const CONFIG_PENDING_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
 const jConfigPending = (r: Response) => parseJson(r, CONFIG_PENDING_NOT_OWNER)
 
+/**
+ * The tenth: the Kiro sign-in reads (`GET /api/kas-login` and `/api/kas-login/sources`)
+ * answering `owner_only` to a caller that is not the dashboard owner. The app-level sign-in
+ * notice reads the status on every page of a KAS gateway, and for a guest that refusal means
+ * "no sign-in to report", so journaling it would file one error report per read. The sign-in
+ * actions keep `j`: a refusal there is a real failure.
+ */
+const KAS_LOGIN_READ_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
+const jKasLoginRead = (r: Response) => parseJson(r, KAS_LOGIN_READ_NOT_OWNER)
+
 /** Add transport failures that have no HTTP Response to the same journal as apiFailure.
  *
  *  The journaled report is also PINNED to the rejection (`attachReport`). Every deadline here
@@ -1629,8 +1643,9 @@ export interface KiroUsagePayload {
   /**
    * Why usage is unavailable when `available` is false (`signin_required`,
    * `account_unproven` when the account is named but its reading could not be
-   * tied to it, or `api_key` when the sessions run on a `KIRO_API_KEY` whose
-   * balance cannot be read); absent when the gateway simply holds no reading.
+   * tied to it, `api_key` when the sessions run on a `KIRO_API_KEY` whose balance
+   * cannot be read, or `plan_without_limit` when the account's plan reports no
+   * credit limit); absent when the gateway simply holds no reading.
    */
   reason?: string
   /** With `reason: signin_required`: the API refused a credential it was shown. */
@@ -1702,6 +1717,7 @@ const transport: ClientTransport = {
   jApps,
   jRelayViewer,
   jConfigPending,
+  jKasLoginRead,
   sessionKeyHeader: _sk,
   checkSessionExpired,
   removeAuthBanner,
@@ -1933,6 +1949,7 @@ export const api = {
   ...apps.sessionStatus,
   ...autoResearch.campaigns,
   ...apps.fileMenu,
+  ...apps.sessionCreate,
   ...artifacts.publishing,
   ...featureDiscovery.tips,
   ...browserLive.browserLive,

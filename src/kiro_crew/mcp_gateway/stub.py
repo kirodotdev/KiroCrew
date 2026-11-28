@@ -400,7 +400,8 @@ async def _recaller_loop(
 ) -> None:
     """Poll for a late-arriving session key and re-register the caller once.
 
-    Started only when the initial Register carried an empty ``session_key``.
+    Started only when the initial Register carried an empty ``session_key``
+    and no ``stub_session_token``.
     FALLBACK path under claim-push (the gateway's ``claim`` frame is the
     primary repair); unbounded with interval backoff so a late claim can
     never be stranded by a poll deadline. Exits on: key found (after sending
@@ -692,11 +693,13 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
         # kiro-cli was pool-spawned before its session was claimed), watch for
         # the key to materialize and re-register the caller so state-mutating
         # tools (learn_add et al.) work for the claimed session. No-op for stubs
-        # that already had a key at register. Re-armed per connection: the task
+        # that already had a key at register, and for a stub carrying a session
+        # token: only claim-push names a token-carrying connection, and gatewayd
+        # refuses every recaller on one. Re-armed per connection: the task
         # writes THIS socket, so one that outlived its connection would write a
         # closed writer.
         recaller_task: Optional[asyncio.Task[None]] = None
-        if not payload.get("session_key"):
+        if not payload.get("session_key") and not payload.get("stub_session_token"):
             recaller_task = asyncio.create_task(
                 _recaller_loop(
                     writer, _resolve_channel_id(args.channel_id), stop_event

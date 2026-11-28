@@ -22,8 +22,11 @@ import { selectActiveSlotProject } from '../store/chatSlice'
 import { renderHook } from '@testing-library/react'
 import type { RootState } from '../store'
 
-vi.mock('../components/CliPanel', () => ({
+vi.mock('../components/LazyCliPanel', () => ({
   default: ({ sessionId }: { sessionId: string }) => <div data-testid={`cli-${sessionId}`} />,
+}))
+vi.mock('../components/terminalSessions', () => ({
+  preloadTerminal: vi.fn(),
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
 }))

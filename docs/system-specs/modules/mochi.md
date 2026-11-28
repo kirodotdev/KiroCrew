@@ -30,7 +30,9 @@ and can hand them over with `{ app: true }`.
 The desktop pet keeps polling the gateway while disabled so enabling Mochi in
 the App Store takes effect without restarting the shell. Probe diagnostics are
 deduplicated per outcome for one minute, including alternating HTTP errors and
-disabled responses; actual enabled-state changes still log immediately.
+disabled responses; actual enabled-state changes still log immediately, and an
+unchanged known state (installed, disabled, enabled) is logged once, when it
+becomes current, not again once the minute lapses.
 The probe re-resolves a cached link token once it is 240 s old, or when the wall
 clock moved backwards (`website/electron/link-token-age.js`), so it never sends one
 the gateway's 300 s link window refuses. That refusal would be a `denied` security

@@ -11,6 +11,10 @@
  * through the scoped client, so the app's `permissions.api` must declare
  * `/api/browser/media` (`BROWSER_MEDIA_PATH`).
  *
+ * `runRecipe(name)` (level 15) runs one of the app's approved
+ * `permissions.browserRecipes` on the same tab: fixed clicks on selectors, no model.
+ * Its answer says which step failed, so the page can ask its agent instead.
+ *
  * The hook draws nothing: the app lays out its own buttons and reads `media`.
  */
 import { useCallback, useContext, useEffect, useRef, useState } from 'react'
@@ -24,6 +28,8 @@ export const BROWSER_MEDIA_PATH = '/api/browser/media'
 export interface BrowserMediaState {
   readonly kind: 'video' | 'audio'
   readonly paused: boolean
+  /** True once the tab counted an ending (also one the site answered by taking the
+   *  source away, as YouTube does), until something plays again. */
   readonly ended: boolean
   /** Seconds. */
   readonly currentTime: number
@@ -49,6 +55,15 @@ export interface BrowserMedia {
   setVolume(volume: number): Promise<void>
   /** Read the state again without changing it. */
   refresh(): Promise<void>
+  /** Run the approved browser recipe *name* on the tab (level 15). */
+  runRecipe(name: string): Promise<BrowserRecipeResult>
+}
+
+/** What a recipe run answered: `ok`, or the refusal `code` and the failed `step` (from 0). */
+export interface BrowserRecipeResult {
+  readonly ok: boolean
+  readonly code?: string
+  readonly step?: number
 }
 
 type Action = 'state' | 'play' | 'pause' | 'seek' | 'volume'
@@ -56,7 +71,8 @@ type Action = 'state' | 'play' | 'pause' | 'seek' | 'volume'
 interface MediaAnswer {
   ok?: boolean
   code?: string
-  media?: BrowserMediaState
+  /** `endId` changes once per ending the tab counted (null before the first). */
+  media?: BrowserMediaState & { endId?: unknown }
 }
 
 /** The fastest the hook re-reads the state: every read takes the browser lock every
@@ -77,11 +93,13 @@ function pollInterval(raw: unknown): number {
 /** The media controls of *sessionKey*'s tab. With `pollMs` > 0 the state is re-read
  *  on that interval while the page is mounted (a progress bar), at most every 500 ms;
  *  0 reads it once.
- *  `onEnded` is called once each time the element turns `ended` in an answer (a
+ *  `onEnded` is called once for each ending the tab counted, seen in an answer (a
  *  poll's or a button's): the page's cue to pick the next song, for example by
- *  sending the app's own agent a message or posting to the app's own backend. It is
- *  derived from the state the page already reads, so it fires only while the page is
- *  mounted and polling. */
+ *  sending the app's own agent a message or posting to the app's own backend. The
+ *  tab counts an ending as it happens, so a site that takes the source away right
+ *  after (YouTube) or a poll that falls after the moment still sees it once; an
+ *  advert that hands over to the item on the same page is not one. It fires only
+ *  while the page is mounted and polling. */
 export function useBrowserMedia(
   sessionKey: string,
   options: { pollMs?: number; onEnded?: (media: BrowserMediaState) => void } = {},
@@ -95,11 +113,11 @@ export function useBrowserMedia(
   // An answer for a session the page has since moved off is dropped.
   const current = useRef(sessionKey)
   current.current = sessionKey
-  // The latest callback, and whether the last answer was already `ended`, so one
-  // ending calls it once however many polls see it.
+  // The latest callback, and the last answer's `endId` (undefined before the first
+  // answer), so one ending calls it once however many polls see it.
   const onEnded = useRef(options.onEnded)
   onEnded.current = options.onEnded
-  const wasEnded = useRef(false)
+  const lastEnd = useRef<string | null | undefined>(undefined)
 
   const send = useCallback(async (action: Action, value?: number) => {
     const asked = sessionKey
@@ -122,9 +140,14 @@ export function useBrowserMedia(
       if (answer?.ok && answer.media) {
         setMedia(answer.media)
         setError(null)
-        const ended = answer.media.ended === true
-        if (ended && !wasEnded.current) onEnded.current?.(answer.media)
-        wasEnded.current = ended
+        const endId = typeof answer.media.endId === 'string' ? answer.media.endId : null
+        // The first answer has nothing to compare with: an element already ended
+        // when the page mounts counts once, which is what continuous play wants.
+        const isNew = lastEnd.current === undefined
+          ? answer.media.ended === true
+          : endId !== null && endId !== lastEnd.current
+        lastEnd.current = endId
+        if (isNew) onEnded.current?.(answer.media)
       } else {
         setError(answer?.code || 'browser_error')
       }
@@ -146,13 +169,32 @@ export function useBrowserMedia(
     }
   }, [api, sessionKey])
 
+  const runRecipe = useCallback(async (name: string): Promise<BrowserRecipeResult> => {
+    if (!api) return { ok: false, code: 'not_declared' }
+    try {
+      const answer = await api.post<{ ok?: boolean; code?: string; step?: unknown }>(
+        BROWSER_MEDIA_PATH, { session_key: sessionKey, action: 'recipe', recipe: name },
+      )
+      if (answer?.ok) return { ok: true }
+      return { ok: false, code: answer?.code || 'browser_error', ...(typeof answer?.step === 'number' ? { step: answer.step } : {}) }
+    } catch (err) {
+      if (err instanceof AppApiPermissionError) return { ok: false, code: 'not_declared' }
+      let code = 'browser_error'
+      try {
+        code = JSON.parse((err as { body?: string })?.body || '{}').code || code
+      } catch {
+        // A body that is not JSON keeps the generic code.
+      }
+      return { ok: false, code }
+    }
+  }, [api, sessionKey])
+
   const pollMs = pollInterval(options.pollMs)
   useEffect(() => {
     setMedia(null)
     setError(null)
-    // A song that already ended when the page mounts counts once: the page then
-    // picks the next one, which is what continuous play wants.
-    wasEnded.current = false
+    // A new session or interval compares from scratch (see `send`).
+    lastEnd.current = undefined
     // Only one poll read is ever in flight: a tick that falls while one is still
     // out sends nothing, so a slow read (the browser lock is held by an agent op)
     // never queues a read per tick. The flag lives in the effect, so a new session
@@ -178,5 +220,6 @@ export function useBrowserMedia(
     seek: useCallback((seconds: number) => send('seek', seconds), [send]),
     setVolume: useCallback((volume: number) => send('volume', volume), [send]),
     refresh: useCallback(() => send('state'), [send]),
+    runRecipe,
   }
 }

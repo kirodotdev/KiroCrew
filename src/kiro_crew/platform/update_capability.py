@@ -390,6 +390,25 @@ def _command_remediation(message: str, command: str) -> dict[str, str]:
     return {"kind": "command", "message": message, "command": command}
 
 
+#: Set to ``"1"`` by the test harness: its gateway imports the package from this
+#: checkout without being installed from it, so the checkout is no install root.
+NO_CHECKOUT_ROOT_ENV = "KIROCREW_UPDATE_NO_CHECKOUT_ROOT"
+
+
+def default_install_root() -> str:
+    """The root every update surface judges: the project dir, else the running checkout.
+
+    A gateway started outside its clone with no saved project dir has the
+    variable empty, and the checkout the package loads from is then the same
+    root ``kirocrew update`` resolves; a release install has none and stays ``""``.
+    :data:`NO_CHECKOUT_ROOT_ENV` withholds that fallback from a test-harness gateway.
+    """
+    proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
+    if proj or os.environ.get(NO_CHECKOUT_ROOT_ENV) == "1":
+        return proj
+    return str(_source_checkout_root() or "")
+
+
 def derive_capability(
     *,
     install_root: str | None = None,
@@ -397,8 +416,8 @@ def derive_capability(
 ) -> UpdateCapability:
     """Derive the capability contract for this install.
 
-    *install_root* defaults to ``KIROCREW_PROJECT_DIR`` and *dist* to the value
-    stamped into the package tree at packaging time.
+    *install_root* defaults to :func:`default_install_root` and *dist* to the
+    value stamped into the package tree at packaging time.
 
     An externally managed stamp wins over a git working tree. A packaged app
     that happens to be pointed at a checkout is still updated by its own
@@ -412,7 +431,30 @@ def derive_capability(
     if dist is None:
         dist = distribution()
     if install_root is None:
-        install_root = os.environ.get("KIROCREW_PROJECT_DIR", "")
+        install_root = default_install_root()
+
+    if dist in _ELECTRON_DISTRIBUTIONS and _headless_desktop_install(dist):
+        # The Windows desktop bundle with no desktop app hosting it (decision entry
+        # "a headless Windows desktop install updates from its gateway"): nothing
+        # else can update it, so this gateway checks the app's feed and arms the
+        # update, and the next start hands the signed installer to a helper. An
+        # install carrying the EXTERNALLY-MANAGED marker is its owner's to update
+        # and takes the deferring branch below. An overridden update source needs
+        # the host's own ``kirocrew update``, so the dashboard is not offered the
+        # apply there.
+        from kiro_crew.platform.desktop_installer_update import source_overridden
+
+        return UpdateCapability(
+            supported=True,
+            managed_by=MANAGED_BY_ELECTRON,
+            mode=MODE_CONSENT,
+            can_download=True,
+            can_apply=not source_overridden(),
+            requires_restart=True,
+            remediation=_command_remediation(
+                "Update this install from a terminal on the host.", "kirocrew update"
+            ),
+        )
 
     if dist in _ELECTRON_DISTRIBUTIONS:
         # ``can_apply`` answers for the process serving this contract, and that is
@@ -559,6 +601,13 @@ def runs_in_container() -> bool:
     return baked_distribution() in _CONTAINER_DISTRIBUTIONS
 
 
+def _headless_desktop_install(dist: str) -> bool:
+    """The Windows desktop bundle with no desktop app hosting its gateway and no owner's marker."""
+    from kiro_crew.platform.desktop_installer_update import headless_desktop_install
+
+    return headless_desktop_install(dist)
+
+
 def _installer_runs_here() -> bool:
     """The managed venv is cli.sh's, a POSIX install; the seam tests pin this."""
     return sys.platform != "win32"
@@ -675,9 +724,15 @@ def auto_update_effect(
             route, reason = AUTO_ROUTE_PROVIDER, ""
         else:
             route, reason = None, "the policy's apply_command is missing or cannot run here"
-    elif (distribution() if dist is None else dist) in EXTERNALLY_MANAGED_STAMPS:
-        # The baked stamp, so this one needs no I/O at all.
-        route, reason = None, "its own updater owns this install"
+    elif (stamp := distribution() if dist is None else dist) in EXTERNALLY_MANAGED_STAMPS:
+        # The baked stamp, so this one needs no I/O except on the Windows desktop
+        # bundle, whose marker check reads its install. A headless one is updated
+        # by a person's Update and restart only: its installer replaces the tree
+        # the gateway runs from.
+        if stamp in _ELECTRON_DISTRIBUTIONS and _headless_desktop_install(stamp):
+            route, reason = None, _IN_PLACE_REASON
+        else:
+            route, reason = None, "its own updater owns this install"
     elif not git_probes and _source_checkout_root() is None:
         # Not running from a source checkout, so the git route cannot apply and
         # the answer is the installer route's, which needs no git: a managed
@@ -688,7 +743,7 @@ def auto_update_effect(
         return None
     else:
         if install_root is None:
-            install_root = os.environ.get("KIROCREW_PROJECT_DIR", "")
+            install_root = default_install_root()
         managed_by = derive_capability(install_root=install_root, dist=dist).managed_by
         if managed_by == MANAGED_BY_GIT:
             route, reason = _git_route(install_root)

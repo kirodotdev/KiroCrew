@@ -17,18 +17,19 @@ import notificationsReducer from '../../store/notificationsSlice'
 import instancesReducer from '../../store/instancesSlice'
 import type { ChatSlot } from '../../types'
 import { attachReport, type ErrorReport } from '../../utils/errorReport'
-import { DockMatesSection, DockMatesTiles } from './matesDock'
+import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../../components/NavigationLeaveGuard'
+import { DockMatesSection, DockMatesTiles, useDockMatesSectionOpen } from './matesDock'
 
 // Keep real sortable context; deliver drops at its callback boundary instead
 // of depending on layout measurements that the test DOM does not implement.
-const dnd = vi.hoisted(() => ({ props: null as ComponentProps<typeof DndContext> | null }))
+const dnd = vi.hoisted(() => ({ props: null as ComponentProps<typeof DndContext> | null, started: [] as string[] }))
 vi.mock('@dnd-kit/core', async importOriginal => {
   const actual = await importOriginal<typeof import('@dnd-kit/core')>()
   return {
     ...actual,
     DndContext: (props: ComponentProps<typeof DndContext>) => {
       dnd.props = props
-      return <actual.DndContext {...props} />
+      return <actual.DndContext {...props} onDragStart={e => { dnd.started.push(String(e.active.id)); props.onDragStart?.(e) }} />
     },
   }
 })
@@ -47,7 +48,13 @@ vi.mock('../../components/CrewAvatar', () => ({
 }))
 
 const clients: QueryClient[] = []
-beforeEach(() => { dnd.props = null; handoff.prompts.length = 0; localStorage.removeItem('mc-dock-mates-expanded') })
+beforeEach(() => {
+  dnd.props = null
+  dnd.started.length = 0
+  handoff.prompts.length = 0
+  localStorage.removeItem('mc-dock-mates-expanded')
+  localStorage.removeItem('mc-dock-mates-section-open')
+})
 afterEach(() => {
   cleanup()
   for (const client of clients) client.clear()
@@ -73,15 +80,35 @@ function deferred<T>() {
 const settleCache = (change: () => void) =>
   act(async () => { change(); await new Promise(done => setTimeout(done, 0)) })
 
+/** Fake timers for one test. Framer paints through jsdom's interval-driven rAF, so
+ *  the frame it last asked for runs before the real clock returns; otherwise no
+ *  later test in this file gets a frame. Teardown runs after afterEach's cleanup(). */
+function fakeClockForThisTest() {
+  vi.useFakeTimers()
+  onTestFinished(() => { vi.advanceTimersByTime(100); vi.useRealTimers() })
+}
+
 /** Prints the router's current address, so a test can read where a click went. */
 function Where() {
   const loc = useLocation()
-  return <output data-testid="where">{loc.pathname + loc.search}</output>
+  return <output data-testid="where" data-state={JSON.stringify(loc.state ?? null)}>{loc.pathname + loc.search}</output>
+}
+
+/** A page on screen whose leave guard answers `guard`. */
+function LeaveGuard({ guard }: { guard: () => boolean }) {
+  useRegisterNavigationLeaveGuard(guard)
+  return null
+}
+
+/** The section as the rail mounts it: the rail owns the header's disclosure. */
+function RailSection(props: { collapsed: boolean; isMobile: boolean; onDragActiveChange?: (active: boolean) => void }) {
+  const [sectionOpen, onToggleSection] = useDockMatesSectionOpen()
+  return <DockMatesSection {...props} sectionOpen={sectionOpen} onToggleSection={onToggleSection} />
 }
 
 /** Seeds the roster cache unless the test needs to exercise its first read. */
-function renderDock(roster: MemberRosterRow[] | undefined, { url = '/schedule', collapsed = false, surface = 'section', onDragActiveChange }: {
-  url?: string; collapsed?: boolean; surface?: 'section' | 'tiles' | 'both'; onDragActiveChange?: (active: boolean) => void
+function renderDock(roster: MemberRosterRow[] | undefined, { url = '/schedule', collapsed = false, isMobile = false, surface = 'section', guard, onDragActiveChange }: {
+  url?: string; collapsed?: boolean; isMobile?: boolean; surface?: 'section' | 'tiles' | 'both'; guard?: () => boolean; onDragActiveChange?: (active: boolean) => void
 } = {}) {
   // The roster read retries on its own (`retryThroughRestart`); no backoff, so
   // a read that keeps failing shows its notice at once.
@@ -98,9 +125,15 @@ function renderDock(roster: MemberRosterRow[] | undefined, { url = '/schedule', 
     <Provider store={liveStore}>
       <QueryClientProvider client={qc}>
         <MemoryRouter initialEntries={[url]}>
-          {visibleSurface !== 'tiles' && <DockMatesSection collapsed={collapsed} isMobile={false} onDragActiveChange={onDragActiveChange} />}
-          {visibleSurface !== 'section' && <DockMatesTiles onActivate={() => {}} />}
-          {visibleSurface !== 'tiles' && <Where />}
+          <NavigationLeaveGuardProvider>
+            {guard && <LeaveGuard guard={guard} />}
+            {/* The rail's own landmark, which the row menu's focus move looks inside. */}
+            <div role="navigation">
+              {visibleSurface !== 'tiles' && <RailSection collapsed={collapsed} isMobile={isMobile} onDragActiveChange={onDragActiveChange} />}
+              {visibleSurface !== 'section' && <DockMatesTiles onActivate={() => {}} />}
+            </div>
+            {visibleSurface !== 'tiles' && <Where />}
+          </NavigationLeaveGuardProvider>
         </MemoryRouter>
       </QueryClientProvider>
     </Provider>
@@ -115,6 +148,21 @@ const dockNames = () =>
 function dragStart(active: string) {
   expect(dnd.props?.onDragStart).toBeTypeOf('function')
   dnd.props!.onDragStart!({ active: { id: active } } as DragStartEvent)
+}
+
+/** A dock row's own button: the row also holds its "..." trigger. */
+const mateRowButton = (slug: string) =>
+  screen.getByTestId(`dock-mate-${slug}`).querySelector<HTMLElement>(`[data-onboarding-nav="mate-${slug}"]`)!
+
+/** Whether a click gets past dnd-kit's capture listener, which a drag puts on
+ *  the document and only takes off on a timer after the drag ends. */
+function clickReachesDocument() {
+  let reached = false
+  const seen = () => { reached = true }
+  document.addEventListener('click', seen)
+  document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  document.removeEventListener('click', seen)
+  return reached
 }
 
 function drop(active: string, over: string) {
@@ -169,6 +217,48 @@ describe('DockMatesSection', () => {
     expect(screen.queryByTestId('dock-mates-more')).toBeNull()
   })
 
+  it('puts every mate away behind the section header and brings them back', async () => {
+    const roster = ['a', 'b', 'c', 'd'].map((n, i) => row(n, { starred: true, star_order: i + 1 }))
+    renderDock(roster)
+    const toggle = screen.getByTestId('dock-mates-section-toggle')
+    expect(toggle).toHaveAccessibleName('Bots')
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(dockNames()).toEqual(['a', 'b', 'c'])
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    // The rows close up rather than vanishing in the click's own frame: they
+    // leave once the exit motion's promise settles, never within the click.
+    expect(dockNames()).toEqual(['a', 'b', 'c'])
+    await waitFor(() => expect(dockNames()).toEqual([]))
+    // The header stays, and so does the way back; the fold row goes with the rows.
+    expect(screen.getByTestId('dock-mates-section-toggle')).toBeInTheDocument()
+    expect(screen.queryByTestId('dock-mates-more')).toBeNull()
+    expect(localStorage.getItem('mc-dock-mates-section-open')).toBe('0')
+    fireEvent.click(toggle)
+    expect(dockNames()).toEqual(['a', 'b', 'c'])
+    expect(screen.getByTestId('dock-mates-more')).toBeInTheDocument()
+    expect(localStorage.getItem('mc-dock-mates-section-open')).toBe('1')
+  })
+
+  it('stays put away across a reload', async () => {
+    const roster = ['a', 'b'].map(n => row(n, { starred: true }))
+    renderDock(roster)
+    fireEvent.click(screen.getByTestId('dock-mates-section-toggle'))
+    await waitFor(() => expect(dockNames()).toEqual([]))
+    cleanup()
+    renderDock(roster)
+    expect(screen.getByTestId('dock-mates-section-toggle')).toHaveAttribute('aria-expanded', 'false')
+    expect(dockNames()).toEqual([])
+  })
+
+  it('keeps the icon rail listing mates: it draws no header to click', () => {
+    const roster = ['a', 'b'].map(n => row(n, { starred: true }))
+    localStorage.setItem('mc-dock-mates-section-open', '0')
+    renderDock(roster, { collapsed: true })
+    expect(screen.queryByTestId('dock-mates-section-toggle')).toBeNull()
+    expect(dockNames()).toEqual(['a', 'b'])
+  })
+
   it('lets a mate starred late be dragged from below the fold into the top three', async () => {
     const roster = [
       ...['a', 'b', 'c'].map((n, i) => row(n, { starred: true, star_order: i + 1 })),
@@ -189,20 +279,20 @@ describe('DockMatesSection', () => {
   it('keeps the open mate on screen while folded, and lights it', () => {
     renderDock(['a', 'b', 'c', 'd', 'e'].map((n, i) => row(n, { starred: true, star_order: i + 1 })), { url: '/members?member=e' })
     expect(dockNames()).toEqual(['a', 'b', 'c', 'e'])
-    expect(within(screen.getByTestId('dock-mate-e')).getByRole('button')).toHaveAttribute('aria-current', 'page')
+    expect(mateRowButton('e')).toHaveAttribute('aria-current', 'page')
     expect(within(screen.getByTestId('dock-mates-more')).getByRole('button')).toHaveAccessibleName('1 more')
   })
 
   it('links each row to its mate chat', () => {
     renderDock([row('Issue Triage', { slug: 'triage', starred: true })])
-    fireEvent.click(within(screen.getByTestId('dock-mate-triage')).getByRole('button'))
+    fireEvent.click(mateRowButton('triage'))
     expect(screen.getByTestId('where')).toHaveTextContent('/members?member=Issue%20Triage')
   })
 
   it('lights the row of the mate whose chat is open', () => {
     renderDock([row('a', { starred: true }), row('b', { starred: true })], { url: '/members?member=b' })
-    expect(within(screen.getByTestId('dock-mate-b')).getByRole('button')).toHaveAttribute('aria-current', 'page')
-    expect(within(screen.getByTestId('dock-mate-a')).getByRole('button')).not.toHaveAttribute('aria-current')
+    expect(mateRowButton('b')).toHaveAttribute('aria-current', 'page')
+    expect(mateRowButton('a')).not.toHaveAttribute('aria-current')
   })
 
   it('marks a working mate on its face, not with a dot, before live slot data arrives', () => {
@@ -333,8 +423,7 @@ describe('DockMatesSection', () => {
   })
 
   it('never asks again for the roster a guest is refused', async () => {
-    vi.useFakeTimers()
-    onTestFinished(() => { vi.useRealTimers() })
+    fakeClockForThisTest()
     const members = vi.spyOn(api, 'members').mockRejectedValue(new ApiError(403, 'owner only', '{"code":"owner_only"}'))
     renderDock(undefined, { surface: 'both' })
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
@@ -416,8 +505,7 @@ describe('DockMatesSection', () => {
   })
 
   it('re-reads a roster that stays failed every 30s, so its notice clears once a read lands', async () => {
-    vi.useFakeTimers()
-    onTestFinished(() => { vi.useRealTimers() })
+    fakeClockForThisTest()
     const roster = [row('a', { starred: true })]
     const members = vi.spyOn(api, 'members').mockRejectedValue(new TypeError('Failed to fetch'))
     const { qc } = renderDock(roster)
@@ -437,8 +525,7 @@ describe('DockMatesSection', () => {
   })
 
   it('keeps a dismissed notice away through a failed 30s re-read', async () => {
-    vi.useFakeTimers()
-    onTestFinished(() => { vi.useRealTimers() })
+    fakeClockForThisTest()
     const roster = [row('a', { starred: true })]
     const members = vi.spyOn(api, 'members').mockRejectedValue(new TypeError('Failed to fetch'))
     const { qc } = renderDock(roster)
@@ -570,7 +657,7 @@ describe('DockMatesTiles', () => {
 
   it('renders nothing when no mate is starred', () => {
     const { container } = renderTiles([row('a')])
-    expect(container).toBeEmptyDOMElement()
+    expect(within(container).getByRole('navigation')).toBeEmptyDOMElement()
   })
 
   it('shows the same three mates in dock order and no "N more" tile', () => {
@@ -586,5 +673,117 @@ describe('DockMatesTiles', () => {
     expect(screen.queryAllByTestId(/^rail-mate-/).map(el => el.getAttribute('data-testid'))).toEqual([
       'rail-mate-a', 'rail-mate-b', 'rail-mate-c', 'rail-mate-d',
     ])
+  })
+
+  describe('row menu', () => {
+    const starredRows = (...names: string[]) => names.map((n, i) => row(n, { starred: true, star_order: i + 1 }))
+    const trigger = (slug: string) => within(screen.getByTestId(`dock-mate-${slug}`)).getByTestId('mate-row-menu-trigger')
+    const openMenu = async (slug: string) => {
+      fireEvent.pointerDown(trigger(slug), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      return screen.findByRole('menu')
+    }
+
+    it('gives a bot row a "..." trigger beside the row, revealed on hover and focus, whose menu lists Profile and Remove', async () => {
+      renderDock(starredRows('a', 'b'))
+      const button = trigger('a')
+      expect(button).toHaveAccessibleName('More actions for a')
+      // A sibling of the row's own button, never inside it.
+      expect(mateRowButton('a').contains(button)).toBe(false)
+      expect(button.parentElement).toBe(mateRowButton('a').parentElement)
+      expect(button.parentElement?.className).toContain('group/approw')
+      expect(button.className).toContain('group-hover/approw:opacity-100')
+      expect(button.className).toContain('focus-visible:opacity-100')
+      expect(button.className).toContain('[@media(hover:none)]:opacity-100')
+      const menu = await openMenu('a')
+      expect(within(menu).getAllByRole('menuitem').map(item => item.textContent?.trim())).toEqual(['Profile', 'Remove from the sidebar'])
+    })
+
+    it('opens the bot on its Profile tab through the guarded leave', async () => {
+      renderDock(starredRows('a', 'b'), { guard: () => true })
+      const menu = await openMenu('b')
+      fireEvent.click(within(menu).getByRole('menuitem', { name: 'Profile' }))
+      expect(screen.getByTestId('where')).toHaveTextContent('/members?member=b')
+      expect(JSON.parse(screen.getByTestId('where').dataset.state!)).toEqual({ openMateSessions: true, tab: 'profile', leaveGranted: true })
+    })
+
+    it('stays put when the page on screen refuses the leave', async () => {
+      const guard = vi.fn(() => false)
+      renderDock(starredRows('a', 'b'), { guard })
+      const menu = await openMenu('b')
+      fireEvent.click(within(menu).getByRole('menuitem', { name: 'Profile' }))
+      expect(guard).toHaveBeenCalledTimes(1)
+      expect(screen.getByTestId('where')).toHaveTextContent('/schedule')
+    })
+
+    it('unstars the bot with its slot cleared, takes the row off the dock and focuses the next one', async () => {
+      const write = vi.spyOn(api, 'updateKirocrewAgent').mockResolvedValue({ ok: true } as never)
+      const roster = starredRows('a', 'b', 'c')
+      vi.spyOn(api, 'members').mockResolvedValue(membersReply(roster.map(r => (r.name === 'a' ? { ...r, starred: false, star_order: 0 } : r))))
+      const { qc } = renderDock(roster)
+      const menu = await openMenu('a')
+      fireEvent.click(within(menu).getByRole('menuitem', { name: 'Remove from the sidebar' }))
+      await waitFor(() => expect(dockNames()).toEqual(['b', 'c']))
+      expect(write).toHaveBeenCalledWith('a', { starred: false })
+      expect(qc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.find(r => r.name === 'a')).toMatchObject({ starred: false, star_order: 0 })
+      await waitFor(() => expect(document.activeElement).toBe(mateRowButton('b')))
+    })
+
+    it('puts the row back and says so when the unstar fails', async () => {
+      const roster = starredRows('a', 'b')
+      const written = deferred<void>()
+      vi.spyOn(api, 'updateKirocrewAgent').mockImplementation(() => written.promise.then(() => { throw failedRequest('write failed', '/api/kirocrew/agents/a', 500) }))
+      vi.spyOn(api, 'members').mockResolvedValue(membersReply(roster))
+      const { qc } = renderDock(roster)
+      const menu = await openMenu('a')
+      fireEvent.click(within(menu).getByRole('menuitem', { name: 'Remove from the sidebar' }))
+      await waitFor(() => expect(dockNames()).toEqual(['b']))
+      await act(async () => { written.resolve() })
+      const notice = await screen.findByTestId('dock-mates-unstar-error')
+      expect(notice).toHaveTextContent("Couldn't remove this bot from the sidebar.")
+      expect(dockNames()).toEqual(['a', 'b'])
+      expect(qc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.find(r => r.name === 'a')).toMatchObject({ starred: true, star_order: 1 })
+    })
+
+    it('starts no drag and no navigation from a press on the trigger', async () => {
+      renderDock(starredRows('a', 'b'))
+      // The row itself still picks up on a press-and-move: the harness can see a drag start.
+      fireEvent.mouseDown(mateRowButton('b'), { button: 0, clientX: 10, clientY: 10 })
+      fireEvent.mouseMove(document, { clientX: 10, clientY: 40 })
+      fireEvent.mouseUp(document, { clientX: 10, clientY: 40 })
+      await waitFor(() => expect(dnd.started).toEqual(['b']))
+      // A finished drag keeps swallowing clicks at the document for a moment;
+      // wait it out so the click below is real and none of the next test's is lost.
+      await waitFor(() => expect(clickReachesDocument()).toBe(true))
+      dnd.started.length = 0
+      const button = trigger('a')
+      fireEvent.mouseDown(button, { button: 0, clientX: 10, clientY: 10 })
+      fireEvent.touchStart(button, { touches: [{ clientX: 10, clientY: 10 }] })
+      fireEvent.mouseMove(document, { clientX: 10, clientY: 40 })
+      fireEvent.mouseUp(document, { clientX: 10, clientY: 40 })
+      fireEvent.click(button)
+      expect(dnd.started).toEqual([])
+      expect(screen.getByTestId('where')).toHaveTextContent('/schedule')
+    })
+
+    it('starts no drag from a press-and-move on an item of the open menu', async () => {
+      renderDock(starredRows('a', 'b'))
+      const item = within(await openMenu('a')).getByRole('menuitem', { name: 'Profile' })
+      fireEvent.mouseDown(item, { button: 0, clientX: 10, clientY: 10 })
+      fireEvent.touchStart(item, { touches: [{ clientX: 10, clientY: 10 }] })
+      fireEvent.mouseMove(document, { clientX: 10, clientY: 40 })
+      fireEvent.mouseUp(document, { clientX: 10, clientY: 40 })
+      expect(dnd.started).toEqual([])
+      expect(screen.getByRole('menu')).toBeInTheDocument()
+    })
+
+    it.each([
+      ['the collapsed rail', { collapsed: true }],
+      ['the phone drawer', { isMobile: true }],
+      ['the phone tiles', { url: '/chat', surface: 'tiles' as const }],
+    ])('offers no trigger on %s', (_where, options) => {
+      renderDock(starredRows('a', 'b'), options)
+      expect(screen.queryAllByTestId(/^rail-mate-|^dock-mate-/).length).toBeGreaterThan(0)
+      expect(screen.queryByTestId('mate-row-menu-trigger')).toBeNull()
+    })
   })
 })

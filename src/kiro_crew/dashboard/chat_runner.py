@@ -124,7 +124,7 @@ from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard import engine_fallback as _engine_fallback
 from kiro_crew.dashboard import git_repo_touches as _git_repo_touches
 from kiro_crew.dashboard import run_clock as _run_clock
-from kiro_crew.dashboard import trace_binding
+from kiro_crew.dashboard import running_bot_turns, trace_binding
 from kiro_crew.dashboard.chat_delivery import COMMANDS_OFF_META_KEY  # noqa: F401
 from kiro_crew.dashboard.chat_delivery import START_BACKGROUND_META_KEY  # noqa: F401
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
@@ -209,6 +209,7 @@ from kiro_crew.dashboard.chat_turn.queue_cycle import (
     _note_failed_before_the_try,
     _turn_record_outcome,
     _TurnExit,
+    note_message_failed_before_start,
 )
 from kiro_crew.dashboard.chat_turn.queue_drain import (  # noqa: F401
     _RESTORED_DRAIN_IDS,
@@ -224,6 +225,8 @@ from kiro_crew.dashboard.chat_turn.queue_drain import (  # noqa: F401
 from kiro_crew.dashboard.chat_turn.recipient import (  # noqa: F401
     MIRROR_ECHO_OWED_META_KEY,
     _authorize_recipient,
+    _mirror_upload_roots,
+    _name_local_attachments,
     _recipient_principal,
     _resolve_channel_target,
     _resolve_mirror_target,
@@ -238,16 +241,21 @@ from kiro_crew.dashboard.chat_turn.regenerate_swap import (  # noqa: F401
     release_regenerate_on_done,
 )
 from kiro_crew.dashboard.chat_turn.segment_flush import (
+    _commit_reveals,
     _flush_segment,
+    _redact_segment_text,
     _turn_settle_answer,
 )
 from kiro_crew.dashboard.chat_turn.session_events import (
     _finish_harness_notices,
+    _keep_cleared_turns,
     _on_agent_switched,
     _on_clear_status,
     _on_compaction_status,
     _on_harness_notice,
+    _on_model_fallback,
     _on_todo_update,
+    _restore_refused_text,
 )
 from kiro_crew.dashboard.chat_turn.session_reset import (
     _arm_pending_reset_retry,
@@ -282,9 +290,10 @@ from kiro_crew.dashboard.chat_turn.tool_approval import (  # noqa: F401
     _auto_approve_reason,
     _on_permission_request,
     _operator_confirms_call,
+    _persistable_session_policy,
     _slot_is_trusted,
 )
-from kiro_crew.dashboard.chat_turn.tool_results import _on_tool_result
+from kiro_crew.dashboard.chat_turn.tool_results import _on_child_tool_finished, _on_tool_result
 from kiro_crew.dashboard.chat_turn.tool_rows import (
     _MAX_TCID_SOURCES,
     _on_tool_call,
@@ -325,6 +334,7 @@ from kiro_crew.dashboard.chat_turn.turn_marker import (  # noqa: F401
     _clear_local_turn_marker,
     _gateway_shutdown_requested,
     register_turn_observer,
+    unanswered_turn_opener,
 )
 from kiro_crew.dashboard.chat_turn.turn_reply_seams import _flush_thinking_stream, _notify_turn_died
 from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _turn_stop_hook
@@ -443,6 +453,7 @@ from kiro_crew.llm_helpers import (  # noqa: F401
     first_advertised_fallback,
     probe_fallback_restore,
     provider_last_turn_usage,
+    reactive_model_candidate,
     record_interaction_event,
     run_bg_oneliner,
     slot_switch_session_lock,
@@ -514,7 +525,7 @@ from kiro_crew.slack.code_channels.binding import (
 )
 from kiro_crew.slack.code_channels.worker_approvals import finish as finish_worker_approval
 from kiro_crew.slack.code_channels.worker_approvals import start as start_worker_approval_relay
-from kiro_crew.slack.handler import post_linked_approval
+from kiro_crew.slack.handler import _reply_by_voice, post_linked_approval
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.tracing import turns as trace_turns
 from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
@@ -968,6 +979,9 @@ async def _run_chat(
     # entry this way; without the switch, a channel's queued "/clear" would be the
     # one queued "/clear" in the system that ran instead of being said.
     _commands_off: bool = False,
+    # The message's ``@prompt`` and ``$skill`` mentions stay text: a chat option
+    # tap's label, or a drained entry stamped ``EXPANSIONS_OFF_META_KEY``.
+    _expansions_off: bool = False,
     # A verbatim recovery replay of a dashboard prompt whose first attempt died
     # before the mirror posted its echo. Set only by the drain, from the entry's
     # ``MIRROR_ECHO_OWED_META_KEY`` stamp, so the replay is echoed once.
@@ -983,6 +997,15 @@ async def _run_chat(
     # the mirror does not quote it there again. Stamped by ``api_chat`` and carried
     # through the queue by the entry's ``promptOnChannel`` meta.
     _prompt_on_channel: bool = False,
+    # A Bot's Heartbeat wake (``mate_welcome.dispatch_hidden_turn``): a linked thread
+    # or channel gets only the final reply -- no "Thinking…" placeholder, no task
+    # stream, and no outcome line for a quiet end.
+    _mirror_reply_only: bool = False,
+    # The Slack message this turn answers, routed from its linked thread
+    # (``route_linked_thread``): the thread's session key, the sender, and whether
+    # it was a voice memo. The mirror speaks the answer there as an unlinked
+    # thread's is spoken. None (every other turn) keeps the mirror text-only.
+    _slack_voice: tuple[str, str, bool] | None = None,
     # Who caused this turn, from the dispatch that knows -- a consumed queue
     # entry's enqueue-time ``kind`` tag, or an injector calling this runner
     # directly. Recorded in the session's log, so it must not be derivable from
@@ -1028,9 +1051,12 @@ async def _run_chat(
         _directive_source_channels=_directive_source_channels,
         _directive_owner_origin=_directive_owner_origin,
         _commands_off=_commands_off,
+        _expansions_off=_expansions_off,
         _recovery_echo_owed=_recovery_echo_owed,
         _card_origin=_card_origin,
         _prompt_on_channel=_prompt_on_channel,
+        _mirror_reply_only=_mirror_reply_only,
+        _slack_voice=_slack_voice,
         _turn_actor=_turn_actor,
         regenerate_hint=regenerate_hint,
         _on_consumed=_on_consumed,
@@ -1316,7 +1342,9 @@ async def _run_chat(
             elif event.kind == EVENT_COMPACTION_STATUS:
                 await _on_compaction_status(turn, event)
             elif event.kind == EVENT_CLEAR_STATUS:
-                await _on_clear_status(turn, event)
+                _clear_is_ours = await _on_clear_status(turn, event)
+                if _clear_is_ours:
+                    await _keep_cleared_turns(turn)
                 _replay_pending = turn._replay_pending
             elif event.kind == EVENT_AGENT_SWITCHED:
                 _flow = await _on_agent_switched(turn, event)
@@ -1333,17 +1361,12 @@ async def _run_chat(
             elif event.kind == EVENT_HARNESS_NOTICE:
                 _on_harness_notice(turn, event)
             elif event.kind == EVENT_MODEL_FALLBACK:
-                # kiro-cli moved this turn onto another model, or could not. The
-                # handle already moved the resolved model; the slot follows a
-                # promotion, and the finally ends the walk with one notice.
-                if event.model_fallback is not None:
-                    _engine_fallback.record_engine_fallback(
-                        state, slot, client, turn._engine_fallback_walk, event.model_fallback
-                    )
+                _on_model_fallback(turn, event)
             elif event.kind == EVENT_SUBAGENT_LIST:
                 await _on_subagent_list(turn, event)
             elif event.kind == EVENT_SUBAGENT_ACTIVITY:
                 await _on_subagent_activity(turn, event)
+                await _on_child_tool_finished(turn, event)
             elif event.kind == EVENT_COMPLETE:
                 await _settle_echo_hold(turn)
                 _flow = await _on_complete(turn, event)
@@ -1358,6 +1381,7 @@ async def _run_chat(
 
         await _turn_compact_command(turn)
 
+        _restore_refused_text(turn)
         await _turn_settle_answer(turn)
         # After the reply's last segment and before the turn is saved.
         _finish_harness_notices(turn)
@@ -1488,13 +1512,11 @@ async def _run_chat(
             and isinstance((_rejected_id := getattr(exc, "rejected_model", None)), str)
             and _rejected_id.strip()
             and len(_rejected_id) <= _MAX_MODEL_ID_LEN
-            and model_is_unusable(_rejected_id, getattr(exc, "advertised", None))
             and (
-                _access_fb_candidate := first_advertised_fallback(
-                    getattr(exc, "advertised", None), _rejected_id
-                )
+                model_is_unusable(_rejected_id, getattr(exc, "advertised", None))
+                or getattr(exc, "unentitled", False) is True
             )
-            is not None
+            and (_access_fb_candidate := reactive_model_candidate(exc, _rejected_id)) is not None
             and len(_access_fb_candidate) <= _MAX_MODEL_ID_LEN
         ):
             await _on_acp_model_access(turn, exc, _rejected_id, _access_fb_candidate)
@@ -1507,6 +1529,7 @@ async def _run_chat(
     except Exception as exc:
         await _on_error(turn, exc)
     finally:
+        running_bot_turns.end(turn)  # first, so nothing below can skip it; never raises
         trace_turns.release_turn_root(_trace_root)
         state.release_turn_heartbeat(turn)
         if _timed:

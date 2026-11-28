@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:ea346c17def3902a85cde16a6dc227e48f60c8d6923a637775d392ef149409bb"
+export const GUIDE_BUILD_DIGEST = "sha256:f465169d9cdcb86dc0718efc2fe6511c5817c1a6d37ed94f6f78045244542716"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -16,6 +16,9 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "agents.section-danger",
   "agents.section-model",
   "apps.detail.disable",
+  "apps.detail.enable",
+  "apps.detail.enable-builtin",
+  "apps.detail.enable-self-managed",
   "apps.detail.install",
   "apps.detail.sync",
   "apps.detail.uninstall",
@@ -66,6 +69,7 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "composer.automation.stop-monitor",
   "composer.context-usage",
   "composer.expand",
+  "composer.project-aws-profile",
   "composer.send",
   "composer.stop",
   "composer.voice",
@@ -74,11 +78,15 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "mcp.add-custom",
   "mcp.add-server",
   "mcp.probe",
+  "mcp.review-approve",
   "mcp.servers-view",
+  "mcp.share-switch",
+  "mcp.sharing-view",
   "members.add-menu",
   "members.add-menu.import",
   "members.add-menu.new",
   "members.back",
+  "members.bot-sessions-switch",
   "members.dashboard-tab",
   "members.details",
   "members.edit",
@@ -90,6 +98,7 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "members.profile-tab",
   "members.roster-list",
   "members.schedule-tab",
+  "members.sessions-tab",
   "members.settings",
   "members.switcher",
   "members.switcher.import",
@@ -97,13 +106,15 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "members.switcher.show-roster",
   "members.switcher.unread",
   "members.switcher.unread-more",
+  "memory.audit-tab",
+  "memory.more-actions",
+  "memory.test-recall",
   "notifications.clear-all",
   "notifications.detail.mark-unread",
   "notifications.mark-all-read",
   "notifications.mute-channel",
   "notifications.page-clear-all",
   "notifications.page-mark-all-read",
-  "overview.memory-details",
   "schedule.add-job",
   "schedule.batch-actions",
   "schedule.cancel-run",
@@ -202,6 +213,11 @@ export const GUIDE_REVEAL_SCOPES = {
     "revealer": "members.back",
     "state": "crewmate_chat_open_phone"
   },
+  "members.sessions-tab": {
+    "kind": "state",
+    "revealer": "members.sessions-tab",
+    "state": "crewmate_profile_sessions_tab_closed"
+  },
   "members.settings": {
     "kind": "state",
     "revealer": "members.settings",
@@ -234,6 +250,10 @@ export const GUIDE_REVEAL_SCOPES = {
   "menu:members.switcher": {
     "kind": "menu",
     "revealer": "members.switcher"
+  },
+  "menu:memory.more-actions": {
+    "kind": "menu",
+    "revealer": "memory.more-actions"
   },
   "menu:schedule.batch-actions": {
     "kind": "menu",
@@ -1828,6 +1848,40 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
       }
     ]
   },
+  "mcp.share-switch": {
+    "version": 2,
+    "label_key": "pages.mcpManagement.share_switch_label",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/capabilities?tab=mcp-servers",
+        "steps": [
+          {
+            "id": "any:mcp.share-switch",
+            "location": "mcp.share-switch",
+            "label_key": "pages.mcpManagement.share_switch_label"
+          }
+        ]
+      }
+    ]
+  },
+  "mcp.sharing-view": {
+    "version": 2,
+    "label_key": "pages.mcpPage.view_sharing",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/capabilities?tab=mcp-servers",
+        "steps": [
+          {
+            "id": "any:mcp.sharing-view",
+            "location": "mcp.sharing-view",
+            "label_key": "pages.mcpPage.view_sharing"
+          }
+        ]
+      }
+    ]
+  },
   "members.add-menu": {
     "version": 2,
     "label_key": "pages.membersPage.add_menu",
@@ -2230,6 +2284,38 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
       }
     ]
   },
+  "members.sessions-tab": {
+    "version": 2,
+    "label_key": "pages.membersPage.profile_sessions_tab",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/members",
+        "steps": [
+          {
+            "id": "any:select:crewmate_selected",
+            "kind": "select",
+            "location": "members.roster-list",
+            "label_key": "pages.membersPage.title",
+            "selection": "crewmate_selected",
+            "entity": "crewmate"
+          },
+          {
+            "id": "any:members.edit",
+            "location": "members.edit",
+            "label_key": "pages.membersPage.profile_card",
+            "when": "crewmate_profile_closed",
+            "scope": "members.profile"
+          },
+          {
+            "id": "any:members.sessions-tab",
+            "location": "members.sessions-tab",
+            "label_key": "pages.membersPage.profile_sessions_tab"
+          }
+        ]
+      }
+    ]
+  },
   "members.settings": {
     "version": 2,
     "label_key": "pages.membersPage.profile_settings",
@@ -2443,18 +2529,60 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
       }
     ]
   },
-  "overview.memory-details": {
+  "memory.audit-tab": {
     "version": 2,
-    "label_key": "pages.overviewPage.view_details",
+    "label_key": "memoryPage.tab_audit",
     "placements": [
       {
         "id": "any",
-        "route": "/settings/overview",
+        "route": "/settings/memory",
         "steps": [
           {
-            "id": "any:overview.memory-details",
-            "location": "overview.memory-details",
-            "label_key": "pages.overviewPage.view_details"
+            "id": "any:memory.audit-tab",
+            "location": "memory.audit-tab",
+            "label_key": "memoryPage.tab_audit"
+          }
+        ]
+      }
+    ]
+  },
+  "memory.more-actions": {
+    "version": 2,
+    "label_key": "memoryPage.more_actions",
+    "placements": [
+      {
+        "id": "desktop",
+        "route": "/settings/memory",
+        "viewport": "desktop",
+        "steps": [
+          {
+            "id": "desktop:memory.more-actions",
+            "location": "memory.more-actions",
+            "label_key": "memoryPage.more_actions"
+          }
+        ]
+      }
+    ]
+  },
+  "memory.test-recall": {
+    "version": 2,
+    "label_key": "memoryPage.test_recall",
+    "placements": [
+      {
+        "id": "desktop",
+        "route": "/settings/memory",
+        "viewport": "desktop",
+        "steps": [
+          {
+            "id": "desktop:memory.more-actions",
+            "location": "memory.more-actions",
+            "label_key": "memoryPage.more_actions",
+            "scope": "menu:memory.more-actions"
+          },
+          {
+            "id": "desktop:memory.test-recall",
+            "location": "memory.test-recall",
+            "label_key": "memoryPage.test_recall"
           }
         ]
       }

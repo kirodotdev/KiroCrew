@@ -25,7 +25,7 @@ from types import ModuleType, SimpleNamespace
 
 import git_repo_templates
 import pytest
-from skill_script_helpers import load_skill_script
+from skill_script_helpers import load_skill_script, skill_text
 
 ROOT = Path(__file__).resolve().parents[1]
 _SKILL_DIR = ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "kirocrew-prepare-pr"
@@ -382,7 +382,7 @@ def test_a_file_that_does_not_parse_is_still_scanned_line_by_line(mod) -> None:
 
 def test_the_skill_states_the_loops_own_bounds() -> None:
     """The monitor bounds the loop while every stale verdict remains actionable."""
-    skill = " ".join((_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+    skill = " ".join(skill_text((_SKILL_DIR / "SKILL.md")).split())
 
     assert "the re-sync cap is spent" not in skill
     assert "Re-sync budget reset" not in skill
@@ -430,6 +430,21 @@ def test_a_base_that_moved_somewhere_else_stays_fresh(mod, monkeypatch, pair, ca
     assert payload["commits"] == 1
     assert "overlap: none" in out
     assert "STATUS: FRESH" in out
+
+
+@pytest.mark.parametrize("base", ["origin/main", "refs/remotes/origin/main"])
+def test_a_remote_qualified_base_names_the_same_branch(
+    mod, monkeypatch, pair, capsys, base
+) -> None:
+    """``--base origin/main`` fetches ``main``, not a branch named ``origin/main``."""
+    pair.branch_changes({"src/kiro_crew/ledger/store.py": "VALUE = 2\n"})
+    pair.base_gains({"src/kiro_crew/ledger/store.py": "VALUE = 3\n"})
+
+    code = _run_main(mod, monkeypatch, pair, "--base", base)
+    stderr = capsys.readouterr().err
+
+    assert code == mod.EXIT_STALE, stderr
+    assert "origin/origin" not in stderr
 
 
 def test_a_base_that_has_not_moved_is_fresh(mod, monkeypatch, pair, capsys) -> None:
@@ -584,7 +599,7 @@ def test_a_clean_re_check_keeps_the_rebase_local() -> None:
     runs in a throwaway worktree so a red one leaves the measured HEAD on the
     published head: otherwise the next cycle reads 0 and the red is never pushed.
     """
-    skill = " ".join((_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+    skill = " ".join(skill_text((_SKILL_DIR / "SKILL.md")).split())
     thirty = (
         " ".join(_template_text().split()).split("green_age 30:", 1)[1].split("pr_status 10:")[0]
     )
@@ -607,7 +622,7 @@ def test_phase_four_pushes_a_rebase_only_on_a_conflict() -> None:
     rebases and pushes only on a conflict and sends a clean behind-base rebase
     through the exit-30 re-check.
     """
-    skill = " ".join((_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+    skill = " ".join(skill_text((_SKILL_DIR / "SKILL.md")).split())
     phase4 = skill.split("### Phase 4", 1)[1].split("### When main is red", 1)[0]
     exit0 = " ".join(_template_text().split()).split("Exit 0:", 1)[1].split("Merged,", 1)[0]
 

@@ -9,6 +9,19 @@
  */
 
 /**
+ * The lines of `text` as a line-oriented diff reads them: a final newline ends
+ * the last line rather than opening another, so `''` is no lines and `'a\nb\n'`
+ * is two, which is how `git diff --numstat` counts. The empty tail would read
+ * a new two-line file as +3 and a cleared one as -3.
+ */
+function linesOf(text: string): string[] {
+  if (!text) return []
+  const lines = text.split('\n')
+  if (lines[lines.length - 1] === '') lines.pop()
+  return lines
+}
+
+/**
  * Line-level diff count via LCS — correctly attributes moves as +N/-N
  * (a moved line shows up as a removal at the old position and an addition
  * at the new). Falls back to a cheap multiset count for huge files to bound
@@ -17,11 +30,14 @@
  */
 export function countLines(before: string, after: string): { added: number; removed: number } {
   if (before === after) return { added: 0, removed: 0 }
-  // Guard empty strings: ''.split('\n') yields [''] (1 phantom line), which would
-  // mis-count a new file as +1/-1 instead of +1, and a fully cleared file as
-  // +1/-2 instead of -2. Treat empty content as zero lines.
-  const a = before ? before.split('\n') : []
-  const b = after ? after.split('\n') : []
+  const a = linesOf(before)
+  const b = linesOf(after)
+  // When only one side ends in a newline, git counts the other side's unterminated last line
+  // as changed, so keep that line distinct (a newline never occurs inside a line).
+  if (a.length && b.length && before.endsWith('\n') !== after.endsWith('\n')) {
+    const open = before.endsWith('\n') ? b : a
+    open[open.length - 1] += '\n'
+  }
   const m = a.length, n = b.length
   // LCS with rolling rows: O(mn) time, O(min(m,n)) space.
   // 1M cell cap = ~1000x1000 lines which covers anything inside our 200KB snapshot cap comfortably.
@@ -288,7 +304,7 @@ function trimBlankEdges(lines: string[]): string[] {
 const ROW_STATED_META_RE = /^(?:index [0-9a-f]+\.\.[0-9a-f]+|similarity index \d+%|(?:rename|copy) (?:from|to) )/
 
 /** How the positional walk reads one line of a unified diff. */
-type PatchLineKind =
+export type PatchLineKind =
   /** A `diff ` / `Index: ` preamble line: where a file begins. */
   | 'file'
   /** A `--- x` file header: outside a hunk body and paired with a `+++ ` line. */
@@ -373,6 +389,14 @@ function walkPatch(lines: readonly string[], visit: (kind: PatchLineKind, line: 
     else if (startsFileHeader(lines, i - 1, false)) visit('new-header', line, i)
     else visit('meta', line, i)
   }
+}
+
+/** Each line's kind under `walkPatch`, index for index, for a surface that
+ *  prints every line itself and only styles it by kind. */
+export function patchLineKinds(lines: readonly string[]): PatchLineKind[] {
+  const kinds = new Array<PatchLineKind>(lines.length)
+  walkPatch(lines, (kind, _line, i) => { kinds[i] = kind })
+  return kinds
 }
 
 /** The prefix rule for text with no hunk header: every `+`/`-` line is content

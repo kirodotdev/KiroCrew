@@ -722,38 +722,53 @@ class TestCloneLocaleIsPlatformValid:
         if sys.platform == "darwin":
             assert reg._GIT_CLONE_LOCALE != "C.UTF-8"
 
-    def test_locale_selection_is_platform_split_not_a_flat_literal(self, monkeypatch):
+    def test_locale_selection_is_platform_split_not_a_flat_literal(self, tmp_path):
         # Drive the selection logic on BOTH platforms without depending on the
-        # host's real platform or a real non-English git: reload the module with
-        # sys.platform monkeypatched and assert the resolved constant. Fails at
-        # 0e3001598 (the value is a flat "C.UTF-8" literal, so it stays "C.UTF-8"
-        # even under a darwin reload); passes after the platform split.
-        import importlib
+        # host's real platform or a real non-English git: reload the registry with
+        # sys.platform set and read the resolved constant. A flat "C.UTF-8" literal
+        # would stay "C.UTF-8" under the darwin reload.
+        #
+        # The reload runs in a child interpreter. A reload of the registry facade
+        # reloads every owner, so every function in the family becomes a new
+        # object, while modules outside the family (the security handlers among
+        # them) keep the old ones. In this worker that split makes a later first
+        # import of ``kiro_crew.dashboard.handlers.security`` refuse its mirror.
+        import json
+        import os
+        import subprocess
         import sys
+        from pathlib import Path
 
-        from kiro_crew.apps import registry as reg
+        from kiro_crew.subprocess_utf8 import UTF8_TEXT
+        from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
-        try:
-            monkeypatch.setattr(sys, "platform", "darwin")
-            # flake-ok: pre-existing reload of the registry facade under a patched sys.platform, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-in-process-reload -- pre-existing reload of the registry facade under a patched sys.platform, moved verbatim; tracked for a de-flake pass
-            reloaded = importlib.reload(reg)
-            assert reloaded._GIT_CLONE_LOCALE == "en_US.UTF-8"
-
-            monkeypatch.setattr(sys, "platform", "linux")
-            # flake-ok: pre-existing reload of the registry facade under a patched sys.platform, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-in-process-reload -- pre-existing reload of the registry facade under a patched sys.platform, moved verbatim; tracked for a de-flake pass
-            reloaded = importlib.reload(reg)
-            assert reloaded._GIT_CLONE_LOCALE == "C.UTF-8"
-        finally:
-            # Restore the module to the real-platform value so later tests (and
-            # the shared module object) see the genuine constant.
-            # flake-ok: pre-existing undo in the finally that restores the real platform before the last reload, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo in the finally that restores the real platform before the last reload, moved verbatim; tracked for a de-flake pass
-            monkeypatch.undo()
-            # flake-ok: pre-existing reload in the finally, after the undo restored the real sys.platform, so the shared registry facade carries the genuine constant again, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-in-process-reload -- pre-existing reload in the finally, after the undo restored the real sys.platform, so the shared registry facade carries the genuine constant again, moved verbatim; tracked for a de-flake pass
-            importlib.reload(reg)
+        probe = (
+            "import importlib, json, sys\n"
+            "from kiro_crew.apps import registry\n"
+            "seen = {}\n"
+            "for name in ('darwin', 'linux'):\n"
+            "    sys.platform = name\n"
+            "    seen[name] = importlib.reload(registry)._GIT_CLONE_LOCALE\n"
+            "print(json.dumps(seen))\n"
+        )
+        source = Path(__file__).resolve().parents[1] / "src"
+        env = {
+            **os.environ,
+            "KIROCREW_HOME": str(tmp_path / "data"),
+            "PYTHONPATH": os.pathsep.join([str(source), os.environ.get("PYTHONPATH", "")]),
+        }
+        completed = subprocess.run(
+            [sys.executable, "-c", probe],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            timeout=FALLBACK_TIMEOUT_SECS,
+            check=False,
+            **UTF8_TEXT,
+        )
+        assert completed.returncode == 0, completed.stderr
+        seen = json.loads(completed.stdout.strip().splitlines()[-1])
+        assert seen == {"darwin": "en_US.UTF-8", "linux": "C.UTF-8"}
 
     def test_anonymous_git_env_pins_the_platform_valid_value(self):
         # End of the wire: the env the index-originated clone actually runs with

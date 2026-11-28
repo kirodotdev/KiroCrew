@@ -103,6 +103,19 @@ async def attach_stub(self: Backend, stub_uuid: str, *, agent: str = "") -> "asy
     return inbox
 
 
+async def _relabel_stub(backend: Backend, stub_uuid: str, agent: str) -> None:
+    """Record *agent* for a stub ALREADY attached to *backend* (``Backend.agent_for_stub``).
+
+    For a stub whose declaring agent became known after it attached. Under the
+    inbox lock, like :meth:`detach_stub`, so a stub detached meanwhile is not
+    given a label again. A plain function rather than a ``Backend`` method: its
+    one caller is the connection handler.
+    """
+    async with backend._inbox_lock:
+        if agent and stub_uuid in backend._stub_inboxes:
+            backend._stub_agents[stub_uuid] = agent
+
+
 async def detach_stub(self: Backend, stub_uuid: str) -> int:
     """Drop ``stub_uuid``'s inbox and clean up any pending requests
     owned by it. Returns the remaining refcount so the caller can
@@ -348,6 +361,7 @@ async def forward_from_stub(
             tool_name = ""
             tool_arguments = None
             resource_uri = ""
+            listen_uris: frozenset[str] = frozenset()
             list_paginated = False
             _params = msg.get("params")
             if isinstance(_params, dict):
@@ -372,6 +386,12 @@ async def forward_from_stub(
                     _uri = _params.get("uri")
                     if isinstance(_uri, str):
                         resource_uri = _uri
+                # Only a ``subscriptions/listen`` carries this filter, and routing
+                # reads it for that method alone.
+                _filter = _params.get("notifications")
+                _uris = _filter.get("resourceSubscriptions") if isinstance(_filter, dict) else None
+                if isinstance(_uris, list):
+                    listen_uris = frozenset(u for u in _uris if isinstance(u, str))
             self._pending_requests[fid] = _PendingRequest(
                 stub_uuid=stub_uuid,
                 original_id=orig_id,
@@ -382,6 +402,7 @@ async def forward_from_stub(
                 tool_name=tool_name,
                 tool_arguments=tool_arguments,
                 resource_uri=resource_uri,
+                listen_uris=listen_uris,
                 list_paginated=list_paginated,
                 caller=(caller if resource_uri else None),
             )

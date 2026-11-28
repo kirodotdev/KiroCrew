@@ -856,6 +856,7 @@ async def _generate_title_via_kiro(
         crew_log_kind="title",
         crew_log_session_key=session_key,
         memory_gate=memory_gate,
+        sel_source="chat_title",
     )
     title = _validate_title_reply(text)
     if not title:
@@ -891,6 +892,7 @@ async def _generate_refreshed_title(
         timeout=_TITLE_TIMEOUT_SECS,
         crew_log_kind="title",
         crew_log_session_key=session_key,
+        sel_source="chat_title",
     )
     title = _validate_title_reply(text)
     if not title:
@@ -1023,6 +1025,8 @@ async def _persist_title(
             )
             if not persisted:
                 logger.debug("Failed to persist title for slot %s", slot.key)
+                # The title is live but not on disk: the next periodic flush owes it.
+                slot._dirty = True
                 await restore_replacement_if_handover_did_not_land(
                     state, slot.key, tightening, history_key
                 )
@@ -1031,6 +1035,7 @@ async def _persist_title(
             logger.debug("Persisted title %r for slot %s", slot.title, slot.key)
         except Exception:
             logger.debug("Failed to persist title for slot %s", slot.key)
+            slot._dirty = True
             await restore_replacement_if_handover_did_not_land(
                 state, slot.key, tightening, history_key
             )

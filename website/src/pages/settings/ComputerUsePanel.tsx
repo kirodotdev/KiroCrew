@@ -4,7 +4,7 @@ import { ExternalLink } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsInput } from '../../components/settings'
 import { Badge, Btn, FormSkeleton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
-import { LockedByPolicyBadge } from '../../components/settingRef/LockedByPolicyBadge'
+import { LockedByPolicyBadge, lockedNote } from '../../components/settingRef/LockedByPolicyBadge'
 import { api } from '../../api/client'
 import type { ComputerUseConfigData, ComputerUseConfigSave } from '../../api/client'
 
@@ -231,6 +231,8 @@ export function ComputerUsePanel() {
   const busy = saveMut.isPending
   // An LTS build ignores the local opt-in; the enable is shown greyed out.
   const locked = cfg?.locked_by_policy === true
+  // No policy term can lift the lock: the note names the edition, not a policy.
+  const editionLock = locked && cfg?.locked_by_edition === true
   const save = (patch: Partial<ComputerUseConfigSave>) => {
     setSaveError('')
     saveMut.mutate(patch)
@@ -351,8 +353,8 @@ export function ComputerUsePanel() {
           {/* Outside the toggle row, so it is not dimmed with the disabled switch. */}
           {locked && (
             <div id={LOCKED_NOTE_ID} className="flex items-center gap-2 text-[12px] text-muted" data-testid="computer-use-locked-note">
-              <LockedByPolicyBadge />
-              <span>{i18nT('components.lockedByPolicyBadge.tooltip')}</span>
+              <LockedByPolicyBadge edition={editionLock} />
+              <span>{lockedNote(editionLock)}</span>
             </div>
           )}
           <SettingsToggle

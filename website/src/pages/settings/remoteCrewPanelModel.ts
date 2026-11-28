@@ -65,6 +65,40 @@ export const needsSignin = (j: LaunchJob) =>
  *  in later from its own Settings. */
 export const signinSkipped = (j: LaunchJob) => j.signin_skipped === true && j.signin_detected !== true
 
+/** A finished launch's card closes by itself this long after its last write. */
+export const LAUNCH_CARD_SHOWN_MS = 120_000
+
+/** Ids of the finished launch cards closed in this browser, so a reload does not
+ *  bring one back. Newest last; only the last 50 are kept. */
+export const LAUNCH_DISMISSED_KEY = 'mc-cloud-launch-dismissed'
+const LAUNCH_DISMISSED_MAX = 50
+
+/** A card the reader may close: the launch finished, its crew is registered with no
+ *  error, and its sign-in is confirmed with no code left, so it needs nothing more.
+ *  A failed, cancelled or running launch, or one still waiting on sign-in, keeps it. */
+export const launchCardDismissable = (j: LaunchJob) =>
+  j.status === 'done' && isRegistered(j) && !j.error &&
+  j.signin_detected === true && !j.signin && !needsSignin(j)
+
+export function readDismissedLaunches(): string[] {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(LAUNCH_DISMISSED_KEY) ?? '[]')
+    return Array.isArray(v)
+      ? v.filter((x): x is string => typeof x === 'string').slice(-LAUNCH_DISMISSED_MAX)
+      : []
+  } catch {
+    return []
+  }
+}
+
+export function writeDismissedLaunches(ids: string[]): void {
+  try {
+    localStorage.setItem(LAUNCH_DISMISSED_KEY, JSON.stringify(ids.slice(-LAUNCH_DISMISSED_MAX)))
+  } catch {
+    // Storage full or off: the card still closes for this page.
+  }
+}
+
 /** Whether the Connect step's icon should read as waiting rather than done.
  *  What it answers is "is this crew signed in", NOT "is this job over" — a
  *  registered crew waiting on a code is unsigned for the whole approval, which

@@ -6,7 +6,9 @@ Slack-token ``.env`` written to, ``config_dir()``, the listener port ``logout`` 
 for, and which messaging channels ``setup`` configures.
 """
 
+import io
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -58,6 +60,145 @@ class TestSetupWorkspaceDir:
             _setup_workspace_dir()
         output = capsys.readouterr().out
         assert "Default:" in output
+
+    @staticmethod
+    def _run_with_chat_config(
+        tmp_path,
+        monkeypatch,
+        default_project="",
+        workspace_folder="",
+        workspace_path=None,
+        session_folder_root="",
+        load=None,
+    ):
+        """Run the step against a ``dashboard.default_project`` and a workspace folder.
+
+        *workspace_folder* is what ``default_project_dir`` answers: ``""`` when the
+        default workspace's folder is missing or unusable. *workspace_path* is what
+        ``workspace_dir_for`` answers, an existing folder unless given.
+        """
+        cfg = SimpleNamespace(
+            dashboard=SimpleNamespace(
+                default_project=default_project, session_folder_root=session_folder_root
+            )
+        )
+        monkeypatch.setattr(
+            "kiro_crew.cli_setup_chat_folder.KiroCrewConfig",
+            SimpleNamespace(load=load or (lambda: cfg)),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.cli_setup_chat_folder.default_project_dir",
+            lambda _workspace=None: workspace_folder,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.cli_setup_chat_folder.workspace_dir_for",
+            lambda _workspace=None: workspace_path or tmp_path,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.cli_setup._workspace_dir_file", lambda: tmp_path / "no_such_file"
+        )
+        with patch("builtins.input", return_value=str(tmp_path / "ws")):
+            from kiro_crew.cli_setup import _setup_workspace_dir
+
+            _setup_workspace_dir()
+
+    def test_names_the_folder_dashboard_chats_start_in(self, tmp_path, monkeypatch, capsys):
+        """The saved folder is not where dashboard chats run, so the step names both."""
+        chat_dir = str(tmp_path / "chat-workspace")
+        self._run_with_chat_config(tmp_path, monkeypatch, workspace_folder=chat_dir)
+        output = capsys.readouterr().out
+        assert f"Dashboard chats start in the default workspace's folder: {chat_dir}" in output
+        assert "workspaces.<name>.dir" in output
+        assert "KIROCREW_WORKSPACE" in output
+
+    def test_names_the_dashboard_default_project_when_it_applies(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A usable ``dashboard.default_project`` is where a new chat starts, as slot create picks."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        unused = str(tmp_path / "unused")
+        self._run_with_chat_config(
+            tmp_path, monkeypatch, default_project=str(project), workspace_folder=unused
+        )
+        output = capsys.readouterr().out
+        assert f"Dashboard chats start in: {os.path.realpath(project)}" in output
+        assert "set by `dashboard.default_project`" in output
+        assert unused not in output
+
+    def test_a_missing_dashboard_default_project_falls_back_to_the_workspace(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        chat_dir = str(tmp_path / "chat-workspace")
+        self._run_with_chat_config(
+            tmp_path,
+            monkeypatch,
+            default_project=str(tmp_path / "missing"),
+            workspace_folder=chat_dir,
+        )
+        output = capsys.readouterr().out
+        assert f"Dashboard chats start in the default workspace's folder: {chat_dir}" in output
+
+    def test_an_unusable_workspace_folder_is_named_as_no_project(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Slot create leaves Project empty when the existing folder is refused, so setup names none."""
+        self._run_with_chat_config(tmp_path, monkeypatch)
+        output = capsys.readouterr().out
+        assert "Dashboard chats start with no project" in output
+        assert "Dashboard chats start in" not in output
+        assert "workspaces.<name>.dir" in output
+
+    def test_a_missing_folder_outside_the_base_is_named_as_no_project(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The gateway creates only the base workspace folder, so a missing other one stays missing."""
+        missing = tmp_path / "not-yet"
+        self._run_with_chat_config(tmp_path, monkeypatch, workspace_path=missing)
+        output = capsys.readouterr().out
+        assert "Dashboard chats start with no project" in output
+        assert "created when the gateway first starts" not in output
+
+    def test_a_fresh_data_home_names_its_workspace_folder(self, tmp_path, monkeypatch, capsys):
+        """An empty data home has no ``workspace`` folder yet; setup still names it."""
+        home = tmp_path / "crew-home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        monkeypatch.setattr(
+            "kiro_crew.cli_setup._workspace_dir_file", lambda: tmp_path / "no_such_file"
+        )
+        with patch("builtins.input", return_value=str(tmp_path / "ws")):
+            from kiro_crew.cli_setup import _setup_workspace_dir
+
+            _setup_workspace_dir()
+        output = capsys.readouterr().out
+        folder = home / "workspace"
+        assert f"Dashboard chats start in the default workspace's folder: {folder}" in output
+        assert "created when the gateway first starts" in output
+        assert "no project" not in output
+
+    def test_names_the_session_folder_root_when_set(self, tmp_path, monkeypatch, capsys):
+        """Slot create gives each new chat a folder under this root before any default."""
+        root = str(tmp_path / "sessions")
+        chat_dir = str(tmp_path / "chat-workspace")
+        self._run_with_chat_config(
+            tmp_path, monkeypatch, workspace_folder=chat_dir, session_folder_root=root
+        )
+        output = capsys.readouterr().out
+        assert f"a folder of its own under: {root}" in output
+        assert "dashboard.session_folder_root" in output
+        assert f"Dashboard chats start in the default workspace's folder: {chat_dir}" in output
+
+    def test_an_unloadable_config_does_not_stop_setup(self, tmp_path, monkeypatch, capsys):
+        """The note is informational: a config that cannot load leaves setup going on."""
+
+        def unloadable():
+            raise RuntimeError("config cannot load")
+
+        self._run_with_chat_config(tmp_path, monkeypatch, load=unloadable)
+        output = capsys.readouterr().out
+        assert "The folder dashboard chats start in could not be resolved" in output
+        assert f"Workspace: {tmp_path / 'ws'}" in output
 
     @pytest.mark.parametrize("interactive", [True, False])
     def test_refused_answer_keeps_the_configured_folder(
@@ -374,6 +515,7 @@ class TestManifest:
                 "im:write",
                 "reactions:write",
                 "users:read",
+                "users:read.email",
             ],
             "user": [
                 "channels:history",
@@ -742,7 +884,15 @@ class TestSetupChannelGating:
     into the guided Slack credential + slash-command steps.
     """
 
-    def _run_setup(self, monkeypatch, tmp_path, argv=None, install_wrote: bool = True, **kwargs):
+    def _run_setup(
+        self,
+        monkeypatch,
+        tmp_path,
+        argv=None,
+        install_wrote: bool = True,
+        sandbox_blocks: bool = False,
+        **kwargs,
+    ):
         import kiro_crew.cli_setup as cs
 
         calls: list[str] = []
@@ -764,7 +914,6 @@ class TestSetupChannelGating:
         for name in (
             "_ensure_prerequisites",
             "_setup_workspace_dir",
-            "_setup_sandbox_consent",
             "_setup_timezone",
             "_maybe_setup_dashboard_url",
             "_maybe_setup_custom_domain",
@@ -772,6 +921,7 @@ class TestSetupChannelGating:
             "_ensure_default_agent_in_config",
         ):
             monkeypatch.setattr(cs, name, lambda *a, **k: None)
+        monkeypatch.setattr(cs, "_setup_sandbox_consent", lambda: sandbox_blocks)
         monkeypatch.setattr(cs, "_setup_slack_tokens", lambda: calls.append("slack_tokens"))
         monkeypatch.setattr(cs, "_setup_slash_command", lambda: calls.append("slash_command"))
         monkeypatch.setattr(cs, "_setup_whatsapp", lambda: calls.append("whatsapp"))
@@ -811,6 +961,30 @@ class TestSetupChannelGating:
         assert (
             "Run `kirocrew doctor`; when it reports no issues, run `kirocrew gateway`." in closing
         )
+
+    @pytest.mark.parametrize(
+        ("agent_only", "done"),
+        [
+            (
+                False,
+                "👻 Done! Run `kirocrew doctor`; when it reports no issues, run `kirocrew gateway`.",
+            ),
+            (True, "👻 Done! Try: kirocrew gateway"),
+        ],
+        ids=["wizard", "agent-only"],
+    )
+    def test_the_closing_line_says_no_agent_can_run_while_the_sandbox_refuses_all(
+        self, tmp_path, monkeypatch, capsys, agent_only, done
+    ):
+        """A host the sandbox step leaves refusing every agent is not "Done!": the
+        first chat would fail. Any other outcome keeps the closing line as it was."""
+        self._run_setup(monkeypatch, tmp_path, sandbox_blocks=True, agent_only=agent_only)
+        out = capsys.readouterr().out
+        assert "Done!" not in out
+        assert "no agent can run on this host yet" in out
+        assert "`kirocrew doctor`" in out
+        self._run_setup(monkeypatch, tmp_path, sandbox_blocks=False, agent_only=agent_only)
+        assert capsys.readouterr().out.rstrip().splitlines()[-1] == done
 
     def test_a_rebuild_that_did_not_write_is_not_reported_installed(
         self, tmp_path, monkeypatch, capsys
@@ -975,3 +1149,36 @@ class TestSetupAbortNamesUnfinishedSteps:
         monkeypatch.setattr("builtins.input", _raise_eof)
         with pytest.raises(cs._SetupAborted):
             cs._maybe_setup_dashboard_url()
+
+
+class TestDashboardUrlRefusesControlCharacters:
+    """Ctrl+D then Enter on a Windows console reaches ``input()`` as U+0004."""
+
+    @pytest.mark.parametrize(
+        ("current", "outcome"),
+        [("http://old:1", "Keeping: http://old:1"), ("", "Skipped.")],
+    )
+    def test_a_control_character_answer_is_not_saved(
+        self, tmp_path, monkeypatch, capsys, current, outcome
+    ):
+        import kiro_crew.cli_setup as cs
+
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"dashboard": {}}), encoding="utf-8")
+        before = cfg_file.read_text(encoding="utf-8")
+        cfg = MagicMock()
+        cfg.load_credentials.return_value = {"SLACK_APP_TOKEN": "a", "SLACK_BOT_TOKEN": "b"}
+        cfg.dashboard.url = current
+        monkeypatch.setattr(cs, "config_path", lambda: cfg_file)
+        monkeypatch.setattr(cs, "KiroCrewConfig", MagicMock(load=MagicMock(return_value=cfg)))
+        monkeypatch.setattr(cs, "_resolve_hostname_bounded", lambda _h: "10.0.0.1")
+        monkeypatch.setattr(cs, "_configured_port", lambda: 1)
+        monkeypatch.setattr("sys.stdin", io.StringIO("\x04\n"))
+
+        cs._maybe_setup_dashboard_url()
+
+        assert cfg_file.read_text(encoding="utf-8") == before
+        out = capsys.readouterr().out
+        assert "Not saved: the URL contains a control character." in out
+        assert outcome in out
+        assert "Dashboard URL saved" not in out

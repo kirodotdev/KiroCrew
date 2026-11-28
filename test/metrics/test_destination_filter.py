@@ -528,3 +528,117 @@ class TestTheWrapperKeepsTheCoresDecisions:
         assert wrapper.force_flush(1234) is True
         wrapper.shutdown(5678)
         assert calls == [("force_flush", 1234), ("shutdown", 5678)]
+
+
+# -- named_entity_namespaces --------------------------------------------------------
+
+APP_PRESENT = "kirocrew.app.present"
+
+
+@pytest.fixture
+def _edition_names_apps(monkeypatch):
+    """Say a registry row declares ``appNamespace``."""
+    monkeypatch.setattr("kiro_crew.apps.store_origin.edition_names_apps", lambda: True)
+
+
+def _listing(namespaces: "frozenset[str]" = frozenset({"acme"})) -> OtlpDestination:
+    """A destination that lists the namespaces it may see by name."""
+    return OtlpDestination(
+        "listing",
+        "https://listing.example/v1/metrics",
+        frozenset({"metrics"}),
+        named_entity_namespaces=namespaces,
+    )
+
+
+def _entity_points(exporter, name: str = APP_PRESENT) -> "dict[tuple, float]":
+    """``(Entity, entity_version, status)`` -> value, for every point of *name*."""
+    out: "dict[tuple, float]" = {}
+    for point in exporter.points(name):
+        a = dict(point.attributes or {})
+        key = (a.get("Entity"), a.get("entity_version"), a.get("status"))
+        assert key not in out, f"two points of one series reached the destination: {key}"
+        out[key] = point.value
+    return out
+
+
+def _record_entities(h) -> None:
+    counter = h.meter.create_counter(APP_PRESENT)
+    for entity, version in (
+        ("acme.tool-a", "1.0.0"),
+        ("acme.tool-b", "2.0.0"),
+        ("private", "private"),
+        ("weather-app", "1.2.3"),
+        ("acmex.tool", "1.0.0"),
+    ):
+        counter.add(1, attributes={"Entity": entity, "entity_version": version, "status": "on"})
+    # A point with no Entity is left as it is.
+    h.meter.create_counter(ALLOWED).add(1, attributes={"status": "on"})
+
+
+@pytest.mark.usefixtures("_edition_names_apps")
+class TestNamedEntityNamespaces:
+    def test_a_destination_that_says_nothing_gets_private(self, harness):
+        h = harness([_operator()])
+        _record_entities(h)
+        h.flush()
+
+        assert _entity_points(h.exporters["operator"]) == {
+            ("private", "private", "on"): 4,
+            ("weather-app", "1.2.3", "on"): 1,
+        }
+        assert h.exporters["operator"].attrs(ALLOWED) == [{"status": "on"}]
+
+    def test_a_listed_namespace_keeps_its_names_and_others_are_private(self, harness):
+        h = harness([_listing()])
+        _record_entities(h)
+        h.flush()
+
+        assert _entity_points(h.exporters["listing"]) == {
+            ("acme.tool-a", "1.0.0", "on"): 1,
+            ("acme.tool-b", "2.0.0", "on"): 1,
+            ("private", "private", "on"): 2,
+            ("weather-app", "1.2.3", "on"): 1,
+        }
+
+    def test_the_local_sink_and_an_operator_owned_destination_keep_every_name(self, harness):
+        inner = _RecordingExporter()
+        assert df.wrap_if_narrowed(_operator(), inner, operator_owned=True) is inner
+        h = harness([_operator()])
+        _record_entities(h)
+        h.flush()
+
+        _, points, _ = h.local_records()
+        local = {(p.get("attributes") or {}).get("Entity") for p in points}
+        assert {"acme.tool-a", "acme.tool-b", "acmex.tool"} <= local, local
+
+    @pytest.mark.parametrize(
+        ("named", "sent"),
+        [("acme", "private"), ("acme.tools", "acme.tools.weather")],
+    )
+    def test_a_namespace_is_everything_before_the_last_dot(self, harness, named, sent):
+        h = harness([_listing(frozenset({named}))])
+        h.meter.create_counter(APP_PRESENT).add(1, attributes={"Entity": "acme.tools.weather"})
+        h.flush()
+
+        assert h.exporters["listing"].attrs(APP_PRESENT) == [{"Entity": sent}]
+
+    def test_another_metric_keeps_a_dotted_entity(self, harness):
+        h = harness([_operator()])
+        h.meter.create_counter("kirocrew.tip.feedback").add(1, attributes={"Entity": "apps.md"})
+        h.flush()
+
+        assert h.exporters["operator"].attrs("kirocrew.tip.feedback") == [{"Entity": "apps.md"}]
+
+    def test_nothing_is_wrapped_while_no_registry_declares_a_namespace(self, monkeypatch):
+        monkeypatch.setattr("kiro_crew.apps.store_origin.edition_names_apps", lambda: False)
+        inner = _RecordingExporter()
+        assert df.wrap_if_narrowed(_operator(), inner) is inner
+
+    def test_the_merged_point_spans_both_windows(self):
+        from opentelemetry.sdk.metrics.export import NumberDataPoint
+
+        a = NumberDataPoint({"Entity": "private"}, 10, 20, 1, [])
+        b = NumberDataPoint({"Entity": "private"}, 5, 30, 2, [])
+        (merged,) = df._summed_by_attributes([a, b])
+        assert (merged.start_time_unix_nano, merged.time_unix_nano, merged.value) == (5, 30, 3)

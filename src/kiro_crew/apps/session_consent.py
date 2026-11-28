@@ -10,27 +10,29 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
-async def reconcile_after_ready() -> list[str]:
+async def reconcile_after_ready(state: Any = None) -> list[str]:
     """Disable and mark pending every pre-consent ``sessionApproval`` app.
 
     Per app, under ``app_lifecycle_lock`` so no install, update, uninstall,
     enable or disable of that app interleaves: the same teardown the disable
-    route runs (hooks, backend, gateway-owned registrations), then the record
-    write. The agent spec is rebuilt once at the end when anything changed.
-    Never raises; returns the names marked.
+    route runs (hooks, backend, gateway-owned registrations, and with *state*
+    the Bot chats that mount the app), then the record write, both inside the
+    app's stop fence. The agent spec is rebuilt once at the end when anything
+    changed. Never raises; returns the names marked.
     """
     try:
-        return await _reconcile_after_ready()
+        return await _reconcile_after_ready(state)
     except Exception:
         logger.warning("session approval reconcile failed", exc_info=True)
         return []
 
 
-async def _reconcile_after_ready() -> list[str]:
+async def _reconcile_after_ready(state: Any) -> list[str]:
     from kiro_crew.apps.hooks_integration import stop_retained_startup_hooks  # noqa: PLC0415
     from kiro_crew.apps.manager import (  # noqa: PLC0415 - kept off the import path
         _session_approval_consent_unrecorded_on_disk,
@@ -40,10 +42,11 @@ async def _reconcile_after_ready() -> list[str]:
         session_approval_consent_candidates,
     )
     from kiro_crew.apps.teardown import teardown_app_runtime  # noqa: PLC0415
+    from kiro_crew.bot_chat_app_tools import app_stop_fence  # noqa: PLC0415
 
     marked: list[str] = []
     for name in await asyncio.to_thread(session_approval_consent_candidates):
-        async with app_lifecycle_lock(name):
+        async with app_lifecycle_lock(name), app_stop_fence(name):
             # Re-check under the lock: the owner may have consented, reinstalled
             # or uninstalled the app since the listing, and teardown must stop
             # only an app that still qualifies.
@@ -64,7 +67,7 @@ async def _reconcile_after_ready() -> list[str]:
                 # Teardown first, while the record still reads enabled, matching
                 # the disable route: it decides from ``enabled`` whether app code
                 # is running and needs stopping.
-                teardown = await teardown_app_runtime(name, info)
+                teardown = await teardown_app_runtime(name, info, state=state)
                 for note in (*teardown.warnings, *teardown.failures):
                     logger.warning("session approval reconcile teardown of %s: %s", name, note)
             if await asyncio.to_thread(mark_session_approval_consent_pending, name):

@@ -1,0 +1,8 @@
++134
+`_plain_case_pattern_indices` in `argv_floor_ssh.py`: the ssh-to-self floor skips a
+case arm's `)`-ending pattern word only when the whole case statement is plainly shaped
+(`case WORD in`, arms of a pattern + simple words + `;;`, then a bare `esac`). Any other
+shape reads every word as a possible verb, exactly as a line with no case, so the floor
+is never looser than before for a glued `esac`, a redirect, an operator, a quoted `)`
+filename or a mis-read `CASE` function. The helper, its reason comment and the one-line
+docs update are the growth, plus four names the facade mirror forwards.

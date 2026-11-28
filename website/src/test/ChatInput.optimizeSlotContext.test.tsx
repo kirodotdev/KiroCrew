@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
 import { createTestStore, renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { SlotProvider } from '../providers/SlotContext'
 import type { RootState } from '../store'
+import { clickOptimize } from './optimizeRow'
 
 /**
  * Driver #1 guard: the "Optimize prompt" context must be read from THIS pane's
@@ -38,9 +38,6 @@ function stubOptimizerCapturing(bodies: string[]) {
     return Promise.resolve({ ok: true, json: async () => [] })
   })
 }
-
-const clickOptimize = () =>
-  fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
 
 describe('ChatInput optimize: context is read from the pane\'s own slot', () => {
   beforeEach(() => {

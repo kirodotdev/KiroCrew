@@ -240,6 +240,28 @@ class TestCommands:
         assert client.sent == [("ROOM", "🗜️ Context compacted.")]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("/compact keep the API decisions", [mock.call("keep the API decisions")]),
+            ("/compact keep\n  the\tAPI   decisions", [mock.call("keep the API decisions")]),
+            ("/compact " + "x" * 2000, [mock.call("x" * 500)]),
+            ("/compact", [mock.call()]),
+            ("/compact   ", [mock.call()]),
+        ],
+    )
+    async def test_compact_focus_reaches_the_provider(self, text: str, expected: list) -> None:
+        provider = FakeProvider([])
+        provider.compact = mock.AsyncMock()  # type: ignore[method-assign]
+        client = FakeClient()
+        d = _dispatcher(FakeSessions(provider), FakeCtx(), client)
+
+        await d.handle_message(_inbound(text))
+
+        assert provider.compact.await_args_list == expected
+        assert len(client.sent) == 1 and client.sent[0][1].endswith("Context compacted.")
+
+    @pytest.mark.asyncio
     async def test_compact_declined_on_auto_managed_backend(self) -> None:
         # A backend that cannot serve /compact gets the informational reply and
         # compact() is NEVER dispatched.
@@ -1142,13 +1164,16 @@ class TestApprovals:
         ``1`` resolve user A's pending tool prompt. The registry is keyed per
         CONVERSATION (route), which does not collapse, so it does not.
         """
+        email_a, email_b = "a@example.com", "b@example.com"
         cfg = _cfg()
         cfg.messaging.dm_scope = "unified"
+        # Both are allowed; A is the owner, so A's own answer is the one that counts.
+        cfg.webex.allowed_emails = [email_a, email_b]
+        cfg.webex.owner_email = email_a
         sessions = FakeSessions(FakeProvider([]))
         sessions._busy = True
         d = _dispatcher(sessions, FakeCtx(), FakeClient(), cfg=cfg)
 
-        email_a, email_b = "a@example.com", "b@example.com"
         # The two DMs share ONE session key under unified...
         assert d._session_key(email_a) == d._session_key(email_b)
         # ...but the approval key is per conversation, so they do not.

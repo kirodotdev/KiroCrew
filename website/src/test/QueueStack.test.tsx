@@ -719,6 +719,78 @@ describe('QueueStack editor hold', () => {
     expect(outgoing.mock.calls).toEqual([['q1', true], ['q1', false]])
     expect(incoming).not.toHaveBeenCalled()
   })
+
+  /** Two cards, the stack expanded, A's editor open; returns B's pencil and A's input. */
+  function openFirstOfTwo(onEditOpen: (queueId: string, open: boolean) => void) {
+    const { unmount } = render(<QueueStack messages={[queued('card a', 'qa'), queued('card b', 'qb')]} onCancel={() => {}} onEdit={() => {}} onEditOpen={onEditOpen} />)
+    fireEvent.click(screen.getByRole('button', { expanded: false }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Edit queued message' })[0])
+    const input = screen.getByRole('textbox', { name: 'Edit queued message' })
+    const pencilB = () => screen.getAllByRole('button', { name: 'Edit queued message' }).at(-1)!
+    return { input, pencilB, unmount }
+  }
+
+  // Pressing B's pencil blurs A's editor, whose release (or save) goes out
+  // before the click opens B. B's hold goes out on the press, so the server
+  // sees it first and the queue never runs between the two editors.
+  it("sends the next card's hold on the press, before the open editor's blur releases its card", () => {
+    const onEditOpen = vi.fn()
+    const { input, pencilB } = openFirstOfTwo(onEditOpen)
+    fireEvent.mouseDown(pencilB())
+    fireEvent.blur(input)
+    fireEvent.mouseUp(pencilB())
+    fireEvent.click(pencilB())
+    // The open holds B again, which only renews the hold its press placed.
+    expect(onEditOpen.mock.calls).toEqual([['qa', true], ['qb', true], ['qa', false], ['qb', true]])
+    expect(screen.getByRole('textbox', { name: 'Edit queued message' })).toHaveValue('card b')
+  })
+
+  it('releases the pressed card when the press is dragged off its pencil', () => {
+    const onEditOpen = vi.fn()
+    const { input, pencilB } = openFirstOfTwo(onEditOpen)
+    fireEvent.mouseDown(pencilB())
+    fireEvent.blur(input)
+    fireEvent.mouseLeave(pencilB())
+    fireEvent.mouseUp(screen.getByText('card b'))
+    expect(onEditOpen.mock.calls).toEqual([['qa', true], ['qb', true], ['qa', false], ['qb', false]])
+    expect(screen.queryByRole('textbox', { name: 'Edit queued message' })).toBeNull()
+  })
+
+  // B's pencil can move or unmount under a still pointer, so no mouseleave
+  // ends its press: the next editor that opens, or the unmount, releases it.
+  it('releases a pressed card that never became a click when another card opens', () => {
+    const onEditOpen = vi.fn()
+    const { input, pencilB } = openFirstOfTwo(onEditOpen)
+    fireEvent.mouseDown(pencilB())
+    fireEvent.blur(input)
+    fireEvent.mouseUp(screen.getByText('card b'))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Edit queued message' })[0])
+    expect(onEditOpen.mock.calls).toEqual([['qa', true], ['qb', true], ['qa', false], ['qb', false], ['qa', true]])
+  })
+
+  it('releases a pressed card when the stack unmounts before the click', () => {
+    const onEditOpen = vi.fn()
+    const { pencilB, unmount } = openFirstOfTwo(onEditOpen)
+    fireEvent.mouseDown(pencilB())
+    fireEvent.mouseUp(pencilB())
+    unmount()
+    expect(onEditOpen.mock.calls).toEqual([['qa', true], ['qb', true], ['qa', false], ['qb', false]])
+  })
+
+  // A right or middle press, or a Ctrl press (the context menu on macOS),
+  // never becomes a click, and the pointer can stay on the pencil, so it must
+  // not leave the card held with no editor open.
+  it('sends no hold for a right, middle or Ctrl press', () => {
+    const onEditOpen = vi.fn()
+    const { pencilB } = openFirstOfTwo(onEditOpen)
+    // Each press ends in a release, as a real one does: React's select event
+    // stays suppressed after a mousedown until a mouseup reaches its root.
+    for (const init of [{ button: 2 }, { button: 1 }, { button: 0, ctrlKey: true }]) {
+      fireEvent.mouseDown(pencilB(), init)
+      fireEvent.mouseUp(pencilB(), init)
+    }
+    expect(onEditOpen.mock.calls).toEqual([['qa', true]])
+  })
 })
 
 describe('QueueStack durable verdict', () => {

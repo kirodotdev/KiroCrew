@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp import runtime as runtime_mod
+from kiro_crew.acp import runtime_process_tree
 from kiro_crew.acp.client import AcpClient, ClaudeAcpClient
 from kiro_crew.acp.harness import antigravity as antigravity_mod
 from kiro_crew.acp.harness import claude as claude_mod
@@ -116,6 +117,9 @@ VOLATILE_ENV = {
     # That the codex child RECEIVES it -- its SQLite home is its own -- is the fact
     # being pinned; the directory is not.
     "CODEX_SQLITE_HOME": "<scratch>",
+    # The goose home Crew builds for the spawn, inside its scratch window. That the
+    # goose child RECEIVES it is the fact being pinned; the directory is not.
+    "GOOSE_PATH_ROOT": "<goose-home>",
 }
 
 #: The parent environment every capture runs against, whatever the recording host's
@@ -307,8 +311,18 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
         if module is client_mod or name in vars(module)
     )
 
+    from kiro_crew.acp.harness import goose as goose_mod
+
     stack.extend(
         [
+            # The goose home is built off the host's own goose config; the capture
+            # pins that the child is pointed at one, on every platform.
+            patch.object(goose_mod, "side_home_supported", return_value=True),
+            patch.object(
+                goose_mod,
+                "build_session_goose_root",
+                side_effect=lambda env, parent: Path(parent) / "goose-session-root",
+            ),
             patch.object(client_mod, "create_subprocess_limited", side_effect=_factory),
             patch.object(client_mod, "finish_suspended_spawn", side_effect=_finish),
             patch.object(AcpClient, "_drain_stderr", side_effect=_drain),
@@ -316,6 +330,17 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             patch.object(AcpClient, "_resolve_session_mcp_servers", return_value=[]),
             patch.object(client_mod, "inject_xdist_auto_cap", return_value=None),
             patch.object(client_mod, "_get_child_pids", return_value=[]),
+            # The stand-in child's pid is a number the HOST may hold: on macOS a
+            # low pid like 4242 is a live process, often one in the worker's own
+            # session. ``_spawn`` runs on past the factory with that number, so
+            # the descendant walk (``pgrep -P`` there) and a failed spawn's
+            # cleanup kill (``killpg`` of that process's group) would reach a
+            # real process -- the worker itself, when they share a group. Neither
+            # is a launch answer, so the walk is skipped and the kill is inert.
+            patch.object(
+                runtime_process_tree, "wait_for_descendants", new=AsyncMock(return_value=False)
+            ),
+            patch.object(AcpClient, "_kill_process", new=AsyncMock(return_value=None)),
             # A per-process temp root the sandbox masks, so every harness that does
             # not need one is captured without it. The DeepSeek arm DOES need one:
             # its gate's load marker is written by the child into this private
@@ -331,7 +356,7 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
                     client_mod.agent_scratch.allocate_scratch,
                     lambda call: (
                         _allocate_capture_scratch(tmp_path, call["label"])
-                        if backend in (ACP_BACKEND_DEEPSEEK, ACP_BACKEND_STRANDS)
+                        if backend in (ACP_BACKEND_DEEPSEEK, ACP_BACKEND_GOOSE, ACP_BACKEND_STRANDS)
                         else None
                     ),
                 ),
@@ -420,6 +445,7 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             patch.object(strands_mod, "strands_project_dir", return_value=_STRANDS_PROJECT),
             patch.object(strands_mod, "_seal_strands_gate", return_value=_STRANDS_GATE),
             patch.object(strands_mod, "strands_python_env_issue", return_value=""),
+            patch.object(strands_mod, "_strands_provider_sdk_issue", return_value=""),
             patch.object(strands_mod, "_strands_version_issue", return_value=""),
             patch.object(pi_node_mod, "choose_pi_node", return_value=pi_node_mod.PiNodeChoice()),
             patch.object(strands_mod, "_strands_user_project", return_value=("", "")),

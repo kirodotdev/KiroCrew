@@ -50,8 +50,9 @@ from kiro_crew.apps.registry import (
     minimal_env,
 )
 from kiro_crew.apps.registry_pipeline.checkout import _HOOKS_NEUTRALIZER_ARGV
+from kiro_crew.apps.registry_pipeline.git_targets import _lfs_endpoint_pin_argv
 from kiro_crew.apps.registry_pipeline.subprocess_env import (
-    _git_network_env,
+    _git_network_step_env,
     _proxy_env_has_credentials,
 )
 from kiro_crew.apps.routes_static import _CONTENT_TYPES
@@ -557,6 +558,7 @@ async def _fetch_git_blob(
             clone_cmd = [
                 "git",
                 *_HOOKS_NEUTRALIZER_ARGV,
+                *_lfs_endpoint_pin_argv(git_url),
                 "clone",
                 "--depth",
                 "1",
@@ -566,10 +568,12 @@ async def _fetch_git_blob(
                 git_url,
                 tmp_root,
             ]
+            forward_applied: list[bool] = []
             sandboxed_cmd, _cleanup = await wrap_argv_async(
                 clone_cmd,
                 mode=clone_mode,
                 forward_ssh_auth_sock=owner_designated,
+                forward_ssh_auth_sock_out=forward_applied if owner_designated else None,
                 _prepare=wrap_argv,
             )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
@@ -577,10 +581,16 @@ async def _fetch_git_blob(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=_git_network_env(clone_env, git_url),
+                env=await _git_network_step_env(
+                    clone_env, git_url, forward_applied=forward_applied
+                ),
             )
             try:
                 _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_BLOB_FETCH_TIMEOUT)
+            except asyncio.CancelledError:
+                # A gateway shutdown must not leave the clone running with no owner.
+                await platform_compat.kill_and_reap(proc)
+                raise
             except asyncio.TimeoutError:
                 proc.kill()
                 await proc.communicate()

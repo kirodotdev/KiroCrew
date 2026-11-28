@@ -4,8 +4,9 @@ const {
   stopGatewayGracefully: stopGatewayProcessGracefully,
   postShutdown,
   gatewayStillRunningError,
+  markUserStop,
 } = require("../../gateway-stop");
-const { windowsProcessCommand, windowsTaskkill } = require("../../windows-port");
+const { windowsProcessCommand, windowsTaskkill, windowsTaskkillTree } = require("../../windows-port");
 const { waitForServiceRebind, waitForProcessExit } = require("../../gateway-recovery");
 const { secretCandidates } = require("../../home-dir");
 
@@ -19,8 +20,8 @@ const ADOPTED_UPDATE_STOP_TIMEOUT_MS = 30_000;
  * quit and before an update), the pre-update stop of an adopted gateway that
  * runs from this app's own bundle, and the two tree kills -- the Windows one
  * the graceful stop uses, with timeouts tightened to fit the shutdown
- * deadline, and the wedge kill (a descendant sweep on POSIX, windowsTaskkill's
- * own defaults on Windows).
+ * deadline, and the wedge kill (a descendant sweep on POSIX, a taskkill /T of
+ * the spawned child on Windows, with no command-line identity read).
  *
  * Which occasion gets which stop is the supervisor's call. The graceful stop
  * clears the child slots once the child is gone.
@@ -60,6 +61,7 @@ function createShutdown({
   posixDescendantPids,
   psCommand,
   isTrustedWindowsGatewayCommand,
+  windowsTaskkillTreeFn = windowsTaskkillTree,
 }) {
   // The command a refused update names for stopping the adopted gateway by
   // hand. A service-managed gateway is stopped through its service (the CLI's
@@ -78,9 +80,17 @@ function createShutdown({
    * fails, the recovery hook must know it is allowed to respawn the child that
    * the updater deliberately stopped.
    */
-  async function stopGatewayGracefully({ timeoutMs = 15000 } = {}) {
+  // `userStop` is true only for a Quit the user chose: the gateway then ends the
+  // YOLO and chat trust it keeps across every other exit (an update, a restart).
+  async function stopGatewayGracefully({ timeoutMs = 15000, userStop = false } = {}) {
     const gateway = getGatewayProcess();
     if (!gateway || gateway.exitCode !== null) {
+      // The gateway this app spawned is already gone (a crash not yet relaunched,
+      // its child cleared): a Quit is still a stop the user chose, so its next boot
+      // ends the grants. An adopted or remote gateway is not this Quit's to end.
+      if (userStop && getGatewayOwnership() === "spawned") {
+        markUserStop({ kirocrewHome: path.dirname(secretCandidates()[0]), fsMod: fs, pathMod: path });
+      }
       setGatewayProcess(null);
       setSpawnedExecutablePaths([]);
       return;
@@ -94,6 +104,7 @@ function createShutdown({
       backendUrl: BACKEND_URL,
       kirocrewHome: currentHome,
       timeoutMs,
+      userStop,
       // 3s PowerShell + 2s WMIC + 5s taskkill fits inside the 18s hard
       // shutdown deadline. The tree sweep is awaited because taskkill can emit
       // the parent's exit while descendants are still being reaped.
@@ -206,7 +217,8 @@ function createShutdown({
   // POSIX lets the parent reap its own children; Windows requires a tree kill or
   // detached kiro-cli/MCP descendants survive with the data-home locks.
   async function killGatewayProcessTree(gateway, signal) {
-    if (!gateway || gateway.exitCode !== null) return;
+    // A child killed by a signal exits with exitCode null and signalCode set.
+    if (!gateway || gateway.exitCode !== null || gateway.signalCode) return;
     const killPid = () => {
       try { gateway.kill(signal); }
       catch (error) { glog(`${signal} failed: ${error && error.message}`); }
@@ -227,12 +239,14 @@ function createShutdown({
       killPid();
       return;
     }
+    // `gateway` is the live ChildProcess this app spawned (exitCode and
+    // signalCode checked above), and Windows does not reuse a pid while that handle is open, so the
+    // command-line identity read proves nothing here. Skipping it keeps a slow
+    // read on a busy machine from turning the tree kill into a parent-only kill.
     try {
-      await windowsTaskkill(gateway.pid, {
-        isTrustedCommand: isTrustedWindowsGatewayCommand,
-      });
+      await windowsTaskkillTreeFn(gateway.pid);
     } catch (error) {
-      glog(`tree kill refused (${error && error.message}) — falling back to a single-pid kill`);
+      glog(`tree kill failed (${error && error.message}) — falling back to a single-pid kill`);
       killPid();
     }
   }

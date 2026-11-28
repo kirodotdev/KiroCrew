@@ -16,6 +16,7 @@ from typing import Any
 from kiro_crew._sqlite_compat import is_cjk_char
 from kiro_crew.dashboard.handlers._shared import _redact_memory_field
 from kiro_crew.memory_history_stamps import is_history_day_header, is_history_stamp
+from kiro_crew.memory_record_facets import record_ref
 
 #: Most semantic rows one graph request reads, in key order with lessons excluded
 #: (they are drawn from ``get_lessons``), through the key index so the read stops
@@ -28,7 +29,7 @@ GRAPH_LESSON_LIMIT = 200
 
 
 def _build_memory_graph(
-    mem: Any, lessons: list, partial: "dict[str, bool] | None" = None
+    mem: Any, lessons: list, partial: "dict[str, bool] | None" = None, vector: Any = None
 ) -> tuple[list[dict], list[dict]]:
     """Synchronous helper — safe to run in a thread.
 
@@ -52,11 +53,21 @@ def _build_memory_graph(
     def _id(prefix: str, label: str) -> str:
         return hashlib.md5(f"{prefix}:{label}".encode(), usedforsecurity=False).hexdigest()[:12]
 
-    def _add(prefix: str, label: str, group: str, title: str = "") -> str:
+    def _add(prefix: str, label: str, group: str, title: str = "", record: str = "") -> str:
+        """*record* is the memory row's key, when the node is one (a fact or a lesson)."""
         nid = _id(prefix, label)
         if nid not in seen_ids:
             seen_ids.add(nid)
-            nodes.append({"id": nid, "label": label[:60], "group": group, "title": title or label})
+            node: dict[str, Any] = {
+                "id": nid,
+                "label": label[:60],
+                "group": group,
+                "title": title or label,
+            }
+            if record:
+                kind = "directive" if record.startswith("lesson.") else "fact"
+                node["record"] = {"kind": kind, "id": record, "ref": record_ref(kind, record)}
+            nodes.append(node)
             node_ids[f"{prefix}:{label}"] = nid
         return nid
 
@@ -94,7 +105,8 @@ def _build_memory_graph(
         pass
 
     # --- Semantic Memory (vector store) ---
-    vs = mem.vector_store
+    # A named V1 store keeps its facts in a vector tier its markdown facade lacks.
+    vs = vector if vector is not None else mem.vector_store
     if vs:
         try:
             rows = vs.get_all_semantic(limit=GRAPH_SEMANTIC_LIMIT + 1, exclude_lessons=True)
@@ -114,7 +126,7 @@ def _build_memory_graph(
                         # A value that is not JSON is shown as its raw text.
                         pass
                 val_str = str(val) if not isinstance(val, str) else val
-                _add("sem", key, "semantic", f"{key} = {val_str[:120]}")
+                _add("sem", key, "semantic", f"{key} = {val_str[:120]}", record=str(key))
         except Exception:
             pass
 
@@ -144,7 +156,7 @@ def _build_memory_graph(
                 # Rendered text for either storage shape; fall back to str() so a
                 # malformed row still surfaces in search rather than vanishing.
                 text = _lesson_display_text(rule) or str(rule)
-                _add("lesson", text[:80], "lesson", text)
+                _add("lesson", text[:80], "lesson", text, record=str(entry.get("key") or ""))
         else:
             # ``load_all`` lists the file oldest first, so the newest are the tail.
             partial["lessons"] = len(lessons) > GRAPH_LESSON_LIMIT

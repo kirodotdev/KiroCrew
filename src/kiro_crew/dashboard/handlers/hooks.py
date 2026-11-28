@@ -49,6 +49,7 @@ from kiro_crew.constants import (
     DENY_CAUSE_POLICY,
     DENY_CAUSE_SURFACE_POLICY,
 )
+from kiro_crew.dashboard import running_bot_turns
 from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers.hooks_scripts import _sel
 from kiro_crew.dashboard.handlers.hooks_webhook_intake import (
@@ -870,6 +871,7 @@ async def _run_hook_inner(
     *,
     execution_context: ExecutionContext | None = None,
     on_client: Callable[[Any], None] | None = None,
+    bot_turn: object | None = None,
 ) -> str:
     """Inner agent turn — called within timeout wrapper.
 
@@ -880,6 +882,7 @@ async def _run_hook_inner(
     from dataclasses import replace
 
     from kiro_crew import name_grant
+    from kiro_crew.agent_sdk.drivers.acp_vocab import RefusalHopText
     from kiro_crew.context import _neutralize_structural_markers, session_store_for_turn
     from kiro_crew.execution_context import bind_session_execution, read_session_execution
     from kiro_crew.hooks import (  # noqa: F811  # circular import
@@ -889,8 +892,10 @@ async def _run_hook_inner(
         identity_grant_covers_child,
     )
     from kiro_crew.llm_helpers import _steer_host_deny
+    from kiro_crew.messaging.alternation_echo import drop_echo
     from kiro_crew.messaging.driver import strip_steering_markers
     from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK  # noqa: F811
+    from kiro_crew.session_directive import strip_quoted_markers
 
     execution: ExecutionContext = (
         execution_context
@@ -911,8 +916,8 @@ async def _run_hook_inner(
         # Publish the captured identity WITHOUT vouching. A vouched entry is only
         # ever read for the CALLER slot of `create_session`'s own-store admission,
         # and a hook session can never be that caller: its key is a `hook:` synthetic
-        # (see `_HOOK_SESSION_PREFIX`) belonging to an ephemeral session that
-        # `_run_hook_agent` destroys after the turn, so it is never a dashboard slot
+        # (see `_HOOK_SESSION_PREFIX`) belonging to a session that `_run_hook_agent`
+        # resets after the turn, so it is never a dashboard slot
         # and `caller_slot_key` cannot resolve it. Vouching it would only occupy a
         # slot in the capped vouched map for an entry nothing can read. Publishing the
         # record still lets the hook turn run.
@@ -925,6 +930,11 @@ async def _run_hook_inner(
         execution = replace(execution, template_id=agent)
     else:
         agent = execution.template_id or None
+        if bot_turn is not None:
+            # The turn runs as the registered execution, on its own agent: the
+            # Bot list reads it as that Bot's. A request that names an agent
+            # runs another one, and is not noted.
+            running_bot_turns.begin(bot_turn, execution)
     memory_store = await session_store_for_turn(state.context_builder, session_key)
     client, is_new, resumed = await state.sessions.get_or_create(session_key, agent=agent)
     if on_client is not None:
@@ -958,6 +968,9 @@ async def _run_hook_inner(
             memory_store=memory_store,
             execution_context=execution,
             context_provider=client,
+            # One-shot: a new hook session reads none of the key's logged history.
+            compressed_history="",
+            conversation_reset=True,
         )
         trusted_prompt = full_message
     if full_message is not trusted_prompt:
@@ -972,12 +985,16 @@ async def _run_hook_inner(
         # ``_run_hook_agent`` prepends is not bounded by _HOOK_MESSAGE_MAX_LEN.
         full_message = await asyncio.to_thread(_neutralize_structural_markers, full_message)
     result_text = ""
+    refusal = RefusalHopText()
     _complete_event: object | None = None
     # Wall clock for the webhook agent turn: acp leaves TurnUsage.duration_ms
     # at 0, so without this the row records a literal 0. Started after the
     # context build so prompt assembly is not charged to the turn.
     _turn_t0 = time.monotonic()
-    async for event in client.stream(full_message):
+    # A turn on a live session it adopted, which already holds an earlier turn,
+    # can open with the alternation placeholder (``drop_echo``).
+    async for event in drop_echo(client.stream(full_message)):
+        result_text = refusal.fold(event, result_text)
         if event.kind == EVENT_TEXT_CHUNK:
             result_text += event.text
         elif event.kind == _EVENT_PERMISSION_REQUEST_KIND:
@@ -1136,6 +1153,11 @@ async def _run_hook_inner(
                     source="webhook",
                     request_id=str(event.request_id),
                     error=deny_error,
+                    metadata=(
+                        {"rule_id": decision.tier}
+                        if deny_error == "hook_deny" and decision is not None and decision.tier
+                        else None
+                    ),
                 )
                 # No person is attached to a webhook turn, so every deny here
                 # is the host's: tell the model which one before the wire.
@@ -1186,8 +1208,8 @@ async def _run_hook_inner(
     except Exception:
         logger.debug("usage row (webhook) persist failed", exc_info=True)
 
-    # kiro-cli's [STEERING steer-…] ack is protocol, not the result.
-    return strip_steering_markers(result_text)
+    # kiro-cli's [STEERING steer-…] ack and a quoted directive marker line are protocol.
+    return strip_quoted_markers(strip_steering_markers(result_text))
 
 
 async def _run_hook_agent(
@@ -1201,15 +1223,17 @@ async def _run_hook_agent(
     token_id: str | None = None,
     execution_context: ExecutionContext | None = None,
 ) -> tuple[str, str]:
-    """Execute a webhook-triggered agent turn in an ephemeral session.
+    """Execute a webhook-triggered agent turn in its hook session.
 
     Returns ``(outcome, result text)``, the text redacted as delivery sends it,
     for a caller that waits for the answer.
 
-    Sessions are always destroyed after the turn completes (like subagents).
+    The session is reset after the turn and its resume sid is forgotten, so a
+    caller that reuses a ``sessionKey`` starts a fresh conversation; the sid is
+    kept while a sub-agent of the turn still owes it a report.
     Context continuity across webhook calls is provided by hooks.json —
     the agent calls ``register_hook`` to persist context_summary, and this
-    handler injects it into the next fresh session.
+    handler injects it into each turn's message.
     """
     # Pure, cannot raise, so it may sit outside the try below.
     hook_id = session_key.removeprefix(_HOOK_SESSION_PREFIX)
@@ -1222,6 +1246,8 @@ async def _run_hook_agent(
     mcp_problems = ""
     mcp_missing: tuple[str, ...] = ()
     mcp_never_reported = ""
+    # This turn's entry in the table of running Bot turns (``GET /v1/crew/bots``).
+    bot_turn = object()
     try:
         # Loading the persisted context (written by the register_hook MCP tool)
         # is INSIDE the try because the caller's permit and the in-flight claim
@@ -1263,6 +1289,7 @@ async def _run_hook_agent(
                     agent,
                     execution_context=execution_context,
                     on_client=clients.append,
+                    bot_turn=bot_turn,
                 ),
                 session_key=session_key,
                 text=message,
@@ -1307,6 +1334,7 @@ async def _run_hook_agent(
         logger.exception("Hook agent failed for %s", session_key)
         await state.sessions.record_failure(session_key)
     finally:
+        running_bot_turns.end(bot_turn)  # first, so nothing below can skip it; never raises
         # Read before release/reset: the report lives on the session being torn
         # down. Here rather than in the inner turn so a timeout or crash still
         # says which servers never started.
@@ -1343,8 +1371,30 @@ async def _run_hook_agent(
         except Exception:
             logger.exception("Hook session reset failed: %s", session_key)
         finally:
-            _hook_inflight_sessions.discard(session_key)
-            _hook_semaphore.release()
+            try:
+                # A hook session is one-shot: the reset keeps the resume sid, which
+                # would let the next call on this `sessionKey` load this conversation.
+                # Kept while a sub-agent of the turn still owes it a report (the
+                # probes of `_parent_owes_child_work` and its `_now` half, less the
+                # teardown fence this path never opens): the report is injected
+                # into this conversation.
+                subs = state.subagents
+                if subs is None or not (
+                    subs.has_unfinished_report_for(session_key)
+                    or subs.has_in_memory_pending_work_for(session_key)
+                    or subs.has_live_or_queued_children(session_key)
+                    or await subs.has_pending_work_for_async(session_key)
+                    or await subs.has_pending_store_children(session_key)
+                ):
+                    state.sessions.forget_conversation(session_key)
+            except Exception:
+                logger.exception(
+                    "Hook session %s: owed-work read or forget failed; resume sid kept",
+                    session_key,
+                )
+            finally:
+                _hook_inflight_sessions.discard(session_key)
+                _hook_semaphore.release()
 
     # Deliver BEFORE recording, and record only the destinations that actually
     # accepted the result. Deriving `delivered` from intent instead of outcome

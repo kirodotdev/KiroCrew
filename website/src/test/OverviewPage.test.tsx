@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { screen, fireEvent, act } from '@testing-library/react'
+import { screen, fireEvent, act, within } from '@testing-library/react'
 import { i18next } from '../i18n/all'
 import { renderWithProviders, createTestStore } from './helpers'
 import { namedCeiling } from './namedCeiling'
-import OverviewPage from '../pages/OverviewPage'
+import OverviewPage, { kasAgentsSignedOut } from '../pages/OverviewPage'
 import { api } from '../api/client'
-import { KIRO_SIGN_IN_BACKEND } from '../pages/developer/kiroSignInLink'
+import type { KasBundleStatus, KasLoginStatus } from '../api/client'
+import { KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
+import { sseDisconnected } from '../store/dashboardSlice'
 import type { RootState } from '../store'
 
 // Mock the two drill-in surfaces to isolate the mission-control shell.
@@ -29,10 +31,12 @@ vi.mock('../api/client', () => ({
       range: 'last_7_days',
       stats: { total_seconds: 1800, total_seconds_including_other_language: 7200 },
     }),
-    // Present only to be asserted NEVER called: the landing page must not read
-    // the Kiro sign-in status, let alone render its chooser.
+    // Read only on KAS, where the health line asks whether the agents can sign in.
     kasLoginStatus: vi.fn().mockResolvedValue({ authenticated: false }),
-    // The selected backend decides whether the sign-in signpost renders.
+    // Whether the gateway says a new chat needs Kiro Crew's own sign-in, read
+    // with an empty sign-in store.
+    kasBundleStatus: vi.fn().mockResolvedValue({ chat_needs_sign_in: false }),
+    // The selected backend decides whether the sign-in status is read.
     kirocrewConfig: vi.fn().mockResolvedValue({ agent: { acp_backend: 'kiro' } }),
   },
 }))
@@ -112,12 +116,12 @@ describe('OverviewPage — mission control', () => {
     expect(screen.queryByText('All systems running')).not.toBeInTheDocument()
   })
 
-  it('renders usage and memory summary cards', async () => {
+  it('renders the usage summary card, and no Memory card: Memory is its own Settings entry', async () => {
     renderWithProviders(<OverviewPage />, { store: statusStore() })
     expect(screen.getByText('Usage')).toBeInTheDocument()
-    expect(screen.getByText('Memory')).toBeInTheDocument()
-    expect(await screen.findByText(/Summarizes chats into memory after 3h idle/)).toBeInTheDocument()
     expect(await screen.findByText(/Today:/)).toBeInTheDocument()
+    expect(screen.queryByText('Memory')).toBeNull()
+    expect(screen.getAllByRole('button', { name: /View details/ })).toHaveLength(2)
   })
 
   it('reads the Today line as one phrase with plural counts and a formatted cost', async () => {
@@ -151,25 +155,6 @@ describe('OverviewPage — mission control', () => {
       usageToday.sessions = 3
       usageToday.messages = 42
     }
-  })
-
-  it('drills into Memory and back', async () => {
-    renderWithProviders(<OverviewPage />, { store: statusStore() })
-    // Summary cards share the verb, in render order: Usage (0), WakaTime (1),
-    // Memory (2).
-    fireEvent.click(screen.getAllByRole('button', { name: /View details/ })[2])
-    expect(await screen.findByTestId('memory-tab')).toBeInTheDocument()
-    expect(screen.queryByText('All systems running')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /Overview/ }))
-    expect(screen.getByText('All systems running')).toBeInTheDocument()
-    expect(screen.queryByTestId('memory-tab')).not.toBeInTheDocument()
-  })
-
-  it('lets a member drill-in own its title while keeping one back action', async () => {
-    renderWithProviders(<OverviewPage />, { store: statusStore(), route: '/settings/overview?view=memory&store=member-alice' })
-    expect(await screen.findByTestId('memory-tab')).toBeInTheDocument()
-    expect(screen.queryByText('Memory')).toBeNull()
-    expect(screen.getAllByRole('button', { name: /Overview/ })).toHaveLength(1)
   })
 
   it('drills into Usage and back', () => {
@@ -224,14 +209,18 @@ describe('OverviewPage — mission control', () => {
   })
 
   // The Kiro sign-in card lives on its own Settings > Kiro account tab. On the
-  // landing page
-  // its provider chooser read as a required step to every user, first-run
-  // installs included. Asserted so it is not re-added: neither the card nor a
-  // read of its status belongs here.
-  it('hosts no Kiro sign-in card and never reads the sign-in status', async () => {
+  // landing page its provider chooser read as a required step to every user,
+  // first-run installs included. Asserted so it is not re-added. Off KAS the
+  // page does not read the sign-in status at all; on KAS only the health line
+  // does.
+  it('hosts no Kiro sign-in card, and off KAS never reads the sign-in status', async () => {
     const { api } = await import('../api/client')
+    vi.mocked(api.kasLoginStatus).mockClear()
+    vi.mocked(api.kirocrewConfig).mockResolvedValueOnce({ agent: { acp_backend: 'claude' } })
     renderWithProviders(<OverviewPage />, { store: statusStore() })
-    expect(await screen.findByText('Memory')).toBeInTheDocument()
+    // Tokens and cost join the Today line only once the config read has landed,
+    // the read that decides whether the health line asks for the sign-in.
+    expect(await screen.findByText('Today: 3 sessions · 42 messages · 63.3K tokens · $4.12')).toBeInTheDocument()
     expect(screen.queryByTestId('kiro-sign-in-card')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Continue with/ })).not.toBeInTheDocument()
     expect(api.kasLoginStatus).not.toHaveBeenCalled()
@@ -239,54 +228,100 @@ describe('OverviewPage — mission control', () => {
 
   it('carries no "sign-in moved" signpost either, whichever backend is selected', async () => {
     const { api } = await import('../api/client')
-    // The time-boxed pointer to the sign-in card is retired: the page
-    // neither renders it nor reads the backend to decide whether to.
+    // The time-boxed pointer to the sign-in card is retired, on every
+    // backend.
     const first = renderWithProviders(<OverviewPage />, { store: statusStore() })
-    expect(await screen.findByText('Memory')).toBeInTheDocument()
+    expect(await screen.findByText(/Today:/)).toBeInTheDocument()
     expect(screen.queryByTestId('kiro-sign-in-moved')).not.toBeInTheDocument()
     first.unmount()
 
     vi.mocked(api.kirocrewConfig).mockResolvedValueOnce({ agent: { acp_backend: KIRO_SIGN_IN_BACKEND } })
     renderWithProviders(<OverviewPage />, { store: statusStore() })
-    expect(await screen.findByText('Memory')).toBeInTheDocument()
+    expect(await screen.findByText(/Today:/)).toBeInTheDocument()
     expect(screen.queryByTestId('kiro-sign-in-moved')).not.toBeInTheDocument()
     expect(screen.queryByText(/sign-in moved/i)).not.toBeInTheDocument()
-    expect(api.kasLoginStatus).not.toHaveBeenCalled()
   })
 })
 
-// The Memory card line was five catalog fragments glued around two raw
-// numbers, so every language kept English word order and "1 days" (#32430).
-describe('OverviewPage — Memory card line', () => {
-  afterEach(async () => {
-    await act(async () => { await i18next.changeLanguage('en') })
+// On KAS with no working Kiro sign-in every reply fails asking for one, so the
+// health line must not read "All systems running" there.
+describe('OverviewPage — health line and the Kiro sign-in', () => {
+  const signedOut: KasLoginStatus = {
+    authenticated: false, provider: '', identity: '', transport: 'loopback', expires_at: null,
+    expired: false, has_refresh_token: false, refresh_rejected: false, usable: false,
+  }
+  const signedIn: KasLoginStatus = {
+    ...signedOut, authenticated: true, provider: 'Github', identity: 'social',
+    expires_at: '2026-11-15T00:00:00+00:00', has_refresh_token: true, usable: true,
+  }
+  afterEach(() => {
+    vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: 'kiro' } })
+    vi.mocked(api.kasLoginStatus).mockResolvedValue({ authenticated: false } as KasLoginStatus)
+    vi.mocked(api.kasBundleStatus).mockResolvedValue({ chat_needs_sign_in: false } as KasBundleStatus)
   })
 
-  it('reads as one sentence with a plural day count', async () => {
-    const { api } = await import('../api/client')
-    vi.mocked(api.memorySettings).mockResolvedValueOnce({ history_idle_hours: 2, history_max_days: 1, migrated: false })
-    renderWithProviders(<OverviewPage />, { store: statusStore() })
-    expect(await screen.findByText('Summarizes chats into memory after 2h idle · keeps 1 day of history')).toBeInTheDocument()
+  const NEEDED = "Kiro sign-in needed: agents can't reply"
+  // The warning waits on three reads in turn: the config, then the sign-in
+  // status (KAS only), then the gateway's verdict on a new chat (empty store
+  // only).
+  const chain = () => namedCeiling('KAS_SIGN_IN_CHAIN', 5000)
+
+  /** A KAS gateway whose store holds `login` and which says whether a new chat needs Kiro Crew's own sign-in. */
+  function renderOnKas(login: KasLoginStatus, chatNeedsSignIn: boolean, connected = true) {
+    vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: KIRO_SIGN_IN_BACKEND } })
+    vi.mocked(api.kasLoginStatus).mockClear().mockResolvedValue(login)
+    vi.mocked(api.kasBundleStatus).mockClear().mockResolvedValue({ chat_needs_sign_in: chatNeedsSignIn } as KasBundleStatus)
+    return renderWithProviders(<OverviewPage />, { store: statusStore(connected) })
+  }
+
+  it('says the agents cannot reply, with a warning dot and the way to sign in', async () => {
+    renderOnKas(signedOut, true)
+    expect(await screen.findByText(NEEDED, {}, chain())).toBeInTheDocument()
+    expect(screen.queryByText('All systems running')).not.toBeInTheDocument()
+    expect(screen.getByTestId('overview-health-dot')).toHaveClass('bg-warn')
+    expect(screen.getByTestId('overview-health-dot')).not.toHaveClass('bg-ok')
+    const link = screen.getByTestId('overview-kiro-sign-in')
+    expect(link).toHaveAttribute('href', KIRO_SIGN_IN_PATH)
+    expect(within(link).getByText('Open sign-in settings')).toBeInTheDocument()
+    // On KAS the page reads the sign-in status once, for this line.
+    expect(api.kasLoginStatus).toHaveBeenCalledTimes(1)
   })
 
-  it('reads as one sentence once semantic memory is on', async () => {
-    const { api } = await import('../api/client')
-    vi.mocked(api.memorySettings).mockResolvedValueOnce({ history_idle_hours: 3, history_max_days: 90, migrated: true })
-    renderWithProviders(<OverviewPage />, { store: statusStore() })
-    expect(await screen.findByText('Summarizes chats into memory after 3h idle · semantic memory active')).toBeInTheDocument()
+  it.each([
+    ['a working sign-in lands', ['kas-login'], signedIn],
+    ['the gateway says a new chat runs without it', ['kas-bundle'], { chat_needs_sign_in: false }],
+  ] as const)('turns green again once %s', async (_case, key, data) => {
+    const { queryClient } = renderOnKas(signedOut, true)
+    expect(await screen.findByText(NEEDED, {}, chain())).toBeInTheDocument()
+    act(() => { queryClient.setQueryData([...key], data) })
+    expect(await screen.findByText('All systems running')).toBeInTheDocument()
+    expect(screen.getByTestId('overview-health-dot')).toHaveClass('bg-ok')
+    expect(screen.queryByText(NEEDED)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('overview-kiro-sign-in')).not.toBeInTheDocument()
   })
 
-  it('follows the word order of the language, not English', async () => {
-    await act(async () => { await i18next.changeLanguage('ja') })
-    const { api } = await import('../api/client')
-    vi.mocked(api.memorySettings).mockResolvedValueOnce({ history_idle_hours: 3, history_max_days: 90, migrated: false })
-    renderWithProviders(<OverviewPage />, { store: statusStore() })
-    expect(await screen.findByText('3 時間使われないとチャットをメモリに要約 · 90 日分の履歴を保持')).toBeInTheDocument()
+  it('lets the connection speak first once the socket drops', async () => {
+    const { store } = renderOnKas(signedOut, true)
+    expect(await screen.findByTestId('overview-kiro-sign-in', {}, chain())).toBeInTheDocument()
+    act(() => { store.dispatch(sseDisconnected(null)) })
+    expect(screen.getByText('Reconnecting…')).toBeInTheDocument()
+    expect(screen.queryByText(NEEDED)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('overview-kiro-sign-in')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['nothing stored, the gateway says a new chat needs Kiro Crew\'s own sign-in', true, signedOut, true],
+    ['nothing stored, a new chat runs on kiro-cli\'s relay, whose own login answers', false, signedOut, false],
+    ['nothing stored, a gateway that does not say', false, signedOut, undefined],
+    ['a working sign-in', false, signedIn, true],
+    ['a sign-in expired with nothing to renew it', true, { ...signedIn, expired: true, has_refresh_token: false, usable: false }, false],
+    ['a renewal Kiro refused, now expired', true, { ...signedIn, expired: true, refresh_rejected: true }, false],
+    ['Kiro refused the access token and its renewal before expiry', true, { ...signedIn, refresh_rejected: true }, false],
+  ] as const)('with %s, the agents cannot sign in: %s', (_case, expected, login, chatNeedsSignIn) => {
+    expect(kasAgentsSignedOut(login, chatNeedsSignIn)).toBe(expected)
   })
 })
 
-// The health line, the Usage card's no-usage note and the WakaTime line were
-// catalog fragments glued around a value in English order (#32431).
 describe('OverviewPage — whole-sentence lines', () => {
   afterEach(async () => {
     usageCaps.usageBilling = true

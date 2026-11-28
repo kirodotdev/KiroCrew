@@ -8,7 +8,8 @@ the device tests use — so no test touches Kiro's servers.
 The allowlisted ports are shared machine-wide, so every test cancels its login
 (or drives it to a terminal state) before returning: a leaked listener would make
 the next test bind a different port, not fail, but would hold the port for the
-whole 300s deadline.
+whole 300s deadline. A signed-in listener keeps answering until that deadline by
+design; the rootdir conftest cancels its close task with the test's loop.
 """
 
 from __future__ import annotations
@@ -194,23 +195,76 @@ async def test_loopback_callback_exchanges_code_and_persists(tmp_path, loopback_
     assert body["redirect_uri"] == (
         f"http://localhost:{begin['port']}/oauth/callback?login_option=github"
     )
-    # Terminal: the entry is gone and the port is released.
+    # Terminal: the entry is gone.
     with pytest.raises(UnknownLoginError):
         await service.poll_device(begin["login_id"])
 
 
 @pytest.mark.asyncio
-async def test_loopback_state_mismatch_is_error_and_saves_nothing(tmp_path, loopback_shape):
+async def test_loopback_callback_without_state_is_error_and_saves_nothing(tmp_path, loopback_shape):
     service, _ = _service(tmp_path)
     begin = await service.begin_loopback("google")
-    page = await _hit_callback(
-        begin["port"], {"login_option": "google", "code": "c", "state": "not-ours"}
-    )
+    page = await _hit_callback(begin["port"], {"login_option": "google", "code": "c"})
     assert "Login failed" in page
     result = await _poll_until_terminal(service, begin["login_id"])
     assert result["status"] == "error"
+    assert _port_is_closed(begin["port"])
     assert result["code"] == "loopback_failed"
     assert TokenStore(tmp_path).resolve() is None
+
+
+@pytest.mark.asyncio
+async def test_loopback_tab_of_a_replaced_sign_in_changes_nothing(tmp_path, loopback_shape):
+    """Start over re-binds the same port, so the replaced sign-in's tab comes back to it."""
+    ok = {"accessToken": "at", "expiresIn": 3600, "profileArn": "arn:aws:kiro::1:profile/s"}
+    service, session = _service(tmp_path, responses=[_FakeResp(200, ok)])
+    begin = await service.begin_loopback("google")
+    for older_tab in (
+        {"login_option": "google", "code": "older", "state": "older-sign-in"},
+        {"error": "access_denied", "state": "older-sign-in"},
+    ):
+        assert "replaced by a newer one" in await _hit_callback(begin["port"], older_tab)
+    assert await service.poll_device(begin["login_id"]) == {"status": "pending"}
+    page = await _hit_callback(
+        begin["port"],
+        {"login_option": "google", "code": "c", "state": _state_from(begin["auth_url"])},
+    )
+    assert "Login complete" in page
+    result = await _poll_until_terminal(service, begin["login_id"])
+    assert result["status"] == "authorized"
+    assert [body["code"] for _, body in session.calls] == ["c"]
+
+
+@pytest.mark.asyncio
+async def test_loopback_second_tab_after_sign_in_gets_a_page(tmp_path, loopback_shape):
+    """A later tab of a finished sign-in gets a page from the listener, not a closed port."""
+    ok = {"accessToken": "at", "expiresIn": 3600, "profileArn": "arn:aws:kiro::1:profile/s"}
+    service, session = _service(tmp_path, responses=[_FakeResp(200, ok)])
+    begin = await service.begin_loopback("google")
+    query = {"login_option": "google", "code": "c", "state": _state_from(begin["auth_url"])}
+    assert "Login complete" in await _hit_callback(begin["port"], query)
+    assert "already finished" in await _hit_callback(begin["port"], query)
+    result = await _poll_until_terminal(service, begin["login_id"])
+    assert result["status"] == "authorized"
+    # Still answering once the sign-in landed and its entry is gone.
+    assert "already finished" in await _hit_callback(begin["port"], query)
+    assert len(session.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_new_sign_in_retires_a_signed_in_listener(tmp_path, loopback_shape):
+    """The next sign-in takes the port back, as a container maps only a few."""
+    ok = {"accessToken": "at", "expiresIn": 3600, "profileArn": "arn:aws:kiro::1:profile/s"}
+    service, _ = _service(tmp_path, responses=[_FakeResp(200, ok)])
+    first = await service.begin_loopback("google")
+    query = {"login_option": "google", "code": "c", "state": _state_from(first["auth_url"])}
+    assert "Login complete" in await _hit_callback(first["port"], query)
+    assert (await _poll_until_terminal(service, first["login_id"]))["status"] == "authorized"
+    second = await service.begin_loopback("google")
+    try:
+        assert _port_is_closed(first["port"])
+    finally:
+        await service.cancel(second["login_id"])
 
 
 @pytest.mark.asyncio
@@ -381,6 +435,47 @@ async def test_loopback_portal_error_is_error(tmp_path, loopback_shape, error, p
         "code": "loopback_failed",
         "error": f"portal returned error: {error}",
     }
+
+
+_OK = {"accessToken": "at", "expiresIn": 3600, "profileArn": "arn:aws:kiro::1:profile/s"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "landing, responses, path, status, says",
+    [
+        ("signed in", [_FakeResp(200, _OK)], "/oauth/callback", 200, "Login complete"),
+        ("exchange failed", [_FakeResp(500, "boom")], "/oauth/callback", 200, "could not finish"),
+        ("login failed", [], "/oauth/callback", 200, "Login failed"),
+        ("already finished", [_FakeResp(200, _OK)], "/oauth/callback", 200, "already finished"),
+        ("replaced", [], "/oauth/callback", 200, "replaced by a newer one"),
+        ("wrong address", [], "/oauth/callback/", 404, "could not finish here"),
+    ],
+)
+async def test_every_page_the_tab_lands_on_is_titled_and_names_the_dashboard(
+    tmp_path, loopback_shape, landing, responses, path, status, says
+):
+    service, _ = _service(tmp_path, responses=responses)
+    begin = await service.begin_loopback("google")
+    query = {"login_option": "google", "code": "c", "state": _state_from(begin["auth_url"])}
+    if landing == "login failed":
+        query = {"error": "access_denied"}
+    elif landing == "replaced":
+        query["state"] = "older-sign-in"
+    url = f"http://127.0.0.1:{begin['port']}{path}?{urllib.parse.urlencode(query)}"
+    try:
+        async with aiohttp.ClientSession() as s:
+            if landing == "already finished":
+                async with s.get(url) as first_tab:
+                    assert first_tab.status == 200
+            async with s.get(url) as resp:
+                assert (resp.status, resp.content_type) == (status, "text/html")
+                page = await resp.text()
+    finally:
+        await service.cancel(begin["login_id"])
+    assert says in page
+    assert "<title>Kiro Crew sign-in</title>" in page
+    assert "the Kiro Crew dashboard" in page
 
 
 @pytest.mark.asyncio

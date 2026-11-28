@@ -12,8 +12,9 @@ own runtime session key (``dashboard:<slot>``), the key the Bot in that slot
 browses under. So the on/off switch (``capabilities.browse``, read for that key,
 never for the app's name), the navigate gate on the requested address, an app's
 ``browserSites``, the takeover hold, the gateway-wide lock, the tab binding and the
-per-caller checks apply to an app exactly as they apply to the Bot, from one copy.
-An app op queues on the same lock as the Bot's.
+per-caller checks apply to an app exactly as they apply to the Bot, from one copy;
+only the gateway's own origins, which the route's request carries, are the Bot's
+alone. An app op queues on the same lock as the Bot's.
 
 Which tabs. A slot is the app's only when its key is spelled ``<app>-<id>`` AND the
 live slot under it carries the app's stamp (``slot._app``): an app name can extend
@@ -67,17 +68,18 @@ def _refusal(code: str, error: str) -> dict[str, Any]:
 def _read_screenshot(path: str) -> bytes | None:
     """The image at *path*, or ``None``. Blocking: run it off the loop.
 
-    The image sits in a leaf an agent's sandbox can write, so it is read with no
-    link followed, pinned to that leaf, the cap enforced on the bytes read (over it
-    raises ``FileTooLargeError``).
+    The image sits in a leaf an agent's sandbox can write, so only a regular file
+    whose real path is inside that leaf is read, the leaf spelled literally as
+    ``SNAPSHOT_DIR_NAME`` asks (a leaf replaced by a link fails the pin), the cap
+    enforced on the bytes read (over it raises ``FileTooLargeError``).
     """
     from kiro_crew.apps.backend_sdk.files import read_bytes_nofollow
-    from kiro_crew.browser_harness.ops import screenshot_dir
-    from kiro_crew.config.paths import config_dir
+    from kiro_crew.browser_snapshots import snapshot_dir
 
+    snap = snapshot_dir()
     return read_bytes_nofollow(
         path,
-        within_root=os.path.realpath(screenshot_dir(config_dir())),
+        within_root=os.path.join(os.path.realpath(snap.parent), snap.name),
         max_bytes=SCREENSHOT_MAX_BYTES,
         within_root_is_canonical=True,
     )

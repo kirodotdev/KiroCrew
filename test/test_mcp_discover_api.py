@@ -259,7 +259,9 @@ class TestDiscoverSearch:
             assert resp.status == 200
             data = await resp.json()
             assert data["providers"] == ["official"]
-            assert data["provider_outcomes"] == [{"name": "official", "status": "ok"}]
+            assert data["provider_outcomes"] == [
+                {"name": "official", "display_name": "MCP Registry", "status": "ok"}
+            ]
             assert data["results"] == [
                 {
                     "id": _WEATHER_ID,
@@ -285,9 +287,100 @@ class TestDiscoverSearch:
             assert resp.status == 200
             data = await resp.json()
             assert data["results"] == []
-            assert data["provider_outcomes"] == [{"name": "official", "status": "error"}]
+            assert data["provider_outcomes"] == [
+                {"name": "official", "display_name": "MCP Registry", "status": "error"}
+            ]
         finally:
             await client.close()
+
+    async def test_edition_provider_found_after_the_first_search_is_searched_without_restart(
+        self, sandbox, fake_sel, reset_registry, monkeypatch
+    ):
+        """The registry singleton is built at the first search, while the edition
+        package manager is still missing (its CLI installed later). Once the
+        manager reports available, the next search reaches it; before that, the
+        search names it and the reason the manager gave."""
+        from kiro_crew.dashboard.handlers import _shared as shared_mod
+        from kiro_crew.dashboard.handlers import mcp_discover as mod
+
+        class _LateManager:
+            installed = False
+
+            def available(self):
+                return self.installed
+
+            def unavailable_reason(self):
+                return "" if self.installed else "The package CLI is not installed yet."
+
+            async def registry(self, query=None):
+                return [{"id": "chorus-mcp", "title": "Chorus MCP", "description": "Docs"}]
+
+        manager = _LateManager()
+        monkeypatch.setattr(shared_mod, "_capability_manager", lambda: manager)
+        # The edition withholds the public registry, so its provider is the only one.
+        monkeypatch.setattr(shared_mod, "admits_registry", lambda *_a: False)
+        mod._registry = None
+
+        first = await mod.search_registry("chorus")
+        assert first["providers"] == []
+        assert first["results"] == []
+        assert first["provider_outcomes"] == [
+            {
+                "name": "capability",
+                "display_name": "Packages",
+                "status": "unavailable",
+                "message": "The package CLI is not installed yet.",
+            }
+        ]
+
+        manager.installed = True
+        second = await mod.search_registry("chorus")
+        assert second["providers"] == ["capability"]
+        assert [r["id"] for r in second["results"]] == ["chorus-mcp"]
+        assert second["provider_outcomes"] == [
+            {"name": "capability", "display_name": "Packages", "status": "ok"}
+        ]
+
+    async def test_a_manager_without_a_reason_stays_out_of_the_search(
+        self, sandbox, fake_sel, reset_registry, monkeypatch
+    ):
+        """The public Default says nothing, so its build shows no edition outcome."""
+        from kiro_crew.dashboard.handlers import _shared as shared_mod
+        from kiro_crew.dashboard.handlers import mcp_discover as mod
+        from kiro_crew.platform.capability_bound import bind_capability_manager
+        from kiro_crew.platform.defaults import DefaultCapabilityManager
+
+        monkeypatch.setattr(
+            shared_mod,
+            "_capability_manager",
+            lambda: bind_capability_manager(DefaultCapabilityManager()),
+        )
+        monkeypatch.setattr(shared_mod, "admits_registry", lambda *_a: False)
+        mod._registry = None
+
+        found = await mod.search_registry("chorus")
+        assert found == {"results": [], "providers": [], "provider_outcomes": []}
+
+    async def test_an_unavailable_reason_is_scrubbed_and_capped(
+        self, sandbox, fake_sel, reset_registry
+    ):
+        from kiro_crew.dashboard.handlers import mcp_discover as mod
+
+        token = github_classic()
+
+        class _Unready(FakeOfficialProvider):
+            def unavailable_reason(self):
+                return f"sign in again (token {token}) " + "x" * 1000
+
+        registry = ProviderRegistry()
+        registry.register(_Unready(available=False))
+        mod._registry = registry
+
+        found = await mod.search_registry("weather")
+        (outcome,) = found["provider_outcomes"]
+        assert outcome["status"] == "unavailable"
+        assert token not in outcome["message"]
+        assert len(outcome["message"]) == mod._MAX_REASON_CHARS
 
     async def test_installed_cross_ref_matches_short_name(
         self, sandbox, fake_sel, reset_registry, monkeypatch
@@ -395,6 +488,34 @@ class TestDiscoverDetail:
         finally:
             await client.close()
 
+    async def test_detail_capability_on_a_build_without_an_edition_503(
+        self, sandbox, fake_sel, reset_registry, monkeypatch
+    ):
+        """The edition provider is always registered, so asking it for a detail on
+        a build whose manager is unavailable is "not available" (503), the same
+        answer install gives, never "unknown provider" (400)."""
+        from kiro_crew.dashboard.handlers import _shared as shared_mod
+        from kiro_crew.dashboard.handlers import mcp_discover as mod
+        from kiro_crew.platform.capability_bound import bind_capability_manager
+        from kiro_crew.platform.defaults import DefaultCapabilityManager
+
+        monkeypatch.setattr(
+            shared_mod,
+            "_capability_manager",
+            lambda: bind_capability_manager(DefaultCapabilityManager()),
+        )
+        monkeypatch.setattr(shared_mod, "admits_registry", lambda *_a: False)
+        client = await _client(FakeOfficialProvider())
+        mod._registry = None
+        try:
+            resp = await client.get(
+                "/api/mcp/discover/detail", params={"provider": "capability", "id": "x"}
+            )
+            assert resp.status == 503
+            assert (await resp.json())["error"] == "Provider 'capability' is not available"
+        finally:
+            await client.close()
+
     async def test_detail_not_found_404(self, sandbox, fake_sel, reset_registry):
         client = await _client(FakeOfficialProvider(detail=None))
         try:
@@ -487,6 +608,38 @@ class TestDiscoverInstall:
             assert await resp.json() == {
                 "error": "cannot parse the Kiro Crew mcp.json",
                 "code": "config_corrupt",
+            }
+            assert sandbox.kirocrew_json.read_bytes() == raw
+            assert not sandbox.rebuild.called
+            outcomes = [c.kwargs.get("outcome") for c in fake_sel.log_api_access.call_args_list]
+            assert outcomes == ["error"]
+        finally:
+            await client.close()
+
+    async def test_install_into_a_store_it_cannot_read_is_refused_as_unreadable(
+        self, sandbox, fake_sel, reset_registry, monkeypatch
+    ):
+        """A store that may be valid but cannot be read is not reported as unparseable."""
+        raw = json.dumps({"mcpServers": {"github": {"command": "gh-mcp"}}}).encode()
+        sandbox.kirocrew_json.write_bytes(raw)
+        real_read_text = Path.read_text
+
+        def read_text(self, *args, **kwargs):
+            if self == sandbox.kirocrew_json:
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", read_text)
+        client = await _client(FakeOfficialProvider())
+        try:
+            resp = await client.post(
+                "/api/mcp/discover/install",
+                json={"provider": "official", "id": _WEATHER_ID},
+            )
+            assert resp.status == 500
+            assert await resp.json() == {
+                "error": "cannot read the Kiro Crew mcp.json",
+                "code": "config_unreadable",
             }
             assert sandbox.kirocrew_json.read_bytes() == raw
             assert not sandbox.rebuild.called

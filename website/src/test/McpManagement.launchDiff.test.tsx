@@ -9,18 +9,33 @@
 // - a hidden or redacted value is named by its key only, never by its value
 //
 // Every label is read from the catalog, so a wording change never breaks a test.
-import { cleanup, render } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { i18nT } from '../i18n/t'
 import { fmtList } from '../i18n/format'
-import { RefusalLaunch } from '../pages/settings/McpManagementLaunchReview'
-import { distinctCommands, envValueChanges, launchChanges } from '../pages/settings/mcpLaunchDiff'
-import type { LaunchRefusal } from '../pages/settings/mcpManagementModel'
+import { RefusalLaunch, ServerName, TrustChangesChoice } from '../pages/settings/McpManagementLaunchReview'
+import type { McpManagedServer } from '../api/client'
+import { distinctCommands, envValueChanges, launchChanges, mergedEnvRule } from '../pages/settings/mcpLaunchDiff'
+import { withCurrentLaunch, type LaunchRefusal } from '../pages/settings/mcpManagementModel'
 
 const M = (key: string, vars?: Record<string, unknown>) => i18nT(`pages.mcpManagement.${key}`, vars)
 const list = (items: string[]) => fmtList(items, { style: 'narrow' })
 const pres = (root: HTMLElement) => Array.from(root.querySelectorAll('pre')).map(p => p.textContent)
+/** One column's launches as [command, its env keys or null], read in DOM order. */
+const columnLaunches = (root: HTMLElement, label: string): [string, string | null][] => {
+  const heading = Array.from(root.querySelectorAll('div')).find(
+    d => d.textContent === label && d.parentElement?.closest('details') === null,
+  )
+  const column = heading?.parentElement
+  if (!column) throw new Error(`no column labelled ${label}`)
+  return Array.from(column.querySelectorAll(':scope > div')).flatMap(launch => {
+    const pre = launch.querySelector('pre')
+    if (!pre) return []
+    const env = launch.querySelector('p')?.textContent?.replace(M('details_env'), '').trim() ?? null
+    return [[pre.textContent ?? '', env] as [string, string | null]]
+  })
+}
 
 const CMD = ['/opt/bin/docs-mcp']
 const OLD_PATH = 'PATH=/home/u/.local/bin:/home/u/bin:/usr/local/bin:/usr/bin'
@@ -308,10 +323,11 @@ describe('two columns for a changed command line', () => {
     expect(Array.from(container.querySelectorAll('mark')).map(m => m.textContent)).toEqual(['--v1', '--v2', 'MODE'])
   })
 
-  it('lists only the env keys that changed, never one the same on both sides', () => {
+  it('lists the keys that changed when there is one launch per side', () => {
     const { container } = render(<RefusalLaunch refusal={argSwitch} />)
     const envRows = Array.from(container.querySelectorAll('p')).filter(p => p.textContent?.startsWith(M('details_env')))
     expect(envRows.map(p => p.textContent)).toEqual([`${M('details_env')} MODE`])
+    // PATH is the same on both sides of the one launch, so it is not listed.
     expect(container.textContent).not.toContain('PATH')
     // A changed command line does not make a key with the same value "moved".
     expect(envValueChanges(argSwitch)).toEqual([])
@@ -394,9 +410,105 @@ describe('a launch that changed its command and gained a key', () => {
         }}
       />,
     )
-    const marks = Array.from(container.querySelectorAll('mark')).map(m => m.textContent)
-    expect(marks).toContain('LD_PRELOAD')
     expect(container.textContent).toContain(`${M('details_env')} LD_PRELOAD`)
+    // The launch that newly carries the preload is marked, the one that kept it is not.
+    const marks = Array.from(container.querySelectorAll('mark')).map(m => m.textContent)
+    expect(marks.filter(m => m === 'LD_PRELOAD')).toEqual(['LD_PRELOAD'])
+  })
+
+  it('shows a preload that moved between two launches whose versions both changed', () => {
+    const a1 = ['/opt/search', '--v1', '--a']
+    const b1 = ['/opt/search', '--v1', '--b']
+    const a2 = ['/opt/search', '--v2', '--a']
+    const b2 = ['/opt/search', '--v2', '--b']
+    const { container } = render(
+      <RefusalLaunch
+        refusal={{
+          ...pathOnly,
+          approved_commands: [a1, b1],
+          approved_envs: [['LD_PRELOAD=/opt/hook.so'], []],
+          commands: [a2, b2],
+          envs: [[], ['LD_PRELOAD=/opt/hook.so']],
+        }}
+      />,
+    )
+    const envRows = Array.from(container.querySelectorAll('p')).filter(p => p.textContent?.startsWith(M('details_env')))
+    expect(envRows.length).toBe(2)
+    for (const row of envRows) expect(row.textContent).toContain('LD_PRELOAD')
+    // The move is marked in both columns, not left to be spotted by placement.
+    const marks = Array.from(container.querySelectorAll('mark')).map(m => m.textContent)
+    expect(marks.filter(m => m === 'LD_PRELOAD')).toEqual(['LD_PRELOAD', 'LD_PRELOAD'])
+  })
+
+  it('does not mark a key that every launch on both sides sets the same way', () => {
+    const a1 = ['/opt/search', '--v1', '--a']
+    const b1 = ['/opt/search', '--v1', '--b']
+    const { container } = render(
+      <RefusalLaunch
+        refusal={{
+          ...pathOnly,
+          approved_commands: [a1, b1],
+          approved_envs: [['PATH=/usr/bin', 'LD_PRELOAD=/opt/hook.so'], ['PATH=/usr/bin']],
+          commands: [['/opt/search', '--v2', '--a'], ['/opt/search', '--v2', '--b']],
+          envs: [['PATH=/usr/bin'], ['PATH=/usr/bin', 'LD_PRELOAD=/opt/hook.so']],
+        }}
+      />,
+    )
+    const marks = Array.from(container.querySelectorAll('mark')).map(m => m.textContent)
+    expect(marks).not.toContain('PATH')
+    expect(marks.filter(m => m === 'LD_PRELOAD')).toEqual(['LD_PRELOAD', 'LD_PRELOAD'])
+  })
+
+  it('lists the env keys of one launch per side when a value is redacted, since equal displays can hide a change', () => {
+    const v1 = ['/opt/search', '--v1']
+    const v2 = ['/opt/search', '--v2']
+    const shown = 'LD_PRELOAD=/opt/[REDACTED: credential]/x.so'
+    const { container } = render(
+      <RefusalLaunch refusal={{ ...pathOnly, approved_commands: [v1], approved_envs: [[shown]], commands: [v2], envs: [[shown]] }} />,
+    )
+    expect(columnLaunches(container, M('details_approved'))).toEqual([['/opt/search --v1', 'LD_PRELOAD']])
+    expect(columnLaunches(container, M('details_new'))).toEqual([['/opt/search --v2', 'LD_PRELOAD']])
+  })
+
+  it('names a key the gateway found changed when both sides display the same redacted value', () => {
+    const shown = 'NODE_OPTIONS=--token=[REDACTED: credential]'
+    const line = M('diff_env_value_changed', { name: 'NODE_OPTIONS' })
+    const same = { ...pathOnly, approved_commands: [CMD], approved_envs: [[shown]], commands: [CMD], envs: [[shown]] }
+    // Equal displays alone name nothing; the gateway's flag names the key.
+    expect(render(<RefusalLaunch refusal={same} />).container.textContent).not.toContain(line)
+    cleanup()
+    const flagged = render(<RefusalLaunch refusal={{ ...same, changed_env_keys: ['NODE_OPTIONS'] }} />)
+    expect(flagged.container.textContent).toContain(line)
+    cleanup()
+    // Beside a visible PATH change too, where each launch gets its own summary.
+    const beside = render(
+      <RefusalLaunch
+        refusal={{ ...same, approved_envs: [[OLD_PATH, shown]], envs: [[NEW_PATH, shown]], changed_env_keys: ['NODE_OPTIONS'] }}
+      />,
+    )
+    expect(beside.container.textContent?.split(line).length).toBe(2)
+  })
+
+  it('drops the changed keys of a refusal the page replaces with a newer launch', () => {
+    const shown = 'NODE_OPTIONS=--token=[REDACTED: credential]'
+    const line = M('diff_env_value_changed', { name: 'NODE_OPTIONS' })
+    const refusal: LaunchRefusal = {
+      ...pathOnly,
+      approved_commands: [CMD],
+      approved_envs: [[shown, 'MODE=<hidden sha256:aaaaaaaa>']],
+      commands: [CMD],
+      envs: [[shown, 'MODE=<hidden sha256:aaaaaaaa>']],
+      changed_env_keys: ['NODE_OPTIONS'],
+    }
+    const launch = { name: 'docs', commands: [CMD], envs: [[shown, 'MODE=<hidden sha256:bbbbbbbb>']], complete: true, expected_launch: 'newer' }
+    const replaced = withCurrentLaunch(refusal, { docs: { refused: 'shown', launch } }, 'docs')
+    expect(replaced.expected_launch).toBe('newer')
+    expect(render(<RefusalLaunch refusal={replaced} />).container.textContent).not.toContain(line)
+    expect(replaced.changed_env_keys).toBeUndefined()
+    cleanup()
+    const kept = withCurrentLaunch(refusal, {}, 'docs')
+    expect(kept.changed_env_keys).toEqual(['NODE_OPTIONS'])
+    expect(render(<RefusalLaunch refusal={kept} />).container.textContent).toContain(line)
   })
 
   it('lists no key for a plain version bump that kept every value', () => {
@@ -449,11 +561,14 @@ describe('two launches of one command swap a loader preload while another change
     envs: [['PATH=/a'], ['PATH=/b', 'LD_PRELOAD=/opt/hook.so'], []],
   }
 
-  it('hides no env key in the columns', () => {
+  it('draws each launch with its own env keys, hiding none', () => {
     const { container } = render(<RefusalLaunch refusal={swap} />)
-    const envRows = Array.from(container.querySelectorAll('p')).filter(p => p.textContent?.startsWith(M('details_env')))
-    expect(envRows.length).toBe(2)
-    for (const row of envRows) expect(row.textContent).toContain('LD_PRELOAD')
+    const before = columnLaunches(container, M('details_approved'))
+    const after = columnLaunches(container, M('details_new'))
+    expect(before).toContainEqual(['/opt/bin/docs-mcp', 'PATH, LD_PRELOAD'])
+    expect(before).toContainEqual(['/opt/bin/docs-mcp', 'PATH'])
+    expect(after).toContainEqual(['/opt/bin/docs-mcp', 'PATH'])
+    expect(after).toContainEqual(['/opt/bin/docs-mcp', 'PATH, LD_PRELOAD'])
   })
 
   it('draws the launches that moved the preload whole behind Show full command', () => {
@@ -468,5 +583,174 @@ describe('two launches of one command swap a loader preload while another change
       <RefusalLaunch refusal={{ ...pathOnly, approved_commands: [v1], approved_envs: [[]], commands: [v2], envs: [[]] }} />,
     )
     expect(container.querySelector('details')).toBeNull()
+  })
+})
+
+describe('launches the gateway lists in a different order on each side', () => {
+  // The gateway sorts each side by its own sha256 identity, so the new side
+  // can arrive as [b2, a2] while the approved side reads [a1, b1].
+  const a1 = ['/opt/search', '--v1', '--a']
+  const b1 = ['/opt/search', '--v1', '--b']
+  const a2 = ['/opt/search', '--v2', '--a']
+  const b2 = ['/opt/search', '--v2', '--b']
+  const moved: LaunchRefusal = {
+    ...pathOnly,
+    approved_commands: [a1, b1],
+    approved_envs: [['LD_PRELOAD=/opt/hook.so'], []],
+    commands: [b2, a2],
+    envs: [['LD_PRELOAD=/opt/hook.so'], []],
+  }
+
+  it('shows a moved LD_PRELOAD under the launch that carries it, whatever the list order', () => {
+    const { container } = render(<RefusalLaunch refusal={moved} />)
+    expect(columnLaunches(container, M('details_approved'))).toEqual([
+      ['/opt/search --v1 --a', 'LD_PRELOAD'],
+      ['/opt/search --v1 --b', null],
+    ])
+    expect(columnLaunches(container, M('details_new'))).toEqual([
+      ['/opt/search --v2 --b', 'LD_PRELOAD'],
+      ['/opt/search --v2 --a', null],
+    ])
+  })
+
+  it('hides keys for several launches only when every launch on both sides sets the same env', () => {
+    const sameEnv: LaunchRefusal = {
+      ...moved,
+      approved_envs: [['PATH=/usr/bin'], ['PATH=/usr/bin']],
+      envs: [['PATH=/usr/bin'], ['PATH=/usr/bin']],
+    }
+    const { container } = render(<RefusalLaunch refusal={sameEnv} />)
+    expect(container.textContent).not.toContain('PATH')
+  })
+})
+
+describe('an added launch that carries the same env as the approved one', () => {
+  it('lists the added launch with its own keys, never hiding them as unchanged', () => {
+    const a = ['/s', '--a']
+    const b = ['/s', '--b']
+    const { container } = render(
+      <RefusalLaunch
+        refusal={{
+          ...pathOnly,
+          approved_commands: [a],
+          approved_envs: [['LD_PRELOAD=/x.so']],
+          commands: [a, b],
+          envs: [['LD_PRELOAD=/x.so'], ['LD_PRELOAD=/x.so']],
+        }}
+      />,
+    )
+    expect(columnLaunches(container, M('details_new'))).toEqual([
+      ['/s --a', 'LD_PRELOAD'],
+      ['/s --b', 'LD_PRELOAD'],
+    ])
+  })
+
+  it('lists every approved launch with its own keys when the new side drops one', () => {
+    const a = ['/s', '--a']
+    const b = ['/s', '--b']
+    const { container } = render(
+      <RefusalLaunch
+        refusal={{
+          ...pathOnly,
+          approved_commands: [a, b],
+          approved_envs: [['LD_PRELOAD=/x.so'], ['LD_PRELOAD=/x.so']],
+          commands: [a],
+          envs: [['LD_PRELOAD=/x.so']],
+        }}
+      />,
+    )
+    expect(columnLaunches(container, M('details_approved'))).toEqual([
+      ['/s --a', 'LD_PRELOAD'],
+      ['/s --b', 'LD_PRELOAD'],
+    ])
+  })
+})
+
+describe('a replaced command with the same launch count and the same env', () => {
+  it('is the same env, as with one launch: no env key changed', () => {
+    const a = ['/s', '--a']
+    const b = ['/s', '--b']
+    const c = ['/s', '--c']
+    const env = ['LD_PRELOAD=/x.so']
+    const replaced: LaunchRefusal = {
+      ...pathOnly,
+      approved_commands: [a, b],
+      approved_envs: [env, env],
+      commands: [a, c],
+      envs: [env, env],
+    }
+    expect(mergedEnvRule(replaced)).toBe('same')
+    // Equal redacted displays can stand for different preloads.
+    for (const shown of ['LD_PRELOAD=/opt/[REDACTED:token].so', 'LD_PRELOAD=/opt/lib…', 'TOKEN=<hidden sha256:0a1b2c3d>']) {
+      expect(mergedEnvRule({ ...replaced, approved_envs: [[shown], [shown]], envs: [[shown], [shown]] })).toBeNull()
+    }
+    const single = { ...replaced, approved_commands: [b], approved_envs: [env], commands: [c], envs: [env] }
+    expect(mergedEnvRule(single)).toBe('single')
+  })
+})
+
+describe('launches that differ only in a value', () => {
+  // Three agents each give the server their own PATH. Each launch draws as the
+  // command and the key name PATH, so the column draws that once, not once per agent.
+  const perAgent: LaunchRefusal = {
+    reason: 'changed_needs_reapproval',
+    complete: true,
+    expected_launch: 'shown',
+    commands: [CMD, CMD, CMD],
+    envs: [[OLD_PATH], [NEW_PATH], [OTHER_PATH]],
+    approved_commands: [CMD, CMD, CMD],
+    approved_envs: [[NEW_PATH], [OTHER_PATH], [OLD_PATH]],
+  }
+
+  it('draws each launch as drawn once on each side', () => {
+    const { container } = render(<RefusalLaunch refusal={perAgent} />)
+    expect(columnLaunches(container, M('details_approved'))).toEqual([['/opt/bin/docs-mcp', 'PATH']])
+    expect(columnLaunches(container, M('details_new'))).toEqual([['/opt/bin/docs-mcp', 'PATH']])
+  })
+})
+
+describe('the Sharing row\'s "Always trust changes" choice', () => {
+  const row = (trust: boolean) =>
+    ({ name: 'docs-mcp', stub: true, can_stub: true, in_allowlist: true, entry_poolable: false, agents: ['a'], transport: 'stdio', denylisted: false, trust_changes: trust }) as McpManagedServer
+  const mountRow = (trust: boolean, onTrustChange = vi.fn(), approved = true) => {
+    render(<TrustChangesChoice server={row(trust)} approved={approved} busy={false} onTrustChange={onTrustChange} />)
+    return onTrustChange
+  }
+
+  it('shows the choice checked, and unchecking it takes it off', () => {
+    const change = mountRow(true)
+    const box = screen.getByRole('checkbox', { name: M('trust_changes_label') }) as HTMLInputElement
+    expect(box.checked).toBe(true)
+    fireEvent.click(box)
+    expect(change).toHaveBeenCalledExactlyOnceWith(false)
+  })
+
+  it('draws the choice unchecked for an untrusted server, and ticking it grants trust', () => {
+    const change = mountRow(false)
+    const box = screen.getByRole('checkbox', { name: M('trust_changes_label') }) as HTMLInputElement
+    expect(box.checked).toBe(false)
+    fireEvent.click(box)
+    expect(change).toHaveBeenCalledExactlyOnceWith(true)
+  })
+
+  it('explains the choice in an info tip a keyboard can reach', () => {
+    mountRow(true)
+    const tip = screen.getByTitle(M('trust_changes_tip'))
+    expect(tip.tagName).toBe('BUTTON')
+  })
+
+  it('draws no choice while the launch waits for approval', () => {
+    mountRow(true, vi.fn(), false)
+    expect(screen.queryByRole('checkbox')).toBeNull()
+  })
+})
+
+describe('a server name in the Sharing table', () => {
+  it('wraps only between words, never anywhere inside one', () => {
+    render(<ServerName id="n" name="local-chorus-mcp" />)
+    const name = document.getElementById('n') as HTMLElement
+    expect(name.textContent).toBe('local-chorus-mcp')
+    expect(name.className).toContain('[overflow-wrap:break-word]')
+    expect(name.className).not.toContain('anywhere')
   })
 })

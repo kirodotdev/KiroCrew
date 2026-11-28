@@ -211,12 +211,44 @@ export async function pickFolderNatively(): Promise<NativeFolderPick> {
     return { status: 'failed' }
   }
 }
+
+/** How handing Connect with WakaTime to the system browser ended. */
+export type WakaTimeBrowserHandoff = 'opened' | 'unavailable' | 'failed'
+
+/**
+ * Hand Connect with WakaTime to the system browser, opening this dashboard's
+ * WakaTime panel there. Resolves 'opened' when the shell opened it,
+ * 'unavailable' with no bridge (a plain browser, the PWA, a remote-crew
+ * window), and 'failed' when the shell answers false or refuses; never throws.
+ */
+export async function openWakaTimeInBrowser(): Promise<WakaTimeBrowserHandoff> {
+  const api = window.wakatimeConnectAPI
+  if (typeof api?.openInBrowser !== 'function') return 'unavailable'
+  try {
+    return (await api.openInBrowser()) === true ? 'opened' : 'failed'
+  } catch {
+    return 'failed'
+  }
+}
+
 /**
  * Width reserved on the right for the Windows titleBarOverlay caption buttons
  * (minimize/maximize/close). The overlay is 138px wide at default DPI on
  * Windows 10/11. The header must not place interactive controls in this zone.
  */
 export const WIN_CAPTION_OVERLAY_WIDTH = 138
+
+/**
+ * CSS px a Windows drag strip must stop short of the right edge. The caption
+ * buttons are fixed in DIP, so the main process pushes their width for the
+ * current zoom as `--mc-win-drag-reserve` on <html>; a fixed 138 would reach
+ * over Minimize below 100% zoom. Falls back to 138 until that value arrives.
+ */
+export function winDragReservePx(
+  raw: string = document.documentElement.style.getPropertyValue('--mc-win-drag-reserve'),
+): number {
+  return parseFloat(raw) || WIN_CAPTION_OVERLAY_WIDTH
+}
 
 /**
  * Height of the caption band at the top of a frameless window: the 42px header

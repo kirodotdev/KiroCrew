@@ -6,7 +6,7 @@
 // otherwise-unmatched requests before any dial — with happy-dom's official
 // disable-loading settings (below) as defense-in-depth. See both notes there.
 import { fileURLToPath, URL } from 'node:url'
-import { defineConfig, type Plugin } from 'vite'
+import { defineConfig, normalizePath, type Plugin } from 'vite'
 /// <reference types="vitest" />
 import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 import babel from '@rolldown/plugin-babel'
@@ -27,6 +27,7 @@ import { stripHtmlCommentsPlugin } from './scripts/strip-html-comments.mjs'
 import { atomicPublishPlugin } from './scripts/publish-dist.mjs'
 import { firstLoadGroups } from './scripts/lib/firstLoadGroup.mjs'
 import { uiAutoStampPlugin } from './scripts/lib/ui-auto-stamp.mjs'
+import { lucideDeepImportsPlugin } from './scripts/lib/lucideDeepImports.mjs'
 import { CONTEXT_SINGLETON_DEDUPE } from './vite.shared'
 import { REACT_COMPILER_OPTIONS, reactCompilerIdFilter } from './react-compiler.config.mjs'
 import { resolveBuildBase, vendorImportMap, withoutServiceWorker } from './scripts/lib/basePath.mjs'
@@ -786,13 +787,20 @@ export default defineConfig({
     // the Babel pass costs per listed file instead of per module. After the
     // stamp (it reads source offsets), before react() (it needs JSX intact).
     ...reactCompilerPlugins(),
-    react(), tokenProxyPlugin(), appImportMapPlugin(), stripHtmlCommentsPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), buildIdPlugin(), editionExtensionPlugin(), editionLanguagesPlugin(), tailwindcss(), compileHintsPlugin(), bundleReportPlugin(), appWindowUrls(), precompressPlugin(), atomicPublishPlugin()],
+    react(), lucideDeepImportsPlugin({
+      root: normalizePath(fileURLToPath(new URL('.', import.meta.url))).replace(/\/$/, ''),
+      allow: normalizePath(fileURLToPath(new URL('./src/app-sdk/shared-modules.ts', import.meta.url))),
+    }), tokenProxyPlugin(), appImportMapPlugin(), stripHtmlCommentsPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), buildIdPlugin(), editionExtensionPlugin(), editionLanguagesPlugin(), tailwindcss(), compileHintsPlugin(), bundleReportPlugin(), appWindowUrls(), precompressPlugin(), atomicPublishPlugin()],
   // Worker bundles do not inherit `plugins`; the hljs worker needs the edition
   // languages module (see editionLanguagesPlugin).
   worker: { plugins: () => [editionLanguagesPlugin()] },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // remark-math uses only the syntax half. The package index also re-exports
+      // `mathHtml`, whose static `import katex` would put KaTeX back on the first
+      // load (it loads on demand, components/markdown/lazyKatex.ts).
+      'micromark-extension-math': path.resolve(__dirname, 'node_modules/micromark-extension-math/lib/syntax.js'),
     },
     dedupe: CONTEXT_SINGLETON_DEDUPE,
   },
@@ -1126,7 +1134,10 @@ export default defineConfig({
               // above can stay on. src/app-sdk/shared-modules.ts registers the
               // WHOLE lucide-react namespace so an installed app can import it as
               // a bare specifier, so the entire package is legitimately in the
-              // graph -- not dead code. Unfiltered, this group therefore captured
+              // graph -- not dead code. (That registry now loads lazily with the
+              // first app bundle, and host code imports each icon's own module
+              // -- scripts/lib/lucideDeepImports.mjs -- so the namespace stays
+              // out of first load.) Unfiltered, this group therefore captured
               // all of it: 598.9 KiB eager for the 55.5 KB of icons actually
               // shared, which also distorted the graph enough to pull App into
               // main. `minShareCount` captures only modules referenced by more
@@ -1148,11 +1159,12 @@ export default defineConfig({
               test: /[\\/]node_modules[\\/](d3|d3-[^\\/]+|internmap|delaunator|robust-predicates)[\\/]/,
             },
             {
-              // Markdown/math/syntax rendering (katex, highlight.js, and the
-              // remark/rehype/unified pipeline).
+              // Markdown/syntax rendering (highlight.js and the remark/rehype/
+              // unified pipeline). KaTeX and rehype-katex stay out: they load
+              // on demand (components/markdown/lazyKatex.ts).
               name: 'vendor-markdown',
               priority: 30,
-              test: /[\\/]node_modules[\\/](katex|highlight\.js|lowlight|refractor|react-markdown|remark-[^\\/]+|rehype-[^\\/]+|mdast-[^\\/]+|hast-[^\\/]+|micromark[^\\/]*|unified|unist-[^\\/]+)[\\/]/,
+              test: /[\\/]node_modules[\\/](highlight\.js|lowlight|refractor|react-markdown|remark-[^\\/]+|rehype-(?!katex)[^\\/]+|mdast-[^\\/]+|hast-[^\\/]+|micromark[^\\/]*|unified|unist-[^\\/]+)[\\/]/,
             },
             {
               // The YAML document parser, reached only by the skill editor's

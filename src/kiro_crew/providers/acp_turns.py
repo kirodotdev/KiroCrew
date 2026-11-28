@@ -50,6 +50,8 @@ def _to_llm_event(e: Any) -> LLMEvent:
         tool_call_id=e.tool_call_id,
         title=e.title,
         wire_title=e.wire_title,
+        # A native KAS child's finished call: the string its PostToolUse hooks match.
+        hook_subject=e.hook_subject,
         tool_kind=e.tool_kind,
         tool_purpose=e.tool_purpose,
         context_usage_pct=e.context_usage_pct,
@@ -86,6 +88,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # mcp_identity_trusted: dropping it revokes the verified-identity
         # half (child_mcp_identity_trusted) for every crossing event.
         raw_params_trusted=e.raw_params_trusted,
+        # The transports refuse such a request before it is yielded; kept so a
+        # consumer never reads a contradicted call as an ordinary one.
+        tool_call_id_reused=e.tool_call_id_reused,
         shell_classified=e.shell_classified,
         # Dropping this would let a KAS spawn reach the prompt unvetted
         # against the spawn policy on this surface.
@@ -128,11 +133,19 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # gate's spec-builtin-grant row reads it.
         spec_granted_paths=e.spec_granted_paths,
         spec_granted_read_paths=e.spec_granted_read_paths,
+        # Dropping this would let a sub-agent run what the agent that started it
+        # may not: the gate's spec-parent-limits row reads it.
+        spec_parent_limits=e.spec_parent_limits,
         # Dropping this would let a native KAS sub-agent's call inherit the
         # parent's in-session deny overrides on this surface.
         native_child_call=e.native_child_call,
+        # Display only: dropping this would leave an engine sub-agent's call card
+        # without the name of the sub-agent that asked.
+        requesting_subagent=e.requesting_subagent,
         # Dropping this would offer no deny override on this surface (fail closed).
         child_calls_marked=e.child_calls_marked,
+        # Dropping this would put every approve-for-me verdict on a card (fail closed).
+        kas_auto_approval=e.kas_auto_approval,
         # Dropping this would refuse every deepseek read on a side turn.
         deepseek_tool_name=e.deepseek_tool_name,
         # Dropping this would cost a claude worker's Crew wait its trusted identity,
@@ -161,6 +174,8 @@ def _to_llm_event(e: Any) -> LLMEvent:
         message_id=e.message_id,
         runtime_global=e.runtime_global,
         sub_session_id=e.sub_session_id,
+        # Dropping this leaves the dashboard's auto-rejected notice in English.
+        auto_reject_reason=e.auto_reject_reason,
         is_shell=e.is_shell,
         # The harness's own tool id for a permission request. Dropping it
         # leaves every KAS call unnamed, so no tool-scoped spec hook fires.
@@ -305,7 +320,12 @@ async def stream(
         send = functools.partial(send, timeout=timeout)
     try:
         async with aclosing(
-            self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
+            self.essential_delivery.stream(
+                message,
+                send,
+                lambda: self.context_incarnation,
+                cancel_keeps_history=lambda: self.capabilities.keeps_history_on_cancel,
+            )
         ) as events:
             async for e in events:
                 yield self._to_llm_event(e)
@@ -474,7 +494,8 @@ async def cancel(self: AcpProvider, *, wait_ack_timeout: float = 0.0) -> CancelO
     if not self._client.has_active_turn():
         logger.debug("provider.cancel: no active turn, skip")
         return "no_turn"
-    self.essential_delivery.invalidate()
+    if not self.capabilities.keeps_history_on_cancel:
+        self.essential_delivery.invalidate()
     try:
         # Pass the ack budget so the client's read-grace window matches how
         # long we will actually wait below — otherwise a budget above the

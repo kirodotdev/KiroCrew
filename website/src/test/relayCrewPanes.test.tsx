@@ -74,7 +74,7 @@ describe('relay Crew panes in the main window', () => {
     const { api } = installBridge()
     const store = createTestStore()
     expect(await openRelayCrewTab('r1', 'One', store.dispatch)).toEqual({ ok: true })
-    expect(api.openPane).toHaveBeenCalledWith('r1', RECT, { width: window.innerWidth, height: window.innerHeight })
+    expect(api.openPane).toHaveBeenCalledWith('r1', RECT, { width: window.innerWidth, height: window.innerHeight }, true)
     expect(api.open).not.toHaveBeenCalled()
     expect(store.getState().instances.relayTabs).toEqual([{ id: 'r1', name: 'One' }])
     expect(store.getState().instances.relayActive).toBe('r1')
@@ -103,6 +103,36 @@ describe('relay Crew panes in the main window', () => {
     await waitFor(() => expect(api.setPaneOverlay).toHaveBeenLastCalledWith('r2', true))
     menu.remove()
     await waitFor(() => expect(api.setPaneOverlay).toHaveBeenLastCalledWith('r2', false))
+  })
+
+  it('while the pane hides under a local menu, <main> shows the Crew name instead of nothing, and the name goes when the menu does', async () => {
+    mountMain()
+    const { api, emit } = installBridge()
+    renderWithProviders(<RelayCrewPaneHost />, { store: storeWith(['r1'], 'r1') })
+    emit({ type: 'loaded', endpointId: 'r1', index: 0 })
+    await waitFor(() => expect(api.setPaneOverlay).toHaveBeenLastCalledWith('r1', false))
+    expect(screen.queryByTestId('relay-crew-under-overlay')).toBeNull()
+    const menu = document.createElement('div')
+    menu.setAttribute('data-test-overlay', '')
+    menu.setAttribute('role', 'menu')
+    await act(async () => { document.body.appendChild(menu); await new Promise(r => setTimeout(r, 0)) })
+    expect((await screen.findByTestId('relay-crew-under-overlay')).textContent).toBe('R1')
+    await act(async () => { menu.remove(); await new Promise(r => setTimeout(r, 0)) })
+    await waitFor(() => expect(screen.queryByTestId('relay-crew-under-overlay')).toBeNull())
+  })
+
+  it('a pane still connecting keeps its connecting cover under a menu', async () => {
+    mountMain()
+    const { api } = installBridge()
+    renderWithProviders(<RelayCrewPaneHost />, { store: storeWith(['r1'], 'r1') })
+    await waitFor(() => expect(api.setPaneOverlay).toHaveBeenLastCalledWith('r1', false))
+    const menu = document.createElement('div')
+    menu.setAttribute('data-test-overlay', '')
+    menu.setAttribute('role', 'menu')
+    await act(async () => { document.body.appendChild(menu); await new Promise(r => setTimeout(r, 0)) })
+    await screen.findByTestId('relay-crew-connecting')
+    expect(screen.queryByTestId('relay-crew-under-overlay')).toBeNull()
+    await act(async () => { menu.remove(); await new Promise(r => setTimeout(r, 0)) })
   })
 
   it('a relay-only overlay outside <main> (the open notification sheet) hides the pane; an empty banner region does not', async () => {
@@ -149,9 +179,9 @@ describe('relay Crew panes in the main window', () => {
     setThemeAccent.mockClear()
     emit({ type: 'loaded', endpointId: 'r1', index: -1 })
     await waitFor(() => expect(document.documentElement.dataset.mode).toBe(flip ? 'dark' : 'light'))
-    // Every reader of the context's mode (top-bar art) follows too. The Windows caption
-    // buttons keep the person's own mode: following a lent mode is #40254.
-    expect(setTitleBarOverlayTheme).not.toHaveBeenCalledWith(flip ? 'dark' : 'light')
+    // Every reader of the context's mode (top-bar art) follows too, and so do the
+    // Windows caption buttons (#40254).
+    expect(setTitleBarOverlayTheme).toHaveBeenLastCalledWith(flip ? 'dark' : 'light')
     expect(screen.getByTestId('theme-probe').textContent).toBe(flip ? 'dark' : 'light')
     // The shell saves the accent for the next launch's splash: not the borrowed mode's.
     await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
@@ -159,6 +189,7 @@ describe('relay Crew panes in the main window', () => {
     expect(localStorage.getItem('mc-theme')).toBeNull()
     act(() => { store.dispatch(setActiveId(null)) })
     await waitFor(() => expect(document.documentElement.dataset.mode).toBe(own))
+    expect(setTitleBarOverlayTheme).toHaveBeenLastCalledWith(own)
     act(() => { store.dispatch(relayPaneOpened({ id: 'r1', name: 'R1' })) })
     await waitFor(() => expect(document.documentElement.dataset.mode).toBe(flip ? 'dark' : 'light'))
     emit({ type: 'closed', endpointId: 'r1', index: -1 })
@@ -279,7 +310,7 @@ describe('relay pane windows, SSH Crews and the local Crew', () => {
     act(() => { store.dispatch(setActiveId('ssh-1')) })
     const opening = openRelayCrewTab('r1', 'One', store.dispatch)
     // The pane starts hidden, so the window's rect is enough until the host reports <main>'s.
-    expect(api.openPane).toHaveBeenCalledWith('r1', { x: 0, y: 0, ...VIEWPORT() }, VIEWPORT())
+    expect(api.openPane).toHaveBeenCalledWith('r1', { x: 0, y: 0, ...VIEWPORT() }, VIEWPORT(), true)
     expect(store.getState().instances.activeId).toBe('ssh-1')
     await answer(0, { ok: false, error: 'CREW_OFFLINE' })
     expect(await opening).toEqual({ ok: false, error: 'CREW_OFFLINE' })

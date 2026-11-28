@@ -62,7 +62,10 @@ def _set_files_calls(fake: FakeBrowser) -> list[dict[str, Any]]:
 def test_upload_is_an_advertised_op_with_its_helper_on_both_allowlists() -> None:
     assert "upload" in ops.OPS
     assert supervisor.HELPERS["set_files"] == ("expression", "files")
-    assert helper_worker._ALLOWLIST["set_files"] == ("_local_set_files", ("expression", "files"))
+    assert helper_worker._ALLOWLIST["set_files"] == (
+        "_local_set_files",
+        ("expression", "files"),
+    )
 
 
 def test_upload_gives_the_browser_a_staged_copy_with_the_same_name(
@@ -129,7 +132,8 @@ def test_path_refusals(
             "": "bad_path",
             "work/report.csv": "bad_path",
             str(tmp_path / "work" / "gone.csv"): "path_missing",
-            str(tmp_path / "work"): "path_not_file",
+            # A folder goes only into a folder field (``webkitdirectory``).
+            str(tmp_path / "work"): "not_folder_input",
         },
     )
 
@@ -259,7 +263,8 @@ def test_staging_keeps_only_recent_copies(tmp_path: Path, monkeypatch: pytest.Mo
     os.utime(old, (now - upload.UPLOAD_KEEP_S - 1, now - upload.UPLOAD_KEEP_S - 1))
     made = []
     for i in range(4):
-        ((staged, _size),) = upload.stage_many([str(source)], upload_dir, now=now + i)
+        made_one = upload.stage(upload.expand([str(source)])[0], upload_dir, now=now + i)
+        ((_source, staged, _size),) = made_one.files
         os.utime(staged.parent.parent, (now + i, now + i))
         made.append(staged.parent.parent)
     left = sorted(p.name for p in upload_dir.iterdir())
@@ -300,6 +305,7 @@ def test_worker_sets_the_node_the_isolated_world_gave_and_frees_it() -> None:
         "Page.getFrameTree",
         "Page.createIsolatedWorld",
         "Runtime.evaluate",
+        "Runtime.callFunctionOn",
         "DOM.setFileInputFiles",
         "Runtime.releaseObject",
     ]
@@ -314,8 +320,8 @@ def test_worker_sets_nothing_when_the_walker_gave_no_node() -> None:
     assert "DOM.setFileInputFiles" not in [m for m, _ in cdp.sent]
 
 
-@pytest.mark.parametrize("files", [[], ["/a"] * 11, "/a", [1], [""]])
-def test_worker_takes_one_to_ten_paths(files: Any) -> None:
+@pytest.mark.parametrize("files", [[], ["/a"] * 101, "/a", [1], [""]])
+def test_worker_takes_one_to_a_hundred_paths(files: Any) -> None:
     with pytest.raises(ValueError):
         helper_worker._local_set_files(_Cdp({}), "W", files)
 

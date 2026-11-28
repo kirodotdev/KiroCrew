@@ -431,6 +431,17 @@ _GIT_BIN_DIRS: tuple[str, ...] = (
 _git_bin_memo: Optional[str] = None
 
 
+def _trusted_git_bin_dirs() -> tuple[str, ...]:
+    """``_GIT_BIN_DIRS``, without the drive-less POSIX dirs on Windows.
+
+    Windows resolves ``/usr/bin`` against the current drive, to a folder any
+    local account can create, which would be tried before Git for Windows.
+    """
+    if platform_compat.IS_WINDOWS:
+        return tuple(d for d in _GIT_BIN_DIRS if not d.startswith("/"))
+    return _GIT_BIN_DIRS
+
+
 def _git_bin() -> str:
     """Absolute path to a trusted ``git``, resolved once. Fails closed.
 
@@ -450,7 +461,8 @@ def _git_bin() -> str:
             _git_bin_memo = override
             return override
         raise GitError(f"MD_NOTEBOOK_GIT_BIN is not an executable file: {override}")
-    for directory in _GIT_BIN_DIRS:
+    trusted_dirs = _trusted_git_bin_dirs()
+    for directory in trusted_dirs:
         for name in ("git", "git.exe"):
             candidate = os.path.join(directory, name)
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
@@ -468,7 +480,7 @@ def _git_bin() -> str:
     )
     raise GitError(
         "no trusted git binary found in a system location "
-        f"({', '.join(_GIT_BIN_DIRS)}); install git or set MD_NOTEBOOK_GIT_BIN{detail}"
+        f"({', '.join(trusted_dirs)}); install git or set MD_NOTEBOOK_GIT_BIN{detail}"
     )
 
 

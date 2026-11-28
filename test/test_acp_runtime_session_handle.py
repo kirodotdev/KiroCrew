@@ -119,6 +119,42 @@ async def test_handle_destroy_terminates_and_unregisters_session():
 
 
 @pytest.mark.asyncio
+async def test_handle_destroy_forgets_the_sessions_agent_binding():
+    """destroy() drops this session's entry from the agent-binding cache.
+
+    On a shared runtime the pid outlives each ephemeral session, so the
+    dead-pid eviction never fires for one; without a forget on session end the
+    cache would grow for every session the long-lived runtime hosts. A handle
+    that carried no stub token leaves the cache untouched."""
+    from kiro_crew.mcp_gateway import claim
+
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA", "sB")
+    rt._send_and_await = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    token = "stub-tok-destroy"
+    other = "stub-tok-other"
+    claim._BOUND_AGENTS[token] = (os.getpid(), "start", frozenset({"agentA"}))
+    claim._BOUND_AGENTS[other] = (os.getpid(), "start", frozenset({"agentB"}))
+    try:
+        handle = AcpSessionHandle("sA", q["sA"], rt)
+        handle.stub_session_token = token
+        await handle.destroy()
+        # This session's binding is gone; a co-tenant session's stays.
+        assert token not in claim._BOUND_AGENTS
+        assert other in claim._BOUND_AGENTS
+
+        # A session with no stub token forgets nothing.
+        handle_b = AcpSessionHandle("sB", q["sB"], rt)
+        assert handle_b.stub_session_token == ""
+        await handle_b.destroy()
+        assert other in claim._BOUND_AGENTS
+    finally:
+        claim._BOUND_AGENTS.pop(token, None)
+        claim._BOUND_AGENTS.pop(other, None)
+
+
+@pytest.mark.asyncio
 async def test_terminate_session_sends_bounded_terminate_for_target_only():
     """terminate_session issues _kiro.dev/session/terminate for exactly the
     target sessionId with a bounded timeout (teardown can't stall on an
@@ -924,6 +960,39 @@ async def test_approve_tool_echoes_recorded_option():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "offered_allow, sent",
+    [
+        # Nothing recorded: the canonical literal goes out as the offered id of its kind.
+        ({"once": "allow-once", "always": "allow-with-updates"}, "allow-once"),
+        # The literal is offered, but as an allow-always: refused with the reject id.
+        ({"always": "allow_once"}, "reject"),
+    ],
+)
+async def test_approve_tool_answers_a_canonical_literal_by_its_offered_kind(offered_allow, sent):
+    from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, AcpEvent
+
+    rt, _, proc = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    ids = [*offered_allow.values(), "reject"]
+    handle._permission_options[42] = {"reject": "reject"}
+    handle._permission_gate_events[42] = AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        request_id=42,
+        title="get_me",
+        options=[{"id": i, "label": i} for i in ids],
+        offered_allow=offered_allow,
+    )
+    approved = await handle.approve_tool(42, option_id="allow_once")
+    assert approved is (sent != "reject")
+    answer = json.loads(proc.stdin.write.call_args.args[0].decode())
+    assert answer["result"]["outcome"]["optionId"] == sent
+    assert 42 not in handle._permission_options
+    assert 42 not in handle._permission_gate_events
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("bridged, sent", [(True, "allow"), (False, "allow_always")])
 async def test_approve_tool_answers_a_connection_tool_once(bridged, sent):
     """An allow-always on a Crew-owned Connection would stop the harness asking,
@@ -950,6 +1019,58 @@ async def test_approve_tool_answers_a_connection_tool_once(bridged, sent):
     )
     try:
         await handle.approve_tool(42, option_id="allow_always")
+    finally:
+        crew_oauth_proxy._bridges.pop("vh", None)
+    sent_frame = json.loads(proc.stdin.write.call_args.args[0].decode())
+    assert sent_frame["result"]["outcome"]["optionId"] == sent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bridged, option_id, sent",
+    [
+        (False, None, "allow_always"),
+        (False, "allow_once", "allow_always"),
+        # The caller picked the frame's own one-call option by its id.
+        (False, "allow_always", "allow_always"),
+        (False, "persist", "persist"),
+        (True, "allow_once", "allow_always"),
+        (True, "allow_always", "allow_always"),
+        (True, "persist", "allow_always"),
+    ],
+)
+async def test_approve_tool_never_reads_a_one_call_id_spelled_like_always_as_always(
+    bridged, option_id, sent
+):
+    """The frame offers its one-call allow under the id ``allow_always``: a one-call
+    approval, or a Connection tool's downgrade, sends it, never the allow-always."""
+    from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, AcpEvent
+    from kiro_crew.connections import crew_oauth_proxy
+
+    rt, _, proc = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle._session_key = "dashboard_chat-bridge-h"
+    if bridged:
+        crew_oauth_proxy.register_bridge(
+            version="vh",
+            token="tok",
+            session_key="dashboard_chat-bridge-h",
+            server="github",
+            slug="github",
+            mcp_url="https://api.githubcopilot.com/mcp/",
+        )
+    handle._permission_options[42] = {"once": "allow_always", "always": "persist"}
+    handle._permission_gate_events[42] = AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        request_id=42,
+        title="get_me",
+        mcp_server_name="github",
+        options=[{"id": "allow_always", "kind": "allow_once"}, {"id": "persist"}],
+        offered_allow={"once": "allow_always", "always": "persist"},
+    )
+    try:
+        assert await handle.approve_tool(42, option_id=option_id) is True
     finally:
         crew_oauth_proxy._bridges.pop("vh", None)
     sent_frame = json.loads(proc.stdin.write.call_args.args[0].decode())

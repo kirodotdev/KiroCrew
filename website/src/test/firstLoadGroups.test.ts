@@ -18,9 +18,12 @@ function ctxOf(graph: Record<string, Mod>) {
   }
 }
 
+type Entries = { mainEntryId: string; otherEntryIds: string[] }
+const ENTRIES: Entries = { mainEntryId: 'index.html', otherEntryIds: ['app.html'] }
+
 /** Every module's chunk name under the given groups, highest priority first. */
-function assign(graph: Record<string, Mod>, layers: number) {
-  const groups = firstLoadGroups({ mainEntryId: 'index.html', otherEntryIds: ['app.html'], layers, priority: 1 })
+function assign(graph: Record<string, Mod>, layers: number, entries: Entries = ENTRIES) {
+  const groups = firstLoadGroups({ ...entries, layers, priority: 1 })
   const ctx = ctxOf(graph)
   const sorted = [...groups].sort((a, b) => b.priority - a.priority)
   const out: Record<string, string | null> = {}
@@ -74,5 +77,22 @@ describe('firstLoadGroups', () => {
     }
     expect(layer('/src/leaf.ts')).toBe(0)
     expect(layer('/src/main.tsx')).toBe(2)
+  })
+
+  // vite.config.ts hands the planner native paths (fileURLToPath, path.join), which
+  // on Windows carry backslashes, while rolldown's module ids always use forward
+  // slashes. An entry that fails to match empties every first-load group.
+  it('matches a native Windows entry path against forward-slash module ids', () => {
+    const root = 'C:/proj'
+    const at = (id: string) => (id.startsWith('/') ? root + id : `${root}/${id}`)
+    const graph: Record<string, Mod> = {}
+    for (const [id, m] of Object.entries(GRAPH)) {
+      graph[at(id)] = { ...m, imports: m.imports?.map(at), dynamic: m.dynamic?.map(at) }
+    }
+    const slashes = assign(graph, 3, { mainEntryId: `${root}/index.html`, otherEntryIds: [`${root}/app.html`] })
+    const backslashes = assign(graph, 3, { mainEntryId: 'C:\\proj\\index.html', otherEntryIds: ['C:\\proj\\app.html'] })
+    expect(slashes[`${root}/src/main.tsx`]).toBe('first-load-2')
+    expect(slashes[`${root}/src/i18n.ts`]).toBe('first-load-shared')
+    expect(backslashes).toEqual(slashes)
   })
 })

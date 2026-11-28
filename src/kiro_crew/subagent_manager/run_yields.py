@@ -6,7 +6,8 @@ row and re-admit it through ``_await_lane_resume_impl`` (``_withdraw_resume`` dr
 resume entry of a waiter that stopped waiting); ``lane_wait_for_status`` records a typed
 input wait, ``ensure_running_marked`` writes the row ``running`` the waits need,
 ``_dependency_verdict`` and ``_dependency_report_db`` run a dependency park's database
-phase, and ``_stop_recovery_wanted_impl``, ``_taskq_note_stop_recovery_impl``,
+phase, ``_release_dead_runtime_waits`` ends the waits of runs whose own runtime died,
+and ``_stop_recovery_wanted_impl``, ``_taskq_note_stop_recovery_impl``,
 ``_stop_recovery_note_db`` and ``_stop_error_text_impl`` decide, note and word a stop. New
 work on a wait inside a run goes here.
 
@@ -17,8 +18,8 @@ they read unqualified are that module's, imported here for typing only; the othe
 this module's own globals, and ``_dependency_report_db`` and ``_stop_recovery_note_db`` are
 bound through ``staticmethod``.
 
-The manager fields this module uses. Writes: ``_queue``. Reads: ``_admission``,
-``_await_lane_resume``, ``_fire_event``, ``_leave_startup``, ``_shutting_down``,
+The manager fields this module uses. Writes: ``_queue``. Reads: ``_admission``, ``_agents``,
+``_await_lane_resume``, ``_fire_event``, ``_leave_startup``, ``_sessions``, ``_shutting_down``,
 ``_taskq_note_stop_recovery``, ``_taskq_pump``, ``_yield_for_dependency``,
 ``dependency_coordinator_async``.
 """
@@ -219,7 +220,9 @@ async def _await_lane_resume_impl(
     ``wake_through`` seam), so a scope that is not due yet is never
     re-entered early. False on timeout / failure, with the resume entry
     withdrawn so a late grant cannot hand a slot to a run that gave up. A
-    run that never yielded answers True at once.
+    run that never yielded answers True at once. Raises the death as the
+    runtime's provider words it (``ensure_ready``; withdrawn too) when the
+    reaper found that runtime dead meanwhile (``_release_dead_runtime_waits``).
     """
     if not info._slot_released:
         return True
@@ -237,10 +240,36 @@ async def _await_lane_resume_impl(
         return False
     finally:
         info._resume_event = None
+    gone = info._runtime_gone
+    if gone is not None and gone[0] is event:
+        self._withdraw_resume(info)
+        await gone[1].ensure_ready()
     if info._wait_failed:
         self._withdraw_resume(info)
         return False
     return not info._slot_released
+
+
+def _release_dead_runtime_waits(self: RunEventCoordinator) -> None:
+    """Reaper step: release each run parked on a wait whose own ``AcpSessionProvider``
+    reads dead, so ``_await_lane_resume_impl`` raises instead of waiting for a wake that
+    cannot bring the process back. A direct ``AcpClient`` respawns at its wake instead."""
+    from ..subagent import AcpSessionProvider
+
+    for info in list(self._manager._agents.values()):
+        event = info._resume_event
+        if info.done or not info._slot_released or event is None:
+            continue
+        if info._session_sharing:
+            handle = info._shared_provider
+        else:
+            provider = self._manager._sessions.get_provider(
+                info.conversation_key or f"subagent:{info.id}"
+            )
+            handle = getattr(provider, "client", None) or getattr(provider, "_client", None)
+        if isinstance(handle, AcpSessionProvider) and not handle.is_alive():
+            info._runtime_gone = (event, handle)
+            event.set()
 
 
 def _withdraw_resume(self: RunEventCoordinator, info: "SubagentInfo") -> None:
@@ -269,10 +298,13 @@ async def _yield_for_dependency_impl(
     attempts cap -- the row is already ``failed``), when the wait did not
     persist (``unpersisted``: the row is another owner's or has ended, or the
     store could not say, so the run stops rather than retry work it may not
-    own), or when the wait timed out. None when
-    NO row exists for the run (``no_row``: a memory mode that keeps none).
-    Nothing was decided then and nothing else owns the work, so the caller
-    handles the error as it would with no coordinator at all.
+    own), or when the wait timed out. A run with NO row (a memory mode that
+    keeps none) waits the same way on a provider throttle: its report asks the
+    schedule to hold it in memory (``hold_rowless``, see :meth:`_dependency_verdict`), and
+    its wake comes through admission like any live run's. None for any other
+    ``no_row`` (another dependency kind, our own infrastructure scope, or no
+    ``wake_through`` seam), so the caller handles the error as it would with no
+    coordinator at all.
     """
     from kiro_crew.taskq.dependency import (
         KIND_CONCURRENCY_EXCEEDED,
@@ -488,6 +520,7 @@ def _dependency_report_db(
     task_id: str,
     signal: Any,
     generation: int | None,
+    hold_rowless: bool = False,
 ) -> Any:
     """Database phase of a dependency park: the ``running`` mark and then the
     coordinator's verdict, on ONE thread.
@@ -524,7 +557,13 @@ def _dependency_report_db(
                 task_id,
                 exc_info=True,
             )
-    return coordinator.report(task_id, signal, generation=generation, from_state=_taskq.RUNNING)
+    return coordinator.report(
+        task_id,
+        signal,
+        generation=generation,
+        from_state=_taskq.RUNNING,
+        hold_rowless=hold_rowless,
+    )
 
 
 async def _dependency_verdict(
@@ -539,11 +578,25 @@ async def _dependency_verdict(
     never this process's ``_taskq_running_marked``, whose whole purpose is to
     keep a LATER stream mark from advancing the parked row back out of the
     wait the coordinator just recorded on it.
+
+    A run with no row is held on the scope for a provider throttle only: our own
+    infrastructure scopes keep their answer (the L1 rung surfaces the completion),
+    and so do the other dependency kinds, which keep the in-turn ladder.
     """
+    from kiro_crew.taskq.dependency import (
+        KIND_CONCURRENCY_EXCEEDED,
+        KIND_RATE_LIMITED,
+        is_infra_scope,
+    )
+
     admission = self._manager._admission
     store = admission.taskq_store()
     info._taskq_running_marked = True
-    args = (coordinator, store, info.id, signal, info._taskq_generation or None)
+    hold_rowless = signal.kind in (
+        KIND_RATE_LIMITED,
+        KIND_CONCURRENCY_EXCEEDED,
+    ) and not is_infra_scope(signal.dependency_scope)
+    args = (coordinator, store, info.id, signal, info._taskq_generation or None, hold_rowless)
     if store is None or not type(admission).pump_off_loop:
         return self._dependency_report_db(*args)
     return await store.run(self._dependency_report_db, *args)

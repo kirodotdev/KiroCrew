@@ -162,7 +162,8 @@ def memory_stats(self: VectorMemoryStore) -> dict:
         "(SELECT COUNT(*) FROM episodic_memories WHERE is_deleted=0) AS ep_active, "
         "(SELECT COUNT(*) FROM episodic_memories WHERE is_deleted=1) AS ep_deleted, "
         "(SELECT COUNT(*) FROM memory_events) AS events_count, "
-        "(SELECT COUNT(*) FROM episodic_memories WHERE is_deleted=0 AND embedding IS NOT NULL) AS ep_with_vec"
+        "(SELECT COUNT(*) FROM episodic_memories WHERE is_deleted=0 AND embedding IS NOT NULL) AS ep_with_vec, "
+        "(SELECT COUNT(*) FROM semantic_memory WHERE is_deleted=0 AND embedding IS NOT NULL) AS sem_with_vec"
     )
     assert row is not None  # a scalar-subquery SELECT always returns one row
     faiss_size = len(self._faiss_id_map) if self._faiss_id_map else 0
@@ -173,7 +174,10 @@ def memory_stats(self: VectorMemoryStore) -> dict:
         "episodic_deleted": row[3],
         "events_count": row[4],
         "faiss_index_size": faiss_size,
+        # Experiences only, as the CLI's "Embedded: n/episodic_active" reports it.
         "embedded_count": row[5],
+        # Facts and lessons with a vector: search by meaning reads them too.
+        "semantic_embedded": row[6],
         # The FAISS index is an optional in-RAM accelerator (needs both
         # faiss and numpy); without it, retrieval falls back to an exact
         # stdlib cosine scan over the same stored embeddings.

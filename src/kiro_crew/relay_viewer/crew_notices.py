@@ -147,7 +147,7 @@ def publish(state: Any, new: list[CrewEndpoint]) -> None:
         state.notify(
             NOTE_KIND,
             f"You've been added to {crew.name}",
-            "Open it from Team Crews in the Crew switcher.",
+            "Open it from Remote Crews in the Crew switcher.",
             actions=[
                 {
                     "id": "open",
@@ -161,8 +161,8 @@ def publish(state: Any, new: list[CrewEndpoint]) -> None:
         return
     state.notify(
         NOTE_KIND,
-        f"You have access to {len(new)} Team Crews",
-        "Open them from Team Crews in the Crew switcher.",
+        f"You have access to {len(new)} Shared Crews",
+        "Open them from Remote Crews in the Crew switcher.",
         channel=CHANNEL,
         i18n={"id": "relay_crews_available", "params": {"count": len(new)}},
     )

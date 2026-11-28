@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Summon hotkey recorder capture (#2802)</title>
+    <script>
+      // Must run BEFORE any app module loads: src/lib/electron.ts reads
+      // window.kirocrew at import time, so the desktop-shell detection is fixed
+      // the moment that module is evaluated.
+      (function () {
+        var params = new URLSearchParams(location.search)
+        var scene = params.get('scene') || 'off'
+        // The theme provider reads its mode from storage when it mounts.
+        localStorage.setItem('mc-theme', params.get('theme') === 'light' ? 'light' : 'dark')
+        var DEFAULT_CHORD = 'Alt+Shift+K'
+        var info = function (accelerator, requested) {
+          return { accelerator: accelerator, requested: requested, default: DEFAULT_CHORD }
+        }
+        // What `global-hotkey:get` answers at load, per scene.
+        var initial = {
+          off: info('', ''),
+          bound: info('Alt+Shift+J', 'Alt+Shift+J'),
+          // A stored chord the shell could not register, so its default is bound.
+          fallback: info(DEFAULT_CHORD, 'Ctrl+Alt+J'),
+          // A window on a remote host: the reader, no setter.
+          remote: info('', ''),
+          // Bound, with a setter that refuses the next change.
+          refused: info('Alt+Shift+J', 'Alt+Shift+J'),
+        }[scene] || info('', '')
+        window.kirocrew = { isElectron: true, platform: 'linux' }
+        window.electronAPI = {
+          getGlobalHotkey: function () { return Promise.resolve(initial) },
+        }
+        if (scene === 'refused') {
+          // The shell refuses the change, as its sender gate does.
+          window.electronAPI.setGlobalHotkey = function () {
+            return Promise.reject(new Error('global-hotkey:set is restricted to the local dashboard'))
+          }
+        } else if (scene !== 'remote') {
+          // Stands in for `global-hotkey:set`: store the chord and report it bound.
+          window.electronAPI.setGlobalHotkey = function (accelerator) {
+            return Promise.resolve(info(accelerator, accelerator))
+          }
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/capture/summon-hotkey-recorder-2802.tsx"></script>
+  </body>
+</html>

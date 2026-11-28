@@ -113,11 +113,16 @@ GATEWAY_NOTICE_CHANNEL_MESSAGE_NOT_RUN = "channel_message_not_run"
 GATEWAY_NOTICE_CREW_NAME_UNDISPATCHABLE = "crew_name_undispatchable"
 GATEWAY_NOTICE_CODE_CHANNEL_WORKTREE_NOT_READY = "code_channel_worktree_not_ready"
 GATEWAY_NOTICE_REMOTE_CREW_READ_ONLY = "remote_crew_read_only"
+GATEWAY_NOTICE_CRON_RUN_READ_ONLY = "cron_run_read_only"
 GATEWAY_NOTICE_ARCHIVE_FAILED_TURN_CANCELLED = "archive_failed_turn_cancelled"
 # A chat that keeps its record's agent after its Bot was set to another one
 # (``member_rebind_notice``). ``notice_args``: ``bot``, ``agent`` (what a new
 # chat with the Bot runs) and ``recorded`` (what this chat keeps running).
 GATEWAY_NOTICE_MEMBER_REBIND_KEPT_AGENT = "member_rebind_kept_agent"
+# A chat running a Bot on another harness than the Bot's own chat
+# (``member_harness_notice``). ``notice_args``: ``bot``, ``bot_harness`` (where
+# the Bot's own chat runs) and ``chat_harness`` (where this chat stays).
+GATEWAY_NOTICE_MEMBER_HARNESS_ELSEWHERE = "member_harness_elsewhere"
 # A new KAS chat whose agent, the user's own file, lists no tools
 # (``agent_no_tools_notice``). ``notice_args``: ``agent``.
 GATEWAY_NOTICE_AGENT_NO_TOOLS = "agent_no_tools"
@@ -132,6 +137,11 @@ GATEWAY_NOTICE_SEND_DISCARDED = "send_discarded"
 GATEWAY_NOTICE_EAGER_SPAWN_STOPPED = "eager_spawn_stopped"
 GATEWAY_NOTICE_TURN_FAILED_BEFORE_START = "turn_failed_before_start"
 GATEWAY_NOTICE_LOCAL_COMMAND_FAILED_BEFORE_START = "local_command_failed_before_start"
+# The ACP handle's auto-rejected sub-agent permission notice (``native_cards``).
+GATEWAY_NOTICE_PERMISSION_AUTO_REJECTED_STRANDED = "permission_auto_rejected_stranded"
+GATEWAY_NOTICE_PERMISSION_AUTO_REJECTED_NO_SECURITY_CONTEXT = (
+    "permission_auto_rejected_no_security_context"
+)
 
 # Terminal turn-limit and never-started cards (``turn_dispatch``). Their numbers
 # (the limit, the wait) ride in ``notice_args``.

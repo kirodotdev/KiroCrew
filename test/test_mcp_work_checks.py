@@ -115,7 +115,9 @@ def test_a_pr_checks_batch_runs_only_the_fixed_gh_argv(caller, argvs):
     )
     assert out["results"][0]["id"] == "it_00000001"
     assert out["results"][0]["verdict"] == "pass"
-    assert argvs == [["gh", "pr", "checks", "42", "--repo", "owner/name"]]
+    head = ["gh", "pr", "view", "42", "--repo", "owner/name", "--json", "headRefOid"]
+    head += ["-q", ".headRefOid"]
+    assert argvs == [head, ["gh", "pr", "checks", "42", "--repo", "owner/name"], head]
 
 
 def test_a_file_batch_answers_both_ways(caller, argvs, tmp_path):

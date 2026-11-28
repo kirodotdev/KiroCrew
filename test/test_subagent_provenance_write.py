@@ -1602,7 +1602,7 @@ def test_no_on_loop_update_state_inside_a_coroutine() -> None:
 
     Only the innermost enclosing frame counts, so a sync helper nested in a coroutine (run on
     a worker thread) is not an offender. ``_promote_conversation_impl`` is a sync ``def`` that
-    stays on the loop by design: its busy check, promotion and admission commit with no await.
+    stays on the loop by design: the busy check and the ``keep=True`` write commit with no await.
     """
     import ast
     from pathlib import Path

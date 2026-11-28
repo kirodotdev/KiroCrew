@@ -67,7 +67,9 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from kiro_crew import decisions as core
+from kiro_crew.decisions import gate as _gate
 from kiro_crew.decisions import log as _log
+from kiro_crew.decisions.local_models import is_loopback_endpoint
 from kiro_crew.decisions.points import MAX_KEY_CHARS, build_history
 from kiro_crew.decisions.points import history_budget as _history_budget
 from kiro_crew.decisions.points import prior_turns as _prior_turns
@@ -78,11 +80,21 @@ logger = logging.getLogger(__name__)
 
 POINT = "skills.select"
 
-#: Cap on how many skills are described to the oracle. The menu has to stay a
-#: small prompt, so the lowest-scoring tail is dropped rather than sent. 99 so
-#: the Choice, with its "none" option, is at most the 100 options Laya's local
-#: server accepts.
+#: Cap on how many skills are described to the oracle, unless the endpoint is on
+#: this machine (:data:`LOCAL_MAX_CANDIDATES`). The menu has to stay a small
+#: prompt, so the lowest-scoring tail is dropped rather than sent. 99 so the
+#: Choice, with its "none" option, is at most the 100 options Laya's server
+#: accepts, which still binds a Laya server reached by a name such as
+#: ``localhost``.
 MAX_CANDIDATES = 99
+
+#: Cap on the menu when the decision endpoint is on this machine
+#: (:func:`~kiro_crew.decisions.local_models.is_loopback_endpoint`). A 4B model run
+#: on the owner's CPU takes longer for every option it reads -- about 25 s for 99
+#: options and 2.8 s for 10, measured on a 48-vCPU host -- while a turn waits at
+#: most :data:`MAX_WAIT_SECS`, so a full menu would time out on every turn. The menu
+#: is sorted best-scoring first, so the cut keeps the strongest candidates.
+LOCAL_MAX_CANDIDATES = 10
 MAX_MESSAGE_CHARS = 2000
 MAX_DESCRIPTION_CHARS = 200
 
@@ -135,11 +147,13 @@ def selected_skills(
     loop: asyncio.AbstractEventLoop | None = None,
     history_source: Callable[[], Sequence[Mapping[str, Any]]] | None = None,
     unusable: Collection[str] = (),
+    only: Collection[str] | None = None,
 ) -> list[str] | None:
     """The oracle's selection for *text*, or ``None`` to keep the baseline.
 
-    *unusable* is the matcher's own: skills the turn cannot use are not on the
-    menu, so the pick and the baseline arm both leave them out.
+    *unusable* and *only* are the matcher's own gates: skills the turn cannot
+    use or its worker did not list are not on the menu, so the pick and the
+    baseline arm both leave them out.
 
     Runs on the CALLER's thread, which in production is an executor worker. The
     order below is the contract:
@@ -188,6 +202,7 @@ def selected_skills(
             session_key=session_key,
             baseline_out=baseline,
             unusable=unusable,
+            only=only,
         )
         if not candidates:
             return None
@@ -378,12 +393,16 @@ def _record_menu_failure(session_key: str | None) -> None:
 def screen_candidates(candidates: Sequence[dict[str, str]]) -> list[dict[str, str]]:
     """The menu rows that may be sent: capped, key-screened, description-clipped.
 
-    The message and each description are truncated because they are prose. Keys
-    are not, for the reason :data:`~kiro_crew.decisions.points.MAX_KEY_CHARS`
-    exists: an over-long key is dropped by the enumerator instead.
+    The cap is :data:`LOCAL_MAX_CANDIDATES` when the decision endpoint is on this
+    machine and :data:`MAX_CANDIDATES` otherwise. The message and each description
+    are truncated because they are prose. Keys are not, for the reason
+    :data:`~kiro_crew.decisions.points.MAX_KEY_CHARS` exists: an over-long key is
+    dropped by the enumerator instead.
     """
+    local = is_loopback_endpoint(_gate.configured_endpoint())
+    cap = LOCAL_MAX_CANDIDATES if local else MAX_CANDIDATES
     rows: list[dict[str, str]] = []
-    for candidate in list(candidates)[:MAX_CANDIDATES]:
+    for candidate in list(candidates)[:cap]:
         key = str(candidate.get("key", ""))
         if not key or len(key) > MAX_KEY_CHARS:
             continue
@@ -467,14 +486,16 @@ def candidates_from_loader(
     session_key: str | None = None,
     baseline_out: list[str] | None = None,
     unusable: Collection[str] = (),
+    only: Collection[str] | None = None,
 ) -> list[dict[str, str]]:
     """Every skill *text* could load, best-scoring first, capped and screened.
 
     Walks the same ``(name, file, within)`` triples and the same frontmatter
     reader ``get_triggered_skills`` uses, so eligibility cannot drift from the
     baseline's own notion of it — and so a confined project skill is read through
-    the descriptor-pinned reader rather than by path. A skill in *unusable* is
-    skipped here exactly as the matcher skips it.
+    the descriptor-pinned reader rather than by path. A skill in *unusable*, or
+    outside *only* when that worker list is present, is skipped here exactly as
+    the matcher skips it.
 
     Scoring is only an ORDER here: a skill below ``MIN_TRIGGER_OVERLAP`` is still
     offered, which is the whole point of asking. A NEGATIVE trigger that matches
@@ -511,7 +532,12 @@ def candidates_from_loader(
         key = str(name or "")
         # An over-long key is dropped, never shortened: the answer is resolved by
         # name downstream.
-        if not key or len(key) > MAX_KEY_CHARS or key in unusable:
+        if (
+            not key
+            or len(key) > MAX_KEY_CHARS
+            or key in unusable
+            or (only is not None and key not in only)
+        ):
             continue
         try:
             meta = skills_loader._cached_frontmatter(skill_file, within=within)

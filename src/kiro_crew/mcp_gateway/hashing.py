@@ -432,19 +432,90 @@ def env_value_bytes(key: str, value: str) -> bytes:
 def hash_declared_env(env_pairs: Mapping[str, str]) -> str:
     """Sorted ``K=V\\0``-delimited SHA-256 over every declared env pair.
 
-    Values go through :func:`env_value_bytes` with their key: the launch
-    approval fingerprint is this hash beside :func:`hash_command`, and both
-    halves must fold the install's own paths or an upgrade still invalidates
-    the approval through whichever half kept the versioned path. Only the
-    ``PYTHONPATH`` value folds; the key decides, not the value.
+    Values go through :func:`env_value_bytes` with their key, so the
+    install's own ``site-packages`` folds in ``PYTHONPATH``; the key decides,
+    not the value. The pool key (:func:`hash_effective_env`) uses this hash.
+    The launch approval uses :func:`hash_launch_env`, which also folds the
+    gateway's own part of ``PATH``.
     """
+    return _hash_env(env_pairs, env_value_bytes)
+
+
+def _hash_env(env_pairs: Mapping[str, str], value_bytes: Any) -> str:
     h = hashlib.sha256()
     for k in sorted(env_pairs):
         h.update(k.encode("utf-8"))
         h.update(b"=")
-        h.update(env_value_bytes(k, env_pairs[k]))
+        h.update(value_bytes(k, env_pairs[k]))
         h.update(b"\0")
     return h.hexdigest()
+
+
+#: The env key gatewayd is handed the gateway's own ``PATH`` part under
+#: (:func:`gateway_path`). The daemon's own ``PATH`` is not the gateway's: the
+#: manager rewrites it at spawn, so the daemon cannot compute the part itself.
+GATEWAY_PATH_ENV = "KIROCREW_MCP_GATEWAY_PATH"
+_ALIAS_GATEWAY_PATH = b"gateway-path"
+
+
+def gateway_path() -> str:
+    """The ``PATH`` part the gateway appends to every declared spec ``PATH``.
+
+    ``kiro_crew.env.gateway_spec_path``, the function that appends it: pinned
+    for the life of the MCP broker in the gateway, and to the handed value in
+    gatewayd (:func:`pin_gateway_path`).
+    """
+    from kiro_crew.env import gateway_spec_path
+
+    return gateway_spec_path()
+
+
+def pin_gateway_path(value: str | None) -> None:
+    """Pin the part gatewayd was handed under :data:`GATEWAY_PATH_ENV` (gatewayd only).
+
+    A missing value pins nothing: gatewayd then folds against its own ``PATH``,
+    so a launch whose approval was folded under the gateway's part is refused
+    rather than admitted under another composition.
+    """
+    if value is None:
+        return
+    from kiro_crew.env import pin_gateway_spec_path
+
+    pin_gateway_spec_path(value)
+
+
+def launch_env_value_bytes(key: str, value: str) -> bytes:
+    """:func:`env_value_bytes`, with the gateway's own part of ``PATH`` folded.
+
+    A ``PATH`` value that is exactly what ``env.spec_env_path`` expands from
+    some spec entries under this gateway's ``PATH`` part hashes as those
+    entries followed by the ``gateway-path`` alias, so a change in the
+    gateway's own ``PATH`` (a re-rendered service unit, a package installer
+    that adds or moves a version directory there) changes no approval. The
+    spec's own entries hash as written. Raw-string equality only, through the
+    writer's own composition (``env.spec_path_own_entries``); a value that does
+    not match it hashes literally. Every other key is :func:`env_value_bytes`.
+    """
+    if key != "PATH":
+        return env_value_bytes(key, value)
+    from kiro_crew.env import spec_path_own_entries
+
+    own = spec_path_own_entries(value, gateway_path())
+    if own is None:
+        return value.encode("utf-8")
+    sep = os.pathsep.encode("utf-8")
+    alias = _INSTALL_MARK + _INSTALL_TAG + b":" + _ALIAS_GATEWAY_PATH + _INSTALL_MARK
+    return sep.join([*(entry.encode("utf-8") for entry in own), alias])
+
+
+def hash_launch_env(env_pairs: Mapping[str, str]) -> str:
+    """The launch approval's env hash: :func:`hash_declared_env` with ``PATH`` folded.
+
+    Kept apart from the pool key: the stub hashes that one without the
+    gateway's ``PATH`` part, and a backend's real ``PATH`` is part of what makes
+    two backends interchangeable.
+    """
+    return _hash_env(env_pairs, launch_env_value_bytes)
 
 
 def hash_effective_env(env_pairs: Mapping[str, str], *, identity_keys: Collection[str] = ()) -> str:

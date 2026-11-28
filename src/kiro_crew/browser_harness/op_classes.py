@@ -7,7 +7,8 @@ One classifier, read by two consumers that must agree on what "reads only" means
   any other op back so the agent can read the note first;
 * a host trust grant (``kiro_crew.browser_host_trust``) covers an op on one
   site by its class: a "read" grant covers opening and reading that site's
-  pages, an "act" grant covers clicking and typing there too.
+  pages, an "act" grant covers clicking, typing, uploading files and running a
+  ``js`` script in the current tab there too.
 
 Stdlib only, so the MCP shim can import it before it lists its tools.
 """
@@ -36,15 +37,16 @@ HARNESS_HELPER_OPS: tuple[str, ...] = ("js", "cdp", "http_get")
 
 #: Ops no standing grant covers, a person's site grant or an app's ``browserSites``:
 #: each asks on the card. A site grant names one host and covers pressing, typing
-#: and picking on its pages; these reach past that. ``upload`` sends a local file;
-#: ``js`` runs any script; ``cdp`` can reach the whole browser (every tab, every
-#: cookie); ``http_get`` fetches outside the browser.
-CARD_ONLY_OPS = frozenset({"upload", *HARNESS_HELPER_OPS})
-#: Ops a host trust grant never covers: :data:`CARD_ONLY_OPS`, plus ``ask`` (a
-#: question to the person) and ``reflex`` (a whole loop of ops).
-#: Ops no host grant covers: the card-only ones, the person's own asks, and the
-#: reads that answer from every tab the agent owns (``tabs list``, ``iframe_target``),
-#: since one host's grant does not cover another site's tab.
+#: and picking on its pages; these reach past that. ``cdp`` can reach the whole
+#: browser (every tab, every cookie); ``http_get`` fetches outside the browser.
+#: ``js`` and ``upload`` are not ones: a person's "act" grant on a site covers them
+#: there (``js`` only in the current tab, :func:`host_trust_class`), though an app's
+#: ``browserSites`` does not (``apps.browser_sites.gate_grants``).
+CARD_ONLY_OPS = frozenset({"cdp", "http_get"})
+#: Ops no host grant covers: the card-only ones, ``ask`` (the person's own
+#: question), ``reflex`` (a whole loop of ops) and ``iframe_target``, which answers
+#: from every tab the agent owns, since one host's grant does not cover another
+#: site's tab.
 NO_HOST_TRUST_OPS = CARD_ONLY_OPS | {"ask", "reflex", "iframe_target"}
 
 
@@ -56,7 +58,10 @@ def card_only(op: str, op_args: dict[str, Any]) -> bool:
 
 #: Ops that open or move around a page without pressing anything on it. A host
 #: "read" grant covers them on that host, beside :data:`READ_ONLY_OPS`.
-_OPEN_OPS = frozenset({"navigate", "scroll"})
+#: ``set_appearance`` and ``resize`` are here: like ``scroll`` they change only how
+#: the agent's own tab shows the page and press, type and send nothing, though the
+#: page's own script may react, so they are not :data:`READ_ONLY_OPS` either.
+_OPEN_OPS = frozenset({"navigate", "scroll", "set_appearance", "resize"})
 
 
 #: Ops that act on the page: a host "act" grant covers them.
@@ -73,6 +78,7 @@ _ACT_OPS = frozenset(
         "press_key",
         "select_option",
         "type",
+        "upload",
         *HARNESS_HELPER_OPS,
     }
 )
@@ -92,12 +98,16 @@ def reads_only(op: str, op_args: dict[str, Any]) -> bool:
 def host_trust_class(op: str, op_args: dict[str, Any]) -> str:
     """``"read"`` or ``"act"`` for an op a host grant may cover, ``""`` for one it never does.
 
-    Read: :func:`reads_only`, plus opening a page (``navigate``, ``tabs new``) and
-    scrolling. Act: every op that presses, types or picks on the page, plus going
-    back and switching or closing tabs. An op this module does not name gets
-    ``""``, so a new op asks until someone classes it here.
+    Read: :func:`reads_only`, plus opening a page (``navigate``, ``tabs new``),
+    scrolling, and setting how the tab shows it (``set_appearance``, ``resize``). Act: every op that presses, types, picks or uploads files on the
+    page, plus going back and switching or closing tabs, and ``js`` in the current
+    tab (one that names a ``target_id`` may reach a tab or frame on another site). An
+    op this module does not name gets ``""``, so a new op asks until someone classes
+    it here.
     """
     if op in NO_HOST_TRUST_OPS or card_only(op, op_args):
+        return ""
+    if op == "js" and op_args.get("target_id") is not None:
         return ""
     if op == "tabs":
         action = str(op_args.get("action") or "list")

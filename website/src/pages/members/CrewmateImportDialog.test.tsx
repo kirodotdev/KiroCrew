@@ -25,7 +25,7 @@ vi.mock('../../cards/ChangeCard', () => ({
 }))
 
 import CrewmateImportDialog, { CREWMATE_FILE_ACCEPT, importRefusal } from './CrewmateImportDialog'
-import { CREWMATE_IMPORT_SLOT } from '../../api/cards'
+import { CREWMATE_IMPORT_SLOT, cardsQueryKey } from '../../api/cards'
 
 const card = (over: Partial<Card> = {}): Card => ({
   id: 'cc_1', slot_key: CREWMATE_IMPORT_SLOT, kind: 'crewmate.import', revision: 1, status: 'pending',
@@ -40,6 +40,7 @@ function mount() {
       <CrewmateImportDialog open onOpenChange={() => {}} />
     </QueryClientProvider>,
   )
+  return client
 }
 
 describe('CrewmateImportDialog', () => {
@@ -100,6 +101,22 @@ describe('CrewmateImportDialog', () => {
     mount()
     expect(await screen.findByTestId('crewmate-import-read-error')).toBeTruthy()
     expect(click).not.toHaveBeenCalled()
+    click.mockRestore()
+  })
+
+  it('keeps the picker closed while a failed read is re-read, and opens it once the re-read finds nothing', async () => {
+    pending.mockRejectedValueOnce(new Error('the change cards could not be read'))
+    let settle: (cards: Card[]) => void = () => {}
+    pending.mockImplementationOnce(() => new Promise<Card[]>((resolve) => { settle = resolve }))
+    const click = vi.spyOn(HTMLInputElement.prototype, 'click')
+    const client = mount()
+    await screen.findByTestId('crewmate-import-read-error')
+    void client.refetchQueries({ queryKey: cardsQueryKey(CREWMATE_IMPORT_SLOT) })
+    await waitFor(() => expect(screen.queryByTestId('crewmate-import-read-error')).toBeNull())
+    expect(pending).toHaveBeenCalledTimes(2)
+    expect(click).not.toHaveBeenCalled()
+    settle([])
+    await waitFor(() => expect(click).toHaveBeenCalledTimes(1))
     click.mockRestore()
   })
 

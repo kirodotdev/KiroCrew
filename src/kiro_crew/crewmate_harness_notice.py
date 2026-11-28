@@ -79,11 +79,11 @@ def fallback_notes(config: Any) -> list[dict[str, str]]:
             (
                 key,
                 {
-                    "title": f"Bots run on {used}, not {chosen}",
+                    "title": f"Bots use {used}, not {chosen}",
                     "body": (
-                        f"Your Agent Harness is {chosen}, which bots cannot run on. Bot "
-                        f"chats and the workers they open run on {used} instead. To choose "
-                        "another harness for a bot, set " + ROUTE
+                        f"Bots can't run on {chosen}, the agent picked in Settings → Agent "
+                        f"Harness. So bot chats, and the worker chats they start, use {used}. "
+                        "To give one bot a different agent, set " + ROUTE
                     ),
                     "url": NOTE_URL,
                 },
@@ -111,11 +111,11 @@ def fallback_notes(config: Any) -> list[dict[str, str]]:
                 (
                     key,
                     {
-                        "title": f"{crew} runs on {used}, not {inherited}",
+                        "title": f"{crew} uses {used}, not {inherited}",
                         "body": (
-                            f"{crew} uses settings {inherited} cannot carry ({fields}), "
-                            f"so its chat and workers run on {used}.{fix} To choose another "
-                            "harness, set " + ROUTE
+                            f"{crew}'s settings ask for things {inherited} can't do ({fields}). "
+                            f"So its chats and worker chats use {used}.{fix} To pick a "
+                            "different agent, set " + ROUTE
                         ),
                         "url": f"/members?member={quote(crew)}",
                     },
@@ -193,10 +193,11 @@ def _pin_fallback_notes(config: Any, holding: set[str]) -> list[tuple[str, dict[
             (
                 key,
                 {
-                    "title": f"{crew} runs on {used}, not {chosen}",
+                    "title": f"{crew} uses {used}, not {chosen}",
                     "body": (
-                        f"{crew} is pinned to {chosen}, which bots cannot run on, so its "
-                        f"chat and workers run on {used}. Pick another harness: set " + ROUTE
+                        f"{crew} is set to {chosen}, but bots can't run on {chosen}. So its "
+                        f"chats and worker chats use {used}. To pick a different agent, set "
+                        + ROUTE
                     ),
                     "url": f"/members?member={quote(crew)}",
                     # An error: the person picked this harness, and it is not used.
@@ -312,11 +313,11 @@ def moved_note(config: Any, crew: str) -> dict[str, str] | None:
         return None
     kas = harness_label("kas")
     return {
-        "title": f"Bots now run on {chosen}",
+        "title": f"Bots now use {chosen}",
         "body": (
-            f"A bot with no harness of its own now follows Settings → Agent Harness "
-            f"({chosen}), not {kas}. Its next turn starts a new conversation there. To "
-            f"keep a bot on {kas}, set it as " + ROUTE
+            f"Bots now use the agent picked in Settings → Agent Harness ({chosen}), "
+            f"not {kas}, unless a bot has its own agent set. A bot's next message starts "
+            f"a new conversation. To keep a bot on {kas}, set " + ROUTE
         ),
         "url": f"/members?member={quote(crew)}",
     }

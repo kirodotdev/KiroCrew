@@ -1,8 +1,8 @@
 /**
  * The App Kit platform: the installed-app lifecycle, registries and the app
  * store, registry installs including the streamed install, registration, an
- * app's declared per-session status route, and app-contributed file-menu
- * actions.
+ * app's declared per-session status route, app-contributed file-menu
+ * actions, and app-contributed Sessions New rows.
  */
 
 import {
@@ -71,6 +71,27 @@ export interface AppBotGrants {
   scopes: string[]
 }
 
+/** One site on an app's browsing list: where it came from and where it stands. */
+export interface AppBrowserSite {
+  site: string
+  /** `app`: the manifest's `permissions.browserSites` declares it; `owner`: the owner added it. */
+  source: 'app' | 'owner'
+  /**
+   * `pending`: declared, not yet approved; `disabled`: the owner turned it off;
+   * `removed`: declared, the owner removed it (never in force; only `add` acts on it).
+   */
+  status: 'approved' | 'pending' | 'disabled' | 'removed'
+}
+
+/** `GET/POST /api/apps/{name}/browser-sites`: every listed site, and the ones in force. */
+export interface AppBrowserSites {
+  sites: AppBrowserSite[]
+  active: string[]
+}
+
+/** What the owner may do to one site. Only `add` widens what the app's agent may open. */
+export type AppBrowserSiteAction = 'add' | 'remove' | 'disable'
+
 /** The surfaces a contributed file-menu row can appear on. */
 export type FileMenuSurface = 'file-overflow' | 'tree-context' | 'folder-row'
 
@@ -108,9 +129,13 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
     // The Bots the owner ticked for an app (`permissions.bots`), and its approved scopes.
     getAppBotGrants: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/bot-grants').then(j) as Promise<AppBotGrants>,
     setAppBotGrants: (name: string, bots: string[]) => put('/api/apps/' + encodeURIComponent(name) + '/bot-grants', { bots }).then(j) as Promise<AppBotGrants>,
+    // The pages an app's own agent may browse (`permissions.browserSites` and the
+    // owner's own edits). The change is owner-only on the gateway.
+    getAppBrowserSites: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/browser-sites').then(j) as Promise<AppBrowserSites>,
+    changeAppBrowserSite: (name: string, action: AppBrowserSiteAction, site: string) => post('/api/apps/' + encodeURIComponent(name) + '/browser-sites', { action, site }).then(j) as Promise<AppBrowserSites>,
     installApp: (source: string) => post('/api/apps/install', { source }).then(j),
     // grantsConsent names the staged entries the owner was shown; only those are approved.
-    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; bots?: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[]; workerAutoApprove?: string[]; reachableByUserSessions?: string[]; desktopCapabilities?: string[]; frameSources?: string[]; browserSites?: string[]; kiroOperations?: string[]; browser?: string[] }, memberThreadsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', {
+    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; bots?: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[]; workerAutoApprove?: string[]; reachableByUserSessions?: string[]; desktopCapabilities?: string[]; frameSources?: string[]; browserSites?: string[]; kiroOperations?: string[]; browserRecipes?: string[]; browserRecipeWatch?: string[]; browser?: string[] }, memberThreadsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', {
       sessionApprovalConsent,
       // Only a consent whose disclosure named member threads says so; the
       // server refuses a consent that omits a scope the live manifest declares.
@@ -118,6 +143,8 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
       ...(grantsConsent ? { grantsConsent } : {}),
     }).then(j),
     disableApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/disable').then(j),
+    /** `POST /api/browser/recipe-watch-off`: takes back one watch recipe's run-by-itself yes (owner only). */
+    stopAppRecipeWatch: (name: string, recipe: string) => post('/api/browser/recipe-watch-off', { app: name, recipe }).then(j) as Promise<{ ok: boolean; removed?: boolean; error?: string }>,
     openApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/open').then(j),
     uninstallApp: (name: string, keepData = true, keepDependencies?: boolean, keepSpecific?: string[]) =>
       post('/api/apps/' + encodeURIComponent(name) + '/uninstall', {
@@ -313,5 +340,18 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
     },
   }
 
-  return { platform, sessionStatus, fileMenu }
+  const sessionCreate = {
+    // Ask the app behind a Sessions New row to prepare the project the new session
+    // opens on (`sessionCreateContributions.tsx`). No session exists yet, so no
+    // session key rides it. `redirect: 'error'` for the reason `invokeFileMenuItem`
+    // gives: the checked endpoint must be the only URL the request reaches.
+    prepareAppSession: async (item: { id: string; endpoint: string }) => {
+      const r = await post(item.endpoint, { item_id: item.id }, undefined, undefined, 'error')
+      checkSessionExpired(r)
+      if (r.ok) { removeAuthBanner(); return r.json() as Promise<unknown> }
+      throw await toApiError(r)
+    },
+  }
+
+  return { platform, sessionStatus, fileMenu, sessionCreate }
 }

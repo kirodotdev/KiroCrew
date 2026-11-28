@@ -879,6 +879,32 @@ async def test_a_held_steer_unresolved_at_turn_end_stays_possibly_delivered(
         await await_until(nxt, what="the next turn")
 
 
+@pytest.mark.asyncio
+async def test_a_written_unanswered_held_steer_is_not_named_unsent_when_the_turn_ends():
+    """The steer was written and awaits its answer when the terminal arrives. It is
+    possibly delivered, so naming it unsent too would queue it a second time."""
+    async with _Tasks() as spawned:
+        client = _client()
+        wire = _Wire(client)
+        turn = await _start_turn(client, spawned)
+        wire.inbound.put_nowait(_open_tool())
+        await async_wait_until(lambda: client._active_tool_calls.possibly_open)
+        assert await client.steer("written once") is True
+        wire.inbound.put_nowait(_close_tool())
+        await wire.next_steering_id()
+        sender = client._held_steer_task
+        assert sender is not None
+        spawned.append(sender)
+        # Written, no answer read: still first in the buffer.
+        assert client._steers_held != []
+
+        wire.end_turn()
+        await await_until(turn, what="the turn")
+        await await_until(sender, what="the held-steer sender")
+        assert client.held_steers_possibly_delivered == {"written once"}
+        assert client.held_steers_unsent == frozenset()
+
+
 @pytest.mark.parametrize("outcome", ["promptRequired", "failed", "error"])
 @pytest.mark.asyncio
 async def test_a_held_steer_the_adapter_does_not_inject_is_not_reported(outcome):

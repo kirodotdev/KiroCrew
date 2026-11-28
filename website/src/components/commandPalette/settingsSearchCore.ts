@@ -35,8 +35,9 @@
  */
 import { crewModeEnabled } from '../../lib/crewMode'
 import { isStandaloneDisplay } from '../../lib/standaloneLastRoute'
+import { isTouchFirst } from '../../lib/touchLayoutForm'
 import { fuzzyMatch } from '../../utils/fuzzyMatch'
-import { PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, previewFlagsLocked, readPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_CREW_CLIENT, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, previewFlagsLocked, readPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
 import { isMac } from '../../utils/platform'
 import { KIRO_SIGN_IN_SETTING_ID } from './kiroSignInSettingId'
@@ -133,7 +134,9 @@ export const PREVIEW_FLAG_SETTING_IDS: ReadonlySet<string> = new Set([
   'developer.wake-bots-to-update-out-of-date-fields',
   'developer.agent-harness-for-worker-chats',
   'developer.visual-refresh',
+  'developer.worker-status-under-the-reply',
   'developer.session-environments',
+  'developer.kiro-managed-environments',
 ])
 
 /** With `dashboard.tips_enabled` off the rail can drop Discovery, and `sub=discovery`
@@ -156,12 +159,19 @@ export const SLACK_TOOLS_SWITCH_KEY = 'slack.slack_mcp'
 export const ENABLE_REMOTE_CREWS_SETTING_ID = 'instances.enable-remote-crew-management'
 /** Settings > Remote Crew's Remote Control card (manual entry in settingsManual.ts). */
 const REMOTE_CONTROL_SETTING_ID = 'instances.remote-control'
+/** Feature Previews > Kiro Managed Environments, drawn only where its sign-in values are set. */
+const MANAGED_ENV_PREVIEW_SETTING_ID = 'developer.kiro-managed-environments'
 export const AUTO_CONNECT_CREWS_SETTING_ID = 'instances.auto-connect-crews'
 
 /** Registry id of "Reopen where I left off", which DisplayPanel draws only in the installed app. */
 export const REOPEN_LAST_PAGE_SETTING_ID = 'display.reopen-where-i-left-off'
+/** Registry id of "Touch screen layout", which DisplayPanel draws only on a touch-first device. */
+export const TOUCH_LAYOUT_SETTING_ID = 'display.touch-screen-layout'
 /** Registry id of the terminal's Ctrl+C / Ctrl+V switch, which DisplayPanel draws only off macOS. */
 export const TERMINAL_CTRL_COPY_PASTE_SETTING_ID = 'display.ctrl-c-and-ctrl-v-copy-and-paste'
+/** Registry id of "Show cursor motion", which ComputerUsePanel draws only while Computer Use
+ *  is on and the gateway supports the overlay (macOS). */
+export const SHOW_CURSOR_MOTION_SETTING_ID = 'computer-use.show-cursor-motion'
 
 /** The governance answers the search needs, as the two surfaces resolve them. */
 export interface SettingsSearchGovernance {
@@ -203,6 +213,13 @@ export interface SettingsSearchGovernance {
    */
   channelsOn?: boolean
   /**
+   * Whether Feature Previews draws the Kiro Managed Environments switch: the gateway's
+   * `managed_env_available` on the `['kirocrewConfig']` read (the cached answer counts).
+   * The row is also drawn while the stored `crew_client` switch is on, which
+   * `settingEntryOffered` reads itself, so the entry is offered in either case.
+   */
+  managedEnvAvailable?: boolean
+  /**
    * Whether Settings > Slack draws the Slack tools switch, from the `['slack-config']`
    * read that page itself renders from: the server says Connections offers the Slack
    * card (`slack_mcp_card`) or the switch is already on. `false` only on a read that
@@ -215,6 +232,14 @@ export interface SettingsSearchGovernance {
    * is drawn only then, so its entry is offered only then, as `channelsOn` is.
    */
   remoteControlShown?: boolean
+  /**
+   * Whether Settings > Computer Use can draw Show cursor motion. `false` once the
+   * `['computer-use-config']` read SUCCEEDED and said the host has no driver
+   * (`supported`) or no overlay (`cursor_motion_supported`), or, before that read,
+   * once the cached gateway platform is Windows. `undefined` (no answer) keeps the
+   * entry. Whether Computer Use is on does not withhold it, as on main.
+   */
+  cursorMotionShown?: boolean
 }
 
 /**
@@ -254,6 +279,7 @@ export function settingEntryOffered(
     return readPreviewFlag(PREVIEW_DASHBOARD_STALE_FIELDS)
   }
   if (entry.id === REOPEN_LAST_PAGE_SETTING_ID) return isStandaloneDisplay()
+  if (entry.id === TOUCH_LAYOUT_SETTING_ID) return isTouchFirst()
   if (entry.id === FEATURE_TIPS_SETTING_ID) return governance.tipsEnabled
   if (entry.id === GATEWAY_AUTO_UPDATE_SETTING_ID) return governance.updateSwitches.gateway
   if (entry.id === APP_AUTO_DOWNLOAD_SETTING_ID) return governance.updateSwitches.app
@@ -262,7 +288,13 @@ export function settingEntryOffered(
   if (entry.id === AUTO_CONNECT_CREWS_SETTING_ID) return governance.remoteCrewsEnabled !== false
   if (entry.configKey === CHANNELS_SWITCH_KEY) return governance.channelsOn === true
   if (entry.id === REMOTE_CONTROL_SETTING_ID) return governance.remoteControlShown === true
+  // Feature Previews draws Kiro Managed Environments where its sign-in values are set
+  // or the stored switch is on (so it can be turned off); the LTS check above still wins.
+  if (entry.id === MANAGED_ENV_PREVIEW_SETTING_ID) {
+    return governance.managedEnvAvailable === true || readPreviewFlag(PREVIEW_CREW_CLIENT)
+  }
   if (entry.id === TERMINAL_CTRL_COPY_PASTE_SETTING_ID) return !isMac
+  if (entry.id === SHOW_CURSOR_MOTION_SETTING_ID) return governance.cursorMotionShown !== false
   if (entry.configKey === SLACK_TOOLS_SWITCH_KEY) return governance.slackToolsShown !== false
   if (!DECISIONS_SETTING_IDS.has(entry.id)) return true
   return governance.decisionsEnabled

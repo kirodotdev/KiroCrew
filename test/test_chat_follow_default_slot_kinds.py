@@ -105,6 +105,10 @@ SLOT_CREATORS: dict[tuple[str, str], str] = {
         "no kept model: the request's model field names an agent (slot.agent); slot.model is "
         "never written here, and a turn writes it only from a crewmate pin"
     ),
+    ("dashboard/crew_api_responses.py", "_run"): (
+        "no kept model: the request's model field names an agent or Bot (slot.agent); "
+        "slot.model is never written here, and the session is removed when the request returns"
+    ),
     ("dashboard/session_control_parts/session_create.py", "create_session"): (
         "excluded: created_by: slot._created_by = caller_key right after the mint, with no "
         "await between, and caller_key is refused when empty at entry"

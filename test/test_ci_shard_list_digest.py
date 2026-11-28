@@ -222,11 +222,23 @@ def run(workflow: dict, tmp_path: Path) -> Run:
     return Run(workflow, tmp_path)
 
 
+def _corpus(workflow: dict, names) -> list[str]:
+    """The first 400 of *names* that the Windows pin file does not list.
+
+    A Windows leaf run that changes more than ``WINDOWS_LEAF_MAX_PINNED``
+    pinned files runs the full suite instead, so a sample holding pinned files
+    would pass or fail by which files sort first in ``test/``.
+    """
+    count = int(workflow["jobs"]["backend-test-windows"]["env"]["SHARD_COUNT"])
+    pinned = ci_file_shards.read_pins(ROOT / "scripts/ci_file_shard_pins_windows.txt", count)
+    return sorted(name for name in names if name not in pinned)[:400]
+
+
 @pytest.fixture(scope="module")
-def corpus() -> list[str]:
+def corpus(workflow: dict) -> list[str]:
     """Real test files of this checkout: a targets list must name files that exist."""
-    names = sorted(path.relative_to(ROOT).as_posix() for path in (ROOT / "test").glob("test_*.py"))
-    return names[:400]
+    names = [path.relative_to(ROOT).as_posix() for path in (ROOT / "test").glob("test_*.py")]
+    return _corpus(workflow, names)
 
 
 @pytest.fixture(scope="module")
@@ -429,6 +441,16 @@ def test_a_shard_holding_no_list_fails_when_the_run_has_one(run: Run, corpus, pa
         # Nothing ran in place of the list: not the full suite, not a part of it.
         assert _sharded(calls) == []
         assert not any("--file-shard-pins" in arg for call in calls for arg in call)
+
+
+@pytest.mark.parametrize("added", range(6))
+def test_new_test_files_sorting_first_leave_the_windows_leaf_sample_failing(
+    run: Run, workflow: dict, corpus, added: int
+) -> None:
+    # A PR adding test files that sort before the rest shifts every sample.
+    names = [*corpus, *(f"test/test_0{index}.py" for index in range(added))]
+    shifted = _corpus(workflow, names)
+    test_a_shard_holding_no_list_fails_when_the_run_has_one(run, shifted, "windows leaf gates")
 
 
 @pytest.mark.parametrize("job", ["backend-test", "backend-test-windows"])

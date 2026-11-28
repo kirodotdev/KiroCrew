@@ -491,7 +491,7 @@ export default function KiroCrewCfgTab() {
         <div className="grid grid-cols-1 gap-y-2 [&>*:last-child]:border-b-0">
           <div className={readonlyCls}><span className="text-muted"><Lock className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.provider')}</span><span className="text-text font-mono text-[13px]">{cfg.agent.provider}</span></div>
           <CfgSelect key={`approval-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.approval_mode')} path="agent.approval_mode" value={cfg.agent.approval_mode} options={['auto', 'interactive']} hint={i18nT('pages.overview.kiroCrewCfgTab.immediate_auto_approves_all_tools_interactive_as')} onSave={save} />
-          <CfgNumber key={`timeout-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.session_timeout')} path="session.timeout_secs" value={cfg.session.timeout_secs} suffix="s" min={60} max={86400} hint={i18nT('pages.overview.kiroCrewCfgTab.takes_effect_on_next_session_range_60_86400s')} onSave={save} />
+          <CfgNumber key={`timeout-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.session_timeout')} path="session.timeout_secs" value={cfg.session.timeout_secs} suffix={i18nT('pages.hooksPage.s')} min={60} max={86400} hint={i18nT('pages.overview.kiroCrewCfgTab.takes_effect_on_next_session_range_60_86400s')} onSave={save} />
           {/* Anchored for Settings → Session Environments' strict-sandbox link (AGENT_SANDBOX_PATH). */}
           <div data-setting-key={AGENT_SANDBOX_HIGHLIGHT_ANCHOR}>
           <CfgSelect key={`sandbox-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.sandbox')} path="agent.sandbox" value={cfg.agent.sandbox} options={['auto', 'strict', 'off']} hint={i18nT('pages.overview.kiroCrewCfgTab.applies_to_sessions_started_after_the_change')} onSave={save} />
@@ -549,7 +549,7 @@ export function AgentRunSettings() {
         <div className="grid grid-cols-1 gap-y-2 [&>*:last-child]:border-b-0">
           <CfgNumber key={`poolsize-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_size')} path="session.pool_size" value={cfg.session.pool_size ?? 0} min={0} max={10} hint={i18nT('pages.overview.kiroCrewCfgTab.number_of_pre_spawned_processes_0_disables')} onSave={save} />
           <CfgSelect key={`poolagent-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_agent')} path="session.pool_agent" value={cfg.session.pool_agent ?? ''} options={['', ...Object.keys(cfg.agents)]} labels={{'': cfg.default_agent ? i18nT('pages.overview.kiroCrewCfgTab.pool_agent_default_option', { name: cfg.default_agent }) : `(${i18nT('pages.overview.kiroCrewCfgTab.default_agent')})`}} hint={i18nT('pages.overview.kiroCrewCfgTab.agent_for_pool_processes_empty_uses_default_agent')} onSave={save} />
-          <CfgNumber key={`poolttl-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_ttl')} path="session.pool_ttl_secs" value={cfg.session.pool_ttl_secs} suffix="s" min={0} max={7200} hint={i18nT('pages.overview.kiroCrewCfgTab.max_age_for_pooled_processes_0_disables_expiry')} onSave={save} />
+          <CfgNumber key={`poolttl-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_ttl')} path="session.pool_ttl_secs" value={cfg.session.pool_ttl_secs} suffix={i18nT('pages.hooksPage.s')} min={0} max={7200} hint={i18nT('pages.overview.kiroCrewCfgTab.max_age_for_pooled_processes_0_disables_expiry')} onSave={save} />
         </div>
       </Card>
       )}

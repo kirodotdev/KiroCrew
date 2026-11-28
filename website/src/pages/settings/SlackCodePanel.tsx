@@ -133,7 +133,7 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
                 // the same); turning it back off before saving undoes that.
                 onChange={v => onChange({
                   switches: { ...draft.switches, code_channels: v },
-                  ...(draft.dispatchOnEnable ? { dispatch: v } : {}),
+                  ...(data.code_channel_dispatch_on_enable === true ? { dispatch: v } : {}),
                 })}
                 disabled={readOnly}
                 configKey="slack.code_channels"

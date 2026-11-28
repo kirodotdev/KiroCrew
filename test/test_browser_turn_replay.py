@@ -32,6 +32,7 @@ from kiro_crew.browser_harness.takeover import parse_input_event
 from kiro_crew.dashboard.handlers import browser_live as live_mod
 from kiro_crew.dashboard.handlers.sessions_parts import slot_teardown
 from kiro_crew.dashboard.routes import browser_live as route_slice
+from kiro_crew.dashboard.slot_buffers import MAX_SLOT_KEY_CHARS
 from kiro_crew.testing.wait import async_wait_until
 
 pytestmark = pytest.mark.asyncio
@@ -1113,6 +1114,22 @@ async def test_a_miss_or_a_traversal_is_one_not_found(recorded, path: str) -> No
     async with TestClient(TestServer(_app())) as client:
         resp = await client.get(path)
         assert resp.status == 404, (path, await resp.text())
+
+
+async def test_an_owned_slot_key_longer_than_128_characters_reads_its_recordings() -> None:
+    """The replay's session check takes a slot key up to ``MAX_SLOT_KEY_CHARS``,
+    bare or with the ``dashboard:`` prefix, as the card's own routes do."""
+    long_key = "k" * MAX_SLOT_KEY_CHARS
+    store = rc.get_recorder().store
+    store.start_turn(long_key, TURN, 1000, url="https://a.example/")
+    store.end_turn(long_key, TURN, 1300)
+    app = _app()
+    app["state"]._slots[long_key] = object()
+    async with TestClient(TestServer(app)) as client:
+        for session in (long_key, f"dashboard:{long_key}"):
+            resp = await client.get(f"/api/browser/live/{session}/recordings")
+            assert resp.status == 200, (len(session), await resp.text())
+            assert [t["turn_id"] for t in (await resp.json())["turns"]] == [TURN]
 
 
 # ── session delete ─────────────────────────────────────────────────────────

@@ -93,12 +93,17 @@ export function gcOrphanedStorage(
   liveSessionIds: Set<string>,
   isKept: (scoped: string) => boolean = () => false,
 ): number {
-  if (typeof localStorage === 'undefined') return 0
+  let storage: Storage
+  try {
+    // A browser that blocks site data throws from the accessor itself.
+    if (typeof localStorage === 'undefined') return 0
+    storage = localStorage
+  } catch { return 0 }
   let removed = 0
   // Collect doomed keys first — removing during iteration shifts indices.
   const doomed: string[] = []
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i)
+  for (let i = 0; i < storage.length; i++) {
+    const key = storage.key(i)
     if (!key) continue
     for (const prefix of SESSION_PREFIXES) {
       if (key.startsWith(prefix)) {
@@ -113,7 +118,7 @@ export function gcOrphanedStorage(
     }
   }
   for (const key of doomed) {
-    try { localStorage.removeItem(key); removed++ } catch { /* best-effort */ }
+    try { storage.removeItem(key); removed++ } catch { /* best-effort */ }
   }
   if (removed > 0 && import.meta.env.DEV) {
     // eslint-disable-next-line no-console

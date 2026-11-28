@@ -259,6 +259,7 @@ from kiro_crew.acp.liveness_proc import (  # noqa: F401 - re-exported for existi
     _DARWIN_CPU_KEY,
     _DARWIN_CPU_LABEL,
     _FILETIME_UNIX_OFFSET_SECS,
+    _NET_TCP_PASSES,
     _WINDOWS_CPU_LABEL,
     DarwinProcessBackend,
     LibprocBackend,
@@ -1337,12 +1338,24 @@ class LivenessOracle(_ShellCleanupMixin):
         return VERDICT_UNKNOWN, evidence
 
     def _any_established(self, runtime_pid: int) -> bool:
-        for pid in iter_descendants(self._proc, runtime_pid):
-            held = socket_inodes(self._proc, pid)
-            if not held:
-                continue
-            if held & established_inodes(self._proc, pid):
-                return True
+        """Whether a process in the tree holds an ESTABLISHED TCP socket.
+
+        ``False`` is the DEAD verdict, acted on at once, and one pass over
+        ``/proc/<pid>/net/tcp{,6}`` can skip a live row, so a tree that holds
+        sockets but finds none established is read again, up to
+        :data:`_NET_TCP_PASSES` passes in all.
+        """
+        for _pass in range(_NET_TCP_PASSES):
+            holds_sockets = False
+            for pid in iter_descendants(self._proc, runtime_pid):
+                held = socket_inodes(self._proc, pid)
+                if not held:
+                    continue
+                holds_sockets = True
+                if held & established_inodes(self._proc, pid):
+                    return True
+            if not holds_sockets:
+                return False
         return False
 
     # ── Movement sampling ──

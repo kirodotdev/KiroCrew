@@ -1,5 +1,7 @@
 /**
  * Script fallback faces must lead every font stack, and must never claim Latin.
+ * The rich-text composer's two stacks are the one exception; composerImeFonts.test.ts
+ * pins them.
  *
  * zh-CN, ja, ko, hi and bn have no font coverage otherwise: every family in
  * `--font-body` and `--mono` covers Latin only, so those scripts fall through to the
@@ -333,6 +335,19 @@ describe('script fallback faces', () => {
       expect(han, "KC Kana Fallback must list a 'Source Han Sans JP' face").toBeGreaterThan(-1)
       expect(han, "'Source Han Sans JP' must precede 'Droid Sans Fallback' in KC Kana Fallback")
         .toBeLessThan(droid)
+    }
+  })
+
+  it('tries Meiryo before any Yu Gothic face in the Japanese and kana aliases', () => {
+    // Windows draws Yu Gothic Regular thin and faint at body sizes; a Japanese
+    // reader reported the dashboard much easier to read once Meiryo was used.
+    for (const family of ['KC Japanese Fallback', 'KC Kana Fallback']) {
+      for (const block of faceBlocks(family)) {
+        const meiryo = block.indexOf("local('Meiryo")
+        const yu = block.indexOf("local('Yu Gothic")
+        expect(meiryo, `${family} must list Meiryo`).toBeGreaterThan(-1)
+        expect(meiryo, `Meiryo must precede Yu Gothic in ${family}`).toBeLessThan(yu)
+      }
     }
   })
 

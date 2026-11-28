@@ -602,7 +602,7 @@ class TestRunScriptSandboxed:
             result = run_script_sandboxed(script_path + ":run", "test-job-id")
 
         assert result["status"] == "error"
-        assert result["error"] == "exit 3"
+        assert result["error"].startswith("Script exited with code 3.")
 
     def test_a_credential_in_the_terminal_stderr_is_redacted(self, tmp_path):
         """The reported text still leaves the box, so redaction still applies.
@@ -632,17 +632,18 @@ class TestRunScriptSandboxed:
         so it would reach logs and ``last_error`` unmasked.
 
         Byte layout (written verbatim, ``os._exit`` so no traceback shifts
-        it): 300 noise + a 40-char token + 461 trailing chars = 801 total.
-        The -500 cut lands ONE character into the token, so slice-then-redact
-        leaks its 39-char tail; redact-then-slice replaces the whole token
-        with the tag, whose tail stays in the report.
+        it): a 300-char noise line, the 40-char token on a line of its own,
+        then 100 trailing chars. The reason's cut severs the noise line, which
+        it drops, and keeps the token's whole line, so the token's mask is
+        shown and no part of the token. A token the cut itself severs is on a
+        line the reason drops whole.
         """
         script_path = self._write_script(
             tmp_path,
             "import os, sys\n"
-            'sys.stderr.write("W" * 300)\n'
-            f'sys.stderr.write("{_SECRET}")\n'
-            'sys.stderr.write("X" * 461)\n'
+            'sys.stderr.write("W" * 300 + "\\n")\n'
+            f'sys.stderr.write("{_SECRET}\\n")\n'
+            'sys.stderr.write("X" * 100)\n'
             "sys.stderr.flush()\n"
             "os._exit(2)\n",
         )
@@ -651,10 +652,8 @@ class TestRunScriptSandboxed:
 
         assert result["status"] == "error"
         assert _SECRET not in result["error"]
-        # The discriminator: the exact fragment the slice-then-redact order
-        # leaves behind. Absent under redact-then-slice; present under the bug.
         assert _SECRET[1:] not in result["error"]
-        assert "credential]" in result["error"]
+        assert "credential]\nXXXX" in result["error"]
 
     def test_ok_status(self, tmp_path):
         script_path = self._write_script(

@@ -39,7 +39,12 @@ from kiro_crew.mcp_gateway.admission import (
 )
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.daemon.control_plane import CONTROL_PLANE_BACKENDS
-from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env, non_secret_env
+from kiro_crew.mcp_gateway.hashing import (
+    hash_command,
+    hash_effective_env,
+    hash_launch_env,
+    non_secret_env,
+)
 from kiro_crew.mcp_gateway.manager import (
     BACKEND_WORK_DIR_ENV,
     _scrub_sensitive_env,
@@ -182,8 +187,10 @@ def _read_declared_env_sidecar(
 ) -> Optional[dict[str, str]]:
     """Return the sidecar ``declaring_agent`` declared for this server, or ``None``.
 
-    EXACT, by name: ``declaring_agent`` is read off the Register frame of the one
-    stub this read is for, and :func:`rewriter.env_sidecar_name` is injective
+    EXACT, by name: ``declaring_agent`` is the agent the daemon resolved for the
+    one stub this read is for (``connection._declaring_agent``: one the owning
+    gateway bound to that stub's session token, never the bare name its
+    Register frame carries), and :func:`rewriter.env_sidecar_name` is injective
     over ``(agent, server)``, so this can only ever open that stub's own
     declaration. That is the whole point -- the returned pairs are UNFILTERED,
     rotating secrets included, so opening another agent's file here would hand
@@ -192,9 +199,9 @@ def _read_declared_env_sidecar(
     ``AWS_SECRET``/``AWS_SESSION``/``OAUTH`` key, so two agents declaring one
     server with different credentials are indistinguishable by key alone.
 
-    ``declaring_agent`` empty (a stub predating the field, or one with no agent
-    behind it) yields a name the rewriter never writes, hence ``None`` and no
-    forwarding -- the same outcome such a stub got before, and fail-closed.
+    ``declaring_agent`` empty (a stub predating the field, one with no agent
+    behind it, or one the gateway did not bind to that agent) yields a name the
+    rewriter never writes, hence ``None`` and no forwarding -- fail-closed.
 
     ``None`` means no readable JSON object exists. The values are ungated;
     :func:`_declared_env_pairs` applies the coherence and approval gates.
@@ -370,8 +377,9 @@ def _declared_env_for_private_backend(
     The coherence gate still applies: a sidecar edited after this session
     started yields ``{}`` rather than values the running stub never hashed.
 
-    ``declaring_agent`` is the agent named on the Register frame of the ONE stub
-    this backend belongs to, and it is what selects the sidecar -- this is the
+    ``declaring_agent`` is the agent the daemon resolved for the ONE stub this
+    backend belongs to (``connection._declaring_agent``), and it is what selects
+    the sidecar -- this is the
     only reader that returns rotating secrets, so it is also the only one that
     must not scan. Reading a sidecar by anything the PoolKey carries would let
     another agent's credentials reach this backend, because
@@ -433,8 +441,9 @@ def _approval_env_identity(pool_key: PoolKey) -> str:
     """The full-env approval identity of the launch behind ``pool_key``.
 
     EXACTLY ONE coherent sidecar yields the complete declared env's fingerprint,
-    the identity the approval stores. In every other case the PoolKey hash
-    stands, which matches an approval only when that approval's env carried no
+    the identity the approval stores. In every other case the PoolKey's
+    non-secret env stands, hashed as approvals are (the gateway's ``PATH`` part
+    folded), which matches an approval only when that approval's env carried no
     secret-prefixed key.
 
     Ambiguity is counted over DISTINCT CONTENTS, not over files, and the
@@ -466,6 +475,12 @@ def _approval_env_identity(pool_key: PoolKey) -> str:
         # The verified contents, not a re-read of the file they came from: a
         # second read could pick up a replacement that no hash ever covered.
         return launch_approval.env_fingerprint(coherent[0])
+    if coherent:
+        # Every coherent sidecar projects to the PoolKey hash; hashing that
+        # projection the way approvals are hashed (the gateway's PATH part
+        # folded) keeps it matching a secret-free approval, as the PoolKey
+        # hash did before the fold.
+        return hash_launch_env(non_secret_env(coherent[0], identity_keys=identity_keys))
     return pool_key.effective_env_hash
 
 
@@ -767,9 +782,44 @@ def _backend_work_dir() -> Optional[str]:
     return None if default is None else str(default)
 
 
+def _target_spec(pool_key: PoolKey) -> str:
+    """The ``KIROCREW_MCP_TARGET_<SERVER>`` mapping for *pool_key*, or ``""`` when none is set."""
+    base = "KIROCREW_MCP_TARGET_" + pool_key.server_name.upper().replace("-", "_")
+    # Accept the legacy MC_MCP_TARGET_ prefix for overlays/daemons written by
+    # older versions that haven't been regenerated.
+    legacy_base = "MC_MCP_TARGET_" + pool_key.server_name.upper().replace("-", "_")
+    # Prefer the args-disambiguated entry (written by
+    # rewriter._collect_target_env) so two agents that share a server name but
+    # declare different --target-args each spawn their OWN backend command,
+    # instead of resolving to whichever agent sorted first alphabetically. Fall
+    # back to the bare server-name entry for older overlays predating the
+    # disambiguated keys.
+    return (
+        os.environ.get(base + "__" + pool_key.command_args_hash)
+        or os.environ.get(base)
+        or os.environ.get(legacy_base + "__" + pool_key.command_args_hash)
+        or os.environ.get(legacy_base)
+        or ""
+    )
+
+
+def _target_unknown_reason(pool_key: PoolKey) -> str:
+    """The ``_TargetUnknown`` text for a resolver that found no target for *pool_key*.
+
+    Both texts begin with ``stub_link.TARGET_UNKNOWN_REASON``, the frozen fragment a
+    stub matches, so either refusal stays fallback-eligible. A mapping that names a
+    command and still resolved to nothing was refused by the launch approval: that is
+    :func:`env_target_resolver`'s only ``None`` once such a mapping is found.
+    """
+    prefix = f"no target mapping for server {pool_key.server_name!r}"
+    if _target_spec(pool_key).strip():
+        return f"{prefix}: its launch is not an approved one; review it in MCP Servers > Sharing"
+    return f"{prefix}; set KIROCREW_MCP_TARGET_<SERVER> env var or pass a target_resolver"
+
+
 def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dict[str, str], str]]:
     """Look up ``KIROCREW_MCP_TARGET_<SERVER>`` in the process env and return the
-    spawn tuple, or ``None`` if no mapping is set.
+    spawn tuple, or ``None`` if no mapping is set or its launch is not approved.
 
     Wire format: ``KIROCREW_MCP_TARGET_SLACK_MCP="slack-mcp --stdio"``.
     The server name is upper-cased with ``-`` replaced by ``_``. Env is
@@ -781,22 +831,7 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
     :func:`kiro_crew.mcp_gateway.manager._scrub_sensitive_env` so even if
     the gateway process somehow inherited credential vars, backends won't.
     """
-    base = "KIROCREW_MCP_TARGET_" + pool_key.server_name.upper().replace("-", "_")
-    # Accept the legacy MC_MCP_TARGET_ prefix for overlays/daemons written by
-    # older versions that haven't been regenerated.
-    legacy_base = "MC_MCP_TARGET_" + pool_key.server_name.upper().replace("-", "_")
-    # Prefer the args-disambiguated entry (written by
-    # rewriter._collect_target_env) so two agents that share a server name but
-    # declare different --target-args each spawn their OWN backend command,
-    # instead of resolving to whichever agent sorted first alphabetically. Fall
-    # back to the bare server-name entry for older overlays predating the
-    # disambiguated keys.
-    spec = (
-        os.environ.get(base + "__" + pool_key.command_args_hash)
-        or os.environ.get(base)
-        or os.environ.get(legacy_base + "__" + pool_key.command_args_hash)
-        or os.environ.get(legacy_base)
-    )
+    spec = _target_spec(pool_key)
     if not spec:
         return None
     parts = shlex.split(spec)

@@ -718,6 +718,39 @@ class TestWindowsKillWithoutTaskkill:
         assert pc.kill_process_tree(4242, pc.SIGKILL) is True
         assert captured["argv"][1:] == ["/T", "/F", "/PID", "4242"]
 
+    def test_the_tree_kill_bound_is_the_callers(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            pc, "trusted_system_bin", lambda _name: r"C:\Windows\System32\taskkill.exe"
+        )
+        bounds: list[float] = []
+
+        def _run(argv: Any, **kwargs: Any) -> Any:
+            bounds.append(kwargs["timeout"])
+            return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(pc.subprocess, "run", _run)
+        pc.kill_process_tree(4242, pc.SIGKILL)
+        pc.kill_process_tree(  # flake-ok: a fake run records the bound; nothing waits on it
+            4242, pc.SIGKILL, timeout=120.0
+        )
+        assert bounds == [5, 120.0]
+
+    def test_a_tree_kill_past_its_bound_raises_timeout_error(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            pc, "trusted_system_bin", lambda _name: r"C:\Windows\System32\taskkill.exe"
+        )
+
+        def _run(argv: Any, **kwargs: Any) -> Any:
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+        monkeypatch.setattr(pc.subprocess, "run", _run)
+        with pytest.raises(TimeoutError, match="did not finish"):
+            pc.kill_process_tree(4242, pc.SIGKILL)
+
 
 # ---------------------------------------------------------------------------
 # Directory links -- the junction fallback

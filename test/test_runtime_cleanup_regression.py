@@ -71,6 +71,9 @@ def lifecycle(monkeypatch, tmp_path):
     # A closed interface: an unexpected process operation fails rather than
     # reaching the host. Only native file locking remains real on each OS.
     backend = SimpleNamespace(
+        # Not Linux: the simulated kernel has no sessions, so the teardown's
+        # session-leftover read stays off the host's /proc.
+        IS_LINUX=False,
         IS_WINDOWS=False,
         SIGTERM=platform_compat.SIGTERM,
         SIGKILL=platform_compat.SIGKILL,

@@ -222,8 +222,12 @@ def read_endorsed_config_text(path: Path) -> str:
     return strip_utf8_bom(content.decode("utf-8"))
 
 
-def read_merged_config_files(*paths: Path) -> dict:
-    """The config documents at *paths*, each merged over the one before. Never raises.
+def read_merged_config_files(*paths: Path, strict: bool = False) -> dict:
+    """The config documents at *paths*, each merged over the one before.
+
+    Never raises unless *strict*: then an absent file still contributes nothing,
+    but one that cannot be read or parsed raises, for a caller that must not
+    mistake a half-written file for an empty one.
 
     The raw counterpart of the loader's overlay for a reader that must stay off the
     config dataclass graph: callers pass ``config.json`` then ``config.local.json``
@@ -240,7 +244,11 @@ def read_merged_config_files(*paths: Path) -> dict:
     for path in paths:
         try:
             document = json.loads(read_endorsed_config_text(path))
+        except FileNotFoundError:
+            continue
         except (OSError, ValueError, RecursionError):
+            if strict:
+                raise
             continue
         if isinstance(document, dict):
             merged = _deep_merge(merged, document)
@@ -511,8 +519,9 @@ def ssh_auth_sock_consent_path() -> Path:
     un-flippable from inside the sandbox.
 
     Holds ``{"enabled": bool, "mcp_gateway_backends": [str]}``; every read fails
-    soft to DISABLED (see ``ssh_auth_sock_consent``). The operator writes it by
-    hand from outside the agent sandbox; Kiro Crew only reads it. There is
+    soft to DISABLED (see ``ssh_auth_sock_consent``). The owner-gated dashboard
+    handler (``dashboard/handlers/ssh_auth_sock_consent.py``) is the only in-tree
+    writer; a hand edit from outside the agent sandbox still works. There is
     deliberately NO CLI verb -- a terminal command that records the grant on
     request is a grant an automated caller can take. Respects
     ``KIROCREW_HOME``.
@@ -728,6 +737,12 @@ def materialize_workspace_dir(validated: Path, *, leaf: Path, display: str) -> N
             "workspace_dir_uncreatable",
             f"Directory '{display}' could not be created: {exc.strerror or exc}",
         ) from exc
+    # A device name (Windows ``NUL``) takes the mkdir and leaves no directory.
+    if not validated.is_dir():
+        raise WorkspaceDirUnusable(
+            "workspace_dir_not_a_directory",
+            f"'{display}' exists and is not a directory; choose another dir or remove it first",
+        )
 
 
 def workspace_dir_from_entry(entry: WorkspaceConfig | None) -> Path:
@@ -753,6 +768,59 @@ def workspace_dir_from_entry(entry: WorkspaceConfig | None) -> Path:
     if p.is_absolute():
         return p
     return config_dir() / dirname
+
+
+def _is_broad_root(real: str) -> bool:
+    """Whether real path *real* is exactly the filesystem root, the owner's home or the data home.
+
+    Exact match only: a folder below any of them is not broad.
+    """
+    norm = os.path.normcase(real)
+    if os.path.dirname(norm) == norm:  # "/" or a bare drive root
+        return True
+    broad = (os.path.expanduser("~"), str(config_dir()))
+    return norm in {os.path.normcase(os.path.realpath(p)) for p in broad}
+
+
+def usable_workspace_dir_from_entry(
+    entry: WorkspaceConfig | None, name: str = "", *, must_exist: bool = True
+) -> Path:
+    """:func:`workspace_dir_from_entry`, held to the rule chat applies to a workspace folder.
+
+    A folder on the sensitive-path list, a broad root (the filesystem root, the owner's
+    home folder or the data home, matched exactly), or missing when *must_exist*, is not
+    used as the working directory of a scheduled run or a channel turn: the base workspace
+    folder is returned instead and one line is logged. A scheduled run passes
+    ``must_exist=False``: a folder that is not there yet is created on use, so the
+    missing half does not apply. The folder is returned as its realpath, the path that was
+    judged, and a link that appeared on it since is refused. The base folder itself is
+    returned as it is.
+    """
+    ws = workspace_dir_from_entry(entry)
+    base = workspace_dir_from_entry(None)
+    if ws == base:
+        return ws
+    from kiro_crew.security import is_sensitive_canonical_path  # circular import
+
+    try:
+        real = os.path.realpath(str(ws))
+        if (
+            (not must_exist or os.path.isdir(real))
+            and not _is_broad_root(real)
+            and not is_sensitive_canonical_path(real)
+        ):
+            # Return the path judged. It resolves to itself only while no link sits on
+            # it, so one swapped in since the judgment is refused here, not followed.
+            if os.path.realpath(real) == real:
+                return Path(real)
+    except Exception:  # noqa: BLE001 - an unjudgeable folder is not used
+        pass
+    logger.warning(
+        "workspace %r: its folder is not usable (sensitive, a broad root, or missing); "
+        "using the base workspace folder",
+        name,
+    )
+    return base
 
 
 def resolve_agent_config_path() -> Path:

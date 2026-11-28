@@ -1,6 +1,7 @@
 """Reasoning effort: the selection-capabilities read,
 ``POST /api/chat/slots/{slot}/reasoning-effort`` and the on/off switches beside it
-(``POST /api/chat/slots/{slot}/ultracode`` and ``POST /api/chat/slots/{slot}/fast``).
+(``POST /api/chat/slots/{slot}/ultracode``, ``POST /api/chat/slots/{slot}/fast`` and
+``POST /api/chat/slots/{slot}/approve-for-me``).
 """
 
 from __future__ import annotations
@@ -17,7 +18,9 @@ if TYPE_CHECKING:
 
     from kiro_crew.dashboard.chat_handlers import (
         _TEARDOWN_INCOMPLETE_WARNING,
+        ACP_BACKENDS_APPROVE_FOR_ME,
         ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+        APPROVE_FOR_ME_MODE,
         AcpProvider,
         DashboardState,
         KiroCrewConfig,
@@ -25,14 +28,25 @@ if TYPE_CHECKING:
         _app_cancel_denied,
         _append_session_switch_notice,
         _ChatSlot,
+        _deny_approval_mode,
         _remember_reasoning_effort_for_restore,
+        _reset_slot_session,
         _reset_slot_session_or_warn,
         _slot_replaced_while_queued,
         _slot_switch_session_lock,
         _subagents_attached_response,
         _switch_target_busy,
+        apply_approval_mode,
+        approve_for_me_engine_supported,
+        approve_for_me_keys,
+        approve_for_me_offered_on,
+        approve_for_me_permitted,
+        approve_for_me_profile_binds,
+        approve_for_me_reads_on,
+        approve_for_me_refresh_engine_support,
         cap_effort_capability_levels,
         deny_app_slot_access,
+        deny_session_approval_caller,
         effective_session_key,
         get_reasoning_effort_ordered,
         get_reasoning_effort_values,
@@ -43,6 +57,8 @@ if TYPE_CHECKING:
         read_bounded_json,
         relay_archive_refusal,
         resolve_effective_model,
+        sel,
+        set_effort_overlay_clear_mark,
         slot_not_found,
     )
 
@@ -144,11 +160,13 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
                 "backend": backend,
                 "model_effort_pair_ids": backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
                 **await _own_models_field(backend, config),
+                **_approve_for_me_field(state, slot, backend),
                 **harness_effort(
                     state,
                     backend,
                     model,
-                    slot.agent or "",
+                    # A template pick runs no crew, whatever crew shares its name.
+                    "" if slot.agent_kind == "template" else slot.agent or "",
                     model_answers=backend not in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
                 ),
             }
@@ -195,8 +213,63 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
             **({} if fast is None else {"fast": fast}),
             # The harness's own words for why the Fast mode switch would not stay on.
             **({} if fast_unavailable is None else {"fast_unavailable": fast_unavailable}),
+            # Present only on a harness that offers approve-for-me.
+            **_approve_for_me_field(state, slot, backend),
         }
     )
+
+
+async def _push_live_effort(provider: AcpProvider, effort: str, slot_name: str) -> str:
+    """Push *effort* to the live *provider*: the one live push both effort routes share.
+
+    ``change_effort`` for a level, ``clear_effort(every_model=True)`` for ``""``
+    (Default), so Default never pins the configured level. Used by
+    ``api_chat_slot_reasoning_effort`` and the bulk model switch's
+    :func:`_bulk_effort_only_switch`. The caller has checked that *provider*
+    supports effort, offers the level and runs no turn, since a push during a
+    turn would race the streaming prompt loop.
+
+    Returns ``"applied"`` (the session runs the level now), ``"not_applied"``
+    (the session takes it only on a restart), ``"overlay_busy"`` (nothing
+    changed: another writer holds the workspace effort overlay), ``"refused"``
+    (the harness refused the level and kept its prior one) or ``"failed"`` (the
+    push raised for another reason). The exception text of the last two stays
+    in the log line: it can carry agent-authored words, a path or a host.
+    """
+    try:
+        if effort:
+            pushed: bool | None = await provider.change_effort(effort)
+        else:
+            pushed = await provider.clear_effort(every_model=True)
+    except Exception as exc:
+        # change_effort rolls back its own override and overlay before raising.
+        if provider.switches_by_relaunch is True or (
+            effort and getattr(exc, "command_refused", False) is True
+        ):
+            # The relaunch refused the level and put the prior one back, or
+            # kiro-cli refused it and change_effort rolled back. Committing it,
+            # or cold-starting on it, would only fail the same way on every
+            # later message.
+            logger.warning(
+                "change_effort(%s) refused for slot %s: %s: %s",
+                effort,
+                slot_name,
+                type(exc).__name__,
+                exc,
+            )
+            return "refused"
+        logger.warning(
+            "change_effort(%s) failed for slot %s: %s: %s",
+            effort,
+            slot_name,
+            type(exc).__name__,
+            exc,
+        )
+        return "failed"
+    if pushed is None:
+        # clear_effort changed nothing: neither the overlay nor the provider's map.
+        return "overlay_busy"
+    return "applied" if pushed else "not_applied"
 
 
 async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
@@ -345,6 +418,9 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         logger.info("Slot %s reasoning_effort switched to %r", name, effort or "default")
 
         _updated_live: bool | None = False
+        # Whether ``clear_effort`` handled the workspace overlay for a Default.
+        # A Default committed without it marks the slot for its next spawn.
+        _live_cleared = False
         if isinstance(provider, AcpProvider) and provider.supports_effort():
             # Guard against racing the in-flight prompt read loop: a live
             # change_effort issues session/set_config_option and its response wait
@@ -354,9 +430,28 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # turn instead of pushing now or resetting (effort is a cheap knob).
             if provider.has_active_turn():
                 logger.info("Slot %s deferred live effort push: turn active", name)
+                if not effort:
+                    # Default does now what a respawn reads, with no RPC under the
+                    # turn: the stored levels and the model's workspace cli.json
+                    # entry go, so neither this provider's respawn nor a reset
+                    # successor brings the old level back.
+                    if not await provider.forget_effort():
+                        return web.json_response(
+                            {
+                                "error": "the workspace effort overlay is locked by another writer",
+                                "code": "effort_overlay_busy",
+                            },
+                            status=409,
+                        )
+                    state.sessions.record_effort_override(session_key, "")
                 # This path's success point: the override is recorded on the
-                # slot now and pushed to the live session next turn.
+                # slot now and pushed to the live session next turn. A rebind
+                # during the await above leaves the Default to the new binding's
+                # next spawn.
                 slot.reasoning_effort = effort
+                set_effort_overlay_clear_mark(
+                    slot, not effort and effective_session_key(slot) != session_key
+                )
                 normalized = normalize_legacy_model()
                 state.push_slots_update()
                 return web.json_response(
@@ -365,43 +460,24 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # change_effort handles both backends and persists the per-model
             # override + overlay. "" clears the slot's level → fall back to the
             # model default (kiro: /effort with the workspace default; claude: the
-            # adapter's ``default`` live), else False asks for the reset below.
-            try:
-                if effort:
-                    _updated_live = await provider.change_effort(effort)
-                else:
-                    _updated_live = await provider.clear_effort(every_model=True)
-            except Exception as exc:
-                if provider.switches_by_relaunch is True or (
-                    effort and getattr(exc, "command_refused", False) is True
-                ):
-                    # The relaunch refused the level and put the prior one back,
-                    # or kiro-cli refused it and change_effort rolled back.
-                    # Committing it, or resetting to cold-start on it, would only
-                    # fail the same way on every later message.
-                    logger.warning(
-                        "change_effort(%s) refused for slot %s: %s: %s",
-                        effort,
-                        name,
-                        type(exc).__name__,
-                        exc,
-                    )
-                    # A fixed sentence: the exception text can carry agent-authored
-                    # words, a path or a host. The log line above keeps the detail.
-                    return web.json_response(
-                        {
-                            "error": "The agent did not accept the reasoning effort change.",
-                            "code": "effort_refused",
-                        },
-                        status=400,
-                    )
-                logger.warning(
-                    "change_effort(%s) failed for slot %s: %s: %s — falling back to reset",
-                    effort,
-                    name,
-                    type(exc).__name__,
-                    exc,
+            # adapter's ``default`` live). A push the session cannot take live,
+            # or one that failed, leaves _updated_live False for the reset below.
+            outcome = await _push_live_effort(provider, effort, name)
+            _live_cleared = not effort and outcome in ("applied", "not_applied")
+            if outcome == "refused":
+                # A fixed sentence: the exception text can carry agent-authored
+                # words, a path or a host. The push's log line keeps the detail.
+                return web.json_response(
+                    {
+                        "error": "The agent did not accept the reasoning effort change.",
+                        "code": "effort_refused",
+                    },
+                    status=400,
                 )
+            if outcome == "applied":
+                _updated_live = True
+            elif outcome == "overlay_busy":
+                _updated_live = None
         elif not effort_commit_needs_reset(provider):
             # Model does not support effort: persist the slot value for when the
             # user switches to a capable model, but do not touch the live session.
@@ -439,6 +515,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # override. Commit the slot value (it is what the new binding's
             # next cold start reads) and report the rebind as a warning.
             slot.reasoning_effort = effort
+            set_effort_overlay_clear_mark(slot, not effort)
             normalized = normalize_legacy_model()
             state.push_slots_update()
             return web.json_response(
@@ -498,7 +575,9 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # would make the acting tab keep the OLD store value for a
             # switch that actually happened.
             prior_effort = slot.reasoning_effort
+            prior_mark = slot._effort_overlay_clear
             slot.reasoning_effort = effort
+            set_effort_overlay_clear_mark(slot, not effort and not _live_cleared)
             teardown_incomplete = False
             reset_ok = True
             try:
@@ -531,6 +610,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 # then let the raise escape as a 500.
                 if slot.reasoning_effort == effort:
                     slot.reasoning_effort = prior_effort
+                    set_effort_overlay_clear_mark(slot, prior_mark)
                 slot._dirty = True
                 state.push_slots_update()
                 raise
@@ -548,6 +628,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 if isinstance(busy_provider, LLMProvider):
                     if busy_provider.has_active_turn():
                         slot.reasoning_effort = prior_effort
+                        set_effort_overlay_clear_mark(slot, prior_mark)
                         return web.json_response(
                             {"error": "a turn is in flight", "code": "turn_in_flight"},
                             status=409,
@@ -566,6 +647,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                     except Exception:
                         if slot.reasoning_effort == effort:
                             slot.reasoning_effort = prior_effort
+                            set_effort_overlay_clear_mark(slot, prior_mark)
                         slot._dirty = True
                         state.push_slots_update()
                         raise
@@ -579,6 +661,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                         and state.sessions.get_provider(session_key) is not None
                     ):
                         slot.reasoning_effort = prior_effort
+                        set_effort_overlay_clear_mark(slot, prior_mark)
                         return web.json_response(
                             {"error": "a turn is in flight", "code": "turn_in_flight"},
                             status=409,
@@ -591,6 +674,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 # (that session was idle and already unbound); roll back and
                 # let the retry resolve the current binding.
                 slot.reasoning_effort = prior_effort
+                set_effort_overlay_clear_mark(slot, prior_mark)
                 return web.json_response(
                     {
                         "error": "slot session was rebound during the switch",
@@ -615,9 +699,11 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                         "warning": _TEARDOWN_INCOMPLETE_WARNING,
                     }
                 )
-        # Live-update and deferral paths commit here (the reset path already
-        # committed before its reset, and assigning again is a no-op).
+        # Live-update and not-effort-capable paths commit here. The reset
+        # path commits before its reset, and assigning again is a no-op.
         slot.reasoning_effort = effort
+        if _updated_live:
+            set_effort_overlay_clear_mark(slot, not effort and not _live_cleared)
         normalized = normalize_legacy_model()
     state.push_slots_update()
     return web.json_response({"ok": True, "reasoning_effort": effort, **normalized})
@@ -651,6 +737,198 @@ async def api_chat_slot_fast_mode(request: web.Request) -> web.Response:
         read=lambda provider: provider.fast_mode_enabled(),
         write=lambda provider, enabled: provider.set_fast_mode(enabled),
     )
+
+
+def _approve_for_me_field(state: DashboardState, slot: _ChatSlot, backend: str) -> dict[str, bool]:
+    """``{"approve_for_me": <on?>}`` for a slot on a harness that offers it, else ``{}``.
+
+    Read from the dashboard's own record, not the session: the engine lists the
+    option only after an opted-in restart, and the slot has no session in between.
+    """
+    if (
+        backend not in ACP_BACKENDS_APPROVE_FOR_ME
+        or not approve_for_me_offered_on(slot)
+        or not approve_for_me_engine_supported()
+    ):
+        # An engine not known to send its verdict to Crew gets no row at all.
+        return {}
+    return {"approve_for_me": approve_for_me_reads_on(state, effective_session_key(slot))}
+
+
+async def _restart_for_approve_for_me(
+    state: DashboardState, slot: _ChatSlot, session_key: str
+) -> bool:
+    """End the slot's idle session so its next start picks up the engine switch.
+
+    False when a turn holds the session, or waits on a person (a permission card,
+    a question): nothing is torn down and nothing pending is answered for them.
+    The record is already changed, so the turn's next settle holds the option off,
+    every verdict the engine sends meanwhile takes the card (the owner check now says
+    no), and the restart waits for an idle session.
+    """
+    provider = state.sessions.get_provider(session_key)
+    if provider is None:
+        return True
+    if _switch_target_busy(state, slot, session_key, provider):
+        return False
+    return bool(await _reset_slot_session(state, slot, session_key, skip_if_busy=True))
+
+
+async def end_approve_for_me(state: DashboardState, slots: list[_ChatSlot]) -> None:
+    """Drop the person's approve-for-me on *slots* after another mode was picked.
+
+    The key leaves the record at once. An idle session is restarted, so its next
+    start runs with the engine switch off. A busy one is held off by the turn's
+    owner check: its next call KAS approves cancels the turn, and the next turn
+    writes the option off.
+    """
+    keys = approve_for_me_keys(state)
+    for slot in slots:
+        session_key = effective_session_key(slot)
+        if session_key not in keys:
+            continue
+        keys.discard(session_key)
+        try:
+            await _restart_for_approve_for_me(state, slot, session_key)
+        except Exception as exc:
+            logger.warning(
+                "approve-for-me restart failed for slot %s: %s: %s",
+                slot.key,
+                type(exc).__name__,
+                exc,
+            )
+
+
+async def api_chat_slot_approve_for_me(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/approve-for-me — let KAS approve calls on its own.
+
+    Body: ``{"enabled": true | false}``; answers ``{"ok": true, "approve_for_me":
+    <bool>}``. Dashboard owner only. Only a slot on a harness in
+    ``ACP_BACKENDS_APPROVE_FOR_ME`` takes it (409 ``approve_for_me_not_offered``), and
+    never one a person does not drive from the dashboard: app-owned, unattended,
+    cron, or tied to a messaging channel (409 ``approve_for_me_not_owners``).
+    Turning it on is checked against the ``approval_modes`` policy (403
+    ``mode_disabled_by_policy``) and first puts the slot back to Normal. Either way
+    the slot's idle session is restarted so the next message starts its engine with
+    the switch set; a running turn refuses with 409 ``turn_in_flight`` and changes
+    nothing.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if slot is None:
+        return slot_not_found()
+    denied = await deny_session_approval_caller(request, "slot_approve_for_me")
+    if denied is not None:
+        return denied
+    if request.get("app") or request.get("internal_auth") is True:
+        return web.json_response(
+            {
+                "error": "approve for me is set from the dashboard only",
+                "code": "approve_for_me_owner_only",
+            },
+            status=403,
+        )
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        return web.json_response(
+            {"error": "enabled must be true or false", "code": "invalid_value"}, status=400
+        )
+    mode = APPROVE_FOR_ME_MODE
+    async with contextlib.AsyncExitStack() as _stack:
+        await _stack.enter_async_context(slot._lock)
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_approve_for_me"):
+            return slot_not_found()
+        session_key = effective_session_key(slot)
+        await _stack.enter_async_context(_slot_switch_session_lock(session_key))
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_approve_for_me"):
+            return slot_not_found()
+        provider = state.sessions.get_provider(session_key)
+        if isinstance(provider, AcpProvider):
+            backend = provider.capabilities.backend
+        else:
+            backend = await _configured_backend_for_slot(slot)
+        if enabled and not approve_for_me_offered_on(slot):
+            # Turns no person at the dashboard sent keep Crew's own checks.
+            return web.json_response(
+                {
+                    "error": "approve for me is offered only on a chat you drive here",
+                    "code": "approve_for_me_not_owners",
+                },
+                status=409,
+            )
+        if backend not in ACP_BACKENDS_APPROVE_FOR_ME or (
+            enabled and not await asyncio.to_thread(approve_for_me_refresh_engine_support)
+        ):
+            # Only an engine known to send its verdict to Crew may hold it on.
+            return web.json_response(
+                {
+                    "error": "this session offers no approve-for-me",
+                    "code": "approve_for_me_not_offered",
+                },
+                status=409,
+            )
+        if enabled and (
+            not approve_for_me_permitted()
+            or approve_for_me_profile_binds(session_key, getattr(slot, "agent", "") or "")
+        ):
+            # The policy does not list the mode, or a governance profile binds the
+            # session and may narrow it: the owner check would hold it off anyway.
+            return _deny_approval_mode(
+                caller="dashboard:approve_for_me",
+                operation=f"mode_change:{mode}",
+                mode=mode,
+                resource=slot.key,
+            )
+        keys = approve_for_me_keys(state)
+        was_on = session_key in keys
+        if was_on == enabled:
+            # Already so: nothing changes, so a running turn is no reason to refuse.
+            return web.json_response({"ok": True, "approve_for_me": enabled})
+        if _switch_target_busy(state, slot, session_key, provider):
+            return web.json_response(
+                {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
+            )
+        if enabled:
+            answer = await apply_approval_mode(
+                state,
+                mode="normal",
+                slot=slot,
+                slot_key=slot.key,
+                request_app="",
+                cron_creator="",
+                audit_caller=lambda label: label,
+            )
+            if answer.status != 200:
+                return answer
+            keys.add(session_key)
+        else:
+            keys.discard(session_key)
+        if not await _restart_for_approve_for_me(state, slot, session_key):
+            # A turn started after the busy check: put the record back.
+            if was_on:
+                keys.add(session_key)
+            else:
+                keys.discard(session_key)
+            return web.json_response(
+                {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
+            )
+    try:
+        sel().log_api_access(
+            caller="dashboard:approve_for_me",
+            operation=f"mode_change:{mode}",
+            outcome="enabled" if enabled else "disabled",
+            resources=slot.key,
+        )
+    except Exception:
+        logger.warning("SEL audit failed for approve-for-me change", exc_info=True)
+    state.push_slots_update()
+    logger.info("Slot %s approve_for_me switched to %s", name, enabled)
+    return web.json_response({"ok": True, "approve_for_me": enabled})
 
 
 async def _write_session_switch(

@@ -1,7 +1,7 @@
 ---
 name: browser-recording
 description: Record a browser flow as video/GIF evidence for animations, transitions and multi-step interactions a still screenshot cannot prove. Uses the project's Playwright via a bundled runner, then ffmpeg to mp4 + GIF. Use when asked to record a demo or GIF, or when a UI change involves motion.
-triggers: record, recording, screen recording, gif, record a video, video capture, demo video, record the flow, capture the animation
+triggers: screen recording, gif, record a video, video capture, demo video, capture the animation
 ---
 
 # Browser Recording — video/GIF evidence for UI flows

@@ -815,8 +815,12 @@ async def test_api_spawn_resume_reports_and_holds(h) -> None:
     state = SimpleNamespace(subagents=hz.mgr)
 
     def req(agent_id: str, wait: str = "0") -> SimpleNamespace:
+        # The run's own tool calls as an internal caller: no app claim to judge.
         return SimpleNamespace(
-            app={"state": state}, match_info={"agent_id": agent_id}, query={"wait_secs": wait}
+            app={"state": state},
+            match_info={"agent_id": agent_id},
+            query={"wait_secs": wait},
+            get={}.get,
         )
 
     body = json.loads((await spawn_resume.api_spawn_resume(req(s.id))).text)
@@ -849,7 +853,10 @@ async def test_api_spawn_resume_reports_and_holds(h) -> None:
     assert "dash:1" in lanes_body["lanes"] and "capacity" in lanes_body
     no_mgr = await spawn_resume.api_spawn_resume(
         SimpleNamespace(
-            app={"state": SimpleNamespace(subagents=None)}, match_info={"agent_id": "a"}, query={}
+            app={"state": SimpleNamespace(subagents=None)},
+            match_info={"agent_id": "a"},
+            query={},
+            get={}.get,
         )
     )
     assert no_mgr.status == 503

@@ -443,6 +443,13 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # run and lists what PR CI deselects. It judges no code and its input
         # exists only once CI runs on a pushed head.
         "scripts/ci_main_red_skip.py",
+        # Shadow only (`continue-on-error`, pull requests only): fetches the
+        # nightly selection bundle over the GitHub API and records what test
+        # selection WOULD run, as an artifact for the miss ledger. It judges no
+        # code and can fail no build, so by this floor's own rule it is not a
+        # gate; its inputs (a run's token and the published bundle) exist only
+        # in Actions.
+        "scripts/ci_test_selection_step.py",
         # Chooses WHICH tests to run for the changed surface; not itself a gate.
         "scripts/ci-surface-tests.py",
         # Decides whether a pull request is docs-only, and so which lanes run
@@ -654,6 +661,10 @@ def test_scoped_frontend_gate_keeps_the_lanes_npm_test_used_to_carry():
         )
 
 
+# A whole-tree scan: CI's surface selector and the related-set checks read every
+# test file, about 37 s of CPU alone and 86-90 s on a loaded shard, so the
+# suite-wide 120 s is no margin. The tree_scan group gives it that group's 300 s.
+@pytest.mark.xdist_group(name="tree_scan_scoped_runner_self_test")
 def test_scoped_runner_self_test_passes():
     """The runner's escalations are its whole contract, so CI runs its self-test.
 

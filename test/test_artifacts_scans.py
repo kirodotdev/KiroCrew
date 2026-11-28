@@ -15,7 +15,9 @@ from typing import Any
 
 import pytest
 
+import kiro_crew.artifacts_scans
 from kiro_crew.artifacts import ArtifactError, ArtifactStore
+from kiro_crew.testing.links import make_dir_link
 
 
 @pytest.fixture
@@ -125,3 +127,74 @@ def test_a_record_another_writer_reclassified_first_is_not_rewritten(
 
     assert [entry["slug"] for entry in report] == ["plain-notes"]
     assert _meta(store, "plain-notes")["kind"] == "json"
+
+
+def _reads(store: ArtifactStore, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The file names the store's fenced reader opens from here on."""
+    opened: list[str] = []
+    real = store._read_text
+
+    def read_text(path: Path) -> str:
+        opened.append(Path(path).name)
+        return real(path)
+
+    monkeypatch.setattr(store, "_read_text", read_text)
+    return opened
+
+
+def test_kind_of_reads_the_kind_from_meta_json_alone_and_writes_nothing(
+    store: ArtifactStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store.create(name="Report", content="<html><body>hi</body></html>", kind="html")
+    before = (store.root / "report" / "meta.json").read_bytes()
+    opened = _reads(store, monkeypatch)
+    monkeypatch.setattr(store, "_write_text", lambda *a, **k: pytest.fail("kind_of wrote"))
+
+    assert store.kind_of("report") == "html"
+    assert opened == ["meta.json"]
+    assert (store.root / "report" / "meta.json").read_bytes() == before
+
+
+def test_kind_of_answers_none_for_a_missing_or_unreadable_record(store: ArtifactStore) -> None:
+    store.create(name="Broken", content="words", kind="markdown")
+    (store.root / "broken" / "meta.json").write_text("{not json", encoding="utf-8")
+
+    assert store.kind_of("missing") is None
+    assert store.kind_of("broken") is None
+
+
+@pytest.mark.parametrize(
+    "slug",
+    ["../x", "..", "/etc/passwd", "a/b", "a\\b", "a\x00b", "C:\\x", "x" * 81, "", "-a", "A"],
+)
+def test_kind_of_refuses_a_slug_outside_the_store_shape_before_any_read(
+    store: ArtifactStore, monkeypatch: pytest.MonkeyPatch, slug: str
+) -> None:
+    store.create(name="X", content="words", kind="html")
+    opened = _reads(store, monkeypatch)
+    monkeypatch.setattr(store, "_artifact_dir", lambda s: pytest.fail(f"resolved a path for {s!r}"))
+    # The plain character checks stand on their own, without the store's slug regex.
+    monkeypatch.setattr("kiro_crew.artifacts._validate_slug", lambda s: s)
+    assert kiro_crew.artifacts_scans._validate_slug("../x") == "../x"
+
+    assert store.kind_of(slug) is None
+    assert opened == []
+
+
+@pytest.mark.parametrize("dir_guard", ["store", "kind_of"])
+def test_kind_of_refuses_an_artifact_dir_that_resolves_outside_the_root(
+    store: ArtifactStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dir_guard: str
+) -> None:
+    outside = tmp_path / "outside" / "evil"
+    outside.mkdir(parents=True)
+    store.create(name="Evil", content="<p>x</p>", kind="html")
+    (outside / "meta.json").write_bytes((store.root / "evil" / "meta.json").read_bytes())
+    store.delete("evil")
+    make_dir_link(store.root / "evil", outside)
+    if dir_guard == "kind_of":
+        # kind_of's own root check, with the store's directory guard taken away.
+        monkeypatch.setattr(store, "_artifact_dir", lambda s: store.root / s)
+    opened = _reads(store, monkeypatch)
+
+    assert store.kind_of("evil") is None
+    assert opened == []

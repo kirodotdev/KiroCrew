@@ -32,7 +32,6 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.config.resolution import (
     _SECTION_KEYS_EMITTED_ELSEWHERE,
     drop_extra_section_keys,
-    drop_retired_section_keys,
 )
 from kiro_crew.config.sections import _migrate_workspaces, _sanitize_bot_name
 from kiro_crew.config.sections_tailnet import TAILNET_OPENING_PATHS
@@ -651,8 +650,6 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     # values to keep out, so every other key is left as it is.
                     _dict_set_create(existing, key, parsed)
                     _ack_explicit_config_write(key, parsed)
-                    # This raw write bypasses save(), which is what drops retired keys.
-                    drop_retired_section_keys(existing)
                     return existing
 
                 try:
@@ -1408,6 +1405,12 @@ def _declared_enum_value(key: str, value: object) -> object:
     entry = _declared_entry(key)
     if entry is None or not entry.enum_values:
         return value
+    if key == "memory.inject_lessons_per_turn" and isinstance(value, bool):
+        # Was a boolean before it had a shadow mode: `true` / `false` still
+        # write its mode, as a stored bool reads.
+        from kiro_crew.config.memory_sections import inject_lessons_per_turn_mode_from
+
+        return inject_lessons_per_turn_mode_from(value)
     if value in entry.enum_values:
         return value
     if key == "stt.provider" and isinstance(value, str):

@@ -18,8 +18,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from skill_script_helpers import skill_text
+from windows_sim import read_sharing_violation, read_text_sharing_violation
 
-from kiro_crew import crew_mode, crew_pause, platform_compat
+from kiro_crew import atomic_write, crew_mode, crew_pause, platform_compat
 from kiro_crew.dashboard.handlers.office_slides import _KeyedLocks
 from kiro_crew.dashboard.turn_dispatch import mark_turn_unstarted
 from kiro_crew.testing.wait import until_parked
@@ -40,6 +42,10 @@ def _pause_store(tmp_path, _floor_monkeypatch):
     _floor_monkeypatch.setattr(crew_pause, "_path", lambda: path)
     _floor_monkeypatch.setattr(crew_pause, "_loaded_from", None)
     _floor_monkeypatch.setattr(crew_pause, "_records", {})
+    # raising=False: prove.py runs these tests on the base module, which lacks them.
+    _floor_monkeypatch.setattr(crew_pause, "_stored", {}, raising=False)
+    _floor_monkeypatch.setattr(crew_pause, "_memory_only", {}, raising=False)
+    _floor_monkeypatch.setattr(crew_pause, "_continuing", set(), raising=False)
     _floor_monkeypatch.setattr(crew_pause, "_resuming", {})
     _floor_monkeypatch.setattr(crew_pause, "_unsaved", False)
     _floor_monkeypatch.setattr(crew_mode, "_known_roots", set())
@@ -49,7 +55,9 @@ def _pause_store(tmp_path, _floor_monkeypatch):
 
 def _forget_memory() -> None:
     """What a gateway restart does to the in-memory copy, before the preload has run."""
-    crew_pause._records.clear()
+    crew_pause._records = {}
+    crew_pause._stored = {}
+    crew_pause._memory_only = {}
     crew_pause._resuming = {}
     crew_pause._loaded_from = None
 
@@ -158,6 +166,31 @@ def test_a_damaged_file_pauses_nothing(_pause_store, body):
     rec = crew_pause.record("root")
     assert rec is None or rec["held"] == rec["tree"] == rec["stopped"] == []
     assert not crew_pause.holds_turn("w1")
+
+
+def test_a_pause_file_that_cannot_be_read_is_read_again_and_never_written_over(
+    _pause_store, monkeypatch
+):
+    crew_pause.pause("rootA", ["w1"], ["w1"])
+    before = _pause_store.read_bytes()
+    _forget_memory()
+    monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0)
+    # Held open by another program for longer than the read retry waits.
+    name = _pause_store.name
+    with (
+        read_sharing_violation(match=name, times=10_000),
+        read_text_sharing_violation(match=name, times=10_000),
+    ):
+        crew_pause.load()  # the startup preload: logged, never raised
+        with pytest.raises(OSError):
+            crew_pause.pause("rootB", ["w2"], ["w2"])
+    assert _pause_store.read_bytes() == before
+    # Once the hold ends, the next read finds rootA paused without a restart.
+    crew_pause.load()
+    assert crew_pause.root_paused("rootA") and crew_pause.holds_turn("w1")
+    crew_pause.pause("rootB", ["w2"], ["w2"])
+    _restart()
+    assert crew_pause.root_paused("rootA") and crew_pause.root_paused("rootB")
 
 
 # ── the routes ─────────────────────────────────────────────────────────────────
@@ -786,6 +819,45 @@ async def test_a_turn_started_during_the_pause_write_is_stopped_too(routes, monk
     assert crew_pause.record("root")["stopped"] == ["root", "w1", "w3", "w4"]
 
 
+@pytest.mark.parametrize("cause", ["size_cap", "replace_refused"])
+@pytest.mark.asyncio
+async def test_a_refused_second_pause_write_still_stops_what_the_first_one_holds(
+    routes, monkeypatch, _pause_store, cause
+):
+    rows = [dict(r) for r in _TREE]
+    real = crew_pause.pause
+    calls: list[list[str]] = []
+
+    def _refused(*_a: Any, **_k: Any) -> None:
+        raise PermissionError("[WinError 5] Access is denied")
+
+    def _pause_while_w4_wakes(root: str, tree: list[str], stopped: list[str]) -> Any:
+        calls.append(list(stopped))
+        out = real(root, tree, stopped)
+        if len(calls) == 1:
+            rows[4]["running"] = True  # w4's patrol wake starts during the write
+            if cause == "size_cap":  # the file is at the cap, so adding w4 would pass it
+                monkeypatch.setattr(crew_pause, "MAX_FILE_BYTES", _pause_store.stat().st_size)
+            else:  # a holder without sharing makes the replace fail
+                monkeypatch.setattr(crew_pause, "atomic_write", _refused)
+        return out
+
+    monkeypatch.setattr(crew_pause, "pause", _pause_while_w4_wakes)
+    try:
+        resp = await routes.handler.api_crew_pause(_req(_state(rows)))
+    except OSError as exc:
+        pytest.fail(f"the refused second write left the route before any stop: {exc!r}")
+    assert len(calls) == 2
+    assert resp.status == 500
+    body = json.loads(resp.text)
+    assert body["code"] == "pause_file_unsaved"
+    assert body["stopped"] == ["w1", "w3"] and body["not_stopped"] == ["w4"]
+    # Every key the stored record names as stopped was stopped; w4's turn runs on.
+    assert sorted(key for key, _ in routes.calls["stop"]) == ["root", "w1", "w3"]
+    assert crew_pause.record("root")["stopped"] == ["root", "w1", "w3"]
+    assert routes.calls["notice"] == [{"kind": "crew_paused_notice", "stopped": 2}]
+
+
 @pytest.mark.asyncio
 async def test_a_refused_hand_back_stays_paused_and_is_reported(routes, monkeypatch):
     from kiro_crew.dashboard import chat_handlers
@@ -800,7 +872,18 @@ async def test_a_refused_hand_back_stays_paused_and_is_reported(routes, monkeypa
         return "resumed"
 
     monkeypatch.setattr(chat_handlers, "continue_slot_turn", _refuse_w1)
+    resume, forget = crew_pause.resume, crew_pause.forget_resuming
+    # w1's stop is one the file had refused: the hand-back write is told so.
+    monkeypatch.setattr(crew_pause, "resume", lambda root: {**resume(root), "memory_only": ["w1"]})
+    told: list[Any] = []
+
+    def _forget(keys: list[str], **kw: Any) -> bool:
+        told.append(kw.get("memory_only"))
+        return forget(keys, **kw)
+
+    monkeypatch.setattr(crew_pause, "forget_resuming", _forget)
     body = json.loads((await routes.handler.api_crew_resume(_req(_state(_TREE)))).text)
+    assert told[-1] == ["w1"]
     assert body["failed"] == ["w1"] and body["paused"] is True
     assert body["resumed"]["w1"] == "slot_subagents_running"
     assert crew_pause.record("root")["stopped"] == ["w1"]
@@ -1069,6 +1152,8 @@ async def test_a_refused_member_continue_keeps_it_paused(tmp_path, monkeypatch):
     crew_pause.pause("chat-root", ["chat-w1"], ["chat-w1"])
 
     async def _still_tearing_down(*_a: Any, **_k: Any) -> None:
+        # Until it is decided, no other write takes the room its release freed.
+        assert crew_pause._continuing == {"chat-w1"}
         raise chat_handlers.SlotContinueRefusal("still stopping", "slot_running", 409)
 
     monkeypatch.setattr(continue_turn, "continue_slot_turn", _still_tearing_down)
@@ -1079,7 +1164,7 @@ async def test_a_refused_member_continue_keeps_it_paused(tmp_path, monkeypatch):
     assert resp.status == 409
     # Still owed its hand-back: Resume all continues it later.
     assert crew_pause.record("chat-root")["stopped"] == ["chat-w1"]
-    assert crew_pause.holds_turn("chat-w1")
+    assert crew_pause.holds_turn("chat-w1") and not crew_pause._continuing
 
 
 @pytest.mark.asyncio
@@ -1207,8 +1292,8 @@ def test_the_lead_prompt_and_both_skills_carry_the_goal_first_rule():
     skills = Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "builtin_skills"
     texts = {
         "prompt": _TEAM_LEAD_SYSTEM_PROMPT,
-        "team-lead": (skills / "team-lead" / "SKILL.md").read_text(encoding="utf-8"),
-        "goal-conductor": (skills / "goal-conductor" / "SKILL.md").read_text(encoding="utf-8"),
+        "team-lead": skill_text((skills / "team-lead" / "SKILL.md")),
+        "goal-conductor": skill_text((skills / "goal-conductor" / "SKILL.md")),
     }
     for name, text in texts.items():
         flat = " ".join(text.split())

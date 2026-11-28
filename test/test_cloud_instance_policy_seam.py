@@ -762,7 +762,7 @@ class TestMigration:
         edited["Statement"][0]["Action"] = "*"
         fake = _FakeIam(edited)
         monkeypatch.setattr(aws, "run_aws", fake)
-        with pytest.raises(aws.AWSError, match="does NOT match"):
+        with pytest.raises(aws.AWSError, match="its contents differ from what this version"):
             source.ensure_instance_boundary()
         assert fake.writes() == []
 

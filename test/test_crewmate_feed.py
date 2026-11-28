@@ -324,6 +324,102 @@ def test_a_card_past_its_expiry_but_still_open_is_read_again_after_the_retry_del
     assert loop.armed[0].delay == crewmate_feed._EXPIRY_RETRY_SECONDS
 
 
+class _ServingLoop(_Loop):
+    """Records timers like :class:`_Loop`; runs tasks on the real running loop."""
+
+    def create_task(self, coro: Any) -> "asyncio.Task[None]":
+        return asyncio.get_running_loop().create_task(coro)
+
+
+def _restarted(monkeypatch, now: float, cards: list[dict[str, Any]]) -> tuple[_State, _ServingLoop]:
+    """A gateway just started: its Bot thread idle, no live client, one unit on disk."""
+    import kiro_crew.constants as constants
+    from kiro_crew.crew_log import projection_readers as readers
+    from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+
+    monkeypatch.setattr(crewmate_feed, "_expiry_timers", {}, raising=False)
+    monkeypatch.setattr(
+        crewmate_feed,
+        "time",
+        type("_Clock", (), {"time": staticmethod(lambda: now)}),
+        raising=False,
+    )
+    # The settle timer is real; the test runs the settle itself, so the timer never fires.
+    monkeypatch.setattr(crewmate_feed, "_SETTLE_SECONDS", FALLBACK_TIMEOUT_SECS)
+    monkeypatch.setattr(constants, "crew_log_enabled", lambda: True)
+    monkeypatch.setattr(crewmate_feed, "_registered", True)
+    monkeypatch.setattr(crewmate_feed, "_state_ref", None)
+    monkeypatch.setattr(crewmate_feed, "_session_of", lambda slot: "")
+    monkeypatch.setattr(readers, "newest_unit_in_succession", {SLOT: "s-atlas"}.get)
+    _cards(monkeypatch, cards)
+    state = _State(_Slot([]))
+    state.slot_list_rebuilding = False  # type: ignore[attr-defined]
+    loop = _ServingLoop()
+    state.serving_loop = loop  # type: ignore[attr-defined]
+    return state, loop
+
+
+async def _settle_now() -> None:
+    """Run the pending settle at once, and every task it starts."""
+    assert crewmate_feed._timer is not None
+    crewmate_feed._timer.cancel()
+    crewmate_feed._settle()
+    await _drain()
+
+
+def _waiting(appended: list[tuple[str, str, dict]]) -> list[tuple[str, list[str]]]:
+    return [
+        (sid, [i["kind"] for i in data["items"]])
+        for kind, sid, data in appended
+        if kind == "waiting"
+    ]
+
+
+CARD = {"status": "pending", "title": "Set the milestones", "created_at": 1792348860.0}
+
+
+def test_a_card_that_expires_after_a_restart_leaves_an_idle_threads_list(appended, monkeypatch):
+    # A restart drops every expiry timer, and a thread idle since has no live client
+    # to name its session: start-up learns its newest unit and reads its list again.
+    now = 1792348860.0
+    state, loop = _restarted(monkeypatch, now, [{**CARD, "expires_at": now + 600}])
+
+    async def go() -> None:
+        crewmate_feed.start(state)
+        await _drain()
+        await _settle_now()
+        assert len(loop.armed) == 1
+        armed = loop.armed[0]
+        assert (armed.fn, armed.args) == (crewmate_feed._retired, (SLOT,))
+        assert armed.delay == pytest.approx(600 + crewmate_feed._SETTLE_SECONDS)
+        # The card runs out; the read the timer starts logs into that unit.
+        _cards(monkeypatch, [{**CARD, "status": "expired", "finished_at": now + 600}])
+        armed.fn(*armed.args)
+        await _settle_now()
+
+    asyncio.run(go())
+    assert _waiting(appended) == [("s-atlas", ["card"]), ("s-atlas", [])]
+
+
+def test_a_card_that_expired_while_the_gateway_was_down_leaves_an_idle_threads_list(
+    appended, monkeypatch
+):
+    # The store reads the card as expired at start-up, so no timer is due: the
+    # start-up read itself records the list without it.
+    now = 1792348860.0
+    expired = {**CARD, "status": "expired", "finished_at": now - 60}
+    state, loop = _restarted(monkeypatch, now, [expired])
+
+    async def go() -> None:
+        crewmate_feed.start(state)
+        await _drain()
+        await _settle_now()
+
+    asyncio.run(go())
+    assert _waiting(appended) == [("s-atlas", [])]
+    assert loop.armed == []
+
+
 def test_a_goal_write_reaches_the_feed_and_is_recorded_once(appended, monkeypatch):
     slot = _Slot([])
     state = _State(slot)

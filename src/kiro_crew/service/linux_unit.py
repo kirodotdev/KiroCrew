@@ -264,7 +264,7 @@ def linger_warning_for_service_account() -> str | None:
     )
 
 
-def render_unit(*, user_scope: bool = False) -> str:
+def render_unit(*, user_scope: bool = False, headless: bool = False) -> str:
     """Render the systemd unit file contents.
 
     Runs the gateway as the invoking user (``User=``, ``Group=``) so it reaches
@@ -279,6 +279,11 @@ def render_unit(*, user_scope: bool = False) -> str:
     :func:`selinux_refusal` only prints, so the remedy cannot drift from the real
     unit. The per-user manager rejects ``User=``/``Group=``, and has no
     ``multi-user.target``, so it installs to ``default.target``.
+
+    ``headless`` adds ``--headless`` to ``ExecStart``, so every start by the
+    manager serves no dashboard and binds loopback (``dashboard/headless.py``).
+    The command line is the only place the mode is kept:
+    :func:`kiro_crew.service.controller.installed_headless` reads it back.
     """
     bin_path = kirocrew_bin()
     user = _current_user()
@@ -291,10 +296,15 @@ def render_unit(*, user_scope: bool = False) -> str:
     # _home_for_user): under `sudo -H` the process HOME is /root while User= is
     # the sudo-selected human, and baking /root in would break service start.
     home = _home_for_user(user) if user else str(Path.home())
+    # Deferred: the facade serves every module-level name of this family.
+    from kiro_crew.service.common import service_exec_path
+
     # `--no-open` for the same reason as the launchd plist: a service starts on
     # boot and on every restart, and auto-opening a browser there is wrong. It is
     # simply less visible on a headless Linux box than on a desktop.
-    exec_start = f"{_sd_quote(bin_path)} gateway --no-open"
+    exec_start = f"{_sd_quote(service_exec_path(bin_path))} gateway --no-open" + (
+        " --headless" if headless else ""
+    )
     env_lines = f"Environment={_sd_quote(f'USER={user}')}\n" + "".join(
         f"Environment={_sd_quote(f'{key}={value}')}\n"
         for key, value in service_environment(home).items()

@@ -120,6 +120,9 @@ export interface HostModel {
   /** The parent's Remote Crews rows (lib/paneRelayCrews.ts), so the pane's own
    *  switcher lists them too; empty from an older host or with the relay viewer off. */
   relayCrews?: PaneRelayCrew[]
+  /** The parent's latest Remote Crews read failed; `relayCrews` are the last rows it
+   *  loaded, none on a first read. False from an older host. */
+  relayCrewsFailed?: boolean
   /** The parent's "keep tab order fixed" preference, relayed so the embedded bar
    *  applies the same ordering as the local bar instead of always reshuffling on
    *  switch (its own cross-origin-iframe localStorage the parent can never
@@ -247,6 +250,10 @@ interface InstancesState {
   relayLive?: string[]
   /** The relay Crew filling <main>, or null. */
   relayActive?: string | null
+  /** Relay Crews whose pane's page the desktop shell confirmed drew its own header
+   *  (a `header` pane event). Layout only: it lets the local top bar keep to its tab
+   *  strip above that pane, and decides nothing else. Absent means none. */
+  relayHeaders?: string[]
   /** Bumped by every choice of what fills <main> (Local, an SSH Crew, a relay tab, the start of
    *  a relay open). A relay open's answer makes its Crew active only while this still holds the
    *  value its start returned, so a late answer never overrides a newer choice. */
@@ -262,6 +269,14 @@ export interface RelayTab { id: string; name: string }
 /** Whether a remote Crew, SSH or relay, covers the local one: `setActiveId(null)` brings it forward. */
 export const localCovered = (s: { instances?: Pick<InstancesState, 'activeId' | 'relayActive'> }) =>
   s.instances?.activeId != null || s.instances?.relayActive != null
+
+/** Whether the relay Crew in front draws its own header, as the desktop shell confirmed
+ *  for that pane. False for every other tab, and for a pane whose page is older, still
+ *  loading or reloaded without one: the local top bar then keeps all its controls. */
+export const relayHeaderInFront = (s: { instances?: Pick<InstancesState, 'relayActive' | 'relayHeaders'> }) => {
+  const front = s.instances?.relayActive
+  return front != null && (s.instances?.relayHeaders ?? []).includes(front)
+}
 
 // Switch the page body to instance `id`, or to the local dashboard for null.
 function activate(state: InstancesState, id: string | null) {
@@ -365,7 +380,17 @@ const instancesSlice = createSlice({
       const id = action.payload
       state.relayLive = (state.relayLive ?? []).filter(x => x !== id)
       state.relayTabs = (state.relayTabs ?? []).filter(t => t.id !== id)
+      if (state.relayHeaders) state.relayHeaders = state.relayHeaders.filter(x => x !== id)
       if (state.relayActive === id) state.relayActive = null
+    },
+    /** The shell read whether a pane's page drew its own header: after each load, and again
+     *  while the pane is in front. Anything but `true` takes the Crew off the list. */
+    relayPaneHeader(state, action: PayloadAction<{ id: string; drawn: boolean }>) {
+      const { id, drawn } = action.payload
+      const listed = (state.relayHeaders ?? []).includes(id)
+      // The shell says it again each time the tab comes to the front: no change, no new list.
+      if ((drawn === true) === listed) return
+      state.relayHeaders = drawn === true ? [...(state.relayHeaders ?? []), id] : (state.relayHeaders ?? []).filter(x => x !== id)
     },
     /** Pure client-state teardown for one connection (no API call). */
     removeWarm(state, action: PayloadAction<string>) {
@@ -462,6 +487,7 @@ export const {
   relayOpenEnded,
   relayPaneOpened,
   relayPaneClosed,
+  relayPaneHeader,
   removeWarm,
   setPendingPaneSlot,
   setPaneReady,

@@ -358,6 +358,11 @@ def _attach_abnormal_turn_stats(
         if ttft_ms > 0:
             stats["ttft_ms"] = int(ttft_ms)
         row.setdefault("meta", {})["turn_stats"] = stats
+        # Imported here: this body runs on the chat runner module's globals.
+        from kiro_crew.dashboard.engine_subagent_record import attach_engine_record
+
+        # The turn's engine sub-agents, recorded on the row its footer went on.
+        attach_engine_record(slot, row)
         slot._dirty = True
     except Exception:
         logger.debug(

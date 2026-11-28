@@ -14,6 +14,7 @@ import asyncio
 import os
 import subprocess
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -166,7 +167,9 @@ class TestStopLockHolderFallback:
         """Record every pid the command would signal, on either platform."""
         sent: list[int] = []
         monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append(pid))
-        monkeypatch.setattr(platform_compat, "kill_process_tree", lambda pid, sig: sent.append(pid))
+        monkeypatch.setattr(
+            platform_compat, "kill_process_tree", lambda pid, sig, **_k: sent.append(pid)
+        )
         return sent
 
     def test_live_kirocrew_lock_holder_is_refused_and_named(
@@ -377,27 +380,71 @@ class TestStopOnWindows:
 
     def test_tree_kill_reports_terminated(self, monkeypatch, sel_rec, capsys) -> None:
         seen: list[int] = []
-        monkeypatch.setattr(platform_compat, "kill_process_tree", lambda pid, sig: seen.append(pid))
+        monkeypatch.setattr(
+            platform_compat, "kill_process_tree", lambda pid, sig, **_k: seen.append(pid)
+        )
         cli_server._stop(None)
         out = capsys.readouterr().out
         assert seen == [4242]
         assert "Terminated gateway (pid 4242)" in out
         assert sel_rec.calls[-1]["outcome"] == "allowed"
 
+    def test_tree_kill_gets_a_bound_a_big_tree_fits_in(self, monkeypatch, sel_rec) -> None:
+        """A 1,500-process tree took taskkill 11.9 s; the shared 5 s bound read it as denied."""
+        bounds: list[float] = []
+        monkeypatch.setattr(
+            platform_compat,
+            "kill_process_tree",
+            lambda pid, sig, *, timeout=5: bounds.append(timeout),
+        )
+        cli_server._stop(None)
+        assert bounds and bounds[0] >= 60
+
     def test_already_gone_pid_is_not_reported_as_stopped(
         self, monkeypatch, sel_rec, capsys
     ) -> None:
-        def gone(pid, sig):
+        def gone(pid, sig, **_k):
             raise ProcessLookupError
 
         monkeypatch.setattr(platform_compat, "kill_process_tree", gone)
+        monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: False)
         with pytest.raises(SystemExit) as exc:
             cli_server._stop(None)
         assert exc.value.code == 1
         assert "process already exited" in capsys.readouterr().out
 
+    def test_a_tree_walk_that_outlived_a_child_still_stops(self, monkeypatch, sel_rec, capsys):
+        """taskkill /T exits 128 when a child leaves during the walk; the gateway it ended
+        was alive just before, so the stop succeeded."""
+
+        def rc128(pid, sig, **_k):
+            raise ProcessLookupError("[taskkill rc=128] not found")
+
+        monkeypatch.setattr(platform_compat, "kill_process_tree", rc128)
+        monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: True)
+        cli_server._stop(None)
+        out = capsys.readouterr().out
+        assert "Terminated gateway (pid 4242)" in out
+        assert "process already exited" not in out
+        assert sel_rec.calls[-1]["outcome"] == "allowed"
+
+    def test_a_tree_walk_past_its_bound_is_not_a_permission_error(
+        self, monkeypatch, sel_rec, capsys
+    ) -> None:
+        def slow(pid, sig, **_k):
+            raise TimeoutError("taskkill /T did not finish")
+
+        monkeypatch.setattr(platform_compat, "kill_process_tree", slow)
+        monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: True)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._stop(None)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "did not finish within" in out
+        assert "No permission" not in out
+
     def test_permission_error_asks_for_sudo_and_exits(self, monkeypatch, sel_rec, capsys) -> None:
-        def denied(pid, sig):
+        def denied(pid, sig, **_k):
             raise PermissionError
 
         monkeypatch.setattr(platform_compat, "kill_process_tree", denied)
@@ -412,7 +459,7 @@ class TestStopOnWindows:
     ) -> None:
         """Windows has no sudo: taskkill is denied across an elevation boundary."""
 
-        def denied(pid, sig):
+        def denied(pid, sig, **_k):
             raise PermissionError
 
         monkeypatch.setattr(platform_compat, "kill_process_tree", denied)
@@ -425,7 +472,7 @@ class TestStopOnWindows:
     def test_permission_error_on_posix_keeps_the_sudo_line(self, monkeypatch, capsys) -> None:
         """Only the Windows text changes; POSIX prints main's line byte for byte."""
 
-        def denied(pid, sig):
+        def denied(pid, sig, **_k):
             raise PermissionError
 
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
@@ -457,7 +504,7 @@ class TestStopOnWindows:
     def test_generic_taskkill_failure_rechecks_liveness(self, monkeypatch, capsys) -> None:
         """An OSError from taskkill is only "denied" if the pid is still alive."""
 
-        def oserr(pid, sig):
+        def oserr(pid, sig, **_k):
             raise OSError("taskkill exit 1")
 
         monkeypatch.setattr(platform_compat, "kill_process_tree", oserr)
@@ -468,7 +515,7 @@ class TestStopOnWindows:
         assert "No permission to stop pid 4242" in capsys.readouterr().out
 
     def test_generic_taskkill_failure_on_dead_pid_is_not_denied(self, monkeypatch, capsys) -> None:
-        def oserr(pid, sig):
+        def oserr(pid, sig, **_k):
             raise OSError("taskkill exit 1")
 
         monkeypatch.setattr(platform_compat, "kill_process_tree", oserr)
@@ -498,14 +545,14 @@ class TestServiceCmd:
         ],
     )
     def test_action_forwards_and_audits(self, monkeypatch, sel_rec, action, fn, operation) -> None:
-        monkeypatch.setattr(cli_server.service_controller, fn, lambda: 0)
+        monkeypatch.setattr(cli_server.service_controller, fn, lambda **_kw: 0)
         rc = cli_server._service_cmd(argparse.Namespace(service_action=action))
         assert rc == 0
         assert sel_rec.operations == [operation]
         assert sel_rec.calls[0]["outcome"] == "allowed"
 
     def test_nonzero_rc_is_audited_as_error(self, monkeypatch, sel_rec) -> None:
-        monkeypatch.setattr(cli_server.service_controller, "install_service", lambda: 3)
+        monkeypatch.setattr(cli_server.service_controller, "install_service", lambda **_kw: 3)
         assert cli_server._service_cmd(argparse.Namespace(service_action="install")) == 3
         assert sel_rec.calls[0]["outcome"] == "error"
         assert "rc=3" in sel_rec.calls[0]["resources"]
@@ -1228,8 +1275,8 @@ class TestRunTask:
     def test_builtin_sync_runs_through_the_explicit_seam(
         self, taskrunner_env, tmp_path, monkeypatch
     ) -> None:
-        # _run_task runs on a loop, where construction-time sync skips
-        # itself: the loader must be built with install_builtins=False and
+        # _run_task builds the loader off the loop, where construction would
+        # run the sync itself: it must be built with install_builtins=False and
         # have sync_builtins driven through the explicit off-loop seam.
         created: list[_FakeStore] = []
 
@@ -1248,6 +1295,26 @@ class TestRunTask:
             inst.kwargs.get("install_builtins") is False and inst.builtins_synced
             for inst in created
         )
+
+    def test_skills_loader_is_built_off_the_loop(
+        self, taskrunner_env, tmp_path, monkeypatch
+    ) -> None:
+        # Its constructor resolves every skills.extra_paths root, which blocks
+        # until a slow or network mount answers.
+        built_on: list[int] = []
+
+        class _SpyLoader(_FakeStore):
+            def __init__(self, *a, **kw) -> None:
+                super().__init__(*a, **kw)
+                built_on.append(threading.get_ident())
+
+        monkeypatch.setattr(cli_server, "SkillsLoader", _SpyLoader)
+        taskrunner_env["install_runner"](_Result("completed"))
+        args = argparse.Namespace(
+            spec=str(_spec(tmp_path)), no_test=True, fresh=False, timeout=0, name=""
+        )
+        asyncio.run(cli_server._run_task(args))
+        assert built_on and threading.get_ident() not in built_on
 
     def test_consolidator_gets_the_configured_migrated_flag(
         self, taskrunner_env, tmp_path, monkeypatch
@@ -1308,6 +1375,38 @@ class TestRunTask:
             asyncio.run(cli_server._run_task(args))
         assert exc.value.code == 1
         assert "step 2 blew up" in capsys.readouterr().err
+
+    def test_a_planning_sandbox_refusal_prints_its_own_text_on_stderr(
+        self, taskrunner_env, tmp_path, monkeypatch, capsys
+    ) -> None:
+        from kiro_crew.sandbox import SandboxUnavailableError
+        from kiro_crew.taskrunner_parts import run_reporting
+
+        refusal = "Sandbox backend unavailable. Run X."
+        result = _Result("failed", error="Failed to decompose spec into tasks")
+
+        class _Refusing:
+            async def _decompose(self, *_a, **_k):
+                raise SandboxUnavailableError(refusal, kind="no_backend", detail="userns denied")
+
+        async def _run(self, spec_path, name=""):
+            # The refusal is met in the task that awaits the run, as in ``TaskRunner.run``.
+            await run_reporting.decompose_recording_refusal(
+                _Refusing(), result, result.error, "spec"  # type: ignore[arg-type]
+            )
+            return result
+
+        taskrunner_env["install_runner"](result)
+        monkeypatch.setattr(cli_server.TaskRunner, "run", _run)
+        args = argparse.Namespace(
+            spec=str(_spec(tmp_path)), no_test=False, fresh=False, timeout=0, name=""
+        )
+        with pytest.raises(SystemExit) as exc:
+            asyncio.run(cli_server._run_task(args))
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert f"Task failed (demo): {refusal}" in err
+        assert "Failed to decompose" not in err
 
     def test_cancelled_task_exits_one(self, taskrunner_env, tmp_path, capsys) -> None:
         taskrunner_env["install_runner"](_Result("cancelled"))

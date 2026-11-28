@@ -185,16 +185,17 @@ async def test_a_call_too_long_to_show_whole_is_refused(monkeypatch: pytest.Monk
 
 @pytest.mark.asyncio
 async def test_on_the_default_spec_an_upload_waits_on_its_card(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     sup = _Supervisor()
     _install(monkeypatch, sup)
     _no_stream(monkeypatch)
     state = _State()
-    args = {"ref": "e4", "path": "/home/u/a.pdf"}
+    (tmp_path / "a.pdf").write_bytes(b"pdf")
+    args = {"ref": "e4", "path": str(tmp_path / "a.pdf")}
     answer, _ = await mod.run_browser_op(_SESSION, "upload", args, state=state)
     assert answer["code"] == "needs_approval"
-    assert "/home/u/a.pdf" in state.opened[0][0]["question"]
+    assert str(tmp_path / "a.pdf") in state.opened[0][0]["question"]
     assert not [h for h, _kw in sup.calls if h == "set_files"]
 
 

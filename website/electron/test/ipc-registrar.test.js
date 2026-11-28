@@ -29,6 +29,7 @@ const {
   lastCall,
   wslEvent,
   assertWslRejected,
+  PICK_REJECTIONS,
 } = require("./ipc-registrar-test-helpers");
 
 test("the updater's handlers are the update:* channels the preload invokes", () => {
@@ -87,7 +88,11 @@ test("registerShell answers the preload's shell channels and is idempotent", () 
   // boot-complete is a further non-update host channel, but it is deliberately
   // gateway-owned and scoped to a single connecting WebContents. Registering it
   // globally here would weaken its sender check and leak listeners.
-  assert.match(GATEWAY_SOURCE, /ipcMain\.on\("boot-complete", onComplete\)/);
+  assert.match(GATEWAY_SOURCE, /fadeBootReveal\(ipcMain, webContents, timeoutMs\)/);
+  assert.match(
+    fs.readFileSync(path.join(__dirname, "..", "boot-reveal.js"), "utf8"),
+    /ipcMain\.on\("boot-complete", onComplete\)/,
+  );
   assert.equal(h.handlers.has("boot-complete"), false);
   assert.equal(h.listeners.has("boot-complete"), false);
 
@@ -168,7 +173,7 @@ test("shell handlers preserve sender, argument, and return shapes", async () => 
     ["focus-mode-watch-cursor", "chrome.watchFocusCursor", [sender, true]],
     ["window-control", "chrome.windowControl", [sender, "maximize", senderFrame]],
     ["theme-mode-changed", "chrome.setThemeMode", ["dark", sender]],
-    ["titlebar-overlay-theme", "chrome.setTitlebarMode", ["light"]],
+    ["titlebar-overlay-theme", "chrome.setTitlebarMode", ["light", sender]],
   ];
   for (const [channel, owner, args] of chromeCases) {
     h.listeners.get(channel)(event, ...args.filter((value) => value !== sender));
@@ -316,13 +321,16 @@ test("image:copy-at copies at the zoomed point and reports whether an image land
 });
 
 // A completed scan, shaped like collectCrashReports' return value. Only
-// newCrashes (what crashNoticeSummary counts) and crashLogPath (what reveal
-// opens) matter here; `recorded` is carried because the log line count is
+// newCrashes (what crashNoticeSummary counts and dates) and crashLogPath (what
+// reveal opens) matter here; `recorded` is carried because the log line count is
 // logged, never handed to the renderer.
 function crashScanResult(overrides = {}) {
   return {
     crashLogPath: "/logs/crashes.log",
-    newCrashes: [{ key: "a" }, { key: "b" }],
+    newCrashes: [
+      { key: "a", kind: "minidump", name: "a.dmp", at: "2026-10-28T19:19:55.283Z" },
+      { key: "b", kind: "minidump", name: "b.dmp", at: "2026-10-10T19:58:23.706Z" },
+    ],
     recorded: 2,
     ...overrides,
   };
@@ -457,17 +465,18 @@ test("crash-reports channels accept the service manager as the port owner", asyn
   }
 });
 
-test("crash-reports:get narrows the scan to a single count", async () => {
+test("crash-reports:get narrows the scan to the count and the newest crash's time", async () => {
   const h = harness({ crashScan: crashScanResult });
   h.registrar.registerShell();
 
   const summary = await h.handlers.get("crash-reports:get")(wslEvent());
 
-  assert.deepEqual(summary, { newCount: 2 });
-  // The renderer must never receive a path, a filename, an exception code, or
-  // even a timestamp: the reveal gesture happens in the trusted process
-  // precisely so it need not.
-  assert.deepEqual(Object.keys(summary).sort(), ["newCount"]);
+  assert.deepEqual(summary, { newCount: 2, lastCrashAt: "2026-10-28T19:19:55.283Z" });
+  // The renderer must never receive a path, a file name or an exception code:
+  // the reveal gesture happens in the trusted process precisely so it need not.
+  assert.deepEqual(Object.keys(summary).sort(), ["lastCrashAt", "newCount"]);
+  assert.equal(JSON.stringify(summary).includes(".dmp"), false);
+  assert.equal(JSON.stringify(summary).includes("/logs"), false);
   assert.equal(h.crashScans.length, 1, "the summary must come from the injected scan");
 });
 
@@ -475,7 +484,7 @@ test("crash-reports:get reports nothing when no collector was injected", async (
   const h = harness();
   h.registrar.registerShell();
 
-  assert.deepEqual(await h.handlers.get("crash-reports:get")(wslEvent()), { newCount: 0 });
+  assert.deepEqual(await h.handlers.get("crash-reports:get")(wslEvent()), { newCount: 0, lastCrashAt: null });
 });
 
 test("crash-reports:reveal selects the ledger the main process resolved itself", async () => {
@@ -781,13 +790,6 @@ test("dashboard:open-file hardens the launcher PATH across the native launch", a
 // three-gate local-dashboard check; the availability probe answers `false`
 // where the pick itself would be refused, and neither ever reaches the dialog
 // from a rejected sender.
-const PICK_REJECTIONS = [
-  ["wrong origin", {}, "https://remote.example/chat"],
-  ["remote window", { wslOwner: { fake: "remote-window" }, wslGatewayLocal: false }, undefined],
-  ["foreign port owner", { primaryPortOwner: "foreign" }, undefined],
-  ["unknown port owner", { primaryPortOwner: "unknown" }, undefined],
-];
-
 test("dashboard:pick-folder is refused outside the local dashboard and opens no dialog", async () => {
   for (const [label, options, url] of PICK_REJECTIONS) {
     const h = harness({
@@ -1121,6 +1123,99 @@ test("bind and unregister remain owned by the dedicated hotkey helper", () => {
   h.registrar.unregisterGlobalHotkey();
   assert.equal(h.hotkey.state.unregisters, 1);
   assert.equal(h.hotkey.state.current, "");
+});
+
+test("global-hotkey:set stores the recorded shortcut and binds it without a restart", async () => {
+  const h = harness({ storeValues: { globalHotkey: "" } });
+  h.registrar.registerShell();
+  const set = h.handlers.get("global-hotkey:set");
+
+  assert.deepEqual(await set(wslEvent(), "Alt+Shift+J"), {
+    accelerator: "Alt+Shift+J",
+    requested: "Alt+Shift+J",
+    default: "Test+Shift+K",
+  });
+  assert.equal(h.store.data.globalHotkey, "Alt+Shift+J");
+  assert.equal(h.hotkey.state.binds.length, 1);
+  assert.equal(h.hotkey.state.binds[0].saved, "Alt+Shift+J");
+  assert.strictEqual(h.hotkey.state.binds[0].handler, h.registrar.summonDashboard);
+
+  // Clearing stores "", the spelling that means "turned off".
+  assert.deepEqual(await set(wslEvent(), ""), {
+    accelerator: "",
+    requested: "",
+    default: "Test+Shift+K",
+  });
+  assert.strictEqual(h.store.data.globalHotkey, "");
+  assert.equal(h.hotkey.state.binds.length, 2);
+});
+
+test("global-hotkey:set refuses a value the recorder cannot produce", async () => {
+  const h = harness({ storeValues: { globalHotkey: "Alt+Shift+J" } });
+  h.registrar.registerShell();
+  for (const bad of ["K", "Shift+K", 7, null, undefined]) {
+    await assert.rejects(
+      () => h.handlers.get("global-hotkey:set")(wslEvent(), bad),
+      { message: "global-hotkey:set: not a shortcut the recorder can produce" },
+    );
+  }
+  assert.deepEqual(h.store.writes, [], "a refused value is never stored");
+  assert.deepEqual(h.hotkey.state.binds, [], "a refused value is never bound");
+});
+
+test("global-hotkey:set rejects a sender that is not the local dashboard", async () => {
+  for (const [why, opts, event] of NOT_LOCAL_WINDOWS) {
+    const h = harness({ storeValues: { globalHotkey: "" }, ...opts });
+    h.registrar.registerShell();
+    await assert.rejects(
+      () => h.handlers.get("global-hotkey:set")(event(), "Alt+Shift+J"),
+      { message: "global-hotkey:set is restricted to the local dashboard" },
+    );
+    assert.deepEqual(h.store.writes, [], `${why}: a rejected sender stores nothing`);
+    assert.deepEqual(h.hotkey.state.binds, [], `${why}: a rejected sender binds nothing`);
+  }
+});
+
+test("global-hotkey:set applies requests in arrival order, whichever gate probe ends first", async () => {
+  const h = harness({ storeValues: { globalHotkey: "Alt+Shift+K" } });
+  h.registrar.registerShell();
+  const set = h.handlers.get("global-hotkey:set");
+  // The first request's port probe is held open; the second one's is instant.
+  let releaseFirstProbe;
+  const firstProbe = new Promise((resolve) => { releaseFirstProbe = () => resolve("kirocrew"); });
+  let probes = 0;
+  h.gateway.probePrimaryPortOwner = () => {
+    probes += 1;
+    return probes === 1 ? firstProbe : Promise.resolve("kirocrew");
+  };
+
+  const recorded = set(wslEvent(), "Alt+Shift+J");
+  const cleared = set(wslEvent(), "");
+  // Give the later request every chance to overtake before the first is let go.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(h.store.writes, [], "the Clear waits behind the recording sent before it");
+  releaseFirstProbe();
+
+  assert.equal((await recorded).accelerator, "Alt+Shift+J");
+  assert.equal((await cleared).accelerator, "");
+  assert.deepEqual(h.store.writes, [["globalHotkey", "Alt+Shift+J"], ["globalHotkey", ""]]);
+  assert.strictEqual(h.store.data.globalHotkey, "", "the user's last action wins");
+});
+
+test("a refused global-hotkey:set does not block the requests after it", async () => {
+  const h = harness({ storeValues: { globalHotkey: "" } });
+  h.registrar.registerShell();
+  const set = h.handlers.get("global-hotkey:set");
+  await assert.rejects(() => set(wslEvent(), "K"));
+  assert.equal((await set(wslEvent(), "Alt+Shift+J")).accelerator, "Alt+Shift+J");
+});
+
+test("the preload withholds the hotkey setter from a window on a remote gateway", () => {
+  const preload = fs.readFileSync(path.join(__dirname, "..", "preload.js"), "utf8");
+  assert.match(
+    preload,
+    /\.\.\.\(REMOTE_GATEWAY \? \{\} : \{\s*setGlobalHotkey: \(accelerator\) =>\s*ipcRenderer\.invoke\("global-hotkey:set", String\(accelerator\)\),\s*\}\),/,
+  );
 });
 
 test("every channel a preload calls has a main-process owner", () => {

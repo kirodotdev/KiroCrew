@@ -62,8 +62,10 @@ def post_compaction_parts(
 ) -> list[str]:
     """What a turn re-injects after a confirmed compaction dropped session start.
 
-    The agent contract, the memory activity index, the skills index (same gate and
-    glob restriction as session start), the learned-lessons block (same store,
+    The agent contract, the critical rules (same variant and opt-out as session
+    start, left out where the session head holds that exact text), the memory
+    activity index, the skills index (same gate and glob restriction as session
+    start), the owner's preferences and the learned-lessons block (same store,
     gates and budgets as session start, ranked against *query_text*, the user's
     own text for this turn), the CURRENT reply-style preferences, the Claude Code
     backend's steering resources (same gate as session start) and the CURRENT
@@ -77,6 +79,7 @@ def post_compaction_parts(
     resources and folder steering stay out of a prompt other people read.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew import session_head as _session_head
 
     parts: list[str] = []
     _essentials = essentials
@@ -93,12 +96,21 @@ def post_compaction_parts(
         project=project or template_dir,
         mode=mode,
         session_key=session_key,
-        is_cc=is_cc,
         private_owner=private_owner,
         session_start=False,
+        provider_type=provider_type,
+        # The live session's own mount, which a crewmate worker's conducting rules follow.
+        member_dispatch_mounted=getattr(context_provider, "member_dispatch_mounted", None),
     )
     if _agent_prompt:
         parts.append(f"[AGENT SYSTEM PROMPT]\n{_agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n")
+    # The reply contract went with it, and only its short reminder rides the next
+    # message. A minimal session start sent none; a session head keeps its copy.
+    if not minimal_context and ctx._agent_includes_crew_context(agent):
+        _rules = ctx._critical_rules_for(session_key, runtime_source)
+        _held = context_provider.native_context_documents if context_provider is not None else {}
+        if not _session_head.holds(_held, _session_head.RULES_KEY, _rules):
+            parts.append(_rules)
     # The tool-name rule went with the session start too, and the contract just
     # restored names the tools bare again. Minimal turns carried it as well.
     _tool_names_part = _tool_names.tool_names_block(provider_type)
@@ -162,9 +174,9 @@ def post_compaction_parts(
                 + ctx._neutralize_structural_markers(skills_ctx)
                 + "\n[END REINJECTED]\n\n"
             )
-    # Lessons are session-start context too: the user's standing corrections
-    # went with the compaction, and nothing else brings them back (the
-    # per-message block only adds new matches, and is off by default).
+    # Preferences and lessons are session-start context too: the user's standing
+    # rules and corrections went with the compaction, and nothing else brings
+    # them back (the per-message block only adds new matches, and is off by default).
     parts.extend(
         lessons_parts(
             builder,
@@ -213,14 +225,36 @@ def lessons_parts(
     essentials: str,
     query_text: str,
 ) -> list[str]:
-    """The learned-lessons block a turn re-sends when session start may be gone.
+    """The owner's preferences and learned lessons a turn re-sends when session start may be gone.
 
-    Same store, gates and budgets as session start, ranked against *query_text*.
+    Same store, gates and budgets as session start, ranked against *query_text*:
+    the whole preferences document and the ``pref.*`` rows under their startup
+    allowance, then the lessons block.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
     parts: list[str] = []
     _essentials = essentials
+    _prefs_ctx = _store_admission.compaction_preferences_block(
+        builder,
+        private=private_owner,
+        blocks_reads=blocks_reads,
+        context_groups=context_groups,
+        workspace=workspace,
+        memory_store=memory_store,
+        model_window=model_window,
+        essentials=_essentials,
+        query_text=query_text,
+        session_key=session_key,
+    )
+    if _prefs_ctx:
+        # The preferences document and its rows are user- and agent-written:
+        # scrub the payload, keep the trusted wrapper outside it.
+        parts.append(
+            "[REINJECTED AFTER COMPACTION — owner preferences]\n"
+            + ctx._neutralize_structural_markers(_prefs_ctx)
+            + "\n[END REINJECTED]\n\n"
+        )
     _lessons_ctx = _store_admission.compaction_lessons_block(
         builder,
         private=private_owner,
@@ -235,9 +269,12 @@ def lessons_parts(
         session_key=session_key,
     )
     if _lessons_ctx:
-        if session_key and ctx.KiroCrewConfig.load().memory.inject_lessons_per_turn:
+        per_turn = ctx.KiroCrewConfig.load().memory.inject_lessons_per_turn
+        if session_key and per_turn != "off":
             # The block as sent: per-message lessons skip what it holds.
-            builder._remember_startup_lessons(session_key, _lessons_ctx)
+            builder._remember_startup_lessons(
+                session_key, _lessons_ctx, shadow=per_turn == "shadow"
+            )
         # Lesson text is user- and agent-written: scrub the payload, keep the
         # trusted wrapper outside it.
         parts.append(
@@ -497,6 +534,55 @@ def thread_context_parts(
     return blocks
 
 
+def project_line(
+    *, project: str | None, context_groups: frozenset[str] | None, session_key: str | None
+) -> str:
+    """The turn's ``[PROJECT]`` line, ``""`` when it carries none.
+
+    :func:`rail_parts` adds it to every turn; ``build_message`` also binds it as a
+    delivery slot, so the engine is sent an unchanged line once per conversation.
+    """
+    from kiro_crew.session_environment import remote_workspace_for
+
+    # A remote session works in the GUEST's directory; naming the gateway checkout
+    # (which its tools cannot reach) sent the model to the wrong machine. Values
+    # come from operator config (profile name, workdir).
+    remote = remote_workspace_for(session_key)
+    if not _inclusion._group_included(context_groups, _inclusion.CONTEXT_GROUP_PROJECT):
+        return ""
+    if remote is not None and not remote[1]:
+        # No directory: the agent itself runs in a Kiro cloud sandbox, which Kiro
+        # Crew never reaches, so name the sandbox and nothing on the gateway.
+        return (
+            f"[PROJECT] This session runs in a Kiro Cloud Sessions sandbox ({remote[0]}). "
+            "Its files, commands and tools all live in that sandbox. Kiro Crew's own "
+            "tools, MCP servers and the gateway machine's files are not available "
+            "there.\n\n"
+        )
+    if remote is not None:
+        env_name, env_workdir = remote
+        return (
+            f"[PROJECT] This session runs in a remote environment ({env_name}). "
+            f"Its working directory is {env_workdir} on that remote machine, "
+            "reached only through the @workspace tools (read_file, write_file, "
+            "edit_file, list_directory, glob, grep, run_command). Files, commands, "
+            "the OS and installed tools all describe that remote machine. "
+            "Subagents you spawn run in the same remote environment. "
+            "The gateway machine that hosts you is a different computer, and "
+            "anything describing it (paths, host memory) is not this session's "
+            "workspace.\n\n"
+        )
+    if project:
+        return (
+            f"[PROJECT] Active project directory: {project}\n"
+            "This is the codebase you are working in for this session. "
+            "File search, @-mentions, and code references are scoped to "
+            "this directory. Prefer files and patterns from this project "
+            "when answering questions.\n\n"
+        )
+    return ""
+
+
 def rail_parts(
     *,
     project: str | None,
@@ -521,33 +607,14 @@ def rail_parts(
     # the active project, even when set/changed after session start.
     from kiro_crew.session_environment import remote_workspace_for
 
-    # A remote session works in the GUEST's directory; naming the gateway checkout
-    # (which its tools cannot reach) sent the model to the wrong machine. Values
-    # come from operator config (profile name, workdir).
     remote = remote_workspace_for(session_key)
     project_on = _inclusion._group_included(context_groups, _inclusion.CONTEXT_GROUP_PROJECT)
-    if remote is not None and project_on and not remote[1]:
-        # No directory: the agent itself runs in a Kiro cloud sandbox, which Kiro
-        # Crew never reaches, so name the sandbox and nothing on the gateway.
-        parts.append(
-            f"[PROJECT] This session runs in a Kiro Cloud Sessions sandbox ({remote[0]}). "
-            "Its files, commands and tools all live in that sandbox. Kiro Crew's own "
-            "tools, MCP servers and the gateway machine's files are not available "
-            "there.\n\n"
-        )
-    elif remote is not None and project_on:
-        env_name, env_workdir = remote
-        parts.append(
-            f"[PROJECT] This session runs in a remote environment ({env_name}). "
-            f"Its working directory is {env_workdir} on that remote machine, "
-            "reached only through the @workspace tools (read_file, write_file, "
-            "edit_file, list_directory, glob, grep, run_command). Files, commands, "
-            "the OS and installed tools all describe that remote machine. "
-            "Subagents you spawn run in the same remote environment. "
-            "The gateway machine that hosts you is a different computer, and "
-            "anything describing it (paths, host memory) is not this session's "
-            "workspace.\n\n"
-        )
+    _project_line = project_line(
+        project=project, context_groups=context_groups, session_key=session_key
+    )
+    if _project_line:
+        parts.append(_project_line)
+    if remote is not None and project_on and remote[1]:
         from kiro_crew.session_environment import take_workspace_recreated
 
         if take_workspace_recreated(session_key):
@@ -557,14 +624,6 @@ def rail_parts(
                 "conversation are gone. Re-clone or rebuild before relying on them; "
                 "anything pushed to git is still on its remote.\n\n"
             )
-    elif project and project_on:
-        parts.append(
-            f"[PROJECT] Active project directory: {project}\n"
-            "This is the codebase you are working in for this session. "
-            "File search, @-mentions, and code references are scoped to "
-            "this directory. Prefer files and patterns from this project "
-            "when answering questions.\n\n"
-        )
 
     # Board state — the session's dashboard board tags, so the agent knows
     # its own workflow lane and which tags it is allowed to change with
@@ -724,7 +783,7 @@ def interactive_guidance(
     Every built message carries them. Whether the engine is sent them again is
     the provider's call at the wire (``build_message`` binds the block as the
     turn's delivery envelope): once per engine conversation on a harness whose
-    compaction Kiro Crew sees, every message elsewhere and in a member's chat.
+    compaction Kiro Crew sees (a member's chat included), every message elsewhere.
 
     *producer_is_user_facing* says a person sent this turn on a dashboard
     slot. It defaults to False, the applier's own default, so a caller that
@@ -808,12 +867,31 @@ def interactive_guidance(
     return _interactive_guidance
 
 
+def recall_query(text: str, user_text_range: tuple[int, int]) -> str:
+    """What session-start recall ranks: the user's own span of *text*.
+
+    The context a dispatcher put in front of that span (a sub-agent notice, a
+    drained pending-context block, a cancelled-turn restore) ranks nothing, as
+    on the per-message and post-compaction lesson paths. An ``@prompt`` turn
+    reports an empty span where the prompt body that replaced its text begins,
+    so that body, still without what was put in front of it, is what ranks.
+    """
+    start, end = user_text_range
+    return text[start:end] or text[start:]
+
+
 def user_turn(
-    text: str, hook_result: HookResult, user_text_range: tuple[int, int] | None
+    text: str,
+    hook_result: HookResult,
+    user_text_range: tuple[int, int] | None,
+    *,
+    quick_prompts: bool = True,
 ) -> tuple[str, tuple[int, int] | None]:
     """``(the turn text as sent, the user's own bounds within it)``.
 
     The bounds are ``None`` when the caller gave no *user_text_range*.
+    *quick_prompts* off sends a leading ``/token`` as written: a chat option
+    tap's label, which the model wrote.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
@@ -844,11 +922,11 @@ def user_turn(
     # output is likewise the turn in full.
     _quick_prompt: str | None = None
     _quick_at = 0
-    if hook_result.action == ctx.HOOK_MODIFY or user_text_range is None:
+    if quick_prompts and (hook_result.action == ctx.HOOK_MODIFY or user_text_range is None):
         _quick_prompt = ctx.expand_quick_prompt(turn_text)
         if _quick_prompt is not None:
             turn_text = _quick_prompt
-    else:
+    elif quick_prompts and user_text_range is not None:
         _q0, _q1 = user_text_range
         _q0 = max(0, min(_q0, len(turn_text)))
         _q1 = max(_q0, min(_q1, len(turn_text)))

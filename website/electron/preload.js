@@ -74,6 +74,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   ...(REMOTE_GATEWAY ? {} : {
     clearPaneHttpCache: (origin) =>
       ipcRenderer.invoke("pane:clear-http-cache", String(origin || "")),
+    // Memory and CPU of the remote Crews loaded in this window (Settings -> Remote Crew).
+    remoteCrewUsage: (origins) =>
+      ipcRenderer.invoke("remote-crew:usage", Array.isArray(origins) ? origins.map(String) : []),
   }),
   // Copy the image drawn at a main-frame point (CSS pixels) to the OS clipboard.
   copyImageAt: (x, y) => ipcRenderer.invoke("image:copy-at", Number(x), Number(y)),
@@ -209,9 +212,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Second argument: whether the macOS menu bar can slide over the window.
   // Only an explicit `menuBarOverlap: false` from main turns it off, so a
   // missing or malformed payload keeps the renderer's menu-bar band.
+  // Third argument: true only when a page's video raised this fullscreen.
   onFullScreenChanged: (callback) => {
     const handler = (_event, isFullScreen, info) =>
-      callback(!!isFullScreen, !(info && info.menuBarOverlap === false));
+      callback(
+        !!isFullScreen,
+        !(info && info.menuBarOverlap === false),
+        !!(info && info.pageRaised === true),
+      );
     ipcRenderer.on("fullscreen-changed", handler);
     return () => ipcRenderer.removeListener("fullscreen-changed", handler);
   },
@@ -266,6 +274,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // shortcuts UI advertises what really works. Resolves
   // { accelerator, default } — accelerator is "" when nothing is bound.
   getGlobalHotkey: () => ipcRenderer.invoke("global-hotkey:get"),
+  // Store and bind a summon hotkey recorded in Settings ("" turns it off);
+  // resolves the same shape as getGlobalHotkey, read after the bind. Withheld
+  // from a window on a remote gateway, where the config file is the way to
+  // change it: the hotkey is grabbed on this machine, not on that host.
+  ...(REMOTE_GATEWAY ? {} : {
+    setGlobalHotkey: (accelerator) =>
+      ipcRenderer.invoke("global-hotkey:set", String(accelerator)),
+  }),
 });
 
 // Local-gateway switch for the Settings > Developer toggle. The choice lives in
@@ -320,8 +336,9 @@ contextBridge.exposeInMainWorld("remoteCrewPaneAPI", {
 // a main-process crash reaches us as "it closed by itself" with the evidence
 // still unread on the reporter's disk. This bridge is what closes that loop.
 //
-// `get` resolves { newCount } and NOTHING else: no paths, no filenames, no
-// exception codes, not even a timestamp. `reveal` takes no argument — main.js knows
+// `get` resolves the count of new crashes and the newest one's time
+// ({ newCount, lastCrashAt }); no path, file name, module name, exception code
+// or logs directory crosses. `reveal` takes no argument — main.js knows
 // where the log is from the scan it performed, so this cannot be turned into a
 // request to open an arbitrary file. Absent in plain browsers and in the PWA,
 // where there is no local disk to reveal; the banner hides itself.
@@ -384,9 +401,13 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("fileOpenAPI", {
 // The pane calls show a Crew in this window instead, below the local top bar:
 // they carry the endpoint ID, the pane's rect with this page's viewport size,
 // or whether a local overlay covers the pane or another tab is in front of it.
-// `onPaneEvent(cb)` hears a pane's switch chord, whether its theme is dark, or
-// its close, as `{ type, endpointId, index, dark }` and nothing more, and
-// returns its unsubscribe. An
+// `openPane` and `prewarmPane` also carry `ownHeader`, true only from a
+// dashboard that keeps to its tab strip above a pane whose page drew its own
+// header: the Crew's page is asked to draw one for such a dashboard alone.
+// `onPaneEvent(cb)` hears a pane's switch chord, whether its theme is dark,
+// whether its page drew its own header, or its close, as
+// `{ type, endpointId, index, dark, header }` and nothing more, and returns its
+// unsubscribe. `header` is true only for a `header` event that said so. An
 // `openPane` from another dashboard window is handed to the main window's
 // dashboard, which hears it through `onOpenRequest(cb)` (the endpoint ID only)
 // while it is subscribed; one subscriber at a time, the newest.
@@ -395,8 +416,8 @@ let openRequestSeq = 0;
 if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("relayCrewAPI", {
   open: (endpointId) => ipcRenderer.invoke("relay-crew:open", String(endpointId || "")),
   closeAll: () => ipcRenderer.invoke("relay-crew:close-all"),
-  openPane: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:open-pane", String(endpointId || ""), rect, viewport),
-  prewarmPane: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:prewarm-pane", String(endpointId || ""), rect, viewport),
+  openPane: (endpointId, rect, viewport, ownHeader) => ipcRenderer.invoke("relay-crew:open-pane", String(endpointId || ""), rect, viewport, ownHeader === true),
+  prewarmPane: (endpointId, rect, viewport, ownHeader) => ipcRenderer.invoke("relay-crew:prewarm-pane", String(endpointId || ""), rect, viewport, ownHeader === true),
   setPaneBounds: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:pane-bounds", String(endpointId || ""), rect, viewport),
   setPaneOverlay: (endpointId, active) => ipcRenderer.invoke("relay-crew:pane-overlay", String(endpointId || ""), !!active),
   setPaneInactive: (endpointId, inactive) => ipcRenderer.invoke("relay-crew:pane-inactive", String(endpointId || ""), !!inactive),
@@ -409,6 +430,7 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("relayCrewAPI", {
       endpointId: String(m?.endpointId || ""),
       index: Number.isInteger(m?.index) ? m.index : -1,
       dark: typeof m?.dark === "boolean" ? m.dark : null,
+      header: m?.type === "header" && m?.header === true,
     });
     ipcRenderer.on("relay-crew:pane-event", handler);
     return () => ipcRenderer.removeListener("relay-crew:pane-event", handler);
@@ -441,6 +463,14 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("relayCrewAPI", {
 if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("folderPickAPI", {
   available: () => ipcRenderer.invoke("dashboard:can-pick-folder"),
   pick: () => ipcRenderer.invoke("dashboard:pick-folder"),
+});
+
+// Connect with WakaTime from the desktop: `openInBrowser()` asks the main
+// process to open this dashboard's WakaTime panel in the system browser, where
+// the sign-in can finish. It passes nothing; resolves true when the OS took the
+// hand-off, false when it failed, and rejects when the shell refuses the window.
+if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("wakatimeConnectAPI", {
+  openInBrowser: () => ipcRenderer.invoke("wakatime:open-in-browser"),
 });
 
 // External terminal bridge for the Files tab's "Open in external terminal" row

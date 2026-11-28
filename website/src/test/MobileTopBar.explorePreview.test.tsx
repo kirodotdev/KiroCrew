@@ -61,6 +61,7 @@ function props(over: Partial<Props> = {}): Props {
     enterSplit: vi.fn(),
     mobileNewSessionItem: undefined,
     dispatch: vi.fn() as never,
+    personSlots: [],
     ...over,
   }
 }

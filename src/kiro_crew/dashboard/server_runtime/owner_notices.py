@@ -43,8 +43,14 @@ async def _dm_owner(state: DashboardState, text: str) -> None:
     """
     safe_text, _ = redact_exfiltration_urls(text)
     safe_text, _ = redact_credentials(safe_text)
-    slack_client = state.slack_client
     owner_id = state.owner_id
+    if owner_id:
+        # Imported here: this body runs on the dashboard server module's globals.
+        from kiro_crew.dashboard.slack_reconnect_wait import wait_for_slack_reconnect
+
+        # A reconnect may have taken the client: DM through the one it publishes.
+        await wait_for_slack_reconnect(state)
+    slack_client = state.slack_client
     if slack_client and owner_id:
         try:
             dm_channel = await slack_client.open_dm(owner_id)

@@ -367,6 +367,17 @@ def _spy_steps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[str]:
     def rec(name: str, result=None):
         return lambda *a, **k: steps.append(name) or result
 
+    # The slim path runs kiro_crew.cli's module-scope CA-bundle step in-window,
+    # while cli.main's ran when cli was imported. An operator's own bundle makes
+    # that step a no-op on every platform, so neither path writes the CA-bundle
+    # variables and monkeypatch restores whatever the process held before.
+    bundle = tmp_path / "operator-ca.pem"
+    bundle.write_text("")
+    monkeypatch.setenv("SSL_CERT_FILE", str(bundle))
+    monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+    for name in _ssl_compat._CA_BUNDLE_ENV:
+        monkeypatch.delenv(_ssl_compat._provenance_env(name), raising=False)
+
     monkeypatch.setattr(platform_compat, "ensure_utf8_console", rec("utf8"))
     from kiro_crew import data_home_owner
 
@@ -417,8 +428,8 @@ def test_cli_and_slim_start_run_the_same_steps_for_an_mcp_server(
             m.setenv("KIROCREW_SANDBOX_LEVEL", "strict")
             for var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS"):
                 m.delenv(var, raising=False)
-            before = dict(os.environ)
             steps = _spy_steps(m, tmp_path)
+            before = dict(os.environ)
             path()
             after = dict(os.environ)
         keys = set(before) | set(after)

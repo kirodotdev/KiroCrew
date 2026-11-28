@@ -47,12 +47,12 @@ def _state(slot: _ChatSlot, live: tuple = ()) -> DashboardState:
     return state
 
 
-def _config(monkeypatch, *, member: str, resolves_to: str = "") -> None:
+def _config(monkeypatch, *, member: str, resolves_to: str = "", configured: str = "") -> None:
     monkeypatch.setattr(
         chat_handlers.KiroCrewConfig,
         "load",
         lambda: SimpleNamespace(
-            agent=SimpleNamespace(acp_backend="", member_acp_backend=member), agents={}
+            agent=SimpleNamespace(acp_backend=configured, member_acp_backend=member), agents={}
         ),
     )
     monkeypatch.setattr(
@@ -211,6 +211,27 @@ async def test_a_cold_codex_thread_takes_the_newest_codex_sessions_answer(monkey
     assert data["effort_levels"] == ["low", "high"]
 
 
+@pytest.mark.asyncio
+async def test_a_cold_template_thread_is_no_same_named_crews_session(monkeypatch):
+    """A template pick runs no crew, so a crewmate of the same name owns none of its sessions."""
+    _config(monkeypatch, member="codex", configured="codex")
+    cold = _ChatSlot("tpl-helper", agent="helper")
+    cold.agent_kind = "template"
+    crewmate = _ChatSlot("member-helper", agent="helper")
+    crewmate.agent_kind = "member"
+    crews = _codex(effort=False)
+    state = _state(cold, (crews, _codex(effort=True)))
+    state._slots[crewmate.key] = crewmate
+    state.sessions.get_provider = lambda key: (
+        crews if key == effective_session_key(crewmate) else None
+    )
+
+    data = await _caps(state, "tpl-helper")
+
+    assert data["effort_supported"] is None
+    assert data["effort_levels"] == ["low", "high"]
+
+
 # ── a live codex session ──
 
 
@@ -276,6 +297,24 @@ async def test_the_crew_editor_takes_the_crews_own_codex_session_over_another():
     sessions = SimpleNamespace(
         active_providers=lambda: [own, _codex(effort=False)],
         get_provider=lambda key: own if key == effective_session_key(thread) else None,
+    )
+    state = SimpleNamespace(sessions=sessions, _slots={thread.key: thread})
+
+    body = await _resolved(member="codex", state=state, model="openai.gpt-6.1-sol")
+
+    assert body["effort_supported"] is None
+    assert body["effort_levels"] == ["low", "high"]
+
+
+@pytest.mark.asyncio
+async def test_the_crew_editor_takes_no_same_named_templates_session_as_the_crews():
+    """A template chat that shares the crew's name runs that template, not the crew."""
+    templates = _codex(effort=False)
+    thread = _ChatSlot("tpl-writer", agent="writer")
+    thread.agent_kind = "template"
+    sessions = SimpleNamespace(
+        active_providers=lambda: [templates, _codex(effort=True)],
+        get_provider=lambda key: templates if key == effective_session_key(thread) else None,
     )
     state = SimpleNamespace(sessions=sessions, _slots={thread.key: thread})
 

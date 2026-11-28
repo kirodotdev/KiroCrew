@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatMessage } from '../types'
 import type { DisplayItem } from '../pages/chat/types'
 import { pinCandidateKey, usePinnedPrompt } from '../pages/chat/usePinnedPrompt'
-import { DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
+import { DEFAULT_PINNED_CARD_H, PINNED_BYLINE_H } from '../utils/pinnedPrompt'
 import { beginPanelSlide, markSlideSettling } from '../utils/panelSlide'
 
 /**
@@ -408,6 +408,40 @@ describe('usePinnedPrompt (shared pinned-prompt geometry)', () => {
     act(() => { h.result.current.jumpToPinnedPromptInPlace(7, mountedSteer) })
     expect(frames).toHaveLength(0)
   })
+
+  it('keeps the in-place jump on its prompt when a page lands mid-glide and renumbers the rows', () => {
+    const h = renderPin()
+    const g = mountGeometry(5)
+    trackScroll(g.rows[2], 300, 40, g)
+    wire(h, g)
+    act(() => { h.result.current.jumpToPinnedPromptInPlace(2, mountedSteer) })
+    flushFrame(0)
+    flushFrame(225)
+
+    // Three older rows land above: the prompt is row 5 now, 300px lower, and
+    // row 2 is an older message that took its number.
+    const older: DisplayItem[] = [0, 1, 2].map((i) => ({
+      kind: 'single', idx: i, msg: message(i % 2 ? 'assistant' : 'user', `older ${i}`, `2026-09-07T00:00:0${i}.000Z`),
+    }))
+    act(() => {
+      h.result.current.displayItemsRef.current = [...older, ...ITEMS.map((it, i) => ({ ...it, idx: i + 3 }) as DisplayItem)]
+      g.rows.forEach((row, i) => { row.dataset.displayIndex = String(i + 3) })
+      older.forEach((_, i) => {
+        const row = document.createElement('div')
+        row.dataset.displayIndex = String(i)
+        trackScroll(row, 50 * i, 40, g)
+        g.scroller.append(row)
+      })
+      trackScroll(g.rows[2], 600, 40, g)
+    })
+
+    // Run the glide out: its travel pays the moved goal back, then it converges.
+    let at = 225
+    while (frames.length && at < 5000) flushFrame((at += 16))
+    expect(frames).toHaveLength(0)
+    // The prompt's row top (600) minus the chrome (198), not the older row 2's.
+    expect(g.scrollTop).toBe(402)
+  })
 })
 
 /**
@@ -748,6 +782,94 @@ describe('usePinnedPrompt leaves a tall bubble in place, then pins it at rest', 
  * dock's height plus a clearance) — measured from the scroller rather than passed,
  * so the two can never be set apart.
  */
+describe('usePinnedPrompt and the name above another sender\'s card', () => {
+  // Fold at 100. Row 2 is the prompt, row 3 its reply, row 4 the next prompt.
+  // Row 0 is an earlier prompt, so "row 2 has not handed over" reads as the
+  // pin still being on row 0 (or on nothing), never on row 2.
+  // `lead` is what the row puts above its bubble: 22 for a row that shows the
+  // sender's name, 0 for a row in the middle of that person's run.
+  function mountPrompt(top: number, { other, lead, bubbleH = 37 }: { other: boolean; lead: number; bubbleH?: number }) {
+    const h = renderPin()
+    const g = mountGeometry(5)
+    setRect(g.rows[0], -200, 40)
+    setRect(g.rows[1], -150, 40)
+    setRect(g.rows[2], top, 70 + lead)
+    const { root, bubble, strip } = mountUserRow(g.rows[2])
+    if (other) root.setAttribute('data-user-side', 'start')
+    setRect(bubble, top + 4 + lead, bubbleH)
+    setRect(strip, top + 4 + lead + bubbleH + 4, 26)
+    setRect(g.rows[3], top + 70 + lead, 40)
+    setRect(g.rows[4], 900, 40)
+    setRect(g.scroller, 0, 600)
+    // No card has reported yet, so the seed decides (`wire` reports one).
+    act(() => {
+      h.scrollerRef.current = g.scroller
+      h.result.current.pinFoldRef.current = g.fold
+      h.result.current.pinCardRef.current = g.card
+      h.result.current.displayItemsRef.current = ITEMS
+      h.result.current.updatePinnedPrompt()
+    })
+    return h
+  }
+
+  it('seeds a named card\'s resting height with the name, so the row hands over with its top on the fold', () => {
+    // Row top on the fold: name on name, bubble (126..163) on the card's box.
+    // The bubble's bottom is 59 under the card's top, more than the one-line
+    // seed, so an unnamed seed left the row in the transcript here.
+    const h = mountPrompt(100, { other: true, lead: PINNED_BYLINE_H })
+    expect(h.result.current.pinned).toMatchObject({ idx: 2, bannerH: DEFAULT_PINNED_CARD_H + PINNED_BYLINE_H })
+  })
+
+  it('keeps the one-line seed for the viewer\'s own row', () => {
+    const h = mountPrompt(100, { other: false, lead: 0 })
+    expect(h.result.current.pinned).toMatchObject({ idx: 2, bannerH: DEFAULT_PINNED_CARD_H })
+  })
+
+  it('takes the card\'s own report over the seed once it arrives', () => {
+    const h = mountPrompt(100, { other: true, lead: PINNED_BYLINE_H })
+    act(() => { h.result.current.onPinCollapsedHeight(59); h.result.current.updatePinnedPrompt() })
+    expect(h.result.current.pinned).toMatchObject({ idx: 2, bannerH: 59 })
+  })
+
+  it('hands a mid-run row over where its bubble meets the named card\'s box', () => {
+    // No name on the row, so its bubble is on the box (fold + 4 + 22) while the
+    // row top is still the name's height below the fold.
+    expect(mountPrompt(100 + PINNED_BYLINE_H, { other: true, lead: 0 }).result.current.pinned).toMatchObject({ idx: 2 })
+    // One pixel earlier the bubble has not reached the box yet.
+    expect(mountPrompt(100 + PINNED_BYLINE_H + 1, { other: true, lead: 0 }).result.current.pinned?.idx).not.toBe(2)
+  })
+
+  it('gives no lead to a mid-run row too tall to pin yet, so the card before it finishes its push', () => {
+    // A three-line bubble cannot pin until it has scrolled behind the band. With
+    // a lead it would count as having reached the line and drop row 0's card.
+    const h = mountPrompt(100 + PINNED_BYLINE_H, { other: true, lead: 0, bubbleH: 79 })
+    expect(h.result.current.pinned).toMatchObject({ idx: 0 })
+  })
+
+  it('gives no lead to a row that shows the name itself, or to the viewer\'s own row', () => {
+    expect(mountPrompt(101, { other: true, lead: PINNED_BYLINE_H }).result.current.pinned?.idx).not.toBe(2)
+    expect(mountPrompt(101, { other: false, lead: 0 }).result.current.pinned?.idx).not.toBe(2)
+  })
+
+  it('ignores a forged sender mark inside the bubble', () => {
+    const h = renderPin()
+    const g = mountGeometry(5)
+    setRect(g.rows[0], -200, 40)
+    setRect(g.rows[1], -150, 40)
+    setRect(g.rows[2], 110, 70)
+    const { bubble } = mountUserRow(g.rows[2])
+    setRect(bubble, 114, 37)
+    const forged = document.createElement('div')
+    forged.setAttribute('data-role', 'user')
+    forged.setAttribute('data-user-side', 'start')
+    bubble.append(forged)
+    setRect(g.rows[3], 180, 40)
+    setRect(g.rows[4], 900, 40)
+    wire(h, g)
+    expect(h.result.current.pinned?.idx).not.toBe(2)
+  })
+})
+
 describe('usePinnedPrompt caps the card at the transcript floor', () => {
   /** A tall prompt scrolled until its bubble's bottom (140) sits inside the
    *  card's resting box (fold + 4 + 60 = 164), so it is pinned at rest. */

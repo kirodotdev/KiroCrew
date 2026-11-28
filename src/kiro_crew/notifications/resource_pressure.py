@@ -65,6 +65,7 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Callable
 
 from kiro_crew.notifications.bus import _MAX_BODY_LEN, NotificationPayload
+from kiro_crew.notifications.memory_sharing_hint import SharingHint, sharing_hint
 from kiro_crew.platform_compat_metrics import linux_memory_psi_full_avg10
 from kiro_crew.resource_status import (
     POSTURE_AMPLE,
@@ -98,6 +99,8 @@ FAST_SAMPLE_INTERVAL_SECS = 5.0
 
 # PSI ``full avg10`` at or above this, on a TIGHT reading, counts as critical for
 # the memory guard only: not for the notes, the spawn gate or the create refusal.
+# While the memory cgroup is out of view, the same percentage is the bar for the
+# share of time between two samples in which the topmost visible cgroup stalled.
 GUARD_PSI_FULL_AVG10 = 10.0
 
 # How long posture must stay tight (without recovering to ample) before the
@@ -108,6 +111,11 @@ SUSTAINED_TIGHT_SECS = 600.0
 # one missed notification is not the only warning before a freeze. Same
 # group_key as the entry note, so the feed stacks the repeats.
 CRITICAL_REALERT_SECS = 1800.0
+
+# How often, at most, a pressured sample re-reads whether a sharing switch can be
+# offered: the read scans the agent specs, and the answer changes only on a settings
+# change.
+SHARING_HINT_REFRESH_SECS = 60.0
 
 # Upper bound on one probe. Must stay BELOW the heartbeat's 5s interval: the
 # heartbeat awaits this sample, so the worst-case gap between beats is
@@ -294,9 +302,36 @@ def _read_disk_posture() -> tuple[str, str, float | None]:
     return (*disk_posture(readings), worst)
 
 
+def _out_of_view_memory_stall_us() -> int | None:
+    """The topmost visible cgroup's total ``full`` memory stall, while out of view.
+
+    In microseconds; None while memory accounting is in view or the file is
+    unreadable. Blocking; runs in the probe's worker thread. ``subagent`` is imported
+    lazily, as ``resource_status`` does, because it is heavy.
+    """
+    from kiro_crew.subagent import out_of_view_memory_stall_us
+
+    return out_of_view_memory_stall_us()
+
+
+def stall_share(before: tuple[float, int] | None, after: tuple[float, int] | None) -> float | None:
+    """The percentage of the time between two ``(clock, total stall)`` readings spent stalled.
+
+    The totals are in microseconds and the clock in seconds. None without both
+    readings, when no time passed, or when the total went back (a new cgroup).
+    """
+    if before is None or after is None:
+        return None
+    elapsed = after[0] - before[0]
+    stalled = after[1] - before[1]
+    if elapsed <= 0 or stalled < 0:
+        return None
+    return min(100.0, stalled / (elapsed * 1e4))
+
+
 def combined_posture(status: ResourceStatus, disk: tuple[str, str]) -> tuple[str, str] | None:
-    """The worse of memory and disk, with its reading; ``None`` while memory is unknown."""
-    memory = status.posture
+    """The worse operational memory/disk posture; ``None`` when memory is unreadable."""
+    memory = status.decision_posture
     if memory not in _POSTURE_RANK:
         return None
     disk_level, disk_text = disk
@@ -359,12 +394,28 @@ class ResourcePressureNotifier:
         disk_fn: Callable[[], tuple] = _read_disk_posture,
         on_posture_change: Callable[[], None] = _pull_watching_conductors,
         psi_fn: Callable[[], float | None] = linux_memory_psi_full_avg10,
+        view_stall_fn: Callable[[], int | None] = _out_of_view_memory_stall_us,
+        sharing_hint_fn: Callable[[], SharingHint | None] = sharing_hint,
     ) -> None:
         self._bus = bus
         self._probe = probe_fn
         self._clock = clock
         self._disk_fn = disk_fn
         self._on_posture_change = on_posture_change
+        # The "Reduce memory use" button the tight and critical notes carry while a
+        # sharing switch is off and can be turned on (``memory_sharing_hint``). The
+        # reader scans the agent specs, so ``maybe_sample`` runs it off the loop at
+        # most every SHARING_HINT_REFRESH_SECS while memory is pressured, and the
+        # pushes read the cached answer.
+        self._sharing_hint = sharing_hint_fn
+        self._hint: SharingHint | None = None
+        # When the last read was started (stamped at launch, so a read that times out
+        # still waits out the interval), and whether one is still running: at most one
+        # read thread at a time, guarded like the probe's ``_inflight`` and
+        # ``_probe_started`` below.
+        self._hint_read_at: float | None = None
+        self._hint_inflight = False
+        self._hint_started = False
         # The disk reading taken beside the last memory probe, in the worker thread.
         self._disk: tuple[str, str] = (POSTURE_AMPLE, "")
         self._disk_free_pct: float | None = None
@@ -374,12 +425,27 @@ class ResourcePressureNotifier:
         # The newest PSI reading, written by the worker thread with the probe and
         # read on the loop after the probe returned in time.
         self._psi: float | None = None
+        self._view_stall_fn = view_stall_fn
+        # ``(clock, total full stall)`` of the topmost visible cgroup while the memory
+        # cgroup is out of view (the free figure is then the host's), read beside a
+        # probe that is not critical while the guard is armed. Written and read like
+        # ``_psi``.
+        self._view_reading: tuple[float, int] | None = None
+        # On the loop: the reading the next stall share is measured from, and the
+        # share this sample measured. No reading taken at a hand-off to the guard, or
+        # while the pass it returned still runs, becomes the baseline, so the stall
+        # behind one stop cannot cause a second.
+        self._view_base: tuple[float, int] | None = None
+        self._view_share: float | None = None
+        self._guard_pass: object = None
         # The memory guard (``session_memory_guard.request``): called on the loop
-        # with ``(status, psi, trigger)`` when the guard trigger holds. It
-        # schedules its own pass and returns at once. None until the gateway wires it.
-        self.memory_guard: Callable[[ResourceStatus, float | None, str], None] | None = None
+        # with ``(status, psi, trigger)`` when the guard trigger holds, where ``psi``
+        # is the host's ``full avg10``, or the stall share for ``psi-cgroup``. It
+        # schedules its own pass and returns at once, with that pass's task. None
+        # until the gateway wires it.
+        self.memory_guard: Callable[[ResourceStatus, float | None, str], object] | None = None
         # Free memory (GB) and worst disk free space (%) the next step is measured
-        # from: the reading at the last posture wake, raised by a recovery.
+        # from: the reading at the last posture wake, never raised by a recovery.
         self._worsen_ref: tuple[float, float | None] = (0.0, None)
         # Which level period this is (this notifier's start time and a count of its
         # level changes, so a restart never repeats one) and the steps it has made.
@@ -441,6 +507,9 @@ class ResourcePressureNotifier:
             self._next_sample = now + SAMPLE_INTERVAL_SECS
             self._inflight = True
             self._probe_started = False
+            # A reading the worker takes while a stop runs is never a baseline. A stop
+            # starts only in ``_maybe_guard``, after the probe, so this check covers it.
+            stopping = self._guard_running()
             try:
                 status = await asyncio.wait_for(
                     asyncio.to_thread(self._run_probe), PROBE_TIMEOUT_SECS
@@ -462,11 +531,40 @@ class ResourcePressureNotifier:
                     self._deliver_slice_oom()
                 except Exception:
                     logger.debug("agents-slice OOM push failed", exc_info=True)
+            reading = None if stopping else self._view_reading
+            self._view_share = stall_share(self._view_base, reading)
+            self._view_base = reading
+            if (
+                status.posture in (POSTURE_TIGHT, POSTURE_CRITICAL)
+                and not self._hint_inflight
+                and (
+                    self._hint_read_at is None
+                    or now - self._hint_read_at >= SHARING_HINT_REFRESH_SECS
+                )
+            ):
+                self._hint_inflight = True
+                self._hint_started = False
+                self._hint_read_at = now
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(self._run_hint_refresh), PROBE_TIMEOUT_SECS
+                    )
+                except (asyncio.TimeoutError, TimeoutError):
+                    logger.debug("memory sharing hint read timed out; the note keeps the last one")
+                    # A read cancelled before its worker started never clears the slot.
+                    if not self._hint_started:
+                        self._hint_inflight = False
             self.observe(status, now)
             self.observe_posture(status)
-            if status.posture in (POSTURE_TIGHT, POSTURE_CRITICAL):
+            # While the memory cgroup is out of view the free figure does not show the
+            # limit, so the stall is sampled at the heartbeat's cadence too: at 30 s a
+            # stall can reach livelock between two samples.
+            if (
+                status.decision_posture in (POSTURE_TIGHT, POSTURE_CRITICAL)
+                or self._view_reading is not None
+            ):
                 self._next_sample = now + FAST_SAMPLE_INTERVAL_SECS
-            self._maybe_guard(status)
+            self._maybe_guard(status, self.guard_trigger(status))
         except Exception:
             logger.debug("resource-pressure sample failed", exc_info=True)
 
@@ -520,43 +618,75 @@ class ResourcePressureNotifier:
             except Exception:
                 self._psi = None
                 logger.debug("memory PSI read failed", exc_info=True)
+            self._view_reading = None
+            # A critical reading hands off without it and drops the baseline anyway.
+            if (
+                self.memory_guard is not None
+                and status.critical_gb > 0
+                and status.decision_posture != POSTURE_CRITICAL
+            ):
+                try:
+                    total = self._view_stall_fn()
+                    if total is not None:
+                        self._view_reading = (self._clock(), total)
+                except Exception:
+                    logger.debug("out-of-view memory stall read failed", exc_info=True)
             return status
         finally:
             self._inflight = False
 
     def guard_trigger(self, status: ResourceStatus) -> str | None:
-        """``"critical"``, ``"psi"`` or None: whether the memory guard should run now.
+        """``"critical"``, ``"psi"``, ``"psi-cgroup"`` or None: whether the guard should run now.
 
-        Off with ``agent.resource_critical_gb = 0`` on both arms: the critical
-        posture never occurs then, and PSI only stands in for critical, so it is
-        armed only while that threshold is on. PSI counts only on a tight
-        reading, so an IO-only stall on an ample host stops nothing.
+        Off with ``agent.resource_critical_gb = 0`` on every arm: the critical
+        decision posture never occurs then, and PSI only stands in for critical,
+        so it is armed only while that threshold is on. ``psi`` is the host's PSI
+        when its visible-memory figure is tight; where the limit is in view an
+        IO-only stall on an ample host stops nothing. ``psi-cgroup`` is the share
+        of time since the last sample in which the topmost visible cgroup stalled
+        while the memory cgroup is out of view. An ample host figure reports an
+        unknown posture; tight and critical host figures stay visible. The free
+        figure is then the host's, not the limit the kernel reclaims at, so that
+        stall is the only evidence of it, and it counts no task outside this
+        view. A share, not ``avg10``, because
+        ``avg10`` takes about 13 s to fall below the bar after a stall ends, and
+        each sample in between would stop another tree.
         """
         if not status.critical_gb or status.critical_gb <= 0:
             return None
-        if status.posture == POSTURE_CRITICAL:
+        decision_posture = status.decision_posture
+        if decision_posture == POSTURE_CRITICAL:
             return "critical"
+        if decision_posture not in (POSTURE_TIGHT, POSTURE_AMPLE):
+            return None
         psi = self._psi
-        if status.posture == POSTURE_TIGHT and psi is not None and psi >= GUARD_PSI_FULL_AVG10:
+        if decision_posture == POSTURE_TIGHT and psi is not None and psi >= GUARD_PSI_FULL_AVG10:
             return "psi"
+        share = self._view_share
+        if share is not None and share >= GUARD_PSI_FULL_AVG10:
+            return "psi-cgroup"
         return None
 
-    def _maybe_guard(self, status: ResourceStatus) -> None:
-        """Hand the sample to the memory guard when its trigger holds. Never raises."""
+    def _guard_running(self) -> bool:
+        """Whether the pass the guard returned for the last hand-off is still running."""
+        task = self._guard_pass
+        return isinstance(task, asyncio.Future) and not task.done()
+
+    def _maybe_guard(self, status: ResourceStatus, trigger: str | None) -> None:
+        """Hand the sample to the memory guard when *trigger* holds. Never raises."""
         guard = self.memory_guard
-        if guard is None:
+        if guard is None or trigger is None:
             return
-        trigger = self.guard_trigger(status)
-        if trigger is None:
-            return
+        self._view_base = None
+        psi = self._view_share if trigger == "psi-cgroup" else self._psi
         try:
-            guard(status, self._psi, trigger)
+            self._guard_pass = guard(status, psi, trigger)
         except Exception:
             logger.warning("memory guard request failed", exc_info=True)
 
     def observe(self, status: ResourceStatus, now: float) -> None:
-        """Advance the episode state machine with one posture reading."""
-        posture = status.posture
+        """Advance the episode state machine with one decision-posture reading."""
+        posture = status.decision_posture
         if posture == POSTURE_CRITICAL:
             if self._episode_since is None:
                 self._episode_since = now
@@ -606,8 +736,9 @@ class ResourcePressureNotifier:
         reading after start pulls only when it is not ample. While the level stays
         tight or critical, a fall by one step (:data:`WORSEN_STEPS`) below the
         reading at the last posture wake publishes a new :func:`worsened` and pulls
-        again; a recovery inside the level wakes nobody and raises that reference
-        (rfc-resource-control.md §4.2).
+        again; a recovery inside the level wakes nobody and leaves that reference
+        where it is, so one input that recovers and falls back steps at most once
+        until the other input steps (rfc-resource-control.md §4.2).
         """
         global _current_posture, _worsened
         combined = combined_posture(status, self._disk)
@@ -627,13 +758,13 @@ class ResourcePressureNotifier:
         if step is None:
             return
         moved = self._step_of_decline(
-            reading, step, (status.posture == level, self._disk[0] == level)
+            reading, step, (status.decision_posture == level, self._disk[0] == level)
         )
         if moved is None:
             return
         # The level period and a count of its steps, beside the reading: the same
-        # reading again (after a recovery, or in a later period at this level) is a
-        # new step, never one the seen set already holds.
+        # reading again in a later period at this level is a new step, never one
+        # the seen set already holds.
         self._decline_count += 1
         disk = "-" if reading[1] is None else f"{reading[1]:.0f}"
         _worsened = (
@@ -652,19 +783,21 @@ class ResourcePressureNotifier:
         """What fell a step below the reference, or ``None``. Moves the reference.
 
         Only an axis at the current level (*binding*: memory, disk) can step: on a
-        host tight on disk alone, ordinary swings of ample memory are not news. An
-        axis that is not binding follows its reading, so a step is measured from
-        where it stood when it became binding. On a binding axis a better reading
-        becomes the reference and a worse one keeps it.
+        host tight on disk alone, ordinary swings of ample memory are not news. No
+        reference rises between two wakes: a binding axis keeps its reference, and
+        an axis that is not binding follows its reading down only, so a step is
+        measured from the lowest it stood since the last wake and a recovery
+        followed by a fall back is no step.
         """
         (memory, disk), (now_memory, now_disk) = self._worsen_ref, reading
         moved: list[str] = []
-        new_memory = now_memory if not binding[0] else max(memory, now_memory)
+        new_memory = memory if binding[0] else min(memory, now_memory)
         if binding[0] and memory - now_memory >= step[0]:
             moved.append(f"memory {now_memory:.1f} GB free, was {memory:.1f} GB at the last wake")
-        new_disk = (
-            now_disk if not binding[1] or disk is None or now_disk is None else max(disk, now_disk)
-        )
+        if disk is None or now_disk is None:
+            new_disk = now_disk
+        else:
+            new_disk = disk if binding[1] else min(disk, now_disk)
         if binding[1] and disk is not None and now_disk is not None and disk - now_disk >= step[1]:
             moved.append(f"worst temp root {now_disk:.0f}% free, was {disk:.0f}% at the last wake")
         # A step is a posture wake: the whole reading becomes the next reference.
@@ -744,6 +877,7 @@ class ResourcePressureNotifier:
                 f"{gb_text(ceiling.ceiling_gb)} GB memory ceiling"
             )
             risk = "Agent processes may be killed if their memory keeps growing"
+        hint = self._read_sharing_hint()
         self._bus.push(
             NotificationPayload(
                 source="system",
@@ -756,6 +890,7 @@ class ResourcePressureNotifier:
                     "stop or defer heavy work (builds, full test suites, sub-agent "
                     "waves) or free memory now."
                 ),
+                actions=hint.actions() if hint else None,
                 group_key="resource-pressure",
                 meta={"posture": status.posture, "available_gb": status.available_gb},
             )
@@ -776,6 +911,7 @@ class ResourcePressureNotifier:
                 f"their {gb_text(ceiling.ceiling_gb)} GB memory ceiling for ~{minutes} minutes "
                 f"(currently {status.available_gb:.1f} GB"
             )
+        hint = self._read_sharing_hint()
         self._bus.push(
             NotificationPayload(
                 source="system",
@@ -785,10 +921,33 @@ class ResourcePressureNotifier:
                     f"{figure}{_fmt_load(status)}).{_agent_ceiling_context(status)} "
                     "Consider deferring heavy work until memory frees."
                 ),
+                actions=hint.actions() if hint else None,
                 group_key="resource-pressure",
                 meta={"posture": status.posture, "available_gb": status.available_gb},
             )
         )
+
+    def refresh_sharing_hint(self) -> None:
+        """Read the sharing hint again and cache it. BLOCKING; never raises."""
+        try:
+            hint = self._sharing_hint()
+        except Exception:  # noqa: BLE001 - the note goes out without its button
+            logger.debug("memory sharing hint failed", exc_info=True)
+            hint = None
+        self._hint = hint
+        self._hint_read_at = self._clock()
+
+    def _run_hint_refresh(self) -> None:
+        """Worker-thread wrapper: refresh the hint and release its in-flight slot."""
+        self._hint_started = True
+        try:
+            self.refresh_sharing_hint()
+        finally:
+            self._hint_inflight = False
+
+    def _read_sharing_hint(self) -> SharingHint | None:
+        """The cached sharing hint for a tight or critical note, or None."""
+        return self._hint
 
     def _push_recovery(self, status: ResourceStatus, *, agent_ceiling: bool = False) -> None:
         subject = "Agent memory" if agent_ceiling else "Host memory"

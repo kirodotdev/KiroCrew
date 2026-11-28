@@ -1,0 +1,27 @@
+# Every app whose wheel copy still ships: a directory under src/kiro_crew/apps/builtins/
+# that holds an app.json. One app name per line, sorted.
+#
+# The tests that walk those copies compare what they found with this list exactly
+# (test/shipped_wheel_copies.py, website/src/test/shippedWheelCopies.ts), so a walk
+# that finds nothing, or misses one copy, fails instead of passing every case.
+# A pull request that deletes a wheel copy removes that app's line here. The list
+# only shrinks: Kiro Crew accepts no new built-in app.
+agent-worlds
+auto-improvement
+auto-research
+aws-control
+code-review-sage
+crew-companion
+design-critique
+design-tweak
+dev-fleet
+file-explorer
+issue-radar
+md-notebook
+meetings
+mochi
+ops-mission-control
+papyrus
+pptx-maker
+spec-builder
+workflows

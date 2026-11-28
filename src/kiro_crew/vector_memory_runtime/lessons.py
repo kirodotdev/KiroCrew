@@ -36,6 +36,7 @@ from kiro_crew.lesson_validation import (
     LESSON_APPLIES_UNSTATED,
     LESSON_APPLIES_VALUES,
     LESSON_RULES_HEADER,
+    authored_lesson_applies,
     cjk_parts,
     contains_volatile_lesson_fact,
     render_lesson_tier,
@@ -952,10 +953,8 @@ def get_lessons_context(
             many.
         relevance_rule: ``memory.relevance_rule`` for a background read
             (:mod:`kiro_crew.memory_relevance_rule`). ``off`` admits the
-            findings tier on any shared stemmed word; ``shadow`` keeps that and
-            records in the injection receipt the finding ids the shared token
-            rule would drop; ``enforce`` admits the tier only on a shared token
-            of that rule. The rule block is the same under every mode.
+            findings tier on any shared stemmed word; ``enforce`` admits the
+            tier only on a shared token of that rule. The rule block is the same under every mode.
     """
     # Scope is applied BEFORE the counts are taken, so a lesson withheld as
     # out-of-scope is not reported as "omitted" -- omitted means "did not fit
@@ -1113,7 +1112,7 @@ def get_lessons_context(
             and relevance_mode != _relevance_rule.MODE_OFF
             and not store._any_lesson_overlap(experiences, query_text, significant=True)
         )
-        if withheld or (withheld_by_rule and relevance_mode == _relevance_rule.MODE_ENFORCE):
+        if withheld or withheld_by_rule:
             # Nothing here is about this request, so spend none of the allowance
             # on it. A finding is DEFINED as material worth having when the task
             # touches it; newest-first filler is not a weaker version of that, it
@@ -1153,24 +1152,6 @@ def get_lessons_context(
                     "judgement that they stopped applying: call memory_recall or "
                     "learn_list for the rest.]"
                 ),
-            )
-        if relevance_mode == _relevance_rule.MODE_SHADOW:
-            # The rows this block carries only because the old test admitted it,
-            # read from this render's own receipt before anything replaces it.
-            shown = injection_receipts.current_ids(injection_receipts.FINDINGS)
-            injection_receipts.record_stage(
-                injection_receipts.RELEVANCE_RULE,
-                mode=relevance_mode,
-                policy=_relevance_rule.POLICY_VERSION,
-                would_drop=sorted(shown) if withheld_by_rule else (),
-                part=_relevance_rule.PART_FINDINGS,
-            )
-        elif relevance_mode == _relevance_rule.MODE_ENFORCE:
-            injection_receipts.record_stage(
-                injection_receipts.RELEVANCE_RULE,
-                mode=relevance_mode,
-                policy=_relevance_rule.POLICY_VERSION,
-                part=_relevance_rule.PART_FINDINGS,
             )
         # Observability without new state: the two blocks are separately
         # labelled in the prompt and each omission notice names its own
@@ -1306,6 +1287,7 @@ def turn_lessons(
     max_rows: int,
     max_chars: int,
     render_lesson: Callable[[str], str] | None = None,
+    facts: dict[str, dict[str, str]] | None = None,
 ) -> list[tuple[str, str]]:
     """``(key, text)`` of the lessons a follow-up message should add, best first.
 
@@ -1322,6 +1304,9 @@ def turn_lessons(
     length, the startup order, and taken while their rendered forms fit
     *max_rows* and *max_chars*. A lesson too long for the room left is skipped,
     not a stop. No embedding is spent.
+
+    *facts*, when given, is filled with :func:`lesson_trace_facts` of each chosen
+    lesson, by key.
     """
     if not query_text.strip() or max_rows <= 0:
         return []
@@ -1365,8 +1350,32 @@ def turn_lessons(
         if used + size > max_chars:
             continue
         chosen.append((row["key"], text))
+        if facts is not None:
+            facts[row["key"]] = lesson_trace_facts(row)
         used += size
     return chosen
+
+
+def lesson_trace_facts(row: dict) -> dict[str, str]:
+    """A lesson row's ``tier``, ``source`` and ``created_at``, for a receipt; never its text.
+
+    ``tier`` is the authored ``applies`` value, ``unstated`` for a structured row
+    without one, or ``legacy`` for a row stored as a plain string. ``source`` is
+    the row's writer label (``user_explicit``, ``consolidation``, ...).
+    """
+    try:
+        decoded = json.loads(row.get("value_json") or "")
+    except (TypeError, ValueError, RecursionError):
+        decoded = None
+    if isinstance(decoded, dict):
+        tier = authored_lesson_applies(decoded.get("applies")) or LESSON_APPLIES_UNSTATED
+    else:
+        tier = "legacy"
+    return {
+        "tier": tier,
+        "source": str(row.get("source") or ""),
+        "created_at": str(row.get("created_at") or ""),
+    }
 
 
 _EXPLICIT_LESSONS_FOOTER = "[End of learned corrections]\n"
@@ -1422,7 +1431,7 @@ def startup_lesson_query(store: VectorMemoryStore, query_text: str) -> _RecallQu
         with store._db_lock:
             generation = store._space_generation
             signature = store.recorded_embedding_space()
-        vector = store._try_embed(query_text, PRIORITY_INTERACTIVE)
+        vector = store._try_embed(query_text, PRIORITY_INTERACTIVE, query=True)
     except (OSError, ValueError, RuntimeError, vector_memory.sqlite3.Error):
         logger.debug("startup lesson query embed skipped", exc_info=True)
         return _RecallQuery(None, None, None)
@@ -1477,7 +1486,7 @@ def rank_lessons(
     if recall_query is not None:
         query_emb = recall_query.vector
     elif store.embed_fn:
-        query_emb = store._try_embed(query_text, PRIORITY_INTERACTIVE)
+        query_emb = store._try_embed(query_text, PRIORITY_INTERACTIVE, query=True)
     else:
         query_emb = None
     # Same row-side derivation, and the same width rule, as the semantic scan:

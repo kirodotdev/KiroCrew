@@ -17,6 +17,7 @@ import { sliceCodePoints } from '../utils/codePoints'
 import { pollWhileVisible } from '../lib/pollWhileVisible'
 
 import { i18nT } from '../i18n/t'
+import { errMessage } from '../utils/thunkError'
 /** Minimal agent shape for hit-testing — all scene agent types satisfy this */
 export interface SceneAgent {
   id: string; name: string; x: number; y: number; running: boolean; detail: string
@@ -472,11 +473,17 @@ export function useSceneInteraction(
   // In-world "New session" sign — creates a chat slot; the new agent enters
   // the scene through the live slot state. Rendered only when sources are wired.
   const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState('')
   const createSession = useCallback(async () => {
     setCreating(true)
+    setCreateError('')
     try {
-      await api.createChatSlot()
-    } catch { /* button re-enables; slot list unchanged */ }
+      // The person's own New session: it starts on their stored approval mode.
+      await api.createChatSlot(undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, true)
+    } catch (err) {
+      // The button re-enables and no agent joins, so the refusal is said here.
+      setCreateError(errMessage(err) || i18nT('pages.chatPage.unknown_error'))
+    }
     setCreating(false)
   }, [])
   // Mirrors MAX_AGENTS in useAgentSync (kept local so tests can mock that module)
@@ -498,6 +505,20 @@ export function useSceneInteraction(
     >
       {creating ? i18nT('hooks.useSceneInteraction.summoning') : i18nT('hooks.useSceneInteraction.new_session')}
     </button>
+  ) : null
+  // The agent hand-off opens a chat, which would discard an unsent draft in the
+  // open thread popover's composer, so it is offered only while no popover is open.
+  const spawnErrorEl = sources && createError ? (
+    <div style={{ position: 'absolute', right: 10, bottom: 40, zIndex: 8, maxWidth: 280, background: 'rgba(10,10,20,0.85)', borderRadius: 6 }}>
+      <ErrorNotice
+        variant="inline"
+        message={createError}
+        onDismiss={() => setCreateError('')}
+        askAgent={!threadView}
+        className="px-2 py-1.5 !text-[#f88]"
+        testId="scene-create-error"
+      />
+    </div>
   ) : null
 
   const tooltipEl = tooltip && !threadView ? (
@@ -682,6 +703,7 @@ export function useSceneInteraction(
         {tooltipEl}
         {threadViewEl}
         {spawnEl}
+        {spawnErrorEl}
       </>
     ),
   }

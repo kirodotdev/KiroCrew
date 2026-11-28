@@ -42,6 +42,7 @@ While `require_memory_ready()` raises `MemoryStartupUnavailable` (Global memory 
 4. Tasks with `HEARTBEAT_KEEP` in response are retained for next tick (incomplete)
 5. Tasks without the sentinel are removed (complete)
 6. Tasks that raise exceptions are retained automatically (retry)
+7. Tasks whose turn times out, or that Shared Crew fair admission refuses, are retained (they did not finish): the gateway returns `HEARTBEAT_KEEP` for both
 
 ### Task Retention (`HEARTBEAT_KEEP`)
 
@@ -55,6 +56,7 @@ Progress: 3/5 files processed. HEARTBEAT_KEEP
 - `None` return (legacy) treated as complete (removed)
 - Sentinel stripped from display text before posting
 - Deliver tags (`<!-- deliver:slack:<channel_id> -->`) preserved on retention
+- With `heartbeat.keep_backoff` on (default off), a retained task waits `_KEEP_LADDER_SECS` (1, 2, 4, 8, then 15 minutes), measured from when the cycle's turns end. `HeartbeatService._keep_table` holds, per `(text, deliver)`, the consecutive retains and the next due time, in memory only. A task not yet due stays in the file and is skipped; a pass with nothing due starts no session and runs no cycle-end recycle. A new or edited task has no entry and runs on the next tick; a task that completes or leaves the file is dropped from the table, and a pass that finds no file or no task empties it
 
 ## Concurrency
 
@@ -85,7 +87,7 @@ On `asyncio.TimeoutError`:
    blocked on the per-key semaphore (held until our `finally` releases) — they
    pick up the freshly-recreated session.
 2. Log a warning.
-3. Return a graceful incomplete result string (the loop is NOT crashed).
+3. Deliver a notice that the task timed out and runs again next beat, then return it with `HEARTBEAT_KEEP` appended so the task is retained (the loop is NOT crashed).
 4. The `finally` block calls `release(HEARTBEAT_KEY)` ONLY — no per-task reset.
    Cycle-end recycle is owned by `SessionManager.recycle_heartbeat`, called
    once via `HeartbeatService.on_cycle_end` after `asyncio.gather` completes.
@@ -153,6 +155,7 @@ When a legitimate new read tool needs to run in heartbeat, operators observe SEL
 | `_PRUNE_TICKS` | 1440 | `heartbeat.py` |
 | `_MEMORY_BACKUP_TICKS` / `_MEMORY_BACKUP_OFFSET` | 1440 / 30 | `heartbeat.py` |
 | `_KEEP_SENTINEL` | `HEARTBEAT_KEEP` | `heartbeat.py` |
+| `_KEEP_LADDER_SECS` | 60, 120, 240, 480, 900 | `heartbeat.py` |
 | `HEARTBEAT_TASK_TIMEOUT_SECS` | 1800 | `heartbeat.py` |
 | `_STOP_DRAIN_SECS` | 10 | `heartbeat.py` |
 | `HEARTBEAT_FILE` | `HEARTBEAT.md` | `heartbeat.py` |
@@ -210,4 +213,4 @@ Slot resolution: `chat-0` → first active slot, `chat-3` → fourth slot. A bus
 
 ### Slack Suppression for Incomplete Tasks
 
-When a task response contains `HEARTBEAT_KEEP`, Slack delivery is suppressed. The task is retained for the next tick without notifying the user. Only completed tasks (no `HEARTBEAT_KEEP`) trigger Slack/dashboard delivery.
+When a task response contains `HEARTBEAT_KEEP`, Slack delivery is suppressed. The task is retained for the next tick without notifying the user. Only completed tasks (no `HEARTBEAT_KEEP`) trigger Slack/dashboard delivery, plus the timeout notice, which is delivered even though the task is retained.

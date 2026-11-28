@@ -18,8 +18,10 @@ agent or the model chose:
   ``ToolCall.app_run`` (:func:`app_run_of`: a cron job's host-written ``created_by``
   stamp);
 * the agent that ACTUALLY ran is one that same app's shipped manifest declares
-  (``hooks._builtin_app_for_agent`` on the resolved agent). The slot's or job's agent
-  NAME is an alias that may resolve to the owner's own agent, so it is never read;
+  (``hooks._builtin_app_for_agent`` on the resolved agent; for an adopted app whose
+  wheel copy a release deleted, one its pin row froze from that copy). The slot's or
+  job's agent NAME is an alias that may resolve to the owner's own agent, so it is
+  never read;
 * the call is ``@kirocrew-core/<tool>`` by its VERIFIED identity, never by title;
 * that same app declares the tool (``app_agent_tools.declared_tools``, minus any name a
   core tool has), read fresh, so a tool another app declares, a core tool, a built-in
@@ -28,8 +30,9 @@ agent or the model chose:
 
 Which declarations count is ``app_agent_tools``' rule, unchanged: a built-in's block is
 read from the wheel, and an adopted former built-in's block is kept only up to its wheel
-copy, so a tool added to an installed tree is not declared and asks. A third-party
-app's block is not read at all, so its agents keep their card.
+copy (once a release deletes it, the block its pin row froze), so a tool added to an
+installed tree is not declared and asks. A third-party app's block is not read at all,
+so its agents keep their card.
 """
 
 from __future__ import annotations

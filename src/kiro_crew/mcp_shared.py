@@ -253,6 +253,8 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.mcp_caller import set_current_tool_call_id  # noqa: F401
     from kiro_crew.mcp_shared_calls import (  # noqa: F401
+        _ANSWER_CODE_CHARS,
+        _ANSWER_CODE_MAX,
         CANCELLED_IDS_MAX,
         DEFERRED_PARKED_MAX,
         DEFERRED_STEP_STUCK_SECS,
@@ -263,6 +265,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         PROGRESS_NOTIFICATION,
         PROGRESS_PHASE_MAX_CHARS,
         ToolCancelled,
+        _answer_code,
         _audit_safe_args,
         _AuditedDeferred,
         _declares_inflight_capability,

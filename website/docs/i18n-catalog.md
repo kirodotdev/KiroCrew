@@ -252,6 +252,21 @@ other languages keep, so a shared key forces a translator to guess:
 
 If a value's part of speech is not obvious from the key, **put it in the key**.
 
+## No reassurance lines
+
+**Every line must tell the reader something the control, title or state does
+not.** A sentence like "Nothing is sent until you press send", "Nothing changes
+until you install" or "Nothing is created until you confirm" fails that test: the
+button is right there, and pressing it is the only way anything happens. Delete
+the sentence. When the action has a consequence the reader cannot infer, state
+that consequence directly instead ("Billable.", "the instance keeps running and
+billing until you delete it in AWS").
+
+`src/i18n/noReassuranceCopy.test.ts` fails on any English catalog value with
+"nothing … until you" (or "none of them … until you") inside one clause. When you
+remove such a sentence, remove the matching sentence in every locale too; never
+write new translated text for it.
+
 ## Destructive-confirm operands must be quoted
 
 A confirm string that interpolates a user-supplied name without quotes lets an
@@ -368,6 +383,29 @@ keys under `components.notifications.systemNote`. Give a new producer an entry i
 both maps, keys in `en.manual.json` whose English matches the note's, and the eleven
 translations. The spec is `docs/system-specs/modules/app-notifications.md`
 § Localized copy.
+
+A Discover editorial card's curator copy follows it too: the published editorial
+document keeps one English title and blurb per card, and
+`components/appstore/editorialCopy.ts` maps each one's exact English to a key under
+`components.appstore.editorialCopy`. A card is translated only when the table knows
+every field it carries; otherwise it renders as published, so a reworded field never
+shows a stale translation. When the catalog publishes a new collection or rewords
+one, add its English to `EDITORIAL_COPY_KEY`, the keys to `en.manual.json` with the
+same English, and the eleven translations. The decision is
+`docs/decisions/2026-11-23-a-discover-cards-curator-copy-reads-in-the-dashboard-language-when-known.md`.
+
+A curated feature tip follows it too. `src/kiro_crew/data/tips_curated.json` keeps its
+English, and `src/utils/curatedTips.ts` maps each tip id to keys under
+`components.tipCard.curated` (`<id>_title`, `<id>_body`, `<id>_action`) in
+`en.manual.json`, which `TipCard` and the Settings tip list resolve through
+`localizedTip`. A tip shows the catalog copy only while the server sends, in every
+field, the English that copy holds, so an edition's tip pool or a generated tip that
+reuses a curated id keeps its own text. To add or edit a curated tip: edit the JSON,
+give `en.manual.json` the same English (`{{productName}}` for the product name), add the
+id to the title and body maps (and to the action map when the tip has a button), and
+translate into the eleven catalogs. `src/test/TipCard.test.tsx` fails while a curated
+tip has no copy, its two English copies differ, or the catalog keeps copy for a tip the
+JSON no longer has.
 
 ## Formatting follows the app language, not the browser
 
@@ -514,7 +552,13 @@ wired; there is no in-repo producer of those attributes yet.
 Latin family in front silently returns zh-CN, ja, ko, hi and bn to whatever the
 platform picks for a missing glyph. A test pins the `:root` tokens, every
 declaration site (including the theme blocks, which redeclare both), the
-`html:lang(zh-CN/ja/ko)` overrides, and the ordering.
+`html:lang(zh-CN/ja/ko)` overrides, and the ordering. The one exception is the
+rich-text composer (`[data-lexical-composer]`): Lexical keeps a U+200B after an
+open IME composition and an alias has no space glyph to draw it with, so
+`src/styles/chat-transcript.css` lists the bundled Latin face ahead of the
+aliases there. No character that paints changes face, because the Latin faces'
+ranges overlap no alias range; `src/i18n/composerImeFonts.test.ts` pins those two
+stacks, which the ordering test does not read.
 
 **No letter-spacing under a Hindi or Bengali UI.** Devanagari and Bengali hang
 each word from one headline stroke and join letters into conjuncts, so

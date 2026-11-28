@@ -5,6 +5,7 @@ import {
   scrollCurrentMatchIntoView,
   scrollRangeToCenter,
   pollRowSettled,
+  claimScrollOwnership,
   glideOnceStep,
   attachUserScrollIntent,
   pointerOnScrollbar,
@@ -862,6 +863,108 @@ describe('scrollCurrentMatchIntoView: range-based target', () => {
     expect(box.scrollTop).toBe(0)
     cancel()
     clearSearchHighlights(box); box.remove()
+  })
+
+  // `onSpent` is how a row tells its find action has been used: the settle,
+  // the reader's own scroll, a newer scroll taking over or the backstop. The
+  // caller's own cancel (the row unmounted, or its effect ran again) leaves it
+  // for the row's next poll.
+  describe('onSpent', () => {
+    it('fires once, when the poll has settled on the match, not at its first scroll', () => {
+      const box = scroller({ top: 0, height: 200, scrollHeight: 1000 })
+      para(box, 'alpha beta')
+      paintCurrent(box, 'beta', 500)
+      const d = makeDriver()
+      const onSpent = vi.fn()
+      const cancel = scrollCurrentMatchIntoView(box, { raf: d.raf, now: d.now, maxMs: 5000, onSpent })
+      expect(onSpent).not.toHaveBeenCalled()
+      d.flush(1)
+      expect(box.scrollTop).toBe(410)
+      expect(onSpent).not.toHaveBeenCalled()
+      // The match holds still through the quiet window: the poll settles.
+      d.drain(200, 16)
+      expect(d.pending()).toBe(0)
+      expect(onSpent).toHaveBeenCalledTimes(1)
+      cancel()
+      expect(onSpent).toHaveBeenCalledTimes(1)
+      clearSearchHighlights(box); box.remove()
+    })
+
+    // A far jump: the first scroll moves the virtualizer's window, which swaps
+    // the row out and back in, and the row's unmount cancels this poll.
+    it('does not fire for the caller\'s cancel after a scroll, so the row\'s next poll finishes the move', () => {
+      const box = scroller({ top: 0, height: 200, scrollHeight: 1000 })
+      para(box, 'alpha beta')
+      paintCurrent(box, 'beta', 500)
+      const d = makeDriver()
+      const onSpent = vi.fn()
+      const cancel = scrollCurrentMatchIntoView(box, { raf: d.raf, now: d.now, maxMs: 5000, onSpent })
+      d.flush(1)
+      expect(box.scrollTop).toBe(410)
+      cancel()
+      d.drain(200, 16)
+      expect(onSpent).not.toHaveBeenCalled()
+      clearSearchHighlights(box); box.remove()
+    })
+
+    it('fires when a newer scroll takes over after it scrolled', () => {
+      const box = scroller({ top: 0, height: 200, scrollHeight: 1000 })
+      para(box, 'alpha beta')
+      paintCurrent(box, 'beta', 500)
+      const d = makeDriver()
+      const onSpent = vi.fn()
+      scrollCurrentMatchIntoView(box, { raf: d.raf, now: d.now, maxMs: 5000, onSpent })
+      d.flush(1)
+      const release = claimScrollOwnership(() => {})
+      expect(onSpent).toHaveBeenCalledTimes(1)
+      // It has stood down: its next frame scrolls nothing and queues no other.
+      d.flush(1)
+      expect(box.scrollTop).toBe(410)
+      expect(d.pending()).toBe(0)
+      release()
+      clearSearchHighlights(box); box.remove()
+    })
+
+    it('does not fire for a cancel before the first scroll', () => {
+      const box = scroller({ top: 0, height: 200, scrollHeight: 1000 })
+      para(box, 'alpha beta')
+      paintCurrent(box, 'beta', 500)
+      const d = makeDriver()
+      const onSpent = vi.fn()
+      const cancel = scrollCurrentMatchIntoView(box, { raf: d.raf, now: d.now, maxMs: 5000, onSpent })
+      cancel()
+      d.flush(3)
+      expect(box.scrollTop).toBe(0)
+      expect(onSpent).not.toHaveBeenCalled()
+      clearSearchHighlights(box); box.remove()
+    })
+
+    it('fires for the reader\'s own scroll, which ends the poll before it scrolls', () => {
+      const box = scroller({ top: 0, height: 200, scrollHeight: 1000 })
+      para(box, 'alpha beta')
+      paintCurrent(box, 'beta', 500)
+      const d = makeDriver()
+      const onSpent = vi.fn()
+      scrollCurrentMatchIntoView(box, { raf: d.raf, now: d.now, maxMs: 5000, onSpent })
+      window.dispatchEvent(new WheelEvent('wheel', { deltaY: 40 }))
+      expect(onSpent).toHaveBeenCalledTimes(1)
+      d.flush(3)
+      expect(box.scrollTop).toBe(0)
+      clearSearchHighlights(box); box.remove()
+    })
+
+    it('fires at the backstop when the match never appears', () => {
+      const box = scroller({ top: 0, height: 200, scrollHeight: 1000 })
+      para(box, 'alpha beta')
+      const d = makeDriver()
+      const onSpent = vi.fn()
+      scrollCurrentMatchIntoView(box, { raf: d.raf, now: d.now, maxMs: 100, onSpent })
+      d.drain(50, 8)
+      expect(d.pending()).toBe(0)
+      expect(box.scrollTop).toBe(0)
+      expect(onSpent).toHaveBeenCalledTimes(1)
+      box.remove()
+    })
   })
 })
 

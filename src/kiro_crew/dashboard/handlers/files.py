@@ -82,6 +82,7 @@ from kiro_crew.config.loader import (  # noqa: F401
     update_config_locked,
 )
 from kiro_crew.config.sections import (  # noqa: F401
+    DEFAULT_APPROVAL_MODES,
     LINK_PATTERN_PATTERN_MAX_LEN,
     LINK_PATTERN_URL_MAX_LEN,
     LINK_PATTERNS_MAX,
@@ -341,6 +342,9 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     require_owner_dashboard_request,
 )
 from kiro_crew.dashboard.handlers.messaging import _resolve_session_target  # noqa: F401
+from kiro_crew.dashboard.handlers.prompts_paths import (  # noqa: F401 - owner: uploads
+    _is_path_too_long_error,
+)
 from kiro_crew.dashboard.origin import is_direct_local_request  # noqa: F401
 from kiro_crew.dashboard.session_folders import (  # noqa: F401
     SESSION_FOLDER_ROOT_MAX_CHARS,
@@ -484,6 +488,8 @@ logger = logging.getLogger(__name__)
 # ``channel_upload`` owner. Bound by attribute: the one ``import`` of this name stays the
 # function-local one from ``kiro_crew.slack.handler``.
 is_tracked_channel = _owner_channel_upload.is_tracked_channel
+# Its code-channel sibling, bound the same way and for the same reason.
+code_channel_workdir = _owner_channel_upload.code_channel_workdir
 
 # The per-leg caption-ceiling refusal shared by the two upload legs, defined in the
 # ``channel_upload`` owner. Bound by attribute so the composed endpoints (which run
@@ -741,7 +747,10 @@ _ALLOWED_TEXT_EXT = {
     ".ts",
     ".tsx",
     ".jsx",
+    # The viewer renders these only inside a fully sandboxed frame: no script
+    # and no same-origin access.
     ".html",
+    ".htm",
     ".css",
     ".sh",
     ".bash",
@@ -753,10 +762,9 @@ _ALLOWED_TEXT_EXT = {
     ".cpp",
     ".h",
     ".hpp",
-    # More source and config text. Stored as uploaded bytes and read back as
-    # text: file-read answers text/plain, file-download is attachment + nosniff,
-    # and none of these is a .html/.htm the viewer would render. A server-side
-    # language extension (.php) is never executed here.
+    # More source and config text, stored as uploaded bytes: file-read answers
+    # text/plain, file-download is attachment + nosniff, the viewer renders none
+    # of these as a page, and a server-side language (.php) never executes here.
     ".php",
     ".sql",
     ".kt",
@@ -783,6 +791,7 @@ _ALLOWED_DOC_EXT = {
     ".zip",
     ".tar",
     ".gz",
+    ".tgz",
 }
 #: Video containers accepted at the upload boundary. Deliberately narrower than
 #: ``FileRenderers``' VIDEO_EXTS: every entry here must be verifiable by
@@ -875,6 +884,7 @@ _RASTER_EXT_MIME: dict[str, str] = {
 _MAGIC_PREFIXES: dict[str, tuple[bytes, ...]] = {
     ".pdf": (b"%PDF-",),
     ".gz": (b"\x1f\x8b",),
+    ".tgz": (b"\x1f\x8b",),
 }
 #: Read-path extras the shared raster table does not cover (served by
 #: ``api_file_raw`` but never accepted at the upload boundary).

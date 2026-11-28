@@ -18,11 +18,13 @@ from typing import NamedTuple
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.beacon import distribution
 from kiro_crew.config.paths import data_home
+from kiro_crew.kiro_cli_bundle import powershell_single_quoted
 from kiro_crew.platform.update_capability import (
     EXTERNALLY_MANAGED_MESSAGES,
     MANAGED_BY_GIT,
     UNAVAILABLE_MANAGED_BY_APP,
     UNAVAILABLE_MANAGED_BY_IMAGE,
+    default_install_root,
     derive_capability,
 )
 
@@ -119,8 +121,7 @@ def _running_interpreter_pip_prefix() -> str:
     :func:`kiro_crew.extras.pip_install_command_for` uses.
     """
     if os.name == "nt":
-        exe = sys.executable.replace("'", "''")
-        return f"& '{exe}' -m pip"
+        return f"& {powershell_single_quoted(sys.executable)} -m pip"
     return f"{shlex.quote(sys.executable)} -m pip"
 
 
@@ -250,7 +251,7 @@ class InstallLayout(NamedTuple):
     """Describes how this Kiro Crew instance was installed."""
 
     kind: str  # "git", "wheel", "dmg", "appimage", "deb", "rpm", "nsis", "docker", or "source"
-    proj: str  # KIROCREW_PROJECT_DIR value (may be empty for non-git)
+    proj: str  # default_install_root(): the project dir or running checkout, "" for a wheel
     is_git: bool
     is_externally_managed: bool
     guidance: str  # Human message for externally managed installs
@@ -268,7 +269,7 @@ def detect_install_layout() -> InstallLayout:
     over a mounted checkout, and the capability contract is where that precedence
     is decided once.
     """
-    proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
+    proj = default_install_root()
     capability = derive_capability(install_root=proj)
 
     if capability.managed_by == MANAGED_BY_GIT:

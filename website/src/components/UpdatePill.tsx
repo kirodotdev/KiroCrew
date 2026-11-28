@@ -2,12 +2,14 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Download, RefreshCw } from 'lucide-react'
 
-import { useAppSelector } from '../store'
+import { useAppDispatch, useAppSelector, type RootState } from '../store'
+import { setActiveId } from '../store/instancesSlice'
 import { i18nT } from '../i18n/t'
 import { settingsPath } from './settingsPath'
 import type { UpdateState } from '../hooks/useUpdateSubscription'
 import { DropdownMenuItem } from './ui/dropdown-menu'
 import { useGuardedLeave } from './NavigationLeaveGuard'
+import HoverTip from './HoverTip'
 
 /**
  * Top-bar update pill: the persistent, passive home for update state.
@@ -28,6 +30,17 @@ import { useGuardedLeave } from './NavigationLeaveGuard'
  * visible way back in.
  */
 /**
+ * Is the gateway installing an update right now? An install pushes update
+ * progress; its last frame is `done`, `failed` or `error`, and `restarting`
+ * belongs to a restart, not an install. Shared with the About card, which drops
+ * its "available" line for the installing step, so the two cannot disagree.
+ */
+export function selectUpdateInstalling(s: RootState): boolean {
+  const step = s.dashboard.updateProgress?.step
+  return !!step && !['done', 'failed', 'error', 'restarting'].includes(step)
+}
+
+/**
  * `variant="menu-item"`: the same update lifecycle (available → downloading N%
  * → ready) as a row inside a DropdownMenu, for a bar that has no room for the
  * pill — the phone chat page's single top bar holds two controls on its right
@@ -46,7 +59,15 @@ export default function UpdatePill({ variant = 'pill', showLabel = false }: { va
   // form) without the same confirm every other leave gets.
   const guardedLeave = useGuardedLeave()
   const target = settingsPath({ tab: 'about' })
-  const openAbout = () => guardedLeave(() => navigate(target), target)
+  // The pill stays in the bar above a relay Crew tab, and Settings is the local
+  // Crew's page under that pane: bring the local Crew forward first, as a rail
+  // row does (shell/nav/navRow.tsx), so the click is not a navigation nobody sees.
+  const dispatch = useAppDispatch()
+  const relayCovered = useAppSelector(s => s.instances?.relayActive != null)
+  const openAbout = () => guardedLeave(() => {
+    if (relayCovered) dispatch(setActiveId(null))
+    navigate(target)
+  }, target)
   // `update_restart_ready`: an update is installed, or the served bundle is gone,
   // and only a restart a person chooses is left (the gateway never restarts
   // itself). It lights the pill even when no newer build is on offer.
@@ -54,6 +75,7 @@ export default function UpdatePill({ variant = 'pill', showLabel = false }: { va
   // The person armed an update: it applies at the next start, never while the
   // gateway runs (`update_armed_version`).
   const armed = useAppSelector(s => !!s.dashboard.status?.update_armed_version)
+  const installing = useAppSelector(selectUpdateInstalling)
   const updateAvailable = useAppSelector(
     s => s.dashboard.status?.update_available === true || s.dashboard.desktopUpdateAvailable
   ) || restartReady || armed
@@ -79,6 +101,11 @@ export default function UpdatePill({ variant = 'pill', showLabel = false }: { va
       : i18nT('components.updatePill.downloading_percent', { percent: pct })
   } else if (desktop?.state === 'downloaded' || restartReady) {
     label = i18nT('components.updatePill.update_ready')
+    Icon = RefreshCw
+  } else if (installing) {
+    // The gateway is building the update beside the running one (a one-click or
+    // approved install): one status line, until it is installed or fails.
+    label = i18nT('components.updatePill.installing')
     Icon = RefreshCw
   } else if (armed) {
     label = i18nT('components.updatePill.update_when_i_restart')
@@ -109,6 +136,9 @@ export default function UpdatePill({ variant = 'pill', showLabel = false }: { va
   }
 
   return (
+    // An in-page hint, not a native `title`: the pill sits in the desktop
+    // window's drag band, where a `title` never paints.
+    <HoverTip label={showLabel ? label : i18nT('components.updatePill.open_update_settings')}>
     <button
       type="button"
       data-testid="update-pill"
@@ -117,7 +147,6 @@ export default function UpdatePill({ variant = 'pill', showLabel = false }: { va
       // Crewmates header needs beside it, even on a 320px bar.
       className={`flex items-center gap-1.5 h-7 px-2.5 rounded-xl shrink-0 cursor-pointer text-[12px] whitespace-nowrap border border-accent/30 bg-accent-subtle text-accent hover:opacity-90 transition-opacity${showLabel ? ' min-w-0 max-w-[88px]' : ''}`}
       onClick={openAbout}
-      title={showLabel ? label : i18nT('components.updatePill.open_update_settings')}
       aria-label={i18nT('components.updatePill.open_update_settings')}
     >
       <Icon size={13} className="lucide-inline shrink-0" />
@@ -128,5 +157,6 @@ export default function UpdatePill({ variant = 'pill', showLabel = false }: { va
           With `showLabel` it stays, truncated to the capped pill. */}
       <span className={showLabel ? 'min-w-0 truncate' : 'tb-drop-update-label hidden sm:inline'}>{label}</span>
     </button>
+    </HoverTip>
   )
 }

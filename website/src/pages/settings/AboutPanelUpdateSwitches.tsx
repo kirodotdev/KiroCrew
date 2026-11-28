@@ -7,6 +7,7 @@ import { gatewayAutoUpdateCopy, useGatewayAutoUpdateEffect } from '../../utils/u
 import { autoUpdatePinNote, useGatewayAutoUpdate, type SwitchState } from '../../hooks/useGatewayAutoUpdate'
 import { useAppAutoDownload } from '../../hooks/useAppAutoDownload'
 import ErrorNotice from '../../components/ErrorNotice'
+import { reportForError } from '../../utils/errorReport'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -23,14 +24,15 @@ function SwitchNotices({ state, unreadable, testIdPrefix, onHandoff }: {
   testIdPrefix: string
   onHandoff?: () => void
 }) {
+  const readReport = state.readError ? reportForError(state.readError) : undefined
   return (
     <>
       {unreadable && state.readFailed && (
-        <ErrorNotice variant="inline" message={unreadable} askAgent onHandoff={onHandoff}
+        <ErrorNotice variant="inline" message={unreadable} report={readReport} askAgent onHandoff={onHandoff}
           testId={`${testIdPrefix}-read-error`} />
       )}
       {state.refreshFailed && (
-        <ErrorNotice variant="inline" message={state.refreshFailed}
+        <ErrorNotice variant="inline" message={state.refreshFailed} report={readReport}
           askAgent onHandoff={onHandoff} testId={`${testIdPrefix}-refresh-error`} />
       )}
       {state.saveError && (
@@ -117,7 +119,7 @@ export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, on
       )}
       <SettingsToggle
         label={i18nT('pages.settings.aboutPanel.automatic_updates')}
-        description={i18nT('pages.settings.aboutPanel.gateway_auto_update_description')}
+        hint={i18nT('pages.settings.aboutPanel.gateway_auto_update_description')}
         // A switch held by the effect cannot install whatever is saved, so it
         // reads off; the saved value comes back if the effect turns to install.
         checked={gw.checked && !copy.disabled}

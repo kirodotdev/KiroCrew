@@ -73,7 +73,7 @@ vi.mock('../hooks/useVoiceInput', () => ({
       recording: voice.recording, transcribing: false, sessionOwner: null, streamEnabled: true,
       toggle: () => { voice.recording = !voice.recording }, start: on, stop: off, cancel: off, prewarm: vi.fn(),
       error: null, level: 0, deviceLabel: '', clearError: vi.fn(), partial: '',
-      sampleRef: { current: { level: 0, centroid: 0.5, onset: 0 } },
+      sampleRef: { current: { level: 0, onset: 0 } },
     }
   },
   voiceInputSupported: true,

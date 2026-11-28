@@ -25,6 +25,7 @@ order, each owner importing only owners earlier in this list:
 * ``issue_search`` -- the GitHub and GitLab issue list and search;
 * ``linear`` -- the Linear issue read and search, installed into ``cache`` and
   ``issue_search`` when it is imported;
+* ``servicenow`` -- the ServiceNow record read and search, installed the same way;
 * ``review`` -- the owner-authenticated review writes.
 
 Tests and callers patch these names through the handler, which forwards the write

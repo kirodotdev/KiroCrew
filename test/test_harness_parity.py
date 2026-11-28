@@ -275,13 +275,13 @@ def test_session_sharing_is_opt_in() -> None:
     # claude-agent-acp runs one process per session (AcpClient), so it cannot
     # host a multiplexed subagent session however the call site is written.
     assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_SESSION_SHARING
-    # KAS is the case this ratchet exists for: it IS on the shared runtime and its
-    # engine WOULD hold a shared session, so nothing about the transport excludes it
-    # -- only its teardown, ``_kiro/session/delete``, which removes the record a
-    # continuation would load. A capability inferred from "runs on AcpRuntime" would
-    # have granted it.
+    # KAS is a member by deliberate entry, and its own process is still asked
+    # whether it qualifies: an engine that cannot close a session and keep the
+    # record answers no, so the capability is never inferred from "runs on
+    # AcpRuntime" alone.
     assert ACP_BACKEND_KAS in ACP_BACKENDS_ACP_RUNTIME
-    assert ACP_BACKEND_KAS not in ACP_BACKENDS_SESSION_SHARING
+    assert ACP_BACKEND_KAS in ACP_BACKENDS_SESSION_SHARING
+    assert "runtime_hosts_subagents" in source
 
 
 def test_member_capabilities_are_opt_in() -> None:
@@ -1400,6 +1400,20 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "native; kiro-cli's launch record already carries it, a Kiro Cloud sandbox "
     "registers no agent, and no other harness reads that tree",
     (
+        "src/kiro_crew/acp/runtime_session_create.py",
+        "_finish_create_session",
+    ): "wording only: the Kiro CLI harness is the one launch that runs kiro-cli's v2 "
+    "engine, which leaves out of its modes a file kiro-cli lists as the v3 agent "
+    "format, so only its mode refusal may name that format "
+    "(``side_readonly_spec.unavailable_mode_explanation``); the refusal itself is "
+    "raised for every harness alike, and no capability table holds an engine version",
+    (
+        "src/kiro_crew/acp/runtime_session_setup.py",
+        "_mirrored_session_mcp",
+    ): "codex-acp folds whitespace in every server name it registers (codex_name, "
+    "codex's own adapter rule), so a Bot chat's record matches its offers under that "
+    "spelling; no other harness renames a server it is handed",
+    (
         "src/kiro_crew/acp/runtime_spawn_entry.py",
         "spawn",
     ): "moving kiro-cli's broken KAS extract aside and retrying is a repair for the "
@@ -1499,7 +1513,9 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
         "load_session",
     ): "KAS alone must have its custom agents re-attached on resume, and no harness "
     "property means 'this host needs its agent re-sent'. Adding one would cost the "
-    "kiro path an awaited step it does not need (H13).",
+    "kiro path an awaited step it does not need (H13). Its mode refusal also asks "
+    "whether the harness is Kiro CLI's, as ``_finish_create_session`` does, for the "
+    "wording alone.",
     (
         "src/kiro_crew/acp/session_handle_turn.py",
         "command_is_native",

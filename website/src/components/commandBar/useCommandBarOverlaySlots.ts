@@ -33,6 +33,7 @@ export function useCommandBarOverlaySlots({
   artifacts,
   folderSortMode,
   folders,
+  listedFoldersKey,
   runningMates,
   mates,
   argCommand,
@@ -41,7 +42,7 @@ export function useCommandBarOverlaySlots({
   setSelected,
 }: Pick<
   ReturnType<typeof useCommandBarOverlayEngines>,
-  'sessions' | 'openSessionsKey' | 'recentSessions' | 'artifacts' | 'folderSortMode' | 'folders' | 'runningMates' | 'mates'
+  'sessions' | 'openSessionsKey' | 'recentSessions' | 'artifacts' | 'folderSortMode' | 'folders' | 'listedFoldersKey' | 'runningMates' | 'mates'
 > & {
   scope: Scope
   debounced: string
@@ -148,8 +149,8 @@ export function useCommandBarOverlaySlots({
    * Folders view — the same two states the sessions view has, from ONE engine, for
    * the reason the artifacts view has one.
    *
-   * The provider answers an empty query with every folder in the order the sidebar
-   * draws them, so the listing the view lands on and the filtered list a query
+   * The provider answers an empty query with every folder the sidebar draws, in its
+   * order, so the listing the view lands on and the filtered list a query
    * produces are the same call with a different argument. There is deliberately no
    * {@link SESSIONS_MIN_CHARS} or {@link ARTIFACTS_MIN_CHARS} equivalent: the corpus
    * is the folder list already cached under `['chat-folders']`, so one character
@@ -183,10 +184,17 @@ export function useCommandBarOverlaySlots({
     // The sort mode stays part of the identity: the same query in a different mode is
     // a different list, and without it a switch made in the sidebar would be served
     // from the previous order for the rest of the stale window.
-    queryKey: ['chat-folders', 'command-bar', 'view', folderSortMode, folderQuery],
+    //
+    // So are the folders the listed sessions sit in: the view offers only the folders
+    // the Sessions list draws, and that set moves with the sessions, not with a
+    // folder write. The rows are held across that change (and a mode switch), never
+    // across the query, for the reason the crewmates view below gives.
+    queryKey: ['chat-folders', 'command-bar', 'view', folderSortMode, folderQuery, listedFoldersKey],
     queryFn: () => Promise.resolve(folders.search(folderQuery)) as Promise<Result[]>,
     enabled: scope === 'folders',
     staleTime: 15_000,
+    placeholderData: (prev, prevQuery) =>
+      prevQuery?.queryKey?.[4] === folderQuery ? prev : undefined,
   })
 
   /**
@@ -230,10 +238,10 @@ export function useCommandBarOverlaySlots({
     enabled: scope === 'mates',
     staleTime: 15_000,
     // The rows the reader is LOOKING AT, held across the key change the running set
-    // causes. This view is the only one whose key moves on an event the reader did
-    // not cause: a member slot finishing anywhere in the dashboard mints a new key,
+    // causes. This view's key moves on an event the reader did not cause, as the
+    // folders view's does: a member slot finishing anywhere in the dashboard mints a new key,
     // and without this `mateRows` goes undefined, the list blanks to placeholders,
-    // and the selection clamp below (`selected >= rowCount`) pulls the reader's
+    // and the selection clamp below (`next >= rowCount`) pulls the reader's
     // keyboard selection back to row 0 mid-typing. The re-derivation is a local
     // re-map off a cached catalog, so the stale frame it shows lasts an instant.
     //
@@ -288,10 +296,11 @@ export function useCommandBarOverlaySlots({
   /**
    * Whether the rows on screen are the rows for what the reader has typed.
    *
-   * ONE condition, and only because the crewmates view's `placeholderData` above no
-   * longer holds rows across a change of the query. Held-over rows that answer the same
-   * words as the live query are not stale in the sense this guards: what moved was a
-   * working dot, not what the row opens.
+   * ONE condition, and only because neither the crewmates nor the folders view's
+   * `placeholderData` above holds rows across a change of the query. Held-over rows that
+   * answer the same words as the live query are not stale in the sense this guards: what
+   * moved was a working dot, the folder order, or a folder entering or leaving the
+   * Sessions list for as long as the re-derivation takes, not what the words asked for.
    */
   const rowsAnswerTheQuery = askedFor(debounced.trim()) === askedFor(query.trim())
 
@@ -438,18 +447,24 @@ export function useCommandBarOverlaySlots({
 
   /**
    * Keep the selection on the same row when the rows re-rank under an unchanged
-   * query: a tab opening or closing re-orders the sessions hits, and a crew
-   * member starting or stopping re-orders the crewmates rows. Without this the
+   * query: a tab opening or closing re-orders the sessions hits, a crew
+   * member starting or stopping re-orders the crewmates rows, and a session
+   * entering or leaving the Sessions list adds or drops a Bot's folders. Without this the
    * highlight keeps its row NUMBER and lands on a different row. A new query or
    * view is left alone; its own handlers reset the selection.
+   *
+   * The bounds clamp (`next >= rowCount`) runs in the same effect, on the
+   * followed index, so one commit writes the selection once. Two effects would each
+   * read the same stale `selected`, and the clamp's later write would move the
+   * selection off a followed row that is still listed.
    */
   // Compared by the ORDER of row keys, not by array identity: the list is rebuilt
   // on renders that move nothing, and an arrow key must not be undone by one.
   const order = slots.map(slot => slot.key).join('\u0000')
-  // Only the two views whose rows re-rank on their own. Both rank from the
+  // Only the three views whose rows move on their own. All rank from the
   // debounced query, so a keystroke changes nothing here until it lands, and
   // then `asked` changes and the follow is skipped.
-  const follows = scope === 'sessions' || scope === 'mates'
+  const follows = scope === 'sessions' || scope === 'mates' || scope === 'folders'
   const asked = debounced.trim()
   const followRef = useRef({ order, scope, asked, key: '' })
   useEffect(() => {
@@ -457,17 +472,12 @@ export function useCommandBarOverlaySlots({
     let next = selected
     if (follows && prev.order !== order && prev.scope === scope && prev.asked === asked && prev.key) {
       const i = slots.findIndex(slot => slot.key === prev.key)
-      if (i >= 0 && i !== selected) {
-        next = i
-        setSelected(i)
-      }
+      if (i >= 0) next = i
     }
+    if (next >= rowCount) next = Math.max(0, rowCount - 1)
+    if (next !== selected) setSelected(next)
     followRef.current = { order, scope, asked, key: slots[next]?.key ?? '' }
-  }, [slots, order, scope, asked, follows, selected, setSelected])
-
-  useEffect(() => {
-    if (selected >= rowCount) setSelected(Math.max(0, rowCount - 1))
-  }, [rowCount, selected, setSelected])
+  }, [slots, order, scope, asked, follows, rowCount, selected, setSelected])
 
   return {
     scopedQuery,

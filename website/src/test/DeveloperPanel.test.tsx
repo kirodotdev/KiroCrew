@@ -38,7 +38,7 @@ function renderPanel(path = '/settings/developer/feature-previews') {
   )
 }
 
-const PAGES = ['Feature Previews', 'Logs', 'System', 'Telemetry', 'Storage', 'Memory', 'Config', 'Debug tools', 'Archive']
+const PAGES = ['Feature Previews', 'Logs', 'System', 'Telemetry', 'Storage', 'Config', 'Debug tools', 'Archive']
 
 describe('DeveloperPanel', () => {
   beforeEach(() => {

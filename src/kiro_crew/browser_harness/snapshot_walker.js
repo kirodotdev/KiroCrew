@@ -521,6 +521,110 @@
     return tick;
   }
 
+  // Media endings, once per document, for `media` below. An element's `ended` is
+  // true only until the site acts on it: a player that takes its source away when
+  // the item ends (YouTube removes `src`) leaves it paused at 0 with no duration,
+  // and a poll can miss the moment between. So an ending is caught as it happens:
+  // the `ended` event, or the source going away (`emptied`) within END_NEAR_S of
+  // the end. Media events do not bubble; a capturing listener on the window still
+  // sees them, from this world too. Only the page's main element (the largest
+  // shown) is followed, so a small preview or a sound effect ending is no ending.
+  //
+  // An ending counts only once the tab has stayed off that item for END_GRACE_MS:
+  // the same page playing again before then is an advert handing over to the item
+  // itself (or the person replaying it) and drops the ending. Playing again at
+  // another address (the site moving on to its own next item) counts at once.
+  // shortcut: a player that swaps items without changing the address within the
+  // grace reads as an advert; tell them apart by duration if a real site does that.
+  var END_NEAR_S = 2;
+  var END_GRACE_MS = 3000;
+  function isMedia(el) {
+    return !!el && (el.tagName === "VIDEO" || el.tagName === "AUDIO");
+  }
+  // The element `media` acts on: the one playing, else the largest shown one. With
+  // `bySize`, the largest whether or not it plays: the main element for endings.
+  function mainMedia(bySize) {
+    var els = document.querySelectorAll("video,audio");
+    var pick = null;
+    var best = -1;
+    for (var i = 0; i < els.length; i++) {
+      var box = els[i].getBoundingClientRect();
+      var score = (bySize || els[i].paused ? 0 : 1e12) + box.width * box.height;
+      if (score > best) { best = score; pick = els[i]; }
+    }
+    return pick;
+  }
+  function place() {
+    return String(location.pathname) + String(location.search);
+  }
+  // *pick* is the element this read found: one already ended when the listeners go
+  // in is counted at once, so a first read and every later one name it alike.
+  function mediaEnds(pick) {
+    if (window.__kcMediaDoc === document && window.__kcMedia) return window.__kcMedia;
+    var w = {
+      // Names this document's endings apart from another document's (`endId`).
+      doc: Math.random().toString(36).slice(2, 10),
+      n: pick && pick.ended ? 1 : 0,
+      // An ending counted and nothing played since: `ended` reads true.
+      over: !!(pick && pick.ended),
+      pending: null,
+      times: new WeakMap(),
+      lastEl: null
+    };
+    window.__kcMedia = w;
+    window.__kcMediaDoc = document;
+    function begin() {
+      if (w.pending || w.over) return;
+      w.pending = { at: Date.now(), place: place() };
+    }
+    function near(t) {
+      return !!t && t.d > 0 && t.d - t.t <= END_NEAR_S;
+    }
+    function on(type, fn) {
+      try {
+        window.addEventListener(type, function (ev) {
+          if (isMedia(ev.target) && ev.target === mainMedia(true)) fn(ev.target);
+        }, true);
+      } catch (e) {}
+    }
+    on("timeupdate", function (el) {
+      if (isFinite(el.duration)) w.times.set(el, { t: el.currentTime, d: el.duration });
+    });
+    on("ended", begin);
+    on("emptied", function (el) {
+      if (near(w.times.get(el))) begin();
+      w.times.delete(el);
+    });
+    on("playing", function () {
+      // Past the grace with no read in between, or at another address: it counted.
+      if (w.pending && (w.pending.place !== place() || Date.now() - w.pending.at >= END_GRACE_MS)) w.n++;
+      w.pending = null;
+      w.over = false;
+      // What a read last saw near its end is over too: the read-time check below
+      // must not raise the ending again from it.
+      if (w.lastEl) w.times.delete(w.lastEl);
+    });
+    return w;
+  }
+  // Counts a pending ending the grace has passed. A read also notices the main
+  // element it last saw near its end disconnected or emptied, for missed events.
+  // A different selection alone is no ending: the tracked element must lose its source.
+  function settleEnds(w, pick) {
+    var seen = w.lastEl && w.times.get(w.lastEl);
+    if (seen && seen.d > 0 && seen.d - seen.t <= END_NEAR_S &&
+        (!w.lastEl.isConnected || !isFinite(w.lastEl.duration) || w.lastEl.readyState === 0)) {
+      if (!w.pending && !w.over) w.pending = { at: Date.now(), place: place() };
+      w.times.delete(w.lastEl);
+    }
+    if (w.pending && Date.now() - w.pending.at >= END_GRACE_MS) {
+      w.pending = null;
+      w.n++;
+      w.over = true;
+    }
+    w.lastEl = pick;
+    if (pick && isFinite(pick.duration)) w.times.set(pick, { t: pick.currentTime, d: pick.duration });
+  }
+
   function hash(text) {
     // FNV-1a, two seeds: a short fingerprint, never sent as page text.
     var a = 2166136261, b = 5381;
@@ -916,6 +1020,53 @@
     return { content: parts.join("\n\n"), skippedFrames: scan.unreadable - scan.deep, deepRoots: scan.deep };
   }
 
+  // App recipes (`browser_harness/recipes.py`). An embedded document takes input with
+  // no top-document event, and a custom element with no readable shadow root may hide
+  // one, so neither counts as part of the matched element.
+  var RC_EMB = /^(IFRAME|FRAME|OBJECT|EMBED)$/;
+  // `browser_sites.url_matches` for one entry: the exact origin (https, host, no
+  // port), no escaped separator, and the path glob (`*`: any run) matched linearly.
+  function rcSite(site) {
+    var s = String(site || ""), i = s.indexOf("/", 8), p = location.pathname, c = s.slice(i).split("*"), h = c[0], t = c.pop(), n = h.length;
+    if (i < 0 || location.origin !== s.slice(0, i) || /%2e|%2f|%5c|\\/i.test(p) || p.slice(0, n) !== h) return false;
+    if (!c.length) return p === h;
+    for (var k = 1; k < c.length; k++) if ((n = p.indexOf(c[k], n)) < 0) return false; else n += c[k].length;
+    return p.length - t.length >= n && p.slice(p.length - t.length) === t;
+  }
+  function rcNo(code) { return { ok: false, code: code }; }
+  function rcOk(el, n) {
+    if (!n || RC_EMB.test(n.tagName) || (n !== el && /-/.test(n.tagName || "") && !n.shadowRoot)) return false;
+    // Up the composed tree: a shadow root's parent is its host.
+    for (; n; n = n.parentNode || n.host) if (n === el) return true;
+    return false;
+  }
+  // The first match in the top document, shown inside the viewport, and the element
+  // actually drawn at its centre (through open shadow roots, which document hit
+  // testing retargets to their host). Never scrolls, reads no page text, never a
+  // password box. With *click*, it then clicks that element itself (`el.click()`),
+  // so nothing moved under the point takes the click; the event is untrusted.
+  function rcFind(sel, click, site, sites) {
+    var el;
+    if (probeSelectorBlocked(sel)) return rcNo("bad_selector");
+    try { el = document.querySelector(String(sel)); } catch (e) { return rcNo("bad_selector"); }
+    if (!el) return rcNo("not_found");
+    if (inputType(el) === "password") return rcNo("password_field");
+    if (RC_EMB.test(el.tagName)) return rcNo("covered");
+    var r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+    if (!visible(el) || !(r.width > 0 && r.height > 0) || x < 0 || y < 0 || x > innerWidth || y > innerHeight) return rcNo("hidden");
+    var hit = document.elementFromPoint(x, y), d;
+    // A root that cannot hit-test makes the hit unknown: refused below.
+    while (hit && (d = hit.shadowRoot) && (d = d.elementFromPoint ? d.elementFromPoint(x, y) : null) !== hit) hit = d;
+    if (!rcOk(el, hit)) return rcNo("covered");
+    if (click) {
+      // The recipe's site and the session's sites, judged in this same call, so a page
+      // that moved after the gateway's checks gets no click.
+      if (!rcSite(site) || !(sites || []).some(rcSite)) return rcNo("wrong_site");
+      el.click();
+    }
+    return { ok: true, x: x, y: y };
+  }
+
   var api = {
     // `cap`: the node budget left (the gateway walks cross-origin frames after this
     // document and hands each the rest). Same-origin frames are walked in place;
@@ -1134,7 +1285,12 @@
         : disabledEl(el) ? "disabled"
         : !visible(el) ? "not_visible" : "";
       if (node) return code ? null : el;
-      return code ? { ok: false, code: code } : { ok: true, multiple: !!el.multiple };
+      return code ? { ok: false, code: code }
+        : {
+          ok: true,
+          multiple: !!el.multiple,
+          directory: !!el.webkitdirectory || el.hasAttribute("webkitdirectory"),
+        };
     },
 
     textPresent: function (text) {
@@ -1347,6 +1503,14 @@
     // (`probeSelectorBlocked`): the gateway asks before a Harness helper runs one.
     selectorBlocked: function (selector) {
       return probeSelectorBlocked(selector);
+    },
+
+    recipeTarget: function (sel) {
+      return rcFind(sel, false);
+    },
+
+    recipeClick: function (sel, site, sites) {
+      return rcFind(sel, true, site, sites);
     },
 
     // Visible elements matching a CSS selector, as {t, x, y} (short text and the
@@ -1710,16 +1874,11 @@
     // pause, seek or set the volume of the tab's main <video>/<audio>, and report its
     // state. Top document only. The element is the one playing, else the largest
     // shown one. Runs in the isolated world, so a page script cannot swap the
-    // methods it calls. Reads no page text: only the element's own playback state.
+    // methods it calls. Reads no page text: only the element's own playback state
+    // (the page's address is compared in the page for `mediaEnds`, never returned).
     media: function (action, value) {
-      var els = document.querySelectorAll("video,audio");
-      var pick = null;
-      var best = -1;
-      for (var i = 0; i < els.length; i++) {
-        var box = els[i].getBoundingClientRect();
-        var score = (els[i].paused ? 0 : 1e12) + box.width * box.height;
-        if (score > best) { best = score; pick = els[i]; }
-      }
+      var pick = mainMedia(false);
+      var ends = mediaEnds(pick);
       if (!pick) return { ok: false, code: "no_media" };
       var num = typeof value === "number" && isFinite(value) ? value : null;
       if (action === "play") {
@@ -1739,12 +1898,18 @@
       } else if (action !== "state") {
         return { ok: false, code: "bad_action" };
       }
+      settleEnds(ends, mainMedia(true));
       var r = pick.getBoundingClientRect();
       return {
         ok: true,
         kind: pick.tagName.toLowerCase(),
         paused: !!pick.paused,
-        ended: !!pick.ended,
+        // An ending the tab counted (`mediaEnds`) and nothing played since: also
+        // after the site took the source away, never for one still in its grace.
+        ended: ends.over,
+        // Changes once per counted ending (`mediaEnds`), null before the first one
+        // in this document: what a reader compares to call its ending once.
+        endId: ends.n ? ends.doc + ":" + ends.n : null,
         currentTime: isFinite(pick.currentTime) ? pick.currentTime : 0,
         duration: isFinite(pick.duration) ? pick.duration : null,
         volume: pick.volume,

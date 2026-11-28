@@ -3,7 +3,8 @@
  *  own folder rows, reorderable per column) and the unfile strip. */
 import { Fragment } from 'react'
 import { OverlayPortal } from '../../components/overlayRoot'
-import { Plus, X, EyeOff, FolderPlus, MessageSquarePlus, ChevronRight, MoreVertical, Tag as TagIcon, GripVertical, Server } from 'lucide-react'
+import { Plus, X, EyeOff, FolderPlus, MessageSquarePlus, ChevronRight, MoreVertical, Tag as TagIcon, GripVertical, Server, Loader2 } from 'lucide-react'
+import { LIST_BODY_CLS } from '../../components/listShell'
 import { FolderBody } from '../../components/FolderBody'
 import { FolderRail } from '../../components/FolderRail'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -42,7 +43,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
     dropSlotMutation, editName, editScope, editingId, flatView, folderCompare, countSubfolderContents, folderCreateError, folderSortMode,
     folderCreateMountAbsent, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef, folderReorderable,
     folderSubtrees, folders, handleSidebarDragCancel, handleSidebarDragEnd, handleSidebarDragStart, heldLane,
-    hiddenFolderCount, hideEmptyFolderBody, ime, isActiveRow, isFolderFilteredOut, laneSlots, moveByDrag,
+    hiddenFolderCount, hideEmptyFolderBody, ime, isFolderFilteredOut, laneSlots, moveByDrag,
     nativeSessionDrag, onMenuCloseAutoFocus, onOpenSlotInNewTab, orderedColumns, popoverPos,
     renameCommit, renderFolderCreateError, renderFolderMenuItems, renderSessionRow, reorderColumnsMutation, reportDndActive,
     revealFlash, rootFolders, setBoardError, setColumnEditId, setDerivedHintCol, setEditName, setEditScope,
@@ -306,10 +307,8 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
             )}
             {deepChildren.map(cf => renderColumnFolder(cf, columnId, colSlotKeys))}
             {childSlots.map((s, i) => {
-              const isActive = isActiveRow(s)
-              const nextIsActive = isActiveRow(childSlots[i + 1])
-              const showDivider = i < childSlots.length - 1 && !isActive && !nextIsActive
-                && !startsAutomaticSection(childSlots, i + 1)
+              const dividerNext = i < childSlots.length - 1
+                && !startsAutomaticSection(childSlots, i + 1) ? childSlots[i + 1] : null
               // `scope` stays per-folder so the Framer layoutId and the inline
               // rename target remain unique, but the arrow rove is scoped to the
               // COLUMN: a board column's foldered and ungrouped rows are one
@@ -317,7 +316,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
               return (
                 <Fragment key={sessionRowIdentity(s)}>
                   {startsAutomaticSection(childSlots, i) && <PinnedSessionDivider />}
-                  {renderSessionRow(s, 1, showDivider, `${folderLaneScope}:${folder.id}`, folderLaneScope, folderHoldContainer)}
+                  {renderSessionRow(s, 1, dividerNext, `${folderLaneScope}:${folder.id}`, folderLaneScope, folderHoldContainer)}
                 </Fragment>
               )
             })}
@@ -722,14 +721,12 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                       // Inert in flat view, which renders no folder block to swap past.
                       const unfiledFirst = unfiledAboveFolders && !flatView
                       const ungroupedRows = ungrouped.map((s, i) => {
-                        const isActive = isActiveRow(s)
-                        const nextIsActive = isActiveRow(ungrouped[i + 1])
-                        const showDivider = i < ungrouped.length - 1 && !isActive && !nextIsActive
-                          && !startsAutomaticSection(ungrouped, i + 1)
+                        const dividerNext = i < ungrouped.length - 1
+                          && !startsAutomaticSection(ungrouped, i + 1) ? ungrouped[i + 1] : null
                         return (
                           <Fragment key={sessionRowIdentity(s)}>
                             {startsAutomaticSection(ungrouped, i) && <PinnedSessionDivider />}
-                            {renderSessionRow(s, 0, showDivider, colLaneScope, colLaneScope, colHoldContainer)}
+                            {renderSessionRow(s, 0, dividerNext, colLaneScope, colLaneScope, colHoldContainer)}
                           </Fragment>
                         )
                       })
@@ -809,5 +806,15 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
           </div>
           </div>
   )
-  return { renderBoardLane }
+  /** The body while a board user's columns are still loading: their lanes are
+   *  not known yet, and the list in their place would be the wrong view. */
+  const renderColumnsLoading = (): React.ReactNode => (
+    <div className={`${LIST_BODY_CLS} flex items-start justify-center`} data-testid="board-columns-loading">
+      <div role="status" className="flex items-center gap-2 px-3 py-4 text-[12px] text-muted">
+        <Loader2 size={14} className="shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+        {i18nT('pages.chatSidebar.loading_board')}
+      </div>
+    </div>
+  )
+  return { renderBoardLane, renderColumnsLoading }
 }

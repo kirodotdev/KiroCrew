@@ -21,6 +21,7 @@ from typing import Any, cast
 
 import pytest
 
+from kiro_crew import _process_group_supervisor as process_group_supervisor
 from kiro_crew import kiro_cli
 from kiro_crew import kiro_prerequisite as probe_facade
 from kiro_crew import kiro_prerequisite_process as probe_runner
@@ -197,8 +198,10 @@ class TestBootFloor:
         assert bootstrap.apply_kas_cli_floor(cfg) is None
         assert cfg.agent.acp_backend == KAS
         assert KAS in registry.selectable_backends()
-        # A Kiro CLI pick made later in this process runs on KAS too.
-        assert registry.kiro_cli_pick_backend() == KAS
+        # The help verdict: the panel's Kiro CLI row and a Bot's Kiro CLI pin read KAS.
+        assert registry.kiro_cli_listed_backend() == KAS
+        # Nothing was started, so a pick saved later waits for its own start check.
+        assert registry.kiro_cli_pick_backend() == KIRO
 
     def test_unknown_verdict_keeps_kas(self, monkeypatch, pinned_cli, kas_selectable):
         _help(monkeypatch, None)
@@ -1422,6 +1425,9 @@ class TestTheVerdictReachesTheLiveFactory:
         class _Watch:
             started = True
 
+            def subscribe(self, *prefixes, callback, name=None):
+                return None
+
             async def refresh_now(self):
                 # What the live watcher sees at this moment: the stored pick
                 # already loads as KAS, so its diff names agent.acp_backend.
@@ -1609,7 +1615,10 @@ class TestTheProbeRunsTheSpawnBinary:
             return  # killed before it forked, so there is no child to outlive the probe
         child = int(recorded)
         try:
-            fd = os.pidfd_open(child)
+            # The supervisor's opener, not os.pidfd_open: a python-build-standalone
+            # CPython (what releases bundle) has no os.pidfd_open, and the opener
+            # falls back to the raw syscall there.
+            fd = process_group_supervisor._pidfd_open(child)
         except ProcessLookupError:
             return  # already reaped
         except OSError as exc:

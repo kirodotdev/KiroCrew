@@ -192,7 +192,10 @@ def _oracle_carveout(command: str) -> bool:
     if not exfil_bash._exception_eligible(command):
         return False
     words = re.split(r"[ \t]+", command.strip(" \t"))
-    return words[0] in exfil_bash._CARVEOUT_VERBS
+    return (
+        words[0] in exfil_bash._CARVEOUT_VERBS
+        or words[0].lower() == exfil_bash._POWERSHELL_SEARCH_VERB
+    )
 
 
 _WIPE = "rm -" + "rf "  # kept split so this file's text is not itself a wipe command
@@ -239,6 +242,11 @@ _HAND_CORPUS = [
     "da\\te -" + "d @1",
     'date"" -' + "d @1",
     "date\u00a0x -" + "d @1",
+    "Select-String -Pattern '-" + "d @' a.txt",
+    "SELECT-STRING -" + "d @x",
+    "'Select-String' -" + "d @x",
+    "Select-String\u00a0x -" + "d @x",
+    "sls -" + "d @x",
     "",
     "   ",
     "date",

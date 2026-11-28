@@ -189,6 +189,53 @@ class TestCheckForUpdates:
         ds.push_refresh.assert_called_with("update_available")
 
     @pytest.mark.asyncio
+    async def test_min_version_mandate_on_a_headless_desktop_install_gives_no_pip_hint(
+        self, caplog
+    ):
+        """Only the desktop installer replaces an NSIS tree: the floor points at Update."""
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch._auto_apply_update = AsyncMock()
+        orch._auto_apply_wheel_update = AsyncMock()
+        import kiro_crew.dashboard.handlers as _h
+        from kiro_crew.platform import update_layout, wheel_engine
+        from kiro_crew.platform.update_capability import AutoUpdateEffect
+
+        _h._update_info.clear()
+        _h._update_info.update(
+            {
+                "update_available": False,
+                "managed_by": "electron",
+                "remediation": {
+                    "kind": "command",
+                    "message": "Update this install from a terminal on the host.",
+                    "command": "kirocrew update",
+                },
+            }
+        )
+        effect = AutoUpdateEffect("notify", None, "a person applies it")
+        hint = MagicMock(side_effect=AssertionError("no pip hint for a desktop install"))
+        with (
+            patch.object(_h, "_do_update_check", new_callable=AsyncMock),
+            patch("kiro_crew.platform.update_governance.update_required", return_value=True),
+            patch("kiro_crew.slack.gateway.auto_update_effect", return_value=effect),
+            patch.object(update_layout, "non_managed_pip_update_hint", hint),
+            patch.object(wheel_engine, "running_from_managed_venv", hint),
+            patch.object(wheel_engine, "running_from_pipx", hint),
+            caplog.at_level("WARNING", logger="kiro_crew.slack.gateway"),
+        ):
+            await orch._check_for_updates()
+        hint.assert_not_called()
+        orch._auto_apply_update.assert_not_awaited()
+        orch._auto_apply_wheel_update.assert_not_awaited()
+        assert _h._update_info["update_available"] is True
+        ds.push_refresh.assert_called_with("update_available")
+        logged = caplog.text
+        assert "choose Update in the dashboard" in logged and "kirocrew update" in logged
+        assert "pip install" not in logged and "in place with" not in logged
+
+    @pytest.mark.asyncio
     async def test_update_check_exception_handled(self):
         orch = _make_orchestrator()
         orch._auto_apply_update = AsyncMock()

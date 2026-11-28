@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -64,12 +65,13 @@ class _Reader:
 
 
 class _Request(dict):
-    """The parts of a request the import handlers read."""
+    """The parts of a request the import handlers read: the owner's own session."""
 
     content_type = "multipart/form-data"
+    app = {"state": SimpleNamespace(owner_id="owner")}
 
     def __init__(self, part: _Part) -> None:
-        super().__init__(user="owner")
+        super().__init__(user="owner", app="")
         self._part = part
 
     async def multipart(self) -> _Reader:

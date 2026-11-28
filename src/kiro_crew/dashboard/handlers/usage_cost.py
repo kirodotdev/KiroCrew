@@ -14,6 +14,9 @@ import time
 from typing import Any, Iterator
 
 from kiro_crew import model_registry
+from kiro_crew.dashboard.handlers.usage_sessions import (
+    _BACKGROUND_CALL_SURFACE_PREFIX,
+)
 from kiro_crew.dashboard.handlers.usage_spend import _finite_number
 from kiro_crew.dashboard.handlers.usage_store import (
     NAVIGABLE_CATEGORY,
@@ -59,6 +62,34 @@ _COMPACTION_PCT = 90.0
 # does drift down by a fraction of a point between turns (what counts toward
 # `context_used` varies), which is why the threshold is not simply "any fall".
 _COMPACTION_DROP_PCT = 1.0
+
+
+def _purpose_of(obj: dict[str, Any], slot: str) -> str:
+    """What a turn was for: a helper kind, ``automation``, ``turn`` or ``unknown``.
+
+    The session key decides everything but the helper case, as it does for the
+    channel: a historical row's ``surface`` can be wrong but non-empty, so only
+    the ``bg:`` prefix, which only the background-call writers produce, is read
+    from it. A ``bg:`` row is a helper whatever its slot, so the prefix is read
+    before the slot is. The task after the prefix names the kind: a title is
+    ``helper_title`` (``chat_title``, or a messaging ``<source>_auto_title``), a
+    sidebar summary is ``helper_summary``, memory upkeep is ``helper_memory``,
+    and every other helper call, and every row written before these task names
+    were stamped, stays ``helper``.
+    """
+    surface = str(obj.get("surface") or "")
+    if surface.startswith(_BACKGROUND_CALL_SURFACE_PREFIX):
+        task = surface[len(_BACKGROUND_CALL_SURFACE_PREFIX) :]
+        if task == "chat_title" or task.endswith("auto_title"):
+            return "helper_title"
+        if task == "session_summary":
+            return "helper_summary"
+        if task in ("consolidation", "skill_dedupe", "skill_merge"):
+            return "helper_memory"
+        return "helper"
+    if not slot:
+        return "unknown"
+    return "automation" if session_category(slot) == "bg" else "turn"
 
 
 def cost_breakdown(
@@ -140,6 +171,8 @@ def cost_breakdown(
     convos: dict[str, dict[str, Any]] = {}
     by_category: dict[str, dict[str, Any]] = {}
     prev_category: dict[str, float] = {}
+    by_purpose: dict[str, dict[str, Any]] = {}
+    prev_purpose: dict[str, float] = {}
     priciest: dict[str, Any] = {"credits": 0.0, "slot": "", "ts": ""}
     high_context = 0.0
 
@@ -193,15 +226,17 @@ def cost_breakdown(
         field = "cost" if saw_cost and not saw_credits else "credits"
         mixed = saw_credits and saw_cost
     unit = "usd" if field == "cost" else "credits"
-    # A view split by unit counts only its own unit's turns, so the two cards
-    # together hold each turn once: the dollar view keeps the turns billed in
-    # dollars, the credits view drops them and keeps the rest.
+    # No view counts a turn billed only in the other unit: in a window before a
+    # harness switch it would read as a free turn. A view split by unit also
+    # leaves turns that billed nothing to the credits card, so the two cards
+    # together hold each turn once.
     split = mixed or spend_field is not None
     # Dollars keep their cents; credits read to one decimal as before.
     places = 4 if unit == "usd" else 1
+    other = "credits" if field == "cost" else "cost"
 
     for obj, ts_raw, ts_epoch in _window_rows():
-        if split and not _billed(obj, field) and (field == "cost" or _billed(obj, "cost")):
+        if not _billed(obj, field) and (_billed(obj, other) or (split and field == "cost")):
             continue
         raw_credits = obj.get(field)
         # Shards written before the persist-side guard can already
@@ -235,6 +270,12 @@ def cost_breakdown(
         # footnote for money with no row.
         if slot and not is_session_slot(slot):
             continue
+        # The app that owns the session, stamped at write time from `slot._app`.
+        # Read per row and grouped here, over every row in the window, so an
+        # app's total does not depend on its sessions surviving the
+        # `_COST_TOP_CONVOS` cut below.
+        app_raw = obj.get("app")
+        app = app_raw if isinstance(app_raw, str) else ""
 
         if ts_epoch < cutoff:
             prev_tot["credits"] += credits
@@ -242,8 +283,10 @@ def cost_breakdown(
             prev_model[model] = prev_model.get(model, 0.0) + credits
             ch = telemetry_channel_of(slot or None)
             prev_channel[ch] = prev_channel.get(ch, 0.0) + credits
-            cat = session_category(slot)
+            cat = session_category(slot, app)
             prev_category[cat] = prev_category.get(cat, 0.0) + credits
+            purpose = _purpose_of(obj, slot)
+            prev_purpose[purpose] = prev_purpose.get(purpose, 0.0) + credits
             continue
 
         cur_tot["credits"] += credits
@@ -254,7 +297,8 @@ def cost_breakdown(
         for bucket, name in (
             (by_model, model),
             (by_channel, telemetry_channel_of(slot or None)),
-            (by_category, session_category(slot)),
+            (by_category, session_category(slot, app)),
+            (by_purpose, _purpose_of(obj, slot)),
         ):
             e = bucket.setdefault(name, {"name": name, "credits": 0.0, "turns": 0})
             e["credits"] = float(e["credits"]) + credits
@@ -278,8 +322,11 @@ def cost_breakdown(
                     "last_ts": ts_epoch,
                     "_occ": [],
                     "transcript": "",
+                    "app": "",
                 },
             )
+            if app:
+                c["app"] = app
             if obj.get("transcript"):
                 c["transcript"] = str(obj["transcript"])
             c["credits"] = float(c["credits"]) + credits
@@ -383,7 +430,7 @@ def cost_breakdown(
                 # only a dashboard session has a route to open. Deriving either
                 # from the key shape in the frontend would put a second,
                 # drifting copy of session-key knowledge there.
-                "category": session_category(c["slot"]),
+                "category": session_category(c["slot"], c["app"]),
                 # The unollapsed label underneath the category, so a `bg` row
                 # still says whether it was a subagent, a cron or the heartbeat
                 # instead of becoming an anonymous lump.
@@ -427,6 +474,7 @@ def cost_breakdown(
             "by_model": _rank(by_model, prev_model),
             "by_channel": _rank(by_channel, prev_channel),
             "by_category": _rank(by_category, prev_category),
+            "by_purpose": _rank(by_purpose, prev_purpose),
             "context_bands": band_rows,
             # Measured recommendations with their share of the window, or `[]`.
             "advice": advice,

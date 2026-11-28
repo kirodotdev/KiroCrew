@@ -14,6 +14,7 @@ is the command line and can hold a secret.
 from __future__ import annotations
 
 import string
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -67,6 +68,9 @@ class Recurrence:
     days: int
     previous_hits: int
     trend: Trend
+    #: The ``source`` most of the rows carry (``dashboard``, ``agent``, ...). Not
+    #: part of the signature: it only names where a row with no tool name came from.
+    source: str = ""
 
 
 def _collapse_token(token: str) -> str:
@@ -125,6 +129,13 @@ def signature(event: dict) -> str | None:
     return "|".join(_parts(event))
 
 
+def _most_common_source(rows: list[dict]) -> str:
+    """The ``source`` most of *rows* carry, clipped; ``""`` when none names one."""
+    counts = Counter(str(r.get("source") or "").strip()[:_MAX_ERROR_CHARS] for r in rows)
+    counts.pop("", None)
+    return counts.most_common(1)[0][0] if counts else ""
+
+
 def find_recurring(current: Iterable[dict], previous: Iterable[dict] = ()) -> list[Recurrence]:
     """Group *current* failures and keep the ones that recur.
 
@@ -173,6 +184,7 @@ def find_recurring(current: Iterable[dict], previous: Iterable[dict] = ()) -> li
                 days=len(days),
                 previous_hits=prior,
                 trend=trend,
+                source=_most_common_source(rows),
             )
         )
     found.sort(key=lambda r: (-r.hits, r.signature))

@@ -301,6 +301,19 @@ def note_admission_ended(slot: Any, admission: _gate.Admission) -> None:
         _note_not_started(slot, reason)
 
 
+def session_stop_count(state: Any, slot: Any) -> Callable[[], int]:
+    """A reader of the Stop count of the session *slot* is keyed to now.
+
+    The key is fixed here, so a rebinding later does not move the count read. A
+    state with no session manager reads 0, as a manager with no count does.
+    """
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.messaging.dispatch import session_stop_generation
+
+    key = effective_session_key(slot) or slot.key
+    return lambda: session_stop_generation(getattr(state, "sessions", None), key)
+
+
 async def admit_turn(
     *,
     budget_key: str,
@@ -385,7 +398,9 @@ async def gate_turn(
 
     def _ended() -> None:
         work = admission.work
-        _note_not_started(slot, work.reason if work is not None else None)
+        reason = work.reason if work is not None else None
+        if reason is not ReasonCode.CANCELLED_BY_USER:
+            _note_not_started(slot, reason)
         state.push_slots_update()
 
     async def _judged() -> None:
@@ -399,6 +414,11 @@ async def gate_turn(
         _judged(),
         still_live=lambda: slot_is_live(state, slot),
         on_ended=_ended,
+        # An agent-started turn is left out: its cycle already runs natively, and
+        # only its own open stream can cancel it (the dispatch gate's Stop branch).
+        stop_count=(
+            None if kwargs.get("_agent_started") is True else session_stop_count(state, slot)
+        ),
     )
 
 
@@ -606,6 +626,7 @@ __all__ = [
     "run_admitted_or_raise",
     "run_channel_turn",
     "run_slack_message",
+    "session_stop_count",
     "turn_budget",
     "turn_failure",
     "cancel_unadmitted",

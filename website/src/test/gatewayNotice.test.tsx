@@ -178,11 +178,12 @@ describe('resolveGatewayNotice', () => {
     expect(resolveGatewayNotice(retrying, withTool, 0)?.text).toBe(COPY.restored)
   })
 
-  it('words a throttle retry as the provider throttling, never as the connection', () => {
-    // A throttle is the provider's answer: the network was fine, so neither the
-    // pending card nor either settled card may speak of a connection.
+  it('words a throttle retry as throttling, never as the connection or the provider', () => {
+    // A throttle is an answer: the network was fine, so neither the pending card
+    // nor either settled card may speak of a connection. The same token covers
+    // Kiro's per-user request limit, so no card may blame the model provider.
     const throttled = withNotice('transient_throttle_retrying', 'transient_retry')
-    expect(COPY.throttle_retrying).toBe('The model provider is throttling requests — retrying…')
+    expect(COPY.throttle_retrying).toBe('Requests are being throttled — retrying…')
     expect(resolveGatewayNotice(throttled, [throttled], 0)).toEqual({ text: COPY.throttle_retrying, card: 'notice', tone: 'warn' })
     const answered = [throttled, throttled, msg('assistant', { content: 'ok' })]
     for (const i of [0, 1]) {
@@ -199,7 +200,7 @@ describe('resolveGatewayNotice', () => {
     expect(resolveGatewayNotice(throttleResuming, [throttleResuming, msg('assistant', { content: 'ok' })], 0)?.text).toBe(COPY.throttle_restored)
     expect(resolveGatewayNotice(throttleResuming, [throttleResuming, throttleGiveUp], 0)?.text).toBe(COPY.throttle_interrupted)
     for (const text of [COPY.throttle_retrying, COPY.throttle_restored, COPY.throttle_interrupted, COPY.throttle_give_up, COPY.throttle_resuming]) {
-      expect(text).not.toMatch(/connection/i)
+      expect(text).not.toMatch(/connection|provider/i)
     }
     // A plain 5xx in the same ladder keeps its own connection wording.
     const mixed = [throttled, retrying, msg('assistant', { content: 'ok' })]
@@ -396,6 +397,13 @@ describe('the recovery, cancelled-replay, end-of-turn and admission rows', () =>
     expect(resolveGatewayNotice(row('notice', 'member_rebind_kept_agent', { bot: 'b', agent: 'n', recorded: 'r' }), [], 0)).toEqual({
       card: 'notice',
       text: 'b is now set to n, but this chat keeps running r, the agent it started with. Start a new chat with b to use n.',
+      tone: 'info',
+    })
+    expect(
+      resolveGatewayNotice(row('notice', 'member_harness_elsewhere', { bot: 'b', bot_harness: 'h', chat_harness: 'c' }), [], 0),
+    ).toEqual({
+      card: 'notice',
+      text: "b runs on h in its own chat, and this chat stays on c. Open b's own chat to use h.",
       tone: 'info',
     })
     expect(resolveGatewayNotice(row('notice', 'model_throttled_fallback', { primary: 'p', fallback: 'f' }), [], 0)).toEqual({
@@ -622,13 +630,14 @@ describe('the status rows composed outside the dashboard', () => {
 
 describe('wire parity with the gateway constants', () => {
   // `TRANSIENT_NOTICE_<NAME>` in chat_utils.py and `GATEWAY_NOTICE_<NAME>` in
-  // gateway_notice.py, at column 0 (the META_KEY / ARGS_KEY entries name meta
-  // fields, not tokens); every token must be known to the frontend on exactly
-  // one row role, or its row falls back to raw English on every locale.
+  // gateway_notice.py, at column 0, its value bare or in parentheses (the META_KEY
+  // / ARGS_KEY entries name meta fields, not tokens); every token must be known to
+  // the frontend on exactly one row role, or its row falls back to raw English on
+  // every locale.
   const read = (file: string) => readFileSync(join(__dirname, '../../../src/kiro_crew/dashboard', file), 'utf8')
   const sources = [read('chat_utils.py'), read('gateway_notice.py')]
   const backend = sources.flatMap((py) =>
-    [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_(?!META_KEY|ARGS_KEY)[A-Z_]+\s*=\s*"([^"]+)"/gm)].map((m) => m[1]),
+    [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_(?!META_KEY|ARGS_KEY)[A-Z_]+\s*=\s*\(?\s*"([^"]+)"/gm)].map((m) => m[1]),
   )
   const metaKeys = sources.flatMap((py) => [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_META_KEY\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))
   // Every column-0 assignment of a token name, whatever its right-hand side: the
@@ -775,5 +784,36 @@ describe('the row for an agent whose built-in tools were not ready', () => {
     expect(screen.getByTestId('error-card')).toHaveTextContent(GN.tools_not_ready)
     expect(screen.queryByTestId('error-card-continue')).toBeNull()
     cleanup()
+  })
+})
+
+describe('the auto-rejected sub-agent permission row', () => {
+  // The ACP handle refuses a sub-agent's request on its own and says why. The
+  // dashboard words the reason in the reader's language; the tool title the
+  // gateway reported stays exactly as it was, symbols and line breaks and all.
+  const TOOL = 'Running: sha256sum x && echo "<ok>"\necho done'
+  afterEach(async () => { await i18next.changeLanguage('en') })
+
+  it.each([
+    ['permission_auto_rejected_stranded', 'stranded between turns'],
+    ['permission_auto_rejected_no_security_context', 'missing security context'],
+  ] as const)('draws %s localized, with the tool verbatim, from a token or from the English row on disk', async (token, phrase) => {
+    await i18next.changeLanguage('de')
+    expect(i18next.resolvedLanguage).toBe('de')
+    const english = `Blocked: permission auto-rejected (${phrase}): ${TOOL}`
+    const expected = {
+      card: 'notice',
+      tone: 'blocked',
+      text: i18next.t(`pages.chat.gatewayNotice.${token}`, { tool: TOOL }),
+    }
+    expect(expected.text).toContain(TOOL)
+    expect(expected.text).not.toContain('auto-rejected')
+    const tokenized = msg('notice', { content: english, meta: { notice: token, notice_args: { tool: TOOL } } } as Partial<ChatMessage>)
+    expect(resolveGatewayNotice(tokenized, [tokenized], 0)).toEqual(expected)
+    // A row on disk carries the word lead current handles write, or the glyph older ones did.
+    for (const content of [english, `⛔ permission auto-rejected (${phrase}): ${TOOL}`]) {
+      const legacy = msg('notice', { content })
+      expect(resolveGatewayNotice(legacy, [legacy], 0)).toEqual(expected)
+    }
   })
 })

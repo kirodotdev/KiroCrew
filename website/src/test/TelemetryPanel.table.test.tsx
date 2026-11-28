@@ -24,7 +24,7 @@
  *     it can still be acted on when it is small.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
@@ -246,6 +246,63 @@ describe('TelemetryPanel — group by', () => {
     await userEvent.click(screen.getByRole('radio', { name: 'Origin' }))
     await waitFor(() => expect(inTable().getByText('all background')).toBeInTheDocument())
     expect(inTable().queryByText('opus-5')).not.toBeInTheDocument()
+  })
+})
+
+describe('TelemetryPanel — origin filter', () => {
+  it("narrows the session table to one app's sessions", async () => {
+    await mount(
+      only({
+        cost: cost({
+          conversations: [convo(), convo({ slot: 'radar-item-7', category: 'app:radar', title: 'Radar item' })],
+          conversation_count: 2,
+          by_category: [
+            { name: 'dashboard', credits: 100, turns: 10, per_turn: 10, share_pct: 50, delta_pct: null },
+            { name: 'app:radar', credits: 100, turns: 10, per_turn: 10, share_pct: 50, delta_pct: null },
+          ],
+        }),
+      }),
+    )
+    await waitFor(() => expect(inTable().getByText('Radar item')).toBeInTheDocument())
+    expect(inTable().getByText('A named conversation')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Filter sessions by origin' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'app:radar' }))
+    await waitFor(() => expect(inTable().queryByText('A named conversation')).not.toBeInTheDocument())
+    expect(inTable().getByText('Radar item')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Filter sessions by origin' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'All origins' }))
+    await waitFor(() => expect(inTable().getByText('A named conversation')).toBeInTheDocument())
+  })
+
+  it("keeps an app-owned dashboard chat a link to the chat", async () => {
+    // The app stamp changes the origin, not the route: a `chat-N-<ts>` slot an app
+    // opened is still a dashboard chat that /chat can open.
+    await mount(
+      only({
+        cost: cost({
+          navigable_category: 'dashboard',
+          conversations: [
+            convo({ slot: 'chat-3-1700000000', category: 'app:radar', channel: 'dashboard', title: 'App chat' }),
+            convo({ slot: 'radar-item-7', category: 'app:radar', channel: 'other', title: 'App worker' }),
+          ],
+          conversation_count: 2,
+        }),
+      }),
+    )
+    await waitFor(() => expect(inTable().getByText('App chat')).toBeInTheDocument())
+    expect(inTable().getByRole('link', { name: 'App chat' })).toHaveAttribute(
+      'href',
+      '/chat?sid=chat-3-1700000000',
+    )
+    expect(inTable().queryByRole('link', { name: 'App worker' })).not.toBeInTheDocument()
+  })
+
+  it('offers no filter when the window has one origin', async () => {
+    await mount(only({ cost: cost() }))
+    await waitFor(() => expect(inTable().getByText('A named conversation')).toBeInTheDocument())
+    expect(screen.queryByRole('combobox', { name: 'Filter sessions by origin' })).not.toBeInTheDocument()
   })
 })
 

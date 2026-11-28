@@ -579,7 +579,13 @@ The `tailscale serve` path and mobile setup check a login against a derived set
 
 Before the dashboard binds, the gateway publishes an owner-only placeholder
 (`access_set.install_placeholder`, no I/O); `tailnet_direct_listener.start` reads
-the set after the bind. At the first gateway start with a readable tailnet section,
+the set after the bind. All three start paths install the set this way. The
+ordinary dashboard does it through `prepare_at_start` and `start_after_bind`. A
+`gateway --headless` start calls `prepare_tailnet_path` before the bind, which
+records the tailnet path with `loopback_only` true because that bind is always
+loopback, and `finish_access_set` after it, and starts no direct tailnet listener.
+The reduced `--slack-only` server calls `prepare_access_set` and
+`finish_access_set`. At the first gateway start with a readable tailnet section,
 `access_set.install` copies `allowed_logins` (logins and `tag:` entries) into the set
 as its seed and marks it seeded. After that the seed only shrinks: at each start an
 entry no longer in `allowed_logins` leaves the seed, and an entry added later admits
@@ -606,7 +612,10 @@ live on the serve path, and closes their open dashboard sockets and any forwarde
 socket nobody could name (`routes_invites.close_revoked_sockets`). Crew stops no
 work itself. Revoking and `tailscale_invites.sync` commit one at a time
 (`_commit_lock`): `sync` reads the invite state again under the lock, and an invite
-Crew made that was revoked after the list was read admits nobody. Every revoked id
+Crew made that was revoked after the list was read admits nobody. Create, revoke and
+`sync` read the connection (`_api`) under that lock too, so the read never overlaps
+another commit's write of the state file; `sync` drops the lock for its list call
+and takes it again to commit. Every revoked id
 is also kept in the store (`revoked_invite_ids`, the newest 512), so a sync that
 holds a reusable link as accepted by someone new admits nobody by it, even while a
 removed member's row still names that link. A refused read on these owner-only
@@ -659,6 +668,10 @@ agent's question cards included. `GET /api/terminal/sessions` answers a teammate
 route refuses them with `owner_only`. A test fails when a Terminal route is
 registered outside those prefixes.
 
+`/api/managed-environments/*` is owner-only for teammates through
+`teammate_access.is_owner_only_for_teammates`; `/api/cloud/*` refuses a teammate on a
+`kiro_managed_env` job.
+
 Three things stay the machine owner's (`is_owner_only_for_teammates`). The
 Terminal's own surface; it is a UI boundary, not a sandbox, since YOLO, cron scripts
 and app installs, all open to a teammate, reach the host too. Every route the relay
@@ -669,8 +682,9 @@ app's own credential mints and the relay viewer; shutdown; and a path not in
 canonical form. Each is a credential that would outlive the teammate's access, or the
 gateway process, so one table holds a teammate on any path to the boundary the relay
 holds every remote caller to. Plus a channel connection's writes
-(`CHANNEL_CONNECTION_WRITES`: a channel's `/config`, creating, changing or removing a
-connection, linking WhatsApp or Weixin), which hold the channel's token, and a cron
+(`CHANNEL_CONNECTION_WRITES`: a channel's `/config`, which creates, changes or removes
+the connection, and linking WhatsApp or Weixin), which hold the channel's token; the
+multi-agent channels under `/api/channels` hold none and stay open to a teammate; and a cron
 job's secret grants (`CRON_SECRET_GRANTS`), which hand a vault value to a job; reading
 a channel and sending through it stay open. And managing who may reach the
 Crew: `routes_invites._owner_refusal` admits only the local operator or this
@@ -684,8 +698,10 @@ refuses the owner too on a relayed request, 403 `relay_remote_control_refused`, 
 the same reason); and `PATCH
 /api/config/kirocrew` refuses a teammate 403 `owner_only` on an admission key
 (`is_admission_config_key`: the `dashboard.shared_crew`, `dashboard.tailscale`,
-`instances` and `tunnel` subtrees, and any key segment starting `allow` or equal to
-`dm_policy`, so a new allow-list is covered by its name). Reading the Remote Control
+`instances` and `tunnel` subtrees, the `dashboard.entry_port` listener key, and any
+key segment starting `allow` or equal to `dm_policy`, so a new allow-list is covered
+by its name; `dashboard.entry_port` has no rule on that route, so the route refuses
+the owner too, 400 `field not editable`). Reading the Remote Control
 state stays open. The teammate's screens follow the same line: an owner-only control
 is hidden or replaced by an "Only the Crew's owner can …" notice
 (`useViewerIsNotOwner`), never offered and then refused: Secrets, Remote Control's
@@ -693,6 +709,9 @@ Turn off, remote crew management, Channels' connection forms and `/terminal` sho
 the notice; Connect your phone is not offered; Voice drops the host install command;
 Privacy says the data stays on the Crew's computer; People reads "Shared with your
 team" and names an owner known only by machine name "Crew owner".
+
+The managed-environment lane never removes Remote Crew rows; a gone environment's row
+is removed with Remove.
 
 A teammate is not the owner for redaction. The owner's credential-redaction OFF
 covers only what the owner alone sees
@@ -714,7 +733,9 @@ for want of an OS sandbox, whatever the switch reads: no backend
 host (the probe's errno, the kernel sysctl, the OS family, the launcher's stderr,
 `kirocrew service install`, the owner's config key), so `_on_error`, the ACP error
 card and the background-start stop row type it: `meta.code` `host_sandbox_unavailable` with the
-failure time `meta.at` (and `meta.retryable` for a momentary refusal), and the
+failure time `meta.at` (and `meta.retryable` for a momentary refusal, which a
+user-namespace cap read as 0 is not: it is reported transient, yet only the owner
+can fix it), and the
 content prefix `host_sandbox_unavailable: `, which the chat SSE stream carries
 since it sends no row meta. An error row a build without that typing stored is
 read as the same row when its content holds either raiser's fixed wording, "Sandbox backend unavailable" (every `SandboxUnavailableError`) or
@@ -743,6 +764,10 @@ skip the row for every reader: neither string carries a row type to redact by.
 The machine owner is never a teammate, whichever path they came in on: the owner on
 a tailnet path carries a `tailscale_*` actor too, and keeps the Terminal.
 
+A task run's planning sandbox refusal is stored nowhere. `POST /api/taskrunner/plan`
+shows its text to the machine owner alone (`host_sandbox_refusal.plan_error_text`) and
+gives anyone else the ordinary plan error.
+
 A teammate keeps their own identity: `request["user"]` stays their subject
 (`ssm:<invite>`, `relay:<id>`, `tailnet:uid:<id>`) and the published actor stays
 their principal, so every audit row and attribution names them, never the owner.
@@ -750,7 +775,9 @@ their principal, so every audit row and attribution names them, never the owner.
 where the difference is a fact about who is at the machine, not a right:
 `/api/auth/me`'s `owner_ok` (so the host's first-run chapters open only in the
 owner's tab) and the decide-by-id form of a tool approval, which only the owner's
-browser sends (a teammate's card always names its request). A messaging allowlist
+browser sends (a teammate's card always names its request), and the YOLO
+confirmation acknowledgement kept on the gateway (`GET`/`PUT /api/chat/yolo-ack`),
+which is the machine owner's; a teammate keeps the per-browser copy. A messaging allowlist
 link, an app token, an internal caller, a widened-bind tailnet peer (attribution
 only) and an Unknown actor are not teammates. The SSM and Tailscale paths exist only
 while the Shared Crew preview is on; a relay teammate is the team Crew's own access
@@ -776,6 +803,12 @@ once through `POST /api/shared-crew/tailscale/credential` and stored in a dedica
 a response. The status read reports `connected`, the tailnet name, the key's
 `expires` (from `GET /tailnet/-/keys/{keyId}`) and `key_expires_soon` (within 7
 days) or `key_expired`. `DELETE .../credential` removes it.
+
+**State file.** Invites, members and display records live in `invites.json` beside
+the vault. A missing file reads as empty and the first update creates it. A file
+that exists but cannot be read, decoded or parsed still reads as empty for display,
+but `update_state` raises `StateUnreadableError` and writes nothing, so the action
+fails instead of rewriting the file from an empty state.
 
 **This machine's device.** `connect` matches the local daemon's `Self.PublicKey`
 against `devices[].nodeKey`, then `Self.TailscaleIPs` against `devices[].addresses`,
@@ -923,7 +956,10 @@ step (`/api/update/approve`) stays host-local.
 store (`<data home>/.vault/shared-crew-ssm/invites.json`, owner-only, masked from every
 sandbox mode) holds only the id, alias, creation time, first-use time and the SHA-256
 of the secret; the credential is returned once, by the create route. The store is
-read once when the listener starts, so a request answers from memory. At most 64
+read once when the listener starts, so a request answers from memory. A missing file
+reads as empty; a file that exists but cannot be read or is not valid JSON logs one
+warning naming it and admits no invite, and a create reads it again rather than rewrite
+it from the failed read (503 `ssm_invites_unreadable` while it still fails). At most 64
 live invites. The first request carrying `?ssm_invite=` sets the `mc_ssm_<port>` cookie (keyed by the port the browser connects to, so two Crews never share one)
 (`HttpOnly`, `SameSite=Lax`) and redirects to the same URL without it
 (`Referrer-Policy: no-referrer`); that first use sets `joined`. Revoking removes the
@@ -1068,6 +1104,12 @@ counts the sessions passing the search that the creator filter excluded. The
 list covers persisted sessions; a slot that has never been saved is not in it.
 The route answers only the dashboard user, and refuses an app token or an
 internal caller with 403, so it reaches no session the existing list does not.
+People and mode, which every open dashboard polls, read the same catalog with
+the preview on: concurrent reads of the same route by one viewer share one build
+that started after each of them arrived (`crew_board_flight`). The access check
+runs per request; the key is the gateway and the viewer (for mode, also whether
+the Crew is a relay team Crew), so two viewers never share an answer, and
+nothing is kept between builds.
 
 The `unattributed` filter (the older `unknown` value is accepted and echoed as
 `unattributed`) lists sessions with no human creator and no named trigger; a
@@ -1414,12 +1456,18 @@ Terminal rows are purged after `IDEMPOTENCY_TTL_SECONDS`.
 `Admission.run` waits for a slot, then revalidates right before starting: queue
 expiry, `policy_version` (a change to `admission_enabled`, `hard_limits` or
 `containment_enabled` since acceptance is `policy_changed`), the hard-limit probe,
-and the entry point's own check (a chat slot must still be live). `running` is
+and the entry point's own check (a chat slot must still be live, and no Stop was
+recorded on its session since the wait began: `admitted_chat_turn`'s `stop_count`,
+not read for an agent-started turn; either ends the turn `cancelled_by_user` with no
+capacity note). `running` is
 written before the work launches, so `admitted` proves it never started, unless it
 names a run id: a child's, or one an operation's probe can find. A queued
 chat turn holds the slot reservation; while it waits a later send on that slot
 cannot steer into it (`admission_entry.admission_pending`) and queues instead, so a
-queued prompt is never delivered as a steer.
+queued prompt is never delivered as a steer. A dashboard Stop or Interrupt pressed
+while a send waits there, before its runner starts, cancels the work
+(`admission_entry.cancel_waiting_send`), and the turn ends unstarted through its own
+hand-off.
 
 Disabling admission affects new submissions immediately. Maintenance keeps running
 until accepted live work settles: queued work (including parked messages) ends
@@ -1724,7 +1772,11 @@ Rules:
    connection principal the socket handler stamps, never a value from a frame. A
    person's tabs fold into one holder (`typing_lease.same_person`: the same
    principal id, or the local operator's machine-local subjects from
-   `crew_mode.operator_ids`), so their other tabs stay unlocked.
+   `crew_mode.operator_ids`), so their other tabs stay unlocked. The lease and
+   the send race read the gateway's owner id at each comparison, not when they
+   are built: a messaging reconnect sets it from the saved `KIROCREW_OWNER_ID`
+   while the gateway runs, and a tab signed in after that still folds with the
+   operator's earlier tabs.
 2. The first collaborator whose tab sends an accepted `typing` report with a
    non-empty draft acquires a free lease. Each later accepted `typing` report from
    the holder renews it. A typing report never takes a held lease away. Unknown and
@@ -1788,7 +1840,9 @@ spacing while keystrokes continue, so a trailing report lands after the last one
 an edit that leaves the draft empty, and a send, report `draft: 'empty'` at once.
 `useComposerTypingLock` reads the lease and the viewer; when someone else holds
 it, ChatInput's `typingLock` turns the box read-only (not disabled: the draft
-stays as it was, and so does focus), replaces the button row with
+stays as it was, and so does focus), gives its text column the look of a
+disabled input (hover fill, editor at 40%,
+not-allowed cursor; the draft can still be selected and copied), replaces the button row with
 `TypingLockBanner` ("<name> is typing…", the only place typing is named; the
 box's placeholder stays empty; a line beside Take over says Take over types in their place and their draft stays with them), and keeps only Stop and Steer for a running turn.
 When the lease ends the box unlocks in place. A send refused `composer_locked` restores the draft and records the refusal
@@ -2048,7 +2102,11 @@ window that relays none shows the host alone. Each relay row's second line reads
 a `PERSONAL` Crew is "Private" with a lock icon (lucide `Lock`), and any other type
 shows its raw value with no icon. The "Shared with me" section on Remote Crew reads the
 same two type strings. The signed-in account line ("Signed in with ...") sits
-under the heading. Each online row's one visible action is a small
+under the heading. When the dev relay domain setting
+(`tunnel.relay_viewer_relay_domain`) alone left listed Crews out
+(`relay_viewer.cps.CrewList.off_domain`), `GET /api/relay-viewer/crews` sends
+`offDomain`, their count, and the group and the "Shared with me" section show a
+notice naming that setting in place of the empty line. Each online row's one visible action is a small
 Connect (accessible name "Connect <name>"); an offline row shows none. Connect
 hands only the endpoint ID on. In the desktop app the shell (`relayCrewAPI.openPane`)
 shows the Crew as a tab in the main window, under the local top bar; another
@@ -2066,6 +2124,90 @@ The gateway's shared relay session keeps no cookie jar, so no upstream cookie
 reaches another Crew, app or account.
 Only a click connects one: nothing connects when the list loads, when the menu
 opens or when the dashboard reloads.
+
+### A relay Crew tab's top bar (desktop app)
+
+With a relay Crew tab in front, the window shows that Crew's own bell, credit
+and resource readouts, search and navigation, drawn by the Crew's page inside
+its pane. The window's own bar above it keeps to the tab strip. Two rows, and
+three parts that ship apart (the desktop shell, the local dashboard the gateway
+serves into it, and the remote Crew's page), so each is safe beside an older
+copy of the others. Whenever one of the three is older, the window is the one
+from before this section: the local bar whole, and no header in the pane.
+
+| Desktop shell | Local dashboard | Remote Crew's page | What the window shows |
+| --- | --- | --- | --- |
+| new | new | new | the tab strip row, then the Crew's own header |
+| new | new | older | as before |
+| new | older (asks for no header) | new | as before: the shell sends no header token |
+| older (no header token) | new | new | as before |
+
+- **Who asks.** The local dashboard asks on each pane open:
+  `relayCrewAPI.openPane` and `prewarmPane` take a fourth argument, `ownHeader`,
+  and the dashboard always passes `true` (`PANE_OWN_HEADER`,
+  `lib/relayCrewPanes.ts`). The preload and the IPC handler each keep only
+  whether it was the literal `true` (`electron/preload.js`,
+  `electron/ipc-registrar.js`). A dashboard from before this passes nothing, so
+  its panes are never asked for a header and never read for one.
+- **The page's half.** For a dashboard that asked, the shell appends the whole
+  user-agent token `kiroCrewRelayPaneHeader` after `kiroCrewRelayPane` on the
+  pane's page (`electron/relay-crew-window.js`). A page that reads both
+  (`isRelayCrewPaneHeader`, `utils/offlineReason.ts`) draws `ShellHeader` in the
+  pane form: everything its header has in a window of its own except the Crew
+  switcher, since the window's tab strip sits one row above. It marks that header
+  `data-relay-pane-header`, and the header is never a window drag region
+  (`styles/shell-chrome.css`). With the pane token alone the page leaves its
+  header out and its header row takes no height. Both tokens are layout only:
+  any page can claim them, and they decide nothing the page trusts. Each is a
+  fixed string, the same for every user, and the remote host receives it in the
+  `User-Agent` header of every request the pane's page makes. Nothing else is
+  sent to that page or its host: no Crew list, address, notification or figure.
+- **The shell's read.** The pane's page has no preload and is another Crew's, so
+  it is not trusted. Main reads one expression from it with `executeJavaScript`
+  (`PANE_HEADER_READ`: is there a `header[data-relay-pane-header]`) and keeps
+  only whether the answer was the literal `true`; an error, a rejected read or
+  any other value is `false`. It reads after every load (every 100 ms for up to
+  3 s, until true), after an in-page navigation, when the page is first drawn,
+  and once a second while the pane is the tab in front; reads are at least
+  100 ms apart whatever the page does. A new document (`did-navigate`), a failed
+  main-frame load and a lost renderer set it back to `false` at once. One
+  document may take its header back three times; after that the answer stays
+  `false` until the next document, so a page cannot make the local bar's
+  controls come and go. A change goes to the dashboard that opened the pane as
+  `{ type: "header", endpointId, header }`, where `header` is a boolean, and
+  the current answer is sent again each time the pane comes to the front
+  (`relay-crew-open.js`; `preload.js` reads `header` from that event type only).
+  No text and no other value crosses from the pane to the shell or the dashboard.
+- **The local bar's half.** `RelayCrewPaneHost` records the event in
+  `instances.relayHeaders`; `relayHeaderInFront` is true only while the relay tab
+  in front is on that list. Until then, and for Local, an SSH Crew, a relay Crew
+  whose page is older, and a pane that reloaded and has not been read again, the
+  local bar is whole. While it is true `ShellHeader` keeps an allowlist: the Crew
+  tab strip, the window's own application menu (Windows and frameless Linux) and
+  window-controls clearance, the theme's backdrop, and the update pill. The
+  history arrows, search and command bar, focus-mode toggle, readout capsule
+  (connection, resource chip, metrics, Kiro usage and sign-in), offline and
+  metrics notices, Explore, extension widgets, the feedback pill and the phone
+  bar's menu button and chat title slot are left out. The local gateway's state
+  is still spoken, by a visually hidden status region. The flag decides that and
+  nothing else: not which tab is in front, not what a pane may load, no trust.
+  A page that claims a header and draws none costs that tab the local bell's
+  button, and nothing more.
+- **The local bell.** Its button is left out; the rest stays mounted, so the
+  notification sheet's hook, the banner the sheet portals and the dock badge
+  effect keep working for the local Crew. A local note still raises a banner
+  over the relay tab as before (a critical card hides the pane; any other card
+  does not), and a tap on it still brings the local Crew forward and opens its
+  sheet on that note. The update pill does the same before it opens Settings,
+  above any relay tab.
+- **Not covered.** The local side panel that stays open beside a relay tab, and
+  the local nav rail under the pane, are unchanged. While a local menu or dialog
+  hides the pane, the bar stays as it was.
+
+Changing the layout: what the pane form leaves out is `paneForm` and what the
+local bar keeps is `tabStripOnly`, both at the top of `ShellHeader`
+(`shell/topbar/shellHeader.tsx`); the pane header's row is the shell grid's
+ordinary 42 px header row (`App.tsx`).
 
 ## 8. Capabilities
 

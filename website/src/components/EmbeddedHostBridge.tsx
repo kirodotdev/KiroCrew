@@ -23,7 +23,8 @@ import { isEmbeddedPane } from '../lib/embedded'
 import { setFocusModeEnabled } from '../hooks/useFocusMode'
 import { noteChatCompleteChanged, setChatCompleteHostReader } from '../hooks/chatCompleteNotify'
 import { noteClipboardRelayHost, PANE_CLIPBOARD_VERSION } from '../lib/paneClipboardRelay'
-import { noteHostOrigin, setHostElectronReader } from '../lib/hostRelay'
+import { noteHostCrewPopout, noteHostOrigin, setHostElectronReader } from '../lib/hostRelay'
+import { CREW_POPOUT_VERSION } from '../lib/crewPopout'
 import { parsePaneRelayCrews } from '../lib/paneRelayCrews'
 
 const MAC_INSET_CLASS = 'embedded-mac-inset'
@@ -124,6 +125,8 @@ export function parseHostModel(data: unknown): HostModel | null {
       ? d.pinnedCrews.filter((id): id is string => typeof id === 'string')
       : [],
     relayCrews: parsePaneRelayCrews(d.relayCrews),
+    // Absence -> false: an older host sends no failure, and the group shows as before.
+    relayCrewsFailed: d.relayCrewsFailed === true,
     // Tri-state, mirroring `focusMode` above: a non-boolean (typically absent)
     // means the host predates this relay, so it has no `mc-set-stable-order`
     // handler either. `null` records "no opinion" so the bar can order by the
@@ -208,6 +211,8 @@ export default function EmbeddedHostBridge() {
         e.origin,
         (e.data as { clipboardRelay?: unknown }).clipboardRelay === PANE_CLIPBOARD_VERSION,
       )
+      // Whether this host serves the page that frames our pop-outs in the desktop app.
+      noteHostCrewPopout((e.data as { crewPopout?: unknown }).crewPopout === CREW_POPOUT_VERSION)
       document.documentElement.classList.toggle(MAC_INSET_CLASS, model.macInset)
       document.documentElement.classList.toggle(WIN_INSET_CLASS, model.winInset)
       document.documentElement.classList.toggle(LINUX_INSET_CLASS, model.linuxInset)
@@ -248,6 +253,7 @@ export default function EmbeddedHostBridge() {
       document.documentElement.style.removeProperty(WIN_CAPTION_RESERVE_PROP)
       setFocusModeEnabled(false, { echo: false })
       noteClipboardRelayHost(null, false)
+      noteHostCrewPopout(false)
       setHostElectronReader(null)
       setChatCompleteHostReader(null)
       dispatch(setHostModel(null))

@@ -58,6 +58,8 @@ _POLICY_REFUSALS = frozenset(
     {
         "rejected_empty_task",
         "rejected_invalid_cwd",
+        # spawn_run's isolate without a cwd, or with a value but "worktree".
+        "rejected_invalid_isolate",
         "rejected_depth_cap",  # the child would sit past _MAX_SPAWN_DEPTH
         "denied",  # governance, and the parent spec's availableAgents
         "rejected",  # the spawn-approval prompt said no, or had no surface

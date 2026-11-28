@@ -423,6 +423,24 @@ async def test_generate_title_discards_prose_reply(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_title_calls_are_stamped_as_chat_titles(monkeypatch):
+    """A new title and a refreshed one both write a ``bg:chat_title`` spend row,
+    which the Spend tab files under its titles kind."""
+    seen: list[str] = []
+
+    async def _fake_oneliner(*_a, **kw):
+        seen.append(kw["sel_source"])
+        return "Kiro Crew launch blog"
+
+    monkeypatch.setattr(chat_title, "run_bg_oneliner", _fake_oneliner)
+    state = SimpleNamespace(sessions=SimpleNamespace())
+    msgs = [{"role": "user", "content": "this is the launch blog https://example.com/Intro"}]
+    await chat_title._generate_title_via_kiro(state, msgs)
+    await chat_title._generate_refreshed_title(state, msgs, "Old title")
+    assert seen == ["chat_title", "chat_title"]
+
+
+@pytest.mark.asyncio
 async def test_generate_title_keeps_real_reply(monkeypatch):
     """Revert guard: the same path must still return a well-formed title."""
 

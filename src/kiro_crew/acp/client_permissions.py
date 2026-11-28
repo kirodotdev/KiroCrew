@@ -37,8 +37,10 @@ from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
     REFUSAL_FOREIGN_SERVER,
+    REFUSAL_REUSED_CALL_ID,
     REFUSAL_UNCLASSIFIED_CALL,
     _loggable_request_id,
+    asks_allow_always,
     build_permission_event,
     foreign_server_refused,
     gate_envelope,
@@ -46,6 +48,8 @@ from kiro_crew.acp._dispatch import (
 from kiro_crew.acp._dispatch import identified_mcp_call as _identified_mcp_call
 from kiro_crew.acp._dispatch import is_mcp_tool_approval as _is_mcp_tool_approval
 from kiro_crew.acp._dispatch import (
+    log_reused_call_id,
+    offered_allow_id,
     unclassified_call_refused,
 )
 from kiro_crew.acp.harness import pi as pi_mod
@@ -69,6 +73,8 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_FORBIDDEN_MODES,
+    ACP_BACKEND_GOOSE,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
@@ -327,6 +333,14 @@ async def approve_tool(
         await asyncio.to_thread(
             permission_floor.audit_refusal, gate_event, reason, request_id=request_id
         )
+        if gate_event is not None:
+            # A call the floor refused reaches the model as the backend's generic
+            # user denial unless the host notice goes first, while the request is
+            # still unanswered. No recorded event means no title to name.
+            # circular import: llm_helpers_parts.tool_approval imports kiro_crew.acp as it loads.
+            from kiro_crew.llm_helpers_parts.tool_approval import _steer_host_deny
+
+            await _steer_host_deny(self, gate_event, reason, cause=DENY_CAUSE_POLICY)
         await self.reject_tool(request_id)
         return False
     if withdraw_if is not None and withdraw_if():
@@ -349,6 +363,11 @@ async def approve_tool(
         # switch let through, so the session would be killed for the operator's
         # own choice. Crew's side of the grant is unaffected.
         or bool(getattr(self, "_unasked_shell_tripwire", False))
+        # opencode's allow-always stops it asking about every later call the
+        # approved pattern covers, and goose's stops it asking about that tool for
+        # the rest of the process; Crew's spec allowlist rows judge only a call
+        # that asks.
+        or getattr(self, "backend", None) in (ACP_BACKEND_OPENCODE, ACP_BACKEND_GOOSE)
     )
     offered = (self._permission_options.get(request_id) or {}) if once_only else {}
     if resolved_id is None:
@@ -367,6 +386,19 @@ async def approve_tool(
         # whose later calls the gateway proxy then refuses for want of an
         # approval. Crew keeps its own approval memory; the harness is answered once.
         resolved_id = once_for_always(resolved_id, offered)
+    # A canonical literal no recorded id replaced is answered with the offered id of its kind.
+    wants_always = not once_only and asks_allow_always(option_id, gate_event, always=always)
+    offered_id = offered_allow_id(resolved_id, gate_event, always=wants_always)
+    if offered_id is None:
+        logger.warning(
+            "approve_tool: req=%s offers no allow of the kind asked for; refusing",
+            _loggable_request_id(request_id),
+        )
+        # Put back what was taken, so the reject answers with the offered reject id.
+        _restore_withdrawn(self, request_id, gate_event, recorded, pi_gate_tool)
+        await self.reject_tool(request_id)
+        return False
+    resolved_id = offered_id
     # The wait for the write lock is the last await before the answer goes
     # out, so the withdrawal is read again under that lock.
     # The approval mints the single-use mediated-secret capability for this call
@@ -549,6 +581,8 @@ async def _handle_permission(self: AcpClient, msg: JsonRpcMessage) -> None:
         if msg.id is not None:
             await self._send_error(msg.id, -32600, "invalid request id")
         return
+    if await self._refuse_reused_call_id(event):
+        return
     if not self._judges_permission_requests:
         options = getattr(self, "_permission_options", {})
         recorded = options.pop(event.request_id, None)
@@ -688,6 +722,22 @@ async def _refuse_identity_drift(self: AcpClient, event: AcpEvent) -> bool:
         await self.reject_tool(event.request_id)
         return True
     return False
+
+
+async def _refuse_reused_call_id(self: AcpClient, event: AcpEvent) -> bool:
+    """Refuse, audit and say True for a request ``AcpEvent.tool_call_id_reused`` marks;
+    run first on every site that answers one, whatever the session judges."""
+    if not event.tool_call_id_reused:
+        return False
+    log_reused_call_id(logger, event, self._session_id)
+    self._audit_spec_restriction(
+        tool_name="tool__reused_call_id",
+        outcome="denied",
+        reason=REFUSAL_REUSED_CALL_ID,
+        tool_kind=event.tool_kind or "",
+    )
+    await self.reject_tool(event.request_id)
+    return True
 
 
 def _foreign_mcp_identity(self: AcpClient, event: AcpEvent) -> bool:

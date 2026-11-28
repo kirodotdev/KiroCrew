@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, type MutableRefObject } from 'react'
 import { type QueryClient, useQueries } from '@tanstack/react-query'
 
-import type { useDeleteTerminalSession } from '../../../components/CliPanel'
+import type { useDeleteTerminalSession } from '../../../components/terminalSessions'
 import { normalizeUrl, setSessionPreviewPending } from '../../../components/WebPreviewPanel'
 import type { ComposeSendOutcome, ComposeSendResult } from '../../../components/chat/GrillCard'
 import { addTab as addDockTerminal } from '../../../hooks/useBottomTerminal'
@@ -156,7 +156,6 @@ export function useChatEventBridges({
         window.dispatchEvent(new CustomEvent('mc:prefill-terminal-result', { detail: { reqId, ok } }))
       if (typeof command !== 'string' || !command || /[\r\n]/.test(command)) { emit(false); return }
       const sessionId = addDockTerminal(currentProjectRef.current ?? undefined)
-      if (!sessionId) { emit(false); return }
       let settled = false
       const unsub = onTerminalReady(sessionId, () => {
         settled = true

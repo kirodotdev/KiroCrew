@@ -16,17 +16,19 @@ docstring says what it does then: degrade to a fixed answer, or refuse.
 How a provider gets here:
 
 * A builtin app ships a ``seams.py`` at its package root that calls :func:`register`
-  when it is imported. The first lookup imports every such module once, for each name
-  in ``BUILTIN_NAMES``. A seam therefore answers the same in the gateway, in a CLI
-  process and in a test, whatever was imported first. Core callers that never load
-  the app's backend import that module, so it must stay light: heavy imports belong
-  in the provider's methods, which run at call time.
+  when it is imported. The first lookup, or a :func:`release_app` that runs before
+  any lookup, imports every such module once, for each name in ``BUILTIN_NAMES``. A
+  seam therefore answers the same in the gateway, in a CLI process and in a test,
+  whatever was imported first. Core callers that never load the app's backend import
+  that module, so it must stay light: heavy imports belong in the provider's methods,
+  which run at call time.
 * Any other in-process code, such as an installed app's ``on_startup`` hook, calls
   :func:`register` itself. An installed copy of a builtin (an adopted former
-  built-in) registers under the builtin's id and so replaces the builtin's
-  provider. When that copy's modules are unloaded (a disable, an update, an
-  uninstall), :func:`release_app` hands each seam back to the builtin's provider,
-  which answers as it did before the copy was installed.
+  built-in) registers under the builtin's id, and its provider answers whether it
+  registered before or after the one-time load. When that copy's modules are
+  unloaded (a disable, an update, an uninstall), :func:`release_app` hands each seam
+  back to the builtin's provider, which answers as it did before the copy was
+  installed.
 
 A provider answers whether or not its app is ENABLED. Every core feature above
 worked with its app switched off, which is the default, and a seam must not change
@@ -142,7 +144,9 @@ def register(seam: str, app_id: str, provider: object) -> None:
     """Make *provider* the answer to *seam*, on behalf of the app *app_id*.
 
     The same app registering again replaces its own provider, so a module that is
-    imported twice does not fail. A different app is refused.
+    imported twice does not fail. A different app is refused. The builtin load never
+    replaces a provider already registered under its id: it only keeps its own for
+    :func:`release_app`.
     """
     from_builtin_load = _loading_thread == threading.get_ident()
     with _lock:
@@ -155,6 +159,8 @@ def register(seam: str, app_id: str, provider: object) -> None:
         entry = (app_id, provider)
         if from_builtin_load:
             _builtin_providers[seam] = entry
+            if held is not None:
+                return
         _providers[seam] = entry
 
 
@@ -162,12 +168,14 @@ def release_app(app_id: str) -> None:
     """Hand back every seam *app_id*'s installed code holds over a builtin's provider.
 
     Called when the app's modules are unloaded. An installed copy of a builtin
-    registers its providers from ``on_startup`` over the ones the builtin's seams
-    module registered, and those providers import the copy's modules at call time,
-    which an unload has just removed. The builtin's provider answers whether or not
+    registers its providers from ``on_startup`` in place of the ones the builtin's
+    seams module registers, and those providers import the copy's modules at call
+    time, which an unload has just removed. The builtin's provider answers whether or not
     the app is enabled, so it is restored. A seam no builtin provides is left as it
-    is, and so is a builtin's own provider.
+    is, and so is a builtin's own provider. The builtin load runs first, so a copy
+    unloaded before any lookup still has a provider to hand back to.
     """
+    _load_builtin_seams()
     with _lock:
         for seam, held in list(_providers.items()):
             builtin = _builtin_providers.get(seam)

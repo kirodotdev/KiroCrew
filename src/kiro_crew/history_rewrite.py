@@ -8,6 +8,7 @@ post-construction patch consumers are looked up at call time.
 
 from __future__ import annotations
 
+import codecs
 import contextlib
 import contextvars
 import json
@@ -55,6 +56,93 @@ def rewrite_transcript(path: Path, content: str | bytes) -> None:
         mode=OWNER_ONLY_FILE_MODE,
         replace_budget_s=TRANSCRIPT_REPLACE_BUDGET_SECONDS,
     )
+
+
+#: Chunk size for :func:`rewrite_head_streaming`'s copy of the rows.
+_STREAM_CHUNK = 1 << 20
+
+
+class _NotStreamable(Exception):
+    """A row holds a byte the whole-file path treats differently; use that path."""
+
+
+def rewrite_head_streaming(
+    path: Path,
+    replace_head: Callable[[str], bytes | None],
+    *,
+    fsync: bool,
+    replace_budget_s: float | None,
+) -> bool | None:
+    """Replace line 0 of *path*, copying the rows after it in fixed-size chunks.
+
+    Gives the same bytes as reading the file, splitting it with
+    ``splitlines(keepends=True)``, swapping ``lines[0]`` and joining it again, but
+    holds one chunk of the transcript at a time instead of several whole copies.
+    *replace_head* gets line 0 as text and returns the new line 0 as bytes, or
+    ``None`` to write nothing (then this returns False). Returns None, having
+    written nothing, for any file the chunked copy cannot reproduce exactly: one
+    that is absent or has no row after line 0, a line 0 that is not UTF-8 or
+    holds another ``splitlines`` boundary, and rows with a ``\\r`` (the whole-file
+    read translates it) or bytes that are not UTF-8 (it raises on them). The
+    caller then takes its whole-file path. The caller holds the transcript lock.
+    """
+    # No handle on *path* may be open when atomic_write renames over it: on
+    # Windows os.replace cannot swap a file another handle holds. So line 0 is
+    # read in its own block, and copy_rows reopens the file and closes it before
+    # on_staged returns. The caller's lock keeps the file still in between.
+    try:
+        with open(path, "rb") as src:
+            head_raw = src.readline()
+            has_rows = bool(src.peek(1))
+    except FileNotFoundError:
+        return None
+    if not head_raw.endswith(b"\n") or not has_rows:
+        return None
+    try:
+        head = head_raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if "\r" in head or len(head.splitlines()) != 1:
+        return None
+    new_head = replace_head(head)
+    if new_head is None:
+        return False
+
+    def copy_rows(fd: int) -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        with open(path, "rb") as src:
+            src.seek(len(head_raw))
+            while chunk := src.read(_STREAM_CHUNK):
+                if b"\r" in chunk:
+                    raise _NotStreamable
+                # Rows are written ASCII-escaped, so the decode check is
+                # usually skipped; a sequence split across chunks is still fed.
+                if not chunk.isascii() or decoder.getstate()[0]:
+                    try:
+                        decoder.decode(chunk)
+                    except UnicodeDecodeError:
+                        raise _NotStreamable from None
+                view = memoryview(chunk)
+                while view:
+                    view = view[os.write(fd, view) :]
+        try:
+            decoder.decode(b"", final=True)
+        except UnicodeDecodeError:
+            raise _NotStreamable from None
+        if fsync:
+            os.fsync(fd)
+
+    try:
+        atomic_write(
+            path,
+            new_head,
+            mode=OWNER_ONLY_FILE_MODE,
+            replace_budget_s=replace_budget_s,
+            on_staged=copy_rows,
+        )
+    except _NotStreamable:
+        return None
+    return True
 
 
 #: Marks a snapshot the unlocked pass could not take, so it never matches.

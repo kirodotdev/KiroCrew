@@ -170,6 +170,22 @@ class TestRequeuedAutomationSteer:
         assert (text, len(items)) == ("first", 1)
 
     @pytest.mark.asyncio
+    async def test_the_requeued_wake_drains_as_the_autonudge_actor(self, tmp_path, monkeypatch):
+        """Its loop's turn, not the person's: unnamed, it would fall back to ``user``,
+        be model-routed, send coding heartbeats and log as typed. No self-wake rides it."""
+        state, slot = self._requeue_with_human_message(tmp_path, monkeypatch)
+
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()) as run_chat,
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+        assert [q["content"] for q in slot._queue] == ["please also fix the login bug"]
+        assert run_chat.call_args.kwargs.get("_turn_actor") == "autonudge"
+        assert "_directive_self_wake" not in run_chat.call_args.kwargs
+
+    @pytest.mark.asyncio
     async def test_a_human_edit_clears_automation_origin_and_drains_as_user(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
         qid = slot.queue_append(WAKE, meta={AUTOMATION_STEER_META: dict(NUDGE), "sendId": "s-1"})
@@ -189,6 +205,7 @@ class TestRequeuedAutomationSteer:
             assert await chat_runner._start_next_queued_turn(state, slot) is True
 
         assert "_recovered_wake" not in run_chat.call_args.kwargs, "their words charge no loop"
+        assert "_turn_actor" not in run_chat.call_args.kwargs, "their words run as theirs"
         rows = [m for m in slot.messages if m.get("content") == "my own words"]
         assert [r["role"] for r in rows] == ["user"]
         assert "nudge" not in rows[0]["meta"]

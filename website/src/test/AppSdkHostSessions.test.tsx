@@ -29,7 +29,7 @@ import { createTestStore } from './helpers'
 const DOCUMENTED = ['/api/chat/slots', '=/api/config/default-agent', '=/api/chat', '/api/approvals', '=/api/dashboard/config']
 
 const SLOTS = [
-  { key: 'chat-old', title: 'Older work', messages: 3, running: false, last_ts: '2026-11-01T10:00:00Z', agent: '', last_message: 'done' },
+  { key: 'chat-old', title: 'Older work', messages: 3, running: false, last_ts: '2026-11-01T10:00:00Z', agent: '', last_message: 'done', needs_full_chat: 'yes' },
   {
     key: 'chat-new', title: 'chat-new', messages: 7, running: true, last_ts: '2026-11-02T10:00:00Z', agent: 'reviewer', agent_kind: '',
     last_message: 'working on it', waiting_for_input: false,
@@ -37,6 +37,7 @@ const SLOTS = [
   },
   {
     key: 'chat-bg', title: 'Background', messages: 1, running: false, last_ts: '2026-10-30T10:00:00Z', agent: '',
+    needs_full_chat: true,
     pending_approval_info: { origin: 'coordinator', request_id: 'c-9', request_instance: 'i-4', tool: 'spawn', tool_input: '', tool_kind: 'other' },
   },
 ]
@@ -132,6 +133,14 @@ describe('an external app with the documented declaration', () => {
     expect(result.current.can).toEqual({ sessions: true, send: true, decide: true, create: true })
   })
 
+  it('marks only a session whose slot says needs_full_chat: true, never a truthy non-boolean', async () => {
+    const { result } = external(DOCUMENTED)
+    await waitFor(() => expect(result.current.sessions).not.toBeNull())
+    const byKey = Object.fromEntries(result.current.sessions!.map((s) => [s.key, s.needsFullChat]))
+    expect(SLOTS[0].needs_full_chat).toBe('yes')
+    expect(byKey).toEqual({ 'chat-new': false, 'chat-old': false, 'chat-bg': true })
+  })
+
   it('sends a reply or a steer through the dashboard send', async () => {
     const { result } = external(DOCUMENTED)
     let sent: unknown
@@ -139,6 +148,19 @@ describe('an external app with the documented declaration', () => {
     expect(sent).toEqual({ status: 'dispatched' })
     const post = requests.find((r) => r.path === '/api/chat')!
     expect(post.body).toMatchObject({ message: 'look at the logs', slot: 'chat-new', steer: true })
+  })
+
+  it('gives each send its own send id, so a tab that has the session open draws the message', async () => {
+    const { result } = external(DOCUMENTED)
+    await act(async () => { await result.current.send('chat-new', 'first') })
+    await act(async () => { await result.current.send('chat-new', 'second') })
+    const ids = requests
+      .filter((r) => r.path === '/api/chat')
+      .map((r) => (r.body as { meta?: { sendId?: string } }).meta?.sendId)
+    expect(ids).toHaveLength(2)
+    expect(ids[0]).toMatch(/^[A-Za-z0-9_-]{1,128}$/)
+    expect(ids[1]).toMatch(/^[A-Za-z0-9_-]{1,128}$/)
+    expect(ids[0]).not.toBe(ids[1])
   })
 
   it('creates a session the person owns, not one the app owns', async () => {

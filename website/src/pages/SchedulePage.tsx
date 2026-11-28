@@ -31,6 +31,7 @@ import { useAppSelector, useAppDispatch } from '../store'
 import { triggerRefresh } from '../store/dashboardSlice'
 import { SaveCreateLabel, scheduleLabel, scheduleMinutes } from '../utils/cronUtils'
 import { isPartlyBlocked } from '../utils/cronPartlyBlocked'
+import { isAutoPaused } from '../appRunState'
 import { useSortableTable } from '../hooks/useSortableTable'
 import { ResizableTableHead, SortableTableHead } from '../components/SortableHeader'
 import ExecutionsView from '../components/ExecutionsView'
@@ -41,7 +42,7 @@ import { groupJobsByFolder, loadCollapsedFolders, saveCollapsedFolders } from '.
 import type { CronFolder } from '../utils/cronFolders'
 import CronFolderHeader from '../components/CronFolderHeader'
 import CronBatchActionsMenu from '../components/CronBatchActionsMenu'
-import { useScheduleBatchActions, BatchRunConfirmDialog } from './SchedulePageBatchActions'
+import { useScheduleBatchActions, BatchRunConfirmDialog, TelegramResultNotice } from './SchedulePageBatchActions'
 import ScheduleCrewmateRosterNotice from './ScheduleCrewmateRosterNotice'
 import { JobRunText } from './SchedulePageJobRunText'
 import CronRowActions from '../components/CronRowActions'
@@ -380,6 +381,8 @@ export default function SchedulePage() {
    * at what it was filtering.
    */
   const [detailOpen, setDetailOpen] = useState(false)
+  // The tab the detail dialog opens on: `logs` when a link asked for the run log.
+  const [detailInitialTab, setDetailInitialTab] = useState<'details' | 'logs'>('details')
   const [creating, setCreating] = useState(false)
   const [prefill, setPrefill] = useState<CronPrefill | null>(null)
   // Whether the seeded preset performs repo/issue writes (shows a notice in the create panel).
@@ -703,7 +706,7 @@ export default function SchedulePage() {
   }, [selectedIds, load])
   const confirmArmed = confirmText.trim().toLowerCase() === BULK_DELETE_TOKEN
 
-  const { batchBusy, runConfirmIds, runSkipped, batchMenuLayer, closeRunConfirm, closeBatchConfirm, applyBatch, onBatchAction } =
+  const { batchBusy, runConfirmIds, runSkipped, batchMenuLayer, closeRunConfirm, closeBatchConfirm, applyBatch, onBatchAction, sendToTelegram, telegramResult } =
     useScheduleBatchActions({ selectedJobs, running, load, setSelectedIds, setActionError, setBatchConfirm })
 
   // Open the create panel blank (from "Create your first job" / "Add Job").
@@ -711,20 +714,22 @@ export default function SchedulePage() {
   // Open the create panel seeded from a pre-canned schedule card.
   const openPreset = useCallback((p: SchedulePreset) => { setSelected(null); setDetailOpen(false); setPrefill({ ...p.prefill, sourcePreset: p.id, sourceTemplatePrompt: presetCanonicalPrompt(p.id) }); setPrefillWrites(!!p.writes); setPrefillNonce(n => n + 1); setCreating(true) }, [])
   // Open the detail dialog on a job (row click / calendar entry click).
-  const openDetail = useCallback((job: CronJob) => { setCreating(false); setPrefill(null); setSelected(job); setDetailOpen(true) }, [])
+  const openDetail = useCallback((job: CronJob, tab: 'details' | 'logs' = 'details') => { setCreating(false); setPrefill(null); setSelected(job); setDetailInitialTab(tab); setDetailOpen(true) }, [])
   // `?job=<id>` opens that job's detail once the list has loaded, then drops the
   // param so a reload or Back does not reopen it. A Crewmate Profile's schedule
   // row links here; an id that no longer exists simply lands on the list.
+  // `&tab=logs` opens the dialog on that job's run log.
   const [searchParams, setSearchParams] = useSearchParams()
   const deepLinkJob = searchParams.get('job')
+  const deepLinkTab = searchParams.get('tab') === 'logs' ? 'logs' : 'details'
   useEffect(() => {
     // A failed list read has not answered whether the requested job exists.
     // Preserve the param so a successful retry can still resolve it.
     if (!deepLinkJob || loading || loadError) return
     const job = jobs.find((j) => j.id === deepLinkJob)
-    if (job) openDetail(job)
-    setSearchParams((prev) => { const next = new URLSearchParams(prev); next.delete('job'); return next }, { replace: true })
-  }, [deepLinkJob, loading, loadError, jobs, openDetail, setSearchParams])
+    if (job) openDetail(job, deepLinkTab)
+    setSearchParams((prev) => { const next = new URLSearchParams(prev); next.delete('job'); next.delete('tab'); return next }, { replace: true })
+  }, [deepLinkJob, deepLinkTab, loading, loadError, jobs, openDetail, setSearchParams])
   // Dismiss the dialog. `selected` survives on purpose — see its declaration.
   const closeDetail = useCallback(() => { setDetailOpen(false); setCreating(false); setPrefill(null); setPrefillWrites(false) }, [])
   // The dialog is bound to `selected` existing, so a job deleted underneath us
@@ -939,6 +944,7 @@ export default function SchedulePage() {
                       await load()
                     }}
                     onNewFolder={handleNewFolder}
+                    onSendToTelegram={sendToTelegram}
                   />
                 </div>
               )}
@@ -979,6 +985,7 @@ export default function SchedulePage() {
             {actionError?.id === 'batch-action' && (
               <ErrorNotice className="mb-2" message={actionError.msg} askAgent testId="schedule-batch-action-error" />
             )}
+            {actionError?.id === 'batch-telegram' && <TelegramResultNotice failed={actionError.msg} result={telegramResult} />}
             {/* `table-fixed`: the column widths below are a CONTRACT, not a
                 hint. With auto layout a single long cell (an agent name, a cron
                 expression) widens the whole table past its container and the
@@ -1193,7 +1200,7 @@ export default function SchedulePage() {
                     without it. */}
                 <TableCell className="truncate" title={j.schedule}>{scheduleLabel(j)}{j.timezone && <span className="block truncate text-[11px] text-muted">{jobZoneCaption(j)}</span>}{j.strict_schedule && <span className="flex items-center gap-1 text-[11px] text-muted" title={i18nT('pages.schedulePage.enable_strict_schedule_no_jitter')} data-testid="schedule-strict-badge"><Clock size={11} className="shrink-0" aria-hidden="true" />{i18nT('pages.schedulePage.strict_badge')}</span>}</TableCell>
                 <TableCell className="align-top"><CollapsibleMessage message={j.script ? j.script : j.command ? j.command : j.safeMessage} /></TableCell>
-                <TableCell title={j.last_error ? '' : j.last_result || ''}><span className="block truncate">{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : isPartlyBlocked(j) ? <Badge variant="warn" title={`${i18nT('pages.schedulePage.partial_hint')}\n${j.last_error || ''}`}>{i18nT('pages.schedulePage.partial')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}</span></TableCell>
+                <TableCell title={j.last_error ? '' : j.last_result || ''}><span className="block truncate">{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : isPartlyBlocked(j) ? <Badge variant="warn" title={`${i18nT('pages.schedulePage.partial_hint')}\n${j.last_error || ''}`}>{i18nT('pages.schedulePage.partial')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : isAutoPaused(j) ? <Badge variant="err" className="whitespace-normal max-w-full rounded-lg leading-tight">{i18nT('pages.membersPage.schedule_state_auto_paused', { count: j.consecutive_failures })}</Badge> : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}</span></TableCell>
                 <TableCell className="text-muted">
                   <span className="block truncate">{fmtAgo(j.last_run_ts)}</span>
                   {/* Retry telemetry for the LAST run only: a job that needed
@@ -1333,6 +1340,7 @@ export default function SchedulePage() {
           <JobDetailDialog
             key={creating ? (prefill ? `preset#${prefillNonce}` : 'new') : selected?.id}
             job={creating ? undefined : selected || undefined}
+            initialTab={creating ? 'details' : detailInitialTab}
             prefill={creating ? prefill || undefined : undefined}
             prefillWrites={creating && !!prefill && prefillWrites}
             agents={agents}
@@ -1389,7 +1397,7 @@ export default function SchedulePage() {
       />
 
       <Dialog open={batchConfirm} onOpenChange={next => { if (!next && !batchDeleting) closeBatchConfirm() }}>
-        <DialogContent maxWidth={460}>
+        <DialogContent maxWidth={460} onCloseAutoFocus={batchMenuLayer.onDialogCloseAutoFocus}>
           <DialogHeader>
             <Trash2 size={16} className="text-danger shrink-0" aria-hidden="true" />
             <DialogTitle>
@@ -1449,7 +1457,7 @@ export default function SchedulePage() {
         </DialogContent>
       </Dialog>
 
-      <BatchRunConfirmDialog ids={runConfirmIds} skipped={runSkipped} busy={batchBusy} onClose={closeRunConfirm} onConfirm={ids => void applyBatch('run', ids)} />
+      <BatchRunConfirmDialog ids={runConfirmIds} skipped={runSkipped} busy={batchBusy} onClose={closeRunConfirm} onCloseAutoFocus={batchMenuLayer.onDialogCloseAutoFocus} onConfirm={ids => void applyBatch('run', ids)} />
     </div>
   )
 }
@@ -1801,16 +1809,15 @@ function TemplateUpdatedNotice({ job }: { job: CronJob }) {
 /** `confirmed`: the server refused the save, so it was not saved. */
 type LateSaveFailure = { name: string; message: string; confirmed: boolean }
 
-function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, rosterFailure, onClose, onChanged, onDirtyChange, onLateFailure }: {
-  job?: CronJob; prefill?: CronPrefill; prefillWrites?: boolean; agents: KiroCrewAgent[]; defaultAgent: string; rosterFailure?: { reloading: boolean; onReload: () => void }; onClose: () => void; onChanged: () => void; onDirtyChange: (dirty: boolean) => void; onLateFailure: (f: LateSaveFailure) => void
+function JobDetailDialog({ job, initialTab = 'details', prefill, prefillWrites, agents, defaultAgent, rosterFailure, onClose, onChanged, onDirtyChange, onLateFailure }: {
+  job?: CronJob; initialTab?: 'details' | 'logs'; prefill?: CronPrefill; prefillWrites?: boolean; agents: KiroCrewAgent[]; defaultAgent: string; rosterFailure?: { reloading: boolean; onReload: () => void }; onClose: () => void; onChanged: () => void; onDirtyChange: (dirty: boolean) => void; onLateFailure: (f: LateSaveFailure) => void
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [saving, setSaving] = useState(false)
   const [panelError, setPanelError] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
-  const [detailTab, setDetailTab] = useState<'details' | 'logs'>('details')
-  useEffect(() => { setDetailTab('details') }, [job?.id])
+  const [detailTab, setDetailTab] = useState<'details' | 'logs'>(initialTab)
   const submitRef = useRef<(() => void) | null>(null)
   // Closing never cancels a request, so an answer can arrive after this dialog
   // is gone. It still refreshes the list, but only a live dialog closes: a late

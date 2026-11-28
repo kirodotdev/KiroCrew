@@ -2,7 +2,7 @@ import { memo, useState, type ReactNode } from 'react'
 import { KiroSignInStrip, requestIdOf } from '../../components/KiroSignInDialog'
 import KiroCliSignInRow from './KiroCliSignInRow'
 import { useMutation } from '@tanstack/react-query'
-import { ExternalLink, Loader2, MessageSquarePlus, RotateCw, Settings, ShieldCheck, SlidersHorizontal, Wand2 } from 'lucide-react'
+import { ChevronRight, ExternalLink, Loader2, MessageSquarePlus, RotateCw, Settings, ShieldCheck, SlidersHorizontal, Wand2 } from 'lucide-react'
 
 import { ApiError, apiErrorCode } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -25,6 +25,8 @@ import { AgentSpecChoiceCard, agentSpecAmbiguity } from './AgentSpecChoiceCard'
 import { injectOpensTurn } from './RecoveryCard'
 import { HostSandboxUnavailableCard, isHostSandboxUnavailable } from './HostSandboxUnavailableCard'
 import { resumeProseFor } from './gatewayNotice'
+import { fmtMessageTime, fmtMessageTimeFull } from './messageTime'
+import { useRowDisclosure } from './rowDisclosure'
 import { WorkConfirmDeclined } from '../../utils/workInFlight'
 import { useRestartRefusal } from '../../hooks/useRestartRefusal'
 
@@ -448,6 +450,41 @@ export interface ErrorCardProps {
   /** Internal: render a `host_sandbox_unavailable` row as every other row, the
    *  machine owner's view (`HostSandboxUnavailableCard`). */
   hostSandboxOwnerView?: boolean
+  /**
+   * Every row of the run of identical failures this card stands for, oldest
+   * (this row) first (`errorRuns.ts`). The card then says how many times it
+   * happened and when the newest did, and lists each attempt's time when
+   * expanded. Omitted for a row that is a card of its own.
+   */
+  attempts?: readonly Pick<ChatMessage, 'ts'>[]
+  /** The row's disclosure key, so an expanded attempt list survives a remount. */
+  disclosureKey?: string
+}
+
+/** The run line of a card that stands for several identical failures. */
+function RunAttempts({ attempts, disclosureKey }: { attempts: readonly Pick<ChatMessage, 'ts'>[]; disclosureKey?: string }) {
+  const [open, setOpen] = useRowDisclosure(disclosureKey, false)
+  return (
+    <div className="text-[12px] leading-5 text-muted mt-1" data-testid="error-card-run">
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
+        className="inline-flex items-center gap-1 text-left hover:text-text transition-colors"
+        data-testid="error-card-run-toggle"
+      >
+        <ChevronRight size={12} className={`lucide-inline shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} aria-hidden="true" />
+        {i18nT('pages.chat.errorCard.repeated_in_a_row', { count: attempts.length, time: fmtMessageTime(attempts[attempts.length - 1].ts) })}
+      </button>
+      {open && (
+        <ol className="list-decimal pl-8" data-testid="error-card-run-attempts">
+          {attempts.map((a, i) => (
+            <li key={i}><time dateTime={a.ts} title={fmtMessageTimeFull(a.ts)}>{fmtMessageTime(a.ts)}</time></li>
+          ))}
+        </ol>
+      )}
+    </div>
+  )
 }
 
 // No `shrink-0` and no `truncate`: every action sits in a flex row, and a
@@ -696,6 +733,8 @@ export const ErrorCard = memo(function ErrorCard(props: ErrorCardProps) {
     onRepairImages,
     repairImages = 'idle',
     hostSandboxOwnerView,
+    attempts,
+    disclosureKey,
   } = props
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   if (isHostSandboxUnavailable(meta) && !hostSandboxOwnerView) {
@@ -1147,6 +1186,7 @@ export const ErrorCard = memo(function ErrorCard(props: ErrorCardProps) {
       >
         {withOriginLink(displayText)}
         <LimitResetLine meta={meta} />
+        {attempts && <RunAttempts attempts={attempts} disclosureKey={disclosureKey} />}
         {limitHeld}
         {elsewhere && (
           <div className="text-[12px] leading-5 text-muted mt-1" data-testid="error-card-elsewhere-hint">
@@ -1195,6 +1235,7 @@ export const ErrorCard = memo(function ErrorCard(props: ErrorCardProps) {
       <div className="text-danger text-[13px] leading-5 flex-1 min-w-0" style={{ overflowWrap: 'anywhere' }}>
         {withOriginLink(displayText)}
         <LimitResetLine meta={meta} />
+        {attempts && <RunAttempts attempts={attempts} disclosureKey={disclosureKey} />}
         {limitHeld}
       </div>
       {resumeButton}

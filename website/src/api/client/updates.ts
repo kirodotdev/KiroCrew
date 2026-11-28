@@ -34,16 +34,20 @@ export function createUpdatesEndpoints({ post, del, j, jfetch: fetch }: ClientTr
    * work is running the gateway answers 409 `work_in_flight` and restarts nothing.
    * The connection drops as the process image is replaced, so callers must treat
    * a network failure after a 200 as the expected path rather than an error.
+   * `keepTab`: the caller waits through the restart in this tab, so its
+   * `restarting` step arms no reload latch (a changed bundle still reloads).
    */
-  const restartGateway = async () => {
+  const restartGateway = async ({ keepTab = false }: { keepTab?: boolean } = {}) => {
     // Noted before asking: the socket can drop before this call answers.
-    noteGatewayRestart()
+    noteGatewayRestart(Date.now(), { keepTab })
     try {
       let res = await post('/api/restart', { force: false })
       if (res.status === 409) {
         const work = asWorkInFlight(await res.clone().json().catch(() => null))
         if (work) {
           await confirmRestartUnderWork(work)
+          // Renewed: a reconnect or the TTL can drop the note while the dialog is open.
+          noteGatewayRestart(Date.now(), { keepTab })
           res = await post('/api/restart', { force: true })
         }
       }
@@ -92,8 +96,11 @@ export function createUpdatesEndpoints({ post, del, j, jfetch: fetch }: ClientTr
     // `offered`: the version the clicked button named. The gateway reads it only
     // to tell an upgrade click from a channel-move click; it arms its own fresh
     // verdict either way.
-    armUpdate: (offered?: string) => post('/api/update/arm', offered ? { offered } : undefined).then(j) as Promise<{ ok?: boolean; armed?: boolean; request_id?: string; version?: string; version_display?: string; expires_in?: number; approve_command?: string; error?: string; code?: string }>,
-    armStatus: () => fetch('/api/update/arm').then(j) as Promise<{ armed: boolean; managed_by?: string; request_id?: string; version?: string; requested_by?: string; armed_at?: number; expires_in?: number; approve_command?: string }>,
+    // A newer release of this build's own channel installs with the click itself:
+    // the answer is then `status: "applying"` (or `"armed"` for the next start on
+    // a gateway that runs from the stable link) and carries no approve command.
+    armUpdate: (offered?: string) => post('/api/update/arm', offered ? { offered } : undefined).then(j) as Promise<{ ok?: boolean; status?: 'applying' | 'armed'; armed?: boolean; request_id?: string; version?: string; version_display?: string; expires_in?: number; approve_command?: string; error?: string; code?: string }>,
+    armStatus: () => fetch('/api/update/arm').then(j) as Promise<{ armed: boolean; managed_by?: string; request_id?: string; version?: string; version_display?: string; requested_by?: string; armed_at?: number; expires_in?: number; approve_command?: string }>,
     // Decline a packaged-app update request. Removes a nudge, grants nothing.
     dismissUpdateArm: (requestId: string) => del(`/api/update/arm?request_id=${encodeURIComponent(requestId)}`).then(j) as Promise<{ ok?: boolean; armed?: boolean; dismissed?: boolean }>,
     cancelUpdate: () => post('/api/update/cancel').then(j),

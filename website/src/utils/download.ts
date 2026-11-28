@@ -11,16 +11,44 @@ function announceDownload(filename: string): void {
   }
 }
 
-/** *filename* as Chromium saves it, so the announced name is the one the desktop
- *  app's will-download handler sees. Chromium replaces control and format
- *  characters and `"*\/:<>?\\|` with `_`; an announced `notes 10:30.md` would
- *  otherwise never match the saved `notes 10_30.md`, and the download would
- *  open a Save dialog instead of saving.
- *  shortcut: Chromium's edge rewrites (leading or trailing dots and spaces, a
- *  reserved name such as `CON`) are not mirrored; such a name falls back to the
- *  Save dialog. Mirror them if a caller starts producing such names. */
-export function chromiumSavedName(filename: string): string {
-  return filename.replace(/[\u0000-\u001f\u007f-\u009f"*/:<>?\\|\p{Cf}]/gu, '_')
+/** The name Chromium saves a download under when the link or the server names
+ *  it *filename*, so the announced name is the one the desktop app's
+ *  will-download handler sees; any other name misses the match, and the
+ *  download opens a Save dialog instead of saving. These are Chromium's
+ *  download-name rules (`net::GenerateFileName`, Chromium 152 in Electron 44),
+ *  in its order, the Windows ones only on Windows.
+ *  shortcut: two kinds of blob download still open the Save dialog. A name
+ *  left with no extension gets one from the blob's type (`Makefile` as
+ *  `text/plain` saves as `Makefile.txt`), which the OS's type table decides;
+ *  the gateway serves a file of unknown type as `application/octet-stream`,
+ *  which gets none. And the link hands this name back to Chromium, which
+ *  rewrites it again when it is only `_` and `-` (`?` or `~`, saved as
+ *  `download`) or, on Windows, when a replaced character left an 8.3-shaped
+ *  name with a `~` (` a~1.txt`). */
+export function chromiumSavedName(
+  filename: string,
+  windows: boolean = typeof navigator !== 'undefined' && /^Win/.test(navigator.platform),
+): string {
+  let name = filename
+  if (windows) {
+    // Windows drops trailing dots and spaces; Chromium writes a `_` for each.
+    const kept = name.replace(/[ .]+$/, '').replace(/\p{White_Space}+$/u, '')
+    name = kept && kept.padEnd(name.length, '_')
+  }
+  name = name.replace(/^\.+|\.+$/g, '').replace(/[/\\]/g, '_')
+  if (!/[^-_]/.test(name)) return 'download'
+  // Windows may give an 8.3-shaped name a `~1` short name, so its `~` goes.
+  const shortName = windows && /^[^.]{1,8}(\.[^.]{0,3})?$/.test(name)
+    && !/[\p{White_Space}"\\/\[\]:+|<>=;?,*]/u.test(name)
+  name = name
+    .replace(/[\u0000-\u001f\u007f-\u009f"*/:<>?\\|\p{Cf}\p{Noncharacter_Code_Point}]/gu, '_')
+    .replace(/^[\p{White_Space}.~]|[\p{White_Space}.~]$/gu, '_')
+  if (shortName) name = name.replace(/~/g, '_')
+  if (!windows) return name
+  name = name.replace(/\.(?:local|lnk|scf|url|\{[^.]*\})$/i, '.download')
+  return /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9]|clock\$)(?:\.|$)|^(?:desktop\.ini|thumbs\.db)$/i.test(name)
+    ? `_${name}`
+    : name
 }
 
 function clickDownload(href: string, filename: string): void {

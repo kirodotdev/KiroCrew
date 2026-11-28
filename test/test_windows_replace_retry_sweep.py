@@ -282,6 +282,10 @@ _CONVERTED: list[tuple[str, str]] = [
     ("mcp_tools/control.py", "register_hook"),
     ("snapshot_restore.py", "_save"),
     ("eval/bench/safepath.py", "write_text_atomic_nofollow"),
+    ("eval/bench/provider_run.py", "_atomic_write"),
+    ("eval/tasks.py", "_copy_transcript"),
+    ("eval/tasks.py", "_write_record"),
+    ("memory_provider/migration.py", "_atomic_write"),
     ("apps/builtins/auto_improvement/backend/store.py", "write_json_atomic"),
     ("apps/builtins/mochi/queue_file.py", "write_queue_atomic"),
     ("apps/builtins/mochi/activity_log.py", "_write_store"),
@@ -342,6 +346,37 @@ def test_converted_writer_renames_through_the_retry(rel: str, function: str) -> 
         _call_name(n) in {"replace_with_retry", "replace_with_retry_checked", "_replace"}
         for n in calls
     ), rel
+
+
+@pytest.mark.parametrize(
+    "module", ["kiro_crew.eval.bench.provider_run", "kiro_crew.memory_provider.migration"]
+)
+def test_memory_provider_run_file_save_survives_a_contended_rename(
+    tmp_path: Path, module: str
+) -> None:
+    import importlib
+
+    writer = importlib.import_module(module)
+    path = tmp_path / "r_0123456789ab.json"
+    path.write_text('{"state": "running"}', encoding="utf-8")
+    with replace_sharing_violation(match=path.name, times=2) as sim:
+        writer._atomic_write(path, '{"state": "done"}')
+
+    assert sim["n"] == 3
+    assert json.loads(path.read_text("utf-8")) == {"state": "done"}
+    assert [p.name for p in tmp_path.iterdir()] == [path.name]
+
+
+def test_eval_run_record_survives_a_contended_rename(tmp_path: Path) -> None:
+    from kiro_crew.eval import tasks
+
+    with replace_sharing_violation(match="result.json", times=2) as sim:
+        tasks._write_record(tmp_path, {"run_id": "r1"})
+
+    assert sim["n"] == 3
+    run_dir = tmp_path / "runs" / "r1"
+    assert json.loads((run_dir / "result.json").read_text("utf-8")) == {"run_id": "r1"}
+    assert [p.name for p in run_dir.iterdir()] == ["result.json"]
 
 
 def test_crewmate_stage_write_survives_a_contended_rename(tmp_path: Path) -> None:

@@ -54,6 +54,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from shipped_wheel_copies import census_drift
 
 from kiro_crew.apps.execution import _BUILTINS_DIR
 from kiro_crew.apps.manifest import PlatformConfig
@@ -100,7 +101,8 @@ def manifests() -> dict[str, dict]:
 
 def test_there_are_builtin_apps_to_check() -> None:
     """Guard the guard: an empty sweep would make every test below vacuous."""
-    assert len(_app_dirs()) >= 20
+    differs = census_drift(p.name.replace("_", "-") for p in _app_dirs())
+    assert not differs, differs
 
 
 @pytest.mark.parametrize("app", _app_ids())

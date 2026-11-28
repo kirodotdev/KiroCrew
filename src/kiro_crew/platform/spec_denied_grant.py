@@ -32,9 +32,11 @@ class SpecDeniedGrant:
     anchored to absolute globs at the session's directory *cwd*.
 
     *web_fetch_blocked* are the spec's ``web_fetch.blocked`` entries that are plain
-    URLs (``spec_denied_gate.url_literal``), read only to withhold the grant,
-    *web_fetch_blocked_complete* whether that is every entry, and
-    *web_fetch_trusted* the plain-URL ``web_fetch.trusted`` entries it grants by.
+    URLs (``spec_denied_gate.url_literal``): a definite match refuses the fetch, any
+    other hit withholds the grant. *web_fetch_blocked_complete* says whether that is
+    every entry, and *web_fetch_trusted* holds the plain-URL ``web_fetch.trusted``
+    entries it grants by. ``web_fetch`` in *builtins* grants a fetch no blocked
+    entry reaches.
     """
 
     builtins: frozenset[str] = frozenset()
@@ -47,6 +49,55 @@ class SpecDeniedGrant:
     web_fetch_trusted: tuple[str, ...] = ()
 
 
+def denies_only(value: Any) -> SpecDeniedGrant | None:
+    """*value*'s denies with every grant it carries emptied, or ``None``.
+
+    For a native sub-agent's request: the child is held to its parent's denies
+    and is given none of its parent's grants.
+    """
+    grant = as_spec_denied_grant(value)
+    if grant is None:
+        return None
+    return SpecDeniedGrant(
+        denied_commands=grant.denied_commands,
+        denied_write_paths=grant.denied_write_paths,
+        cwd=grant.cwd,
+        web_fetch_blocked=grant.web_fetch_blocked,
+        web_fetch_blocked_complete=grant.web_fetch_blocked_complete,
+    )
+
+
 def as_spec_denied_grant(value: Any) -> SpecDeniedGrant | None:
     """*value* when it is a :class:`SpecDeniedGrant`, else ``None`` (no grant)."""
     return value if isinstance(value, SpecDeniedGrant) else None
+
+
+@dataclass(frozen=True)
+class SpecParentLimits:
+    """The gate-only limits of one agent whose session started this sub-agent run.
+
+    *agent* is that agent's name, for the refusal. The rest are its values of the
+    gate's own limit fields (``ToolCall.spec_shell_allowlist``,
+    ``spec_shell_readonly``, ``spec_write_allowlist``, ``spec_unjudged_denies``) and
+    its deny record with every grant emptied (:func:`denies_only`). It only ever
+    refuses: the gate's ``spec-parent-limits`` row judges the call under each.
+
+    *unread_denies* are the kiro-cli tools (``execute_bash``, ``fs_write``,
+    ``web_fetch``) whose deny list in that agent's spec Kiro Crew cannot read whole. Its own call of such
+    a tool asks a person, so the run's does too (``spec_parent_gate.withhold_undecided``).
+    """
+
+    agent: str
+    shell_allowlist: tuple[str, ...] | None = None
+    shell_readonly: bool = False
+    write_allowlist: tuple[str, ...] | None = None
+    denies: SpecDeniedGrant | None = None
+    unjudged_denies: tuple[Any, ...] = ()
+    unread_denies: frozenset[str] = frozenset()
+
+
+def as_parent_limits(value: Any) -> tuple[SpecParentLimits, ...]:
+    """The :class:`SpecParentLimits` records in *value*; anything else is dropped."""
+    if not isinstance(value, (tuple, list)):
+        return ()
+    return tuple(item for item in value if isinstance(item, SpecParentLimits))

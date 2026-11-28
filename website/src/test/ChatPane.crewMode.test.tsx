@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -21,6 +21,7 @@ vi.mock('react-virtuoso', () => ({
     <div data-testid="virtuoso">{data?.map((d: unknown, i: number) => <div key={i}>{itemContent(i, d)}</div>)}</div>
   ),
 }))
+const chatSlotAgent = vi.hoisted(() => vi.fn(async (_slot: string, agent: string) => ({ agent, agent_kind: 'template', workspace: 'default' })))
 vi.mock('../api/client', () => ({
   api: {
     chatSlots: vi.fn().mockResolvedValue([]),
@@ -36,12 +37,18 @@ vi.mock('../api/client', () => ({
     screenshot: vi.fn().mockResolvedValue({ path: null }),
     fileSearch: vi.fn().mockResolvedValue({ root: '/repo', results: [] }),
     crewWorkers: vi.fn().mockResolvedValue({ root: 'root-1', workers: [] }),
+    chatSlotAgent,
   },
   SEARCH_MIN_CHARS: 2,
 }))
 vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: false, transcribing: false, toggle: vi.fn() }), voiceInputSupported: false }))
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Kiro Crew', avatar: '' }) }))
-vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: 'default' }) }))
+// `choices`: the catalog rows, through the same conductor filter the real hook applies.
+const agentsState = vi.hoisted(() => ({ defaultAgent: 'default', choices: undefined as Array<{ name: string; selection_kind: string }> | undefined }))
+vi.mock('../hooks/useAgents', async () => {
+  const { withoutConductors } = await import('../lib/crewMode')
+  return { useAgents: () => ({ agents: [], defaultAgent: agentsState.defaultAgent, ...(agentsState.choices ? { choices: withoutConductors(agentsState.choices) } : {}) }) }
+})
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span> }))
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
 
@@ -53,18 +60,19 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatPane from '../components/ChatPane'
 import { setCrewModeCatalog } from '../lib/crewMode'
 import { turnOffCrewModeAsLts } from './crewModeOff'
+import { __resetPanelTabs, openPanelView, panelStripOf } from '../hooks/usePanelTabs'
 
 const permission = { role: 'permission', content: 'Shell', cls: '', meta: { approval_id: 'rid-1', tool_input: 'printf hi', request_id: 'rid-1' } }
 const row = (key: string, extra: Record<string, unknown> = {}) => ({
   key, messages: 2, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined, ...extra,
 })
 
-function renderPane(paneKey: string, slots: ReturnType<typeof row>[], messages: unknown[]) {
+function renderPane(paneKey: string, slots: ReturnType<typeof row>[], messages: unknown[], slotLoading = false, chat: Partial<RootState['chat']> = {}) {
   const base = chatReducer(undefined, { type: '@@init' })
   const store = configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
-      chat: { ...base, activeSlot: paneKey, messages } as RootState['chat'],
+      chat: { ...base, activeSlot: paneKey, messages, slotLoading, ...chat } as RootState['chat'],
       dashboard: {
         status: null, connected: true, slots, slotsLoaded: true,
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
@@ -113,6 +121,65 @@ describe('ChatPane in Split View (Crew Mode)', () => {
     expect(cards).toHaveTextContent('Worker B')
     expect(within(cards).getByRole('button', { name: /Approve/ })).toBeInTheDocument()
     expect(within(cards).getByRole('button', { name: /Reject/ })).toBeInTheDocument()
+  })
+})
+
+describe('ChatPane in Split View with the conductor itself as the default agent', () => {
+  beforeEach(() => {
+    setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
+    agentsState.defaultAgent = 'kirocrew-conductor'
+    agentsState.choices = [
+      { name: 'kirocrew-conductor', selection_kind: 'template' },
+      { name: 'other-template', selection_kind: 'template' },
+      { name: 'helper-bot', selection_kind: 'member' },
+    ]
+  })
+  afterEach(() => { setCrewModeCatalog(undefined, undefined); agentsState.defaultAgent = 'default'; agentsState.choices = undefined })
+  const conductor = (extra: Record<string, unknown> = {}) => row('c1', { title: 'Conductor', agent: 'kirocrew-conductor', agent_kind: 'template', ...extra })
+  const pickerRows = async () => {
+    fireEvent.click(await screen.findByRole('button', { name: /^Agent: kirocrew-conductor/ }))
+    const list = await screen.findByRole('listbox', { name: 'Agent list' })
+    return within(list).getAllByRole('option').map(o => o.textContent ?? '')
+  }
+
+  it('makes a new root pane its agent label a picker of the other templates only', async () => {
+    // A namespace-blind row: the pick still goes out as a template.
+    agentsState.choices = agentsState.choices!.map(a => (a.name === 'other-template' ? { name: a.name } as typeof a : a))
+    __resetPanelTabs(); chatSlotAgent.mockClear()
+    openPanelView('c1', 'workers'); openPanelView('c1', 'command-center'); openPanelView('c1', 'changes')
+    renderPane('c1', [conductor({ crew_mode_root: true, messages: 0 })], [])
+    const options = await pickerRows()
+    expect(options.some(t => t.includes('other-template'))).toBe(true)
+    expect(options.some(t => t.includes('helper-bot') || t.includes('kirocrew-conductor'))).toBe(false)
+    fireEvent.click(screen.getByRole('option', { name: /other-template/ }))
+    await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('c1', 'other-template', 'template'))
+    await waitFor(() => expect(panelStripOf('c1').ids).toEqual(['changes']))
+  })
+
+  it('offers no agent picker on a root pane once it has a message', async () => {
+    // No root stamp, so the gateway lock's own clause cannot be what hides it.
+    renderPane('c1', [conductor()], [{ role: 'user', content: 'go', cls: '' }])
+    await waitFor(() => expect(screen.getAllByRole('textbox').length).toBeGreaterThan(0))
+    expect(screen.queryByRole('button', { name: /^Agent: / })).toBeNull()
+  })
+
+  it('offers no agent picker on a root pane whose transcript is still loading', async () => {
+    renderPane('c1', [conductor({ crew_mode_root: true, messages: 0 })], [], true)
+    await waitFor(() => expect(screen.getAllByRole('textbox').length).toBeGreaterThan(0))
+    expect(screen.queryByRole('button', { name: /^Agent: / })).toBeNull()
+  })
+
+  it('offers no agent picker on a new root pane while a turn runs', async () => {
+    renderPane('c1', [conductor({ crew_mode_root: true, messages: 0, running: true })], [])
+    await waitFor(() => expect(screen.getAllByRole('textbox').length).toBeGreaterThan(0))
+    expect(screen.queryByRole('button', { name: /^Agent: / })).toBeNull()
+  })
+
+  it('offers no agent picker on a root pane whose window holds no user row but has older rows', async () => {
+    // The gateway counts the older rows as a message and would refuse the pick.
+    renderPane('c1', [conductor({ crew_mode_root: true })], [{ role: 'assistant', content: 'working', cls: '' }], false, { slotHasMore: true, slotCursorKey: 'c1' })
+    await waitFor(() => expect(screen.getAllByRole('textbox').length).toBeGreaterThan(0))
+    expect(screen.queryByRole('button', { name: /^Agent: / })).toBeNull()
   })
 })
 

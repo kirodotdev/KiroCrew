@@ -422,7 +422,7 @@ async def _update_message(request: web.Request) -> web.Response:
             {"error": "invalid channel ID format", "code": "invalid_channel"}, status=400
         )
     channel = channel.strip()
-    if not channel or len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel):
+    if not channel or len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.fullmatch(channel):
         return web.json_response(
             {"error": "invalid channel ID format", "code": "invalid_channel"}, status=400
         )
@@ -523,8 +523,10 @@ async def _update_message(request: web.Request) -> web.Response:
         deny_reason = f"channel {channel} is not the owner's DM"
         deny_code = "not_owner_dm"
     else:
+        from kiro_crew.slack.tracked_channels import untracked_channel_error
+
         denied = not is_tracked_channel(channel)
-        deny_reason = f"channel {channel} not in tracked channels"
+        deny_reason = untracked_channel_error(channel)
         deny_code = "channel_not_tracked"
     if denied:
         _sel().log_tool_invocation(

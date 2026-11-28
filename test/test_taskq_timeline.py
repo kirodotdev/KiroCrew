@@ -417,6 +417,29 @@ def test_an_incomplete_session_scan_is_reported_as_truncated(
     )
 
 
+def test_a_running_calls_progress_is_not_a_timeline_row(store: TaskStore, clock: Clock) -> None:
+    events = [
+        _wf_event(1, 5001.0, "agent_started", agent_id="a0", call_index=0),
+        *(
+            _wf_event(n, 5001.0 + n, "agent_progress", agent_id="a0", turns=n, last_tool="t")
+            for n in range(2, 6)
+        ),
+        _wf_event(6, 5007.0, "agent_finished", agent_id="a0", ok=True),
+    ]
+    _run_row(store, clock, "workflow:wf_1:agent1", kind=model.KIND_WORKFLOW_AGENT)
+    out = _render(
+        store,
+        "workflow:wf_1:agent1",
+        sources=_sources(workflow_events=lambda _r: events),
+    )
+    assert out is not None
+    assert [e for e in _entries(out.markdown) if e[0] == "workflow"] == [
+        ("workflow", "agent_started"),
+        ("workflow", "agent_finished"),
+    ]
+    assert (out.streams[2].status, out.streams[2].count) == (tl.STATUS_OK, 2)
+
+
 def test_the_workflow_run_keeps_the_newest_events_past_its_bound(
     store: TaskStore, clock: Clock, monkeypatch: pytest.MonkeyPatch
 ) -> None:

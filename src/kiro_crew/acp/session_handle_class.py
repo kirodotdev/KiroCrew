@@ -164,6 +164,7 @@ class AcpSessionHandle:
     _sync_mcp_reattempting = _sh_mcp._sync_mcp_reattempting
     _runtime_reattempts_mcp = _sh_mcp._runtime_reattempts_mcp
     _reattempt_failed_mcp_servers = _sh_mcp._reattempt_failed_mcp_servers
+    _note_mcp_call_disconnected = _sh_mcp._note_mcp_call_disconnected
     _apply_init_notification = _sh_mcp._apply_init_notification
     drain_init = _sh_mcp.drain_init
     # What KAS speaks beyond ACP on a session: ``kiro_crew.acp.session_handle_kas``.
@@ -192,6 +193,7 @@ class AcpSessionHandle:
     _native_child_of = _sh_claude_children._native_child_of
     _reset_claude_child_turn = _sh_claude_children._reset_claude_child_turn
     _claude_child_events = _sh_claude_children._claude_child_events
+    _child_session_call_marks = _sh_claude_children._child_session_call_marks
     _note_native_child_request = _sh_claude_children._note_native_child_request
     native_child_requests = _sh_claude_children.native_child_requests
     cancel_native_child = _sh_claude_children.cancel_native_child
@@ -278,6 +280,7 @@ class AcpSessionHandle:
     _refuse_unidentifiable_mcp_approval = _sh_permissions._refuse_unidentifiable_mcp_approval
     _refuse_unreadable_mcp_identity = _sh_permissions._refuse_unreadable_mcp_identity
     _refuse_unretained_provenance = _sh_permissions._refuse_unretained_provenance
+    _refuse_reused_call_id = _sh_permissions._refuse_reused_call_id
     _tool_call_unclassified = _sh_permissions._tool_call_unclassified
     _refuse_by_harness = _sh_permissions._refuse_by_harness
     _note_permission_state = _sh_permissions._note_permission_state
@@ -771,6 +774,13 @@ class AcpSessionHandle:
         # Parent-scoped cache keys populated by tagged native-child tool calls.
         # Cleared per turn beside the sibling per-call caches below.
         self._native_child_tool_call_ids: set[str] = set()
+        # The native-child calls whose finished frame was already marked
+        # (``kas_child_finished``), so each fires PostToolUse once. Cleared with it.
+        self._native_child_finished: set[str] = set()
+        # The title each native-child call's frames last stated, for that mark.
+        self._native_child_titles: dict[str, str] = {}
+        # The same call's hook subject, uncut, kept apart from that display title.
+        self._native_child_subjects: dict[str, str] = {}
         # Server names for which a mid-session MCP OAuth banner was already
         # emitted, so we don't spam duplicates. Discarded on the matching
         # server_initialized / server_init_failure so a later token-expiry
@@ -806,11 +816,15 @@ class AcpSessionHandle:
         self._mcp_sign_in_dropped = 0
         # Servers whose last status entry for this session was ``failed`` with
         # an error that reads as a missing or refused credential (not an OAuth
-        # authorization failure, which the sign-in above handles), and how many
-        # times each was re-attempted. Both bounded by ``BUCKET_CAP`` names.
+        # authorization failure, which the sign-in above handles), or whose
+        # call found the connection gone, and how many times each was
+        # re-attempted. Both bounded by ``BUCKET_CAP`` names.
         # See kiro_crew.acp.mcp_reattempt.
         self._mcp_reattempt_waiting: set[str] = set()
         self._mcp_reattempt_counts: dict[str, int] = {}
+        # Waiting servers a call found disconnected, until their reset starts:
+        # KAS still lists them ``connected``, which must not end the wait.
+        self._mcp_reattempt_dropped: set[str] = set()
         # Failed servers whose error is the SSE fallback's non-200 answer, each
         # probed once for whether it wants a sign-in (``_probe_mcp_sign_in``), at most
         # ``BUCKET_CAP`` names; those whose probe said so and that have not
@@ -883,6 +897,9 @@ class AcpSessionHandle:
         # Whether that shell allowlist lets a read-only command past, as kiro-cli
         # does for `autoAllowReadonly: true` (``kas_agents.projected_shell_readonly``).
         self.kas_spec_shell_readonly: bool = False
+        # For a sub-agent run: the gate-only limits of each agent above it
+        # (``kas_parent_limits.projected_parent_limits``); the gate refuses what any refuses.
+        self.kas_parent_limits: tuple[Any, ...] = ()
         # The agent's write `allowedPaths`, anchored at this session's directory
         # (``kas_write_allowlist.projected_answered_paths``): the gate answers a
         # write every target of which one covers, after its checks.
@@ -899,6 +916,8 @@ class AcpSessionHandle:
         # The agent batch this session registered, so a mode switch can answer
         # what the agent it moves to auto-approves.
         self.kas_registered_agents: list[dict[str, Any]] = []
+        # The agent whose registration mounted the shipped helper (host memory).
+        self.kas_shipped_helper_parent = ""
         # The KAS MCP launch snapshot names every projection of this session wrote
         # (``acp.kas_env_launch``), read before ``session/load`` hoists servers out
         # of the batch and carried across a handle swap, so shutdown removes them.
@@ -912,6 +931,9 @@ class AcpSessionHandle:
         # The engine version when Crew knows it, i.e. its own bundle's
         # (``KasHarness.bundle_engine_version``); "" on the relay.
         self.kas_bundle_engine_version: str = ""
+        # The engine version a relay KAS runs, read from kiro-cli's unpacked
+        # engine (``KasHarness.relay_engine_version``); "" when unread.
+        self.kas_relay_engine_version: str = ""
         # The notice when the kiro-cli a relay KAS runs under is outside its tested
         # range (``KasHarness.untested_version_notice``); "" otherwise.
         self.kas_untested_version_notice: str = ""

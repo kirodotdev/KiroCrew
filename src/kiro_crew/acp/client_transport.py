@@ -13,7 +13,7 @@ Instance fields written: ``_activated_model``, ``_drain_mode_reports``, ``_last_
 ``_mode_frame_superseded``, ``_next_id``, ``_oauth_emitted_servers``,
 ``_pending_oauth_requests``, ``_stale_eligible``, ``_stdin_lock``, ``_stdin_stalled``.
 
-Instance fields read: ``_active_tool_calls``, ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
+Instance fields read: ``_active_tool_calls``, ``_agent``, ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
 ``_cancelled``, ``_kill_sent``, ``_mcp_report``, ``_mode_frame_awaited``,
 ``_native_skill_projection``, ``_process``, ``_session_id``, ``_stderr_lines``,
 ``_stderr_task``, ``_turn_done``, ``memory_mode``.
@@ -59,6 +59,7 @@ from kiro_crew.acp.transport_framing import (
 from kiro_crew.acp.types import (
     METHOD_AGENT_SWITCHED,
     METHOD_MCP_OAUTH_REQUEST,
+    METHOD_SESSION_FORK,
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
     METHOD_SESSION_RESUME,
@@ -85,6 +86,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS,
 )
 from kiro_crew.json_line import parse_json_object_line
+from kiro_crew.mcp_gateway.claim import send_agent_binding, stub_entry_agents
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -226,6 +228,33 @@ def _next_req_id(self: AcpClient) -> int:
 # ── JSON-RPC Transport ──
 
 
+async def _bind_stub_agents(client: AcpClient, params: dict) -> None:
+    """Tell gatewayd which agents' stubs a ``session/new``, ``/load`` or ``/resume`` starts.
+
+    Awaited before the request is written, because the harness starts the stubs
+    while it serves that request and gatewayd serves each one with the declared
+    env of an agent bound to this client's stub session token only. The token
+    reaches every stub through the child's environment (``client_spawn_env``),
+    so every stub entry counts, including the ones nested in a KAS session's
+    custom agents and the ones a launch harness (Strands, pi, claude) mounts
+    through its launch file rather than the wire array, which is left empty.
+    No-op without a token, a gateway socket, a live process or a stub entry.
+    """
+    token = getattr(client, "_stub_session_token", "")
+    socket_path = getattr(client, "_mcp_gateway_socket", None)
+    process = getattr(client, "_process", None)
+    if not token or not socket_path or process is None:
+        return
+    agents = stub_entry_agents(params)
+    # A launch harness puts its stubs in the launch file and sends an empty wire
+    # array, so the agents are not in ``params``; read them off the launch roster.
+    launched = getattr(client, "_launch_mcp_servers", None)
+    if launched:
+        agents = agents | stub_entry_agents({"mcpServers": launched})
+    if agents:
+        await send_agent_binding(socket_path, process.pid, token, agents)
+
+
 async def _send_request(
     self: AcpClient,
     method: str,
@@ -245,9 +274,20 @@ async def _send_request(
     if not self._process or not self._process.stdin:
         raise AcpError("ACP process not running")
 
+    if method in {
+        METHOD_SESSION_NEW,
+        METHOD_SESSION_LOAD,
+        METHOD_SESSION_RESUME,
+        METHOD_SESSION_FORK,
+    }:
+        from kiro_crew.agent_sdk.project_mcp_holds import hold_session_params
+
+        params = await hold_session_params(self.backend, self._agent, params)
     projection = getattr(self, "_native_skill_projection", None)
     if projection is not None:
         params = projection.request(method, params)
+    if method in (METHOD_SESSION_NEW, METHOD_SESSION_LOAD, METHOD_SESSION_RESUME):
+        await _bind_stub_agents(self, params)
     req_id = self._next_req_id()
     if on_id is not None:
         on_id(req_id)
@@ -1160,13 +1200,14 @@ async def _drain_notifications(
     duration: float = _DRAIN_DURATION,
     idle_exit: float = _DRAIN_IDLE_EXIT,
     *,
-    until_declared: bool = False,
+    until_declared: tuple[str, ...] = (),
 ) -> None:
     """Drain init notifications (buffered + live) and log MCP servers.
 
     ``until_declared`` is the unattended-run wait (see
-    ``wait_for_declared_mcp``): quiet does not end the drain, it ends as soon as
-    every server the agent spec declares has reported, or at ``duration``.
+    ``wait_for_declared_mcp``): the declared servers it waits for. Quiet does
+    not end the drain, it ends as soon as none of them is still starting
+    (``McpSessionReport.still_starting``), or at ``duration``.
 
     Captures `_kiro.dev/mcp/oauth_request` into `_pending_oauth_requests` so
     callers can surface an Authorize prompt after `ensure_ready()` returns.
@@ -1273,7 +1314,7 @@ async def _drain_notifications(
         if remaining <= 0:
             break
         if until_declared:
-            if not self._mcp_report.declared_unreported():
+            if not self._mcp_report.still_starting(until_declared):
                 break
             # No idle exit: a slow server is quiet while it boots.
             idle_remaining = remaining

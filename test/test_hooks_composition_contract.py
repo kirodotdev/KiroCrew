@@ -246,8 +246,13 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: by), so every existing caller still fits. ``fire_tool_hooks`` also takes a
 #: trailing ``tool_match_names=None`` keyword (``None`` keeps title matching).
 #: ``safe_copy_file_nolink`` takes a keyword-only ``links_only=False`` (the browser
-#: upload's read of a cloud-files placeholder on Windows), so its callers fit too.
-_BASE_SHAPE_DIGEST = "4f800391db8fe8cf0c7db83ec28af558812e0ea03dc14f557de05ec6d7334b49"
+#: upload's read of a cloud-files placeholder on Windows) and a keyword-only
+#: ``refuse=None`` (as ``safe_read_prefix``: the upload's own fence on the opened
+#: descriptor's real path), so its callers fit too.
+#: ``safe_file_identity`` takes a keyword-only ``hold=None`` (an ``ExitStack`` that
+#: keeps the sampled descriptor open, so a replaced inode's number cannot be
+#: reused before the next sample), so its callers fit too.
+_BASE_SHAPE_DIGEST = "2f457c7b64470c2221cb447d314c0bbd7b73e607b9f47352b95409c24ff1678d"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in
@@ -269,6 +274,9 @@ _FACADE_DEFS = (
     # The ``app-own-tools`` gate row, kept here for the same two reasons: its body is
     # imported at call time from ``apps.own_agent_tools``.
     "_tier_app_own_tools",
+    # The ``spec-parent-limits`` gate row, kept here for the same two reasons: its body
+    # is imported at call time from ``platform.spec_parent_gate``.
+    "_tier_spec_parent_limits",
 )
 
 #: Collaborators the facade re-offers that belong to another module. Their identity is

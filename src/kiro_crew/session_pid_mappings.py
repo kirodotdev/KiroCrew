@@ -391,8 +391,8 @@ def _prune_stale_session_token_files(ttl_secs: float = _SESSION_TOKEN_TTL_SECS) 
 
     It runs from :func:`cleanup_orphaned_sessions` at startup and graceful shutdown,
     and from the session cleanup loop's periodic tick
-    (``SessionCleanup._sweep_session_token_mappings``), so a long-lived gateway
-    reclaims a mapping within one tick of it passing the TTL.
+    (``SessionCleanup._sweep_session_token_mappings``, at most hourly), so a
+    long-lived gateway reclaims a mapping within an hour of it passing the TTL.
 
     A mapping outliving its session is not a forgery risk: it names a session that
     does not exist, and any holder of its token is inside the trust boundary. So

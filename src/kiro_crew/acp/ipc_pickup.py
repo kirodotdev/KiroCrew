@@ -24,14 +24,21 @@ from typing import Any
 
 from kiro_crew.agent_ipc_wire import BRIDGE_PICKUP_PREFIX, GATEWAY_PID_ENV, PICKUP_ENV
 from kiro_crew.agent_sdk.tool_gate import is_enforced
+from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
 from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.mcp_gateway.hashing import expand_stub_flags
 from kiro_crew.providers.mirrors.identity import with_env
 
 logger = logging.getLogger(__name__)
 
-#: The Kiro Crew servers that redeem a pickup at startup (``agent_ipc_client``).
-PICKUP_SERVERS: frozenset[str] = frozenset({"kirocrew-core", "kirocrew-dashboard"})
+#: The Kiro Crew servers that redeem a pickup at startup (``agent_ipc_client``): every
+#: one an enforced harness's array starts directly. That is the control plane each
+#: session mounts, plus the session-control and crew-panel servers a member session
+#: appends. Each calls the gateway's internal routes, so a server missing here gets
+#: ``internal_secret_missing`` on every call.
+PICKUP_SERVERS: frozenset[str] = frozenset(
+    {*CONTROL_PLANE_SERVERS, "kirocrew-dashboard", "kirocrew-panel"}
+)
 
 
 def _launches_server_directly(element: dict[str, Any]) -> bool:

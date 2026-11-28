@@ -85,8 +85,20 @@ custom-rules:
       - Auto-approve / YOLO mode: an AD-HOC activation (Slack command, dashboard
         picker, API) MUST auto-expire — either on a timed TTL capped at the
         SafetyOverride 24h ceiling, or, when the operator selects the
-        `until_shutdown` duration, when the process stops. Never persist an
-        ad-hoc grant across a restart. A grant the operator DECLARED in
+        `until_shutdown` duration, when the user stops Kiro Crew. An ad-hoc
+        YOLO grant and an owner's dashboard chat Trust / Trust reads are KEPT
+        across every exit the user did not choose (any restart, an update's
+        re-exec, a crash or kill, a host reboot, a SIGTERM nobody sent through
+        Kiro Crew) and end only on a stop the user chose, which writes the
+        user-stop mark first (decision
+        docs/decisions/2026-11-18-yolo-and-chat-trust-survive-every-exit-the-user-did-not-choose.md).
+        Persist such a grant ONLY through kept_grants.py: an HMAC-signed record
+        under the sandbox-HIDDEN `kept-grants` directory, never the transcript or
+        any agent-writable file; read fail-closed (unsigned, malformed or
+        tampered means no grant); restore only what the ceiling in force still
+        permits (approval_modes, yolo_max_seconds from the ORIGINAL activation,
+        session_mode_permitted), never extending a timed grant; and audit every
+        restore and every clear as the manual mode_change does. A grant the operator DECLARED in
         owner-only config (`agent.dangerously_skip_permissions`; the camelCase and legacy `yolo` spellings are also read) MAY
         persist without expiry and IS re-established at each startup: it is a
         standing instruction, is held in memory only (never written to disk), is
@@ -517,6 +529,17 @@ custom-rules:
           stand-in answers only where that check gives no verdict
           (testing-conventions § A host probe that asks a different program
           than the one under test).
+      14. (D1) A scripted event stream (`_set_stream`, `_async_iter`, a list
+          of events a fake client yields) whose events start a TASK in the
+          product, followed by an assertion on what that task did inside the
+          same turn, when the script ends the turn right after the event that
+          starts it. Production's next model step runs for seconds; the
+          script's runs in a few loop steps, so a task that hops a thread
+          loses on a slow runner (a held steer's boundary flush, #38449, red
+          on five macOS PRs). The script must wait on the task's own signal
+          before its next event, the way a real model step outlasts it
+          (testing-conventions § A scripted stream that ends at once races
+          any task its events start).
 
       14. (D13) A test that lets the HOST answer what the code reads: a real tool
           found on the inherited `PATH` or in a fixed install directory (the
@@ -1391,6 +1414,7 @@ custom-rules:
       - ".github/sync-io-in-async-fs-baseline.txt"
       - ".github/agent-sdk-boundary-baseline.txt"
       - ".github/docs-lint-baseline.txt"
+      - ".github/route-access-baseline.txt"
       - "website/src/i18n/untranslated-baseline.json"
       - "website/src/i18n/untranslated-strict-baseline.json"
       - "website/src/i18n/render-baseline.json"
@@ -1861,6 +1885,37 @@ custom-rules:
       Allowed (do NOT flag): rows whose text is the model's or a tool's own
       output, rows a dedicated card draws from structured meta, and assistant
       rows carrying the compaction card's own notice markers.
+
+  - id: a-route-declares-its-action-and-tier
+    blocking: true
+    file-patterns:
+      - "src/kiro_crew/dashboard/routes/**"
+      - "src/kiro_crew/dashboard/server_runtime/**/*.py"
+      - "src/kiro_crew/dashboard/route_access.py"
+      - "src/kiro_crew/**/routes*.py"
+      - ".github/route-access-baseline.txt"
+    rule: |
+      An HTTP route added to the gateway comes with a `RouteAccess(action,
+      tier)` entry in `ROUTES` in `kiro_crew.dashboard.route_access`
+      (docs/system-specs/modules/route-access.md).
+      `test/test_route_access_labels.py` decides whether an entry exists; this
+      rule judges whether it is right.
+
+      - FLAG a line added to `.github/route-access-baseline.txt`. The baseline
+        lists the routes that had no entry when the table arrived and only
+        shrinks; a new route gets an entry, not a baseline line.
+      - For each route this diff adds or re-paths, read the handler. FLAG an
+        action name that does not say what the handler does, and a `.read`
+        name on a handler that writes a file, starts a job or changes state,
+        whatever its HTTP method.
+      - FLAG a new route labelled `stable` or `preview` with no contract test
+        for its request and response in the diff, and a `/v1` route whose tier
+        disagrees with what docs/request-for-change/rfc-crew-api.md or its
+        OpenAPI file says about that route.
+
+      Allowed (do NOT flag): a route whose entry and handler agree; a baseline
+      line deleted because its route gained an entry or was removed; a diff
+      that touches these files and adds or re-paths no route.
 
   - id: a-wheel-install-job-pins-its-python
     blocking: false

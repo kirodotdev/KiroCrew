@@ -121,6 +121,6 @@ describe('OverviewPage — tailnet-mobile suppression seam', () => {
   it('still renders the rest of the page when suppressed', async () => {
     // Suppression must remove one card, not blank the surface around it.
     await mountFresh(true)
-    expect(screen.getByText('Memory')).toBeInTheDocument()
+    expect(screen.getByText('Usage')).toBeInTheDocument()
   })
 })

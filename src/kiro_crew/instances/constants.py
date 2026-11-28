@@ -39,10 +39,13 @@ DEFAULT_SSH_COMPRESSION: bool = True
 DEFAULT_PROBE_INTERVAL_SECS: int = 10
 DEFAULT_PROBE_FAILURE_THRESHOLD: int = 3
 
-# Total timeout (secs) for one end-to-end liveness probe: `GET /api/health` through
-# the forward must return an HTTP response. A TCP connect alone passes on a zombie
-# forward (a session-manager-plugin holding the socket, relaying nothing). 4x the 1.0s
-# `_port_reachable` budget, so one slow round trip does not tear down a good tunnel.
+# Budget (secs) for one end-to-end liveness probe: `GET /api/health` through the
+# forward must return an HTTP response within it, or the probe is a miss. A TCP
+# connect alone passes on a zombie forward (a session-manager-plugin holding the
+# socket, relaying nothing). A missed probe's request stays open as long as its
+# answer could still count ((threshold - 1) x (interval + this) + this, 32s at the
+# defaults), and a late answer proves the forward, so a slow far end is not torn
+# down like a dead one.
 # Not user-tunable: the per-transport connect timeouts are the knob for a slow proxy.
 DEFAULT_PROBE_HEALTH_TIMEOUT_SECS: float = 4.0
 

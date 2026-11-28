@@ -462,8 +462,8 @@ it.each(['default', 'member-review'])('reviews a %s deletion proposal as a scope
   const proposal = (await within(detail).findByText('Proposed change')).closest('details')!
   await waitFor(() => expect(within(proposal).getByText('This memory will be forgotten.')).toBeVisible())
   expect(within(proposal).getAllByText(current.text)).toHaveLength(1)
-  const accepted = within(detail).getByText('Recorded change').closest('details')!
-  fireEvent.click(within(accepted).getByText('Recorded change').closest('summary')!)
+  const accepted = within(detail).getByText('Edited').closest('details')!
+  fireEvent.click(within(accepted).getByText('Edited').closest('summary')!)
   expect(within(accepted).getByText('This memory will be forgotten.')).toBeVisible()
   expect(within(accepted).queryByRole('button', { name: 'Use proposed value' })).not.toBeInTheDocument()
   fireEvent.click(within(proposal).getByRole('button', { name: 'Use proposed value' }))
@@ -777,11 +777,11 @@ it.each(['default', 'member-review'])('restores an earlier %s version through a 
   const detail = screen.getByRole('dialog', { name: 'Memory details' })
   const newest = (await within(detail).findByText('Restored version')).closest('details')!
   // The current version, and any older one holding the same value, has nothing to restore.
-  expect(within(newest).getByText('Current version')).toBeVisible()
+  expect(within(newest).getByText('Current')).toBeVisible()
   expect(within(newest).queryByRole('button', { name: /^Restore/ })).toBeNull()
   expect(within(detail).getAllByRole('button', { name: /^Restore “/, hidden: true }).map(button => button.textContent)).toEqual(['Restore “Boston”', 'Restore “Portland”'])
-  const older = within(detail).getAllByText('Recorded change')[1].closest('details')!
-  fireEvent.click(within(older).getByText('Recorded change').closest('summary')!)
+  const older = within(detail).getAllByText('Edited')[1].closest('details')!
+  fireEvent.click(within(older).getByText('Edited').closest('summary')!)
   fireEvent.click(within(older).getByRole('button', { name: 'Restore “Portland”' }))
   const dialog = screen.getByRole('dialog', { name: 'Restore an earlier version' })
   await waitFor(() => expect(api.memoryEditPreview).toHaveBeenCalledWith(store, { items: [{ kind: 'fact', id: current.id, revision: current.revision }] }, { type: 'restore', revision_id: 2 }))

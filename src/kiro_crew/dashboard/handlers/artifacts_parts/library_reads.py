@@ -80,8 +80,8 @@ _STRIP_TAGS_RE = re.compile(r"<[^>]+>")
 # and a label stops at the next ``[`` so a run of ``[`` cannot rescan the text.
 _MD_LINK_RE = re.compile(rf"!?\[([^\[\]]*)\]\({md_link_destination('[^()]')}*\)")
 _MD_HEADING_RE = re.compile(r"(?m)^\s{0,3}#{1,6}\s*")  # # headings
-_MD_BLOCKQUOTE_RE = re.compile(r"(?m)^\s*>\s?")  # > quotes
-_MD_LIST_RE = re.compile(r"(?m)^\s*(?:[-*+]|\d+\.)\s+")  # -, *, 1. list markers
+_MD_BLOCKQUOTE_RE = re.compile(r"(?m)^[^\S\n]*>\s?")  # > quotes
+_MD_LIST_RE = re.compile(r"(?m)^[^\S\n]*(?:[-*+]|\d+\.)\s+")  # -, *, 1. list markers
 _MD_FENCE_RE = re.compile(r"`{1,3}")  # code ticks/fences
 _MD_EMPHASIS_RE = re.compile(r"[*_~]")  # bold/italic/strike markers
 
@@ -529,6 +529,63 @@ async def api_artifact_asset(request: web.Request) -> web.Response:
         # a given image artifact never change (a re-generated image is a new
         # artifact).
         headers={"Cache-Control": "private, max-age=31536000, immutable"},
+    )
+
+
+def _docx_error(error: str, code: str, status: int) -> web.Response:
+    return web.json_response({"error": error, "code": code}, status=status)
+
+
+async def api_artifact_docx(request: web.Request) -> web.Response:
+    """``GET /api/artifacts/{slug}/docx[?version=N]``: a markdown or text artifact as a Word file.
+
+    Built from the text the detail route shows (the same redaction), live or the
+    numbered version. The redaction and the build run off the event loop.
+    """
+    slug = request.match_info.get("slug", "")
+    version = None
+    if "version" in request.query:
+        try:
+            version = int(request.query["version"])
+        except ValueError:
+            return _docx_error("version must be a whole number", "bad_version", 400)
+    try:
+        art = await _run_off_loop(lambda: get_default_store().get(slug, version=version))
+    except ArtifactNotFoundError as exc:
+        return _docx_error(str(exc), "not_found", 404)
+    except ArtifactValidationError as exc:
+        return _docx_error(str(exc), "bad_slug", 400)
+    except (ArtifactError, OSError) as exc:
+        logger.warning("artifact docx read failed for %s: %s", slug, exc)
+        return _docx_error("could not read the artifact", "read_failed", 500)
+    if art.kind not in ("markdown", "text"):
+        return _docx_error(
+            "only markdown and text artifacts can be a .docx", "unsupported_kind", 400
+        )
+    from kiro_crew import artifact_docx
+    from kiro_crew.dashboard.handlers.artifact_download import _content_disposition
+
+    # Drop what a Word file cannot carry before redaction, so the drop cannot join a split secret.
+    art.content = await asyncio.to_thread(artifact_docx._xml_safe, art.content or "")
+    shown = await asyncio.to_thread(_serialize, art, include_content=True)
+    try:
+        data = await asyncio.to_thread(
+            artifact_docx.build, shown.get("content") or "", art.kind == "markdown"
+        )
+    except artifact_docx.DocxTooLarge:
+        return _docx_error("the artifact is too large for a .docx", "too_large", 413)
+    # The validated slug, never the name, so no text of the name reaches the header.
+    filename = f"{art.slug}-v{version if version is not None else art.version}.docx"
+    return web.Response(
+        body=data,
+        headers={
+            "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "Content-Disposition": _content_disposition(filename),
+            "Content-Security-Policy": "sandbox",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+            "Referrer-Policy": "no-referrer",
+        },
     )
 
 

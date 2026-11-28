@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -34,6 +35,7 @@ from kiro_crew.executors import maintenance_executor
 from kiro_crew.security import _submodule, logger
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
 
+from .deny_gate_nesting import _DEPTH_NOTE, _DEPTH_REFUSAL, _nested_past_cap
 from .redaction_switch import always_scan
 from .shell_commands import sharing_views
 from .text_redaction import redact_and_truncate
@@ -102,46 +104,13 @@ def _emit_push_allow_event(command: str) -> None:
         )
 
 
-def _strip_win_program_suffix(word: str) -> str:
-    return next((word[:-4] for s in (".exe", ".cmd", ".bat") if word.endswith(s)), word)
-
-
-def _cmd_line_args(args: "list[str]") -> "list[str] | None":
-    """The words after ``/c`` or ``/k`` in a ``cmd`` argv, past other ``/x`` switches.
-
-    cmd.exe also takes the switch glued to another switch or to the line (``/s/c``,
-    ``/c"dir"``); the rest of that word is then the first word of the line.
-    """
-    for i, arg in enumerate(args):
-        if not arg.startswith("/"):
-            return None
-        low = arg.lower()
-        for switch in ("/c", "/k"):
-            at = low.find(switch)
-            if at != -1:
-                tail = arg[at + 2 :]
-                return ([tail] if tail else []) + args[i + 1 :]
-    return None
-
-
-def _win_program_index(tokens: "list[str]") -> "int | None":
-    """Index of the program word, past ``sudo``/``env``-style wrappers and ``cmd /c``."""
-    start = 0
-    while (found := _submodule("argv_rules")._program_args(tokens[start:])) is not None:
-        program, args = found
-        rest = _cmd_line_args(args) if _strip_win_program_suffix(program) == "cmd" else None
-        if not rest:
-            return len(tokens) - len(args) - 1
-        start = len(tokens) - len(rest)
-    return None
-
-
 def _cmd_c_payload(tokens: "list[str]") -> "list[str]":
     """The quoted line of ``cmd /c "<line>"`` (or ``/k``), read as a nested command."""
-    found = _submodule("argv_rules")._program_args(tokens)
-    if found is None or _strip_win_program_suffix(found[0]) != "cmd":
+    rules = _submodule("argv_rules")
+    found = rules._program_args(tokens)
+    if found is None or rules._strip_win_program_suffix(found[0]) != "cmd":
         return []
-    rest = _cmd_line_args(found[1])
+    rest = rules._cmd_line_args(found[1])
     return rest if rest is not None and len(rest) == 1 and " " in rest[0].strip() else []
 
 
@@ -333,9 +302,11 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                 candidates.append(stripped)
             # Windows resolves ``aws.exe`` / ``aws.cmd`` / ``aws.bat`` to the same
             # program as ``aws``; the program word only, appended, never substituted.
-            at = _win_program_index(tokens)
-            if at is not None and _strip_win_program_suffix(tokens[at]) != tokens[at]:
-                words = [*tokens[:at], _strip_win_program_suffix(tokens[at]), *tokens[at + 1 :]]
+            rules = _submodule("argv_rules")
+            at = rules._win_program_index(tokens)
+            strip = rules._strip_win_program_suffix
+            if at is not None and strip(tokens[at]) != tokens[at]:
+                words = [*tokens[:at], strip(tokens[at]), *tokens[at + 1 :]]
                 candidates.append(" ".join(words))
             for candidate in candidates:
                 if not (is_root and not emit_self) and candidate not in seen_views:
@@ -529,113 +500,97 @@ class _DenyWaiver:
         return verdict
 
 
-# Matches the ssh floor's _MAX_SSH_READING_DEPTH; unify the two once both are on main.
-_MAX_SUBSTITUTION_DEPTH = 32
-# Where a shell word starts, for a ``#`` comment and the ``case`` / ``esac`` words.
-_WORD_BREAK = frozenset(" \t\n;&|()<>`")
-_DEPTH_REFUSAL = f"substitution nesting deeper than {_MAX_SUBSTITUTION_DEPTH}"
-_DEPTH_NOTE = (
-    f"a command nested more than {_MAX_SUBSTITUTION_DEPTH} substitutions deep is refused;"
-    " flatten it"
+#: The ``_self_protection_floor_hit`` read in progress: its row set, and the list
+#: the hit of a command it carries is kept in (``_reentered_floor_hit``).  Outside
+#: a read it is ``(None, None)``: every row-backed floor runs and nothing is kept.
+_FLOOR_READ: "ContextVar[tuple[set[str] | None, list[tuple[str, str | None]] | None]]" = ContextVar(
+    "self_protection_floor_read", default=(None, None)
 )
 
 
-def _nested_past_cap(text: str) -> bool:
-    """True once *text* nests command text more than ``_MAX_SUBSTITUTION_DEPTH`` deep.
+def _reentered_floor_hit(command: str) -> "tuple[str, str | None] | None":
+    """``_self_protection_floor_hit`` on a *command* another command runs.
 
-    One pass, linear in *text*. The floors re-walk every substitution body as its own
-    string, so their cost grows with depth times length; past the cap the command is
-    refused before any floor runs. Bash opens a FRESH quoting context inside each
-    ``$(``, so ``"$(echo "$(``... nests even though the quotes alternate: the scan keeps
-    a stack of contexts rather than one flat quote state. Only ``$(``, ``<(`` and
-    ``>(`` count. A bare ``(`` is tracked, so its ``)`` closes it, and so is a backtick
-    span, so a ``)`` or quote inside it reads right, but neither counts. An unescaped
-    backtick cannot open inside a backtick span (it closes it, even from inside a
-    double-quoted string there), so between two counted levels sits at most one
-    backtick level and the floors' work stays within about twice the cap. Not counting
-    them also keeps strings that are not posix shell from tripping the cap: PowerShell
-    escapes with a backtick (a backtick before a quote), and a non-shell tool string may nest parens.
-    A ``#`` comment runs to its newline, and between ``case`` and ``esac`` a ``)`` ends
-    a pattern rather than a frame, as the floors' own walk reads them.
+    A floor reading a carried command (``argv_floor_git_tar``) re-enters the
+    dispatcher here, with the row set of the read in progress, so a row the
+    operator disabled stays off for carried commands too.  The hit is kept for
+    that read, which reports it under the inner row's own id and pattern.
     """
-    stack = ["c"]  # c: substitution body, p: bare ( group, d: double quotes, b: backtick body
-    cases = [0]  # open ``case`` words per frame: a pattern's ``)`` closes nothing there
-    depth = 0  # open $( <( >( frames above the outermost command
-    escaped = -1  # index of the last character a backslash escaped
-    i, n = 0, len(text)
-    while i < n:
-        ch, top = text[i], stack[-1]
-        if ch == "\\":
-            escaped = i + 1
-            i += 2
-            continue
-        if top == "d":
-            if ch == '"':
-                stack.pop()
-                cases.pop()
-            elif ch == "$" and text.startswith("(", i + 1):
-                stack.append("c")
-                cases.append(0)
-                depth += 1
-                i += 1
-            elif ch == "`":
-                if stack[-2] == "b":  # bash closes the enclosing backtick span here
-                    del stack[-2:]
-                    del cases[-2:]
-                else:
-                    stack.append("b")
-                    cases.append(0)
-        elif ch == "'":
-            ansi = i > 0 and text[i - 1] == "$"
-            j = i + 1
-            while j < n and text[j] != "'":
-                j += 2 if ansi and text[j] == "\\" else 1
-            i = j + 1
-            continue
-        elif ch == "#" and (i == 0 or text[i - 1] in _WORD_BREAK):
-            newline = text.find("\n", i)
-            if newline < 0:
-                break
-            i = newline  # the comment's own quotes and parens are text
-            continue
-        elif ch in "ce" and (i == 0 or text[i - 1] in _WORD_BREAK):
-            word = text[i : i + 4]
-            j = i - 1  # each blank run is walked only by the word after it: linear
-            while j >= 0 and text[j] in " \t":
-                j -= 1
-            before = text[j] if j >= 0 else ""  # shortcut: reads no reserved-word chain
-            if (
-                word in ("case", "esac")
-                and text[i + 4 : i + 5] in _WORD_BREAK
-                and before in ("", "\n", ";", "&", "|", "(", "`")
-            ):
-                cases[-1] = cases[-1] + 1 if word == "case" else max(0, cases[-1] - 1)
-                i += 4
+    floor_enabled, reentered = _FLOOR_READ.get()
+    hit = _self_protection_floor_hit(command, command, floor_enabled)
+    if hit is not None and reentered is not None:
+        reentered.append(hit)
+    return hit
+
+
+def _self_protection_floor_hit(
+    lower: str, raw_text: str, floor_enabled: "set[str] | None"
+) -> "tuple[str, str | None] | None":
+    """``(rule id, catalog pattern or None)`` of the first argv floor refusing *lower*.
+
+    The one dispatcher of every self-protection argv floor, in evaluation order: the
+    row-backed floors first, each run only while its pattern is in *floor_enabled*,
+    then the ungated subcommand floors, whose hit carries no pattern. *raw_text* is
+    the command as submitted, for the credential-mint, ssh and git/tar predicates. ``None`` for
+    *floor_enabled* runs every row-backed floor.  A floor refusing *lower* because a
+    command it carries was refused on re-entry (``_reentered_floor_hit``) reports
+    that inner hit, so the refusal names the row that matched.
+    """
+    _rules = _submodule("denied_rules")
+    _argv = _submodule("argv_floor")
+    reentered: "list[tuple[str, str | None]]" = []
+    read = _FLOOR_READ.set((floor_enabled, reentered))
+    try:
+        for rule_id, predicate in (
+            ("credential-exfil-kirocrew-token", _argv._is_credential_mint),
+            ("self-protection-kill", _argv._is_self_kill),
+            (
+                "self-protection-dev-mode-out-of-root-confirm",
+                _argv._is_dev_mode_out_of_root_confirm,
+            ),
+            ("sandbox-escape-ssh-self", _argv._reaches_self_over_ssh),
+            ("sandbox-escape-git-tar-self", _argv._is_git_tar_to_self),
+        ):
+            pattern = _rules._SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
+            if pattern is None or (floor_enabled is not None and pattern not in floor_enabled):
                 continue
-        elif ch == '"':
-            stack.append("d")
-            cases.append(0)
-        elif ch == "(":
-            if i > 0 and text[i - 1] in "$<>" and escaped != i - 1:
-                stack.append("c")
-                depth += 1
-            else:
-                stack.append("p")
-            cases.append(0)
-        elif ch == ")" and top in "cp" and len(stack) > 1 and not cases[-1]:
-            depth -= stack.pop() == "c"
-            cases.pop()
-        elif ch == "`":
-            if top == "b":
-                stack.pop()
-                cases.pop()
-            else:
-                stack.append("b")
-                cases.append(0)
-        if depth > _MAX_SUBSTITUTION_DEPTH:
-            return True
-        i += 1
-    return False
+            # The mint predicate also gets the command AS SUBMITTED: it decodes base64
+            # literals to read the name they hide, and base64 does not survive the
+            # lower-casing every other predicate reads.  The git/tar predicate too:
+            # tar's ``L`` takes a value and ``l`` does not.  So does the ssh one: a
+            # wrapper's option words keep their case there (``sudo -H`` is not
+            # ``sudo -h``).
+            hit = (
+                predicate(lower, raw_text=raw_text)
+                if predicate
+                in (
+                    _argv._is_credential_mint,
+                    _argv._reaches_self_over_ssh,
+                    _argv._is_git_tar_to_self,
+                )
+                else predicate(lower)
+            )
+            if hit:
+                return reentered[0] if reentered else (rule_id, pattern)
+    finally:
+        _FLOOR_READ.reset(read)
+    # The self-management SUBCOMMAND floors have no catalog row (their
+    # product-name-anywhere regex rows were deleted, see
+    # ``_SELF_PROTECTION_UNGATED_FLOOR_IDS``), so there is no pattern to gate on
+    # and nothing to report but the id: they run unconditionally, like the
+    # git-publish anti-obfuscation branches.  Gating them on a row lookup was the
+    # trap this replaces -- ``.get(rule_id)`` returning None fell through to
+    # ``continue``, so deleting the row silently disabled the floor.
+    for rule_id, predicate in (
+        ("self-protection-restart", _argv._is_self_restart),
+        ("self-protection-update", _argv._is_self_update),
+        ("self-protection-gateway-restart", _argv._is_self_gateway_restart),
+        ("self-protection-cloud", _argv._is_self_cloud_destructive),
+        ("self-protection-skills-authority-retire", _argv._is_self_skills_authority_retire),
+    ):
+        if predicate(lower):
+            return rule_id, None
+    return None
 
 
 @sharing_views
@@ -738,6 +693,7 @@ def is_denied(
     _diag = _submodule("diagnostics")
 
     lower = tool_name.lower()
+    _submodule("shell_normalizer")._keep_submitted_command(tool_name)
     waive = _DenyWaiver(tool_name, frozenset(waived))
 
     def _reason(
@@ -818,6 +774,11 @@ def is_denied(
     # A rule the operator has DISABLED must stay disabled, so the floor runs
     # only for patterns still present in the effective set.
     floor_enabled = {p for p in regex_patterns if p in _rules._SELF_PROTECTION_FLOOR_PATTERNS}
+    # The git/tar row is enforced by its floor alone, as git-publish is: its regex
+    # would match a quoted argument that only names a dial
+    # (``git commit -m "git clone localhost:x"``), which the floor allows.
+    git_tar_pattern = _rules._SELF_PROTECTION_FLOOR_BY_ID.get("sandbox-escape-git-tar-self")
+    regex_patterns = [p for p in regex_patterns if p != git_tar_pattern]
     # An interpreter CONCATENATES adjacent string literals, so ``'p'+'kill -f <name>'``
     # is one command by the time it reaches the sink.  The two interpreter rules are
     # therefore also matched against a copy with those joins collapsed.  Scoped to those
@@ -959,81 +920,36 @@ def is_denied(
     # ── Self-protection floor (argv-structural, not a glob) ──
     # Runs before the pattern passes and on the WHOLE string, for the same reason
     # the git-publish floor does: the evasions live in shell syntax that textual
-    # splitting scatters or mis-reads.  Each predicate here is checked only if its
-    # catalog row is still in the effective set, so an operator-disabled rule
-    # stays disabled.
-    for rule_id, predicate in (
-        ("credential-exfil-kirocrew-token", _argv._is_credential_mint),
-        ("self-protection-kill", _argv._is_self_kill),
-        ("self-protection-dev-mode-out-of-root-confirm", _argv._is_dev_mode_out_of_root_confirm),
-        ("sandbox-escape-ssh-self", _argv._reaches_self_over_ssh),
-    ):
-        pattern = _rules._SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
-        if pattern is None or pattern not in floor_enabled:
-            continue
-        # The mint predicate also gets the command AS SUBMITTED: it decodes base64
-        # literals to read the name they hide, and base64 does not survive the
-        # lower-casing every other predicate reads.
-        #
-        # The kill floor derives its matched target's offsets in the same walk that
-        # decides the verdict (``_self_kill_span``), so the diagnostic points at the
-        # token not the whole command. The verdict is unchanged -- a self-kill
-        # always yields a span, so ``hit`` is exactly ``_is_self_kill``; other
-        # floors report no offsets and span the whole subject.
+    # splitting scatters or mis-reads.  Each row-backed predicate is checked only
+    # if its catalog row is still in the effective set, so an operator-disabled
+    # rule stays disabled (``_self_protection_floor_hit``).
+    floor_hit = _self_protection_floor_hit(lower, tool_name, floor_enabled)
+    if floor_hit is not None:  # never waived: a self-guard rule (``_DenyWaiver``)
+        rule_id, floor_pattern = floor_hit
+        # The kill floor derives its matched target's offsets so the diagnostic
+        # points at the token, not the whole command.  Offsets index ``lower`` and
+        # the diagnostic renders ``tool_name``, so a width-changing lowercase
+        # (``İ`` U+0130 -> two) drops to the whole-command span.
         span: "tuple[int, int] | None" = None
-        if predicate is _argv._is_credential_mint:
-            hit = _argv._is_credential_mint(lower, raw_text=tool_name)
-        elif predicate is _argv._is_self_kill:
+        if rule_id == "self-protection-kill":
             span = _argv._self_kill_span(lower)
-            hit = span is not None
-            # Offsets index ``lower``; the diagnostic renders ``tool_name``. They
-            # align only while ``str.lower`` kept the length -- a width-changing
-            # lowercase (``İ`` U+0130 -> two) would land them on the wrong raw
-            # bytes, so drop to the whole-command span.
             if span is not None and len(lower) != len(tool_name):
                 span = None
-        elif predicate is _argv._reaches_self_over_ssh:
-            # Also the command as submitted: a wrapper's option words keep their
-            # case there (``sudo -H`` is not ``sudo -h``).
-            hit = _argv._reaches_self_over_ssh(lower, raw_text=tool_name)
-        else:
-            hit = predicate(lower)
-        if hit:  # never waived: a self-guard rule (``_DenyWaiver``)
-            # Report the rule's own pattern, exactly as the regex tier does, so
-            # the denial reason and the SEL event still map back to the rule id —
-            # plus a second line saying the match was STRUCTURAL, because a floor
-            # hit routinely occurs on input that pattern cannot match and the
-            # bare identifier reads as a false explanation.
-            _emit_deny_event(tool_name, pattern, lower)
-            return _reason(
-                pattern,
-                _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
-                rule=rule_id,
-                component="argv-floor",
-                span=span,
-            )
-    # The self-management SUBCOMMAND floors have no catalog row (their
-    # product-name-anywhere regex rows were deleted, see
-    # ``_SELF_PROTECTION_UNGATED_FLOOR_IDS``), so there is no pattern to gate on
-    # and nothing to report but the id: they run unconditionally, like the
-    # git-publish anti-obfuscation branches.  Gating them on a row lookup was the
-    # trap this replaces -- ``.get(rule_id)`` returning None fell through to
-    # ``continue``, so deleting the row silently disabled the floor.
-    for rule_id, predicate in (
-        ("self-protection-restart", _argv._is_self_restart),
-        ("self-protection-update", _argv._is_self_update),
-        ("self-protection-gateway-restart", _argv._is_self_gateway_restart),
-        ("self-protection-cloud", _argv._is_self_cloud_destructive),
-        ("self-protection-skills-authority-retire", _argv._is_self_skills_authority_retire),
-    ):
-        if predicate(lower):
-            _emit_deny_event(tool_name, rule_id, lower)
-            return _reason(
-                rule_id,
-                _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
-                rule=rule_id,
-                component="argv-floor",
-            )
+        # A row-backed hit reports the rule's own pattern, exactly as the regex
+        # tier does, so the denial reason and the SEL event still map back to the
+        # rule id -- plus a second line saying the match was STRUCTURAL, because a
+        # floor hit routinely occurs on input that pattern cannot match and the
+        # bare identifier reads as a false explanation.  An ungated hit reports
+        # its id.
+        refusal_key = floor_pattern if floor_pattern is not None else rule_id
+        _emit_deny_event(tool_name, refusal_key, lower)
+        return _reason(
+            refusal_key,
+            _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
+            rule=rule_id,
+            component="argv-floor",
+            span=span,
+        )
 
     # ── Pattern passes (shared with the synthesized tier's ``segments=True``) ──
     # The shipped ``rm -rf /.*`` row matches every absolute path. It reads a view where
@@ -1167,28 +1083,35 @@ def _deny_pattern_passes(
     # a destructive needle at any offset within a single un-separated segment is
     # caught here.  In ``is_denied``, ``_is_git_publish`` / the always-on floors
     # also run on the full string before this call.
-    for pattern, is_regex in all_patterns:
-        if _rules._deny_pattern_matches(pattern, lower, is_regex):
-            whole_string_exception_match = _rules._exception_applies(
-                lower, _rules._DENY_EXCEPTIONS.get(pattern, [])
-            )
-            if not whole_string_exception_match and (
-                _s3_download_narrows(pattern, lower, narrow_cache, tool_name, shipped)
-                or _nc_redirect_narrows(pattern, text, shipped)
-            ):
-                # Same shape as the glob exception above: a whole-string carve-out
-                # only DEFERS to Pass 2, which re-judges each segment on its own,
-                # so an embedded real invocation is still denied there.  The audit
-                # is emitted here and GATES the carve-out.
-                if _emit_deny_exception_event(
-                    tool_name, pattern, _deny_exception_mechanism_for(pattern)
+    #
+    # Windows runs ``curl.exe`` as ``curl``, and a row that spans a separator
+    # (``curl .* \| sh``) is in no segment's view, so the full input is also matched
+    # with its program words unsuffixed, nested shell payloads included, after the raw
+    # string.  The narrowings still read the command as written, as Pass 2 does.
+    for whole in (lower, *_submodule("deny_gate_windows")._unsuffixed_whole_views(lower)):
+        for pattern, is_regex in all_patterns:
+            if _rules._deny_pattern_matches(pattern, whole, is_regex):
+                whole_string_exception_match = _rules._exception_applies(
+                    whole, _rules._DENY_EXCEPTIONS.get(pattern, [])
+                )
+                if not whole_string_exception_match and (
+                    _s3_download_narrows(pattern, lower, narrow_cache, tool_name, shipped)
+                    or _nc_redirect_narrows(pattern, text, shipped)
+                    or _file_body_narrows(pattern, text, shipped)
                 ):
-                    whole_string_exception_match = True
-            if not whole_string_exception_match:
-                if waive is not None and waive(pattern):
-                    continue
-                _emit_deny_event(tool_name, pattern, lower)
-                return reason(pattern)
+                    # Same shape as the glob exception above: a whole-string carve-out
+                    # only DEFERS to Pass 2, which re-judges each segment on its own,
+                    # so an embedded real invocation is still denied there.  The audit
+                    # is emitted here and GATES the carve-out.
+                    if _emit_deny_exception_event(
+                        tool_name, pattern, _deny_exception_mechanism_for(pattern)
+                    ):
+                        whole_string_exception_match = True
+                if not whole_string_exception_match:
+                    if waive is not None and waive(pattern):
+                        continue
+                    _emit_deny_event(tool_name, pattern, whole)
+                    return reason(pattern)
 
     # ── Pass 2: per-segment (re-)evaluation ──
     # Split into segments and check each.  This runs UNCONDITIONALLY: besides
@@ -1253,6 +1176,7 @@ def _deny_pattern_passes(
                         _rules._exception_applies(view, _rules._DENY_EXCEPTIONS.get(pattern, []))
                         or _s3_download_narrows(pattern, lower, narrow_cache, tool_name, shipped)
                         or _nc_redirect_narrows(pattern, text, shipped)
+                        or _file_body_narrows(pattern, text, shipped)
                     ):
                         # ``lower``, not ``view``: the s3 reading judges the WHOLE
                         # command, since a Pass 2 segment is not always a command.
@@ -1468,10 +1392,38 @@ def _deny_exception_mechanism_for(pattern: str) -> str:
         return _S3_DOWNLOAD_MECHANISM
     if pattern == _submodule("exfil_bash")._NC_FILE_REDIRECT_PATTERN:
         return _NC_REDIRECT_SCOPE_MECHANISM
+    if pattern == _submodule("exfil_bash")._FILE_BODY_PATTERN:
+        return _FILE_BODY_SCOPE_MECHANISM
     return "_DENY_EXCEPTIONS"
 
 
 _NC_REDIRECT_SCOPE_MECHANISM = "_NC_REDIRECT_SCOPE"
+
+_FILE_BODY_SCOPE_MECHANISM = "_FILE_BODY_SCOPE"
+
+
+def _file_body_narrows(pattern: str, raw: str, shipped: frozenset[str]) -> bool:
+    """Whether the shipped ``-d @`` / ``--data @`` file-body row is narrowed away
+    on *raw*.
+
+    The catalog regex matches the flag text anywhere, so a ``curl --data-binary @``
+    written inside a search PATTERN is refused by the regex tier even though no
+    curl runs. True only when :func:`~.exfil_bash._file_body_line_is_inert` reads
+    the whole line as a benign search that reaches no HTTP client -- the same
+    carve-out the substring tier already applies. An operator's own copy of the
+    pattern is not shipped-only and keeps reading the full text.
+    """
+    exfil = _submodule("exfil_bash")
+    if pattern != exfil._FILE_BODY_PATTERN or pattern not in shipped:
+        return False
+    # False on Windows, like the nc-redirect narrower: a Windows script hook runs
+    # under cmd.exe, which reads `'` literally and splits on `&`, so the bash
+    # reading this carve-out relies on is the wrong shell. Gating the regex tier
+    # here keeps the row fail-closed on Windows without touching the substring
+    # tier's own behaviour.
+    if exfil.platform_compat.IS_WINDOWS:
+        return False
+    return exfil._file_body_line_is_inert(raw)
 
 
 def _nc_redirect_narrows(pattern: str, raw: str, shipped: frozenset[str]) -> bool:

@@ -138,6 +138,7 @@ def _mounted(
     agent: str | None = CREW,
     *,
     internal: bool = True,
+    attested: bool = True,
     owner: bool = True,
     namespace: str = "member",
     sessions: Any = None,
@@ -145,8 +146,11 @@ def _mounted(
     """The panel routes on a bare app.
 
     ``internal`` mimics a verified ``X-Internal-Secret`` match (every real publish is
-    MCP). ``namespace`` is ``member`` or ``template``. ``sessions`` swaps in a real
-    ``SessionManager`` to see which key the resolver looks up.
+    MCP). ``attested`` adds the Unix-socket peer attestation that request arrives with;
+    ``attested=False`` is the TCP loopback shape, where only an ``X-Session-Token``
+    can vouch for the declared key. ``namespace`` is ``member`` or ``template``.
+    ``sessions`` swaps in a real ``SessionManager`` to see which key the resolver
+    looks up.
     """
     app = web.Application()
     app["state"] = _State(agent, namespace=namespace, sessions=sessions)
@@ -172,6 +176,8 @@ def _mounted(
         @web.middleware
         async def _internal(request, handler):
             request["internal_auth"] = True
+            if attested:
+                request["peer_verified"] = True
             return await handler(request)
 
         app.middlewares.append(_internal)
@@ -211,6 +217,7 @@ async def _client(
     agent: str | None = CREW,
     *,
     internal: bool = True,
+    attested: bool = True,
     owner: bool = True,
     namespace: str = "member",
     sessions: Any = None,
@@ -223,7 +230,14 @@ async def _client(
     """
     c = TestClient(
         TestServer(
-            _mounted(agent, internal=internal, owner=owner, namespace=namespace, sessions=sessions)
+            _mounted(
+                agent,
+                internal=internal,
+                attested=attested,
+                owner=owner,
+                namespace=namespace,
+                sessions=sessions,
+            )
         )
     )
     await c.start_server()

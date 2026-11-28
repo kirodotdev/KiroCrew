@@ -122,20 +122,16 @@ class TestTheProjectionRecordsWhatItWithheld:
         )
         return withheld
 
-    def test_a_remote_server_the_local_bridge_carries_is_not_recorded(self, tmp_path, monkeypatch):
-        """In a session the projection hands a streamable-HTTP server's headers to
-        the local bridge, which adds them on this machine, so the notice is recorded
-        after that step and must not claim the server starts without them."""
+    @pytest.mark.parametrize("transport", ["http", "sse"])
+    def test_a_remote_server_the_local_bridge_carries_is_not_recorded(
+        self, tmp_path, monkeypatch, transport
+    ):
+        """In a session the projection hands a remote server's headers to the local
+        bridge, which adds them on this machine, so the notice is recorded after that
+        step and must not claim the server starts without them."""
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-        remote = {"type": "http", "url": "https://mcp.example/v1", "headers": {"X": "y"}}
+        remote = {"type": transport, "url": "https://mcp.example/v1", "headers": {"X": "y"}}
         assert self._collect_in_session(_servers(remote=remote)) == {}
-
-    def test_an_sse_server_the_bridge_cannot_carry_is_still_recorded(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-        remote = {"type": "sse", "url": "https://mcp.example/sse", "headers": {"X": "y"}}
-        assert self._collect_in_session(_servers(remote=remote)) == {
-            "remote": ((), ("headers",), False)
-        }
 
     def test_a_server_that_lost_nothing_is_not_recorded(self):
         flags = {"command": "flags-mcp", "env": {"FEATURE_X_ENABLED": "true"}}
@@ -161,10 +157,10 @@ class TestTheProjectionRecordsWhatItWithheld:
 
     def test_build_kas_custom_agents_passes_the_collector_through(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-        sse = {"type": "sse", "url": "https://mcp.example/sse", "headers": {"X": "y"}}
+        insecure = {"type": "http", "url": "http://mcp.example/v1"}
         withheld: WithheldOut = {}
-        build_kas_custom_agents(tmp_path, "a", _servers(sse=sse), withheld_out=withheld)
-        assert set(withheld) == {"sse"}
+        build_kas_custom_agents(tmp_path, "a", _servers(insecure=insecure), withheld_out=withheld)
+        assert set(withheld) == {"insecure"}
 
 
 class TestTheNotice:
@@ -248,6 +244,28 @@ class TestTheNotice:
 
     def test_nothing_withheld_is_no_notice(self):
         assert withheld_credentials_notice({}) == ""
+
+    def test_a_server_a_config_scope_switches_off_is_named_when_the_agent_asks_for_it(self):
+        """The agent declares ``srv`` with ``disabled: false`` and names it in its
+        ``tools``, while a global ``mcp.json`` mutes the name: KAS is not told about it,
+        and the chat says why instead of leaving the server to look failed. A muted
+        server the agent's ``tools`` does not ask for, and one its own entry switches
+        off, are not named."""
+        remote = {"url": "https://example.invalid/mcp", "disabled": False}
+        spec = _servers(
+            srv=remote, unasked={"command": "u"}, own={"command": "o", "disabled": True}
+        )
+        spec["tools"] = [*spec["tools"], "@srv", "@own"]
+        withheld: WithheldOut = {}
+        agent = to_client_custom_agent(
+            "a", spec, "p", withheld_out=withheld, scope_muted=frozenset({"srv", "unasked"})
+        )
+        assert "srv" not in agent["mcpServers"]
+        # The literal, not the constant: with the fix reverted this assertion fails,
+        # not the import of the whole file at collection.
+        assert withheld == {"srv": ((), ("scope-muted",), False)}
+        notice = withheld_credentials_notice(withheld)
+        assert "• srv" in notice and "MCP Servers" in notice and "new session" in notice
 
     def test_no_value_and_no_undeclared_variable_reaches_it(self, monkeypatch):
         monkeypatch.setenv(_UNDECLARED, _UNDECLARED_VALUE)

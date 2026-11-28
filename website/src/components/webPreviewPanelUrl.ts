@@ -147,7 +147,7 @@ function effectivePort(u: URL): string {
  *
  * Such a target can never render in the preview iframe, and the panel would
  * otherwise show a blank frame with no explanation. The gateway answers every
- * request with `X-Frame-Options: SAMEORIGIN` and CSP `frame-ancestors 'self'`,
+ * request with CSP `frame-ancestors 'self'` and `X-Frame-Options: DENY`,
  * and `isolatePreviewHost` deliberately swaps the host to the *other* loopback
  * name for cookie isolation — so the frame is always cross-origin to the
  * dashboard by construction, and always refused. (Keeping the host identical to

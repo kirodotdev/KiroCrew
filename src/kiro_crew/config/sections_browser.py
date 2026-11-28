@@ -105,6 +105,20 @@ def live_quality_resolution(value: object) -> str:
     return LIVE_QUALITY_AUTO
 
 
+def _spelled_int(value: object) -> int | None:
+    """The int a digit string spells, else None.
+
+    ``str.isdigit`` also passes ``"\u00b2"`` and a run past Python's integer-string
+    limit, which ``int`` refuses; both read as no number, so the caller falls back.
+    """
+    if not isinstance(value, str) or not value.strip().isdigit():
+        return None
+    try:
+        return int(value.strip())
+    except ValueError:
+        return None
+
+
 def live_max_fps_resolution(value: object) -> int:
     """The ceiling ``browser.live.max_fps`` of *value* selects. Pure; never logs.
 
@@ -115,8 +129,9 @@ def live_max_fps_resolution(value: object) -> int:
     """
     if isinstance(value, bool):
         return LIVE_MAX_FPS_DEFAULT
-    if isinstance(value, str) and value.strip().isdigit():
-        value = int(value.strip())
+    spelled = _spelled_int(value)
+    if spelled is not None:
+        value = spelled
     if isinstance(value, int) and value in LIVE_MAX_FPS_CHOICES:
         return value
     return LIVE_MAX_FPS_DEFAULT
@@ -145,7 +160,8 @@ def _validated_quality(value: object) -> str:
 
 def _validated_max_fps(value: object) -> int:
     resolved = live_max_fps_resolution(value)
-    spelled = int(value.strip()) if isinstance(value, str) and value.strip().isdigit() else value
+    number = _spelled_int(value)
+    spelled = value if number is None else number
     if value is not None and not (
         isinstance(spelled, int) and not isinstance(spelled, bool) and spelled == resolved
     ):
@@ -267,6 +283,7 @@ class BrowserRecordingConfig:
 #: ``browser.run`` ceilings. 0 is off; the bounds keep a hand-edited value sane.
 RUN_MAX_OPS_CAP = 1_000_000
 RUN_MAX_REPEATS_CAP = 10_000
+RUN_MAX_MINUTES_CAP = 1_440
 
 
 @dataclass
@@ -292,6 +309,16 @@ class BrowserRunConfig:
             "different step starts the count again. 0 (the default) sets no limit.",
         ),
     )
+    max_minutes: int = field(
+        default=0,
+        metadata=_meta(
+            "Most minutes of one browser run",
+            "Once a chat's browser run has lasted this many minutes since its first "
+            "step, the next step is not run and the agent is told why. Time between "
+            "turns counts, as the step count does. Taking over the browser or starting "
+            "a new chat starts the clock again. 0 (the default) sets no limit.",
+        ),
+    )
 
     @classmethod
     def from_raw(cls, section: object) -> "BrowserRunConfig":
@@ -301,6 +328,7 @@ class BrowserRunConfig:
         return cls(
             max_ops=reader.read("max_ops", _safe_int, 0, RUN_MAX_OPS_CAP),
             max_repeats=reader.read("max_repeats", _safe_int, 0, RUN_MAX_REPEATS_CAP),
+            max_minutes=reader.read("max_minutes", _safe_int, 0, RUN_MAX_MINUTES_CAP),
         )
 
 

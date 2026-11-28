@@ -295,9 +295,11 @@ posture. It prints the standing reminder instead, whenever
 ways to let agent commands through. See
 [Check the startup log](docker-troubleshooting.md#check-the-startup-log).
 
-### A team Crew pod: the container is the boundary
+<a id="a-team-crew-pod-the-container-is-the-boundary"></a>
 
-A team Crew deployed as a workload (`KIROCREW_WORKLOAD_IDENTITY=spiffe`) in a pod
+### A Shared Crew pod: the container is the boundary
+
+A Shared Crew deployed as a workload (`KIROCREW_WORKLOAD_IDENTITY=spiffe`) in a pod
 under the Kubernetes Restricted Pod Security Standard has no inner sandbox: the
 `RuntimeDefault` seccomp profile refuses user namespaces. To run its agent
 commands, set `agent.sandbox_allow_unsandboxed_exec=true` (or

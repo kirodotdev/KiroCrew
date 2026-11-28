@@ -58,8 +58,10 @@ function addSticky() {
   const canvas = screen.getByTestId('canvas-editor')
   act(() => { fireEvent.pointerDown(canvas, { clientX: 400, clientY: 400, button: 0, pointerId: 1 }) })
   act(() => { fireEvent.pointerUp(window, { clientX: 400, clientY: 400, button: 0, pointerId: 1 }) })
-  // The new sticky opens for typing; leaving it empty ends the edit.
-  act(() => { (screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement).blur() })
+  // The new sticky opens for typing; it needs text, since an empty one goes when its edit ends.
+  const editor = screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement
+  fireEvent.change(editor, { target: { value: 'Note' } })
+  act(() => { editor.blur() })
 }
 
 beforeEach(() => {
@@ -77,6 +79,13 @@ afterEach(() => {
 })
 
 describe('a canvas artifact', () => {
+  it('lets the page canvas shrink to a short popout without a fixed height floor', () => {
+    render(wrap(<CanvasArtifactBody artifact={art(serializeCanvas(emptyCanvas()))} isCurrent />))
+    const page = screen.getByTestId('canvas-artifact-page')
+    expect(page).toHaveClass('min-h-0')
+    expect(page).not.toHaveClass('min-h-[420px]')
+  })
+
   it('saves a pause after the last change, as a live save on the token it read, and chains the next token', async () => {
     updateArtifact.mockResolvedValueOnce({ content_token: 't2' }).mockResolvedValueOnce({ content_token: 't3' })
     render(wrap(<CanvasArtifactBody artifact={art(serializeCanvas(emptyCanvas()))} isCurrent />))
@@ -268,7 +277,7 @@ describe('a canvas artifact', () => {
       const next = updateArtifact.mock.calls[1][1] as { content: string; expected_token: string }
       expect(next.expected_token).toBe('t2')
       const doc = parseCanvas(next.content)
-      expect(doc.ok && doc.canvas.shapes.map(s => s.text)).toEqual([url, '', ''])
+      expect(doc.ok && doc.canvas.shapes.map(s => s.text)).toEqual([url, 'Note', 'Note'])
     })
 
     it('masked text under a token this page did not save still opens read-only', async () => {
@@ -301,7 +310,9 @@ describe('a canvas artifact', () => {
       expect(screen.getAllByTestId('canvas-shape')).toHaveLength(3)
       expect(screen.getAllByTestId('canvas-shape').map(s => s.textContent).join('')).toContain(url)
 
-      // Undo still holds the second sticky, and its save names the second save's token.
+      // Undo still holds the second sticky (its text, then the sticky itself), and
+      // its save names the second save's token.
+      act(() => { fireEvent.keyDown(screen.getByTestId('canvas-editor'), { key: 'z', ctrlKey: true }) })
       act(() => { fireEvent.keyDown(screen.getByTestId('canvas-editor'), { key: 'z', ctrlKey: true }) })
       expect(screen.getAllByTestId('canvas-shape')).toHaveLength(2)
       await act(async () => { await vi.advanceTimersByTimeAsync(800) })
@@ -471,6 +482,18 @@ describe('a canvas never loses or overwrites work', () => {
     render(wrap(<CanvasArtifactBody artifact={art('# notes, not a canvas')} isCurrent />))
     expect(screen.getByText("This canvas can't be opened")).toBeTruthy()
     expect(screen.getByText('Ask the agent')).toBeTruthy()
+  })
+
+  it('an unreadable canvas on the canvas page has no hand-off that would drop a comment draft', () => {
+    const slot = document.createElement('div')
+    document.body.appendChild(slot)
+    try {
+      render(wrap(<CanvasArtifactBody artifact={art('# notes, not a canvas')} isCurrent noticeSlot={slot} />))
+      expect(within(slot).getByText("This canvas can't be opened")).toBeTruthy()
+      expect(screen.queryByText('Ask the agent')).toBeNull()
+    } finally {
+      slot.remove()
+    }
   })
 })
 

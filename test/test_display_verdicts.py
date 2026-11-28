@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from redaction_structured_cases import github_classic
@@ -188,8 +189,10 @@ def test_a_directory_swapped_after_the_check_does_not_redirect_the_sweep(
             root.symlink_to(victim, target_is_directory=True)
         return real_scandir(target)
 
-    monkeypatch.setattr(dv.os, "scandir", swapping_scandir)
-    dv.enable(home)
+    # display_verdicts' own os binding: dv.os is the worker's stdlib os, so the swap
+    # fires on the sweep's scan, not on another module's or thread's.
+    monkeypatch.setattr(dv, "os", SimpleNamespace(**{**vars(os), "scandir": swapping_scandir}))
+    assert dv.enable(home), "the swap must land after the check, during the sweep"
     assert swapped["done"]
     assert (victim / "tracked.dvc").read_text(encoding="utf-8") == "keep me"
 
@@ -601,8 +604,10 @@ def test_the_boot_sweep_keeps_no_per_file_list(home, monkeypatch):
                 events.append("entry")
                 yield e
 
-    monkeypatch.setattr(os, "unlink", tracked)
-    monkeypatch.setattr(os, "scandir", Scan)
+    # display_verdicts' own os binding: the stdlib os would record every module's calls.
+    monkeypatch.setattr(
+        dv, "os", SimpleNamespace(**{**vars(os), "unlink": tracked, "scandir": Scan})
+    )
     dv._sweep(root, home / "sessions")
     assert sorted(p.name for p in root.iterdir()) == [f"{KEY}{dv._CLEAN_SUFFIX}"]
     first_unlink = events.index("unlink")

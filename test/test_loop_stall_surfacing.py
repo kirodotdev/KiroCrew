@@ -28,6 +28,7 @@ import os
 from pathlib import Path
 
 from kiro_crew.config.loader import (
+    LOOP_STALL_EXIT_AFTER_MANAGED_DEFAULT,
     LOOP_STALL_EXIT_AFTER_MAX,
     LOOP_STALL_EXIT_AFTER_MIN,
     KiroCrewConfig,
@@ -43,6 +44,8 @@ from kiro_crew.dashboard.crash_dump_store import (
     dumps_with_stacks,
 )
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
+from kiro_crew.pod.config import PodConfig
+from kiro_crew.pod.runtime import build_pod_env
 
 
 def _dump(tmp_path: Path, name: str = "loopstall-20260803T000000Z.txt") -> Path:
@@ -206,6 +209,21 @@ class TestLoopStallBudgetConfig:
         assert resolve_loop_stall_exit_after({}, launch_environment) == 90
         assert resolve_loop_stall_exit_after({}, environment) == 25
 
+    def test_pod_gateway_uses_the_managed_budget(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.delenv("KIROCREW_SERVICE_MANAGED", raising=False)
+        environment = build_pod_env(PodConfig.load(), tmp_path / "home", 7999, tmp_path / "co")
+
+        launch_environment = consume_managed_service_launch_environment(environment)
+
+        assert resolve_loop_stall_exit_after({}, launch_environment) == (
+            LOOP_STALL_EXIT_AFTER_MANAGED_DEFAULT
+        )
+        explicit = {"loop_stall_exit_after_secs": 25}
+        assert resolve_loop_stall_exit_after(explicit, launch_environment) == 25
+        # Every descendant of a pod gateway is still in that pod.
+        assert environment["KIROCREW_POD"] == "1"
+        assert "KIROCREW_SERVICE_MANAGED" not in launch_environment
+
     def test_operator_budget_is_preserved_for_managed_services(self) -> None:
         explicit = {"loop_stall_exit_after_secs": 25}
         assert resolve_loop_stall_exit_after(explicit, {"KIROCREW_SERVICE_MANAGED": "1"}) == 25
@@ -219,8 +237,8 @@ class TestLoopStallBudgetConfig:
         )
         watchdog.start()
         try:
-            # The alarm is armed for the 90 s managed budget.
-            assert arms == [90]
+            # The 90 s managed budget: the alarm is its backstop, one budget late.
+            assert arms == [180]
         finally:
             watchdog.stop()
 

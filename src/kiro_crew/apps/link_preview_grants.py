@@ -125,13 +125,12 @@ def link_preview_grant_row(name: str, manifest: Any) -> dict[str, Any]:
     granted: dict[str, list[str]] = {}
     for family in LINK_PREVIEW_GRANT_FAMILIES:
         granted[family] = staged_app_grants(name, family, reader(family))
+    granted_hosts = set(granted["linkPreviewHosts"])
     return {
         "linkPreviewGrant": {
             "hosts": granted["linkPreviewHosts"],
             "textPatterns": granted["linkPreviewTextPatterns"],
-            "stagedHosts": [
-                h for h in declared["linkPreviewHosts"] if h not in granted["linkPreviewHosts"]
-            ],
+            "stagedHosts": [h for h in declared["linkPreviewHosts"] if h not in granted_hosts],
             "stagedTextPatterns": [
                 p
                 for p in declared["linkPreviewTextPatterns"]

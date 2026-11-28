@@ -34,6 +34,7 @@ from kiro_crew.feishu.client import (  # noqa: E402
 _TOKEN_URI = "/open-apis/auth/v3/tenant_access_token/internal"
 _BOT_INFO_URI = "/open-apis/bot/v3/info"
 _MESSAGES_URI = "/open-apis/im/v1/messages"
+_FILES_URI = "/open-apis/im/v1/files"
 _RESOURCE_URI = "/open-apis/im/v1/messages/om_contract/resources/img_contract"
 _RESOURCE_BYTES = b"\x89PNG\r\n\x1a\ncontract"
 _BOT_OPEN_ID = "ou_contract_bot"
@@ -85,6 +86,8 @@ class _HttpStub:
             return self.resource
         if url.endswith(_MESSAGES_URI):
             return _HttpResponse({"code": 0, "msg": "ok", "data": {"message_id": "om_new"}})
+        if url.endswith(_FILES_URI):
+            return _HttpResponse({"code": 0, "msg": "ok", "data": {"file_key": "file_contract"}})
         raise AssertionError(f"unexpected SDK request: {method} {url}")
 
 
@@ -183,6 +186,36 @@ def test_send_creates_a_message_through_the_real_sdk(http_stub: _HttpStub) -> No
         "receive_id": "ou_contract_peer",
         "msg_type": "text",
         "content": '{"text": "你好"}',
+    }
+
+
+def test_file_send_uploads_a_file_and_creates_a_file_message_through_the_real_sdk(
+    http_stub: _HttpStub,
+) -> None:
+    """The file leg: a multipart POST to the files endpoint, then a ``file`` message."""
+    client = _client("cli_contract_file")
+    try:
+        msg_type, content = client._sync_upload_new_file(
+            b"%PDF-1.4 contract", as_image=False, file_name="report.pdf", file_type="pdf"
+        )
+        message_id = client._sync_post_create("open_id", "ou_contract_peer", msg_type, content)
+    finally:
+        client._executor.shutdown(wait=True)
+
+    assert message_id == "om_new"
+    upload_call, create_call = http_stub.calls[-2:]
+    assert upload_call["method"] == "POST"
+    assert upload_call["url"] == "https://open.feishu.cn" + _FILES_URI
+    assert upload_call["headers"]["Authorization"] == "Bearer t-contract"
+    assert upload_call["timeout"] == _RESOURCE_TIMEOUT_SECS
+    fields = upload_call["data"].fields
+    assert fields["file_type"] == "pdf"
+    assert fields["file_name"] == "report.pdf"
+    assert fields["file"].getvalue() == b"%PDF-1.4 contract"
+    assert json.loads(create_call["data"]) == {
+        "receive_id": "ou_contract_peer",
+        "msg_type": "file",
+        "content": '{"file_key": "file_contract"}',
     }
 
 
