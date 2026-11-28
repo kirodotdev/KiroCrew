@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MutationCache, onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
 
@@ -22,6 +22,7 @@ vi.mock('./lib/agentSession', async (importOriginal) => {
 })
 
 import { createTestStore } from '../../test/helpers'
+import { confirmAction } from '../../test/confirmAction'
 import AutoImprovementPage from './AutoImprovementPage'
 
 const FINDINGS = [
@@ -65,9 +66,9 @@ function respond(url: string, init?: RequestInit) {
   return { ok: true, status: 200, json: async () => ({}) }
 }
 
-function mountPage() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
+function mountPage(mutationCache?: MutationCache) {
+  const qc = new QueryClient({ mutationCache, defaultOptions: { queries: { retry: false } } })
+  const result = render(
     <Provider store={createTestStore()}>
       <MemoryRouter>
         <QueryClientProvider client={qc}>
@@ -76,6 +77,7 @@ function mountPage() {
       </MemoryRouter>
     </Provider>,
   )
+  return { ...result, queryClient: qc }
 }
 
 beforeEach(() => {
@@ -86,6 +88,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  onlineManager.setOnline(true)
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -185,27 +188,125 @@ describe('AutoImprovementPage findings ledger', () => {
   })
 
   it('publishes a queued change only after the operator confirms the branch', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     mountPage()
     await screen.findByText('zzq/fabric')
     const commit = (await screen.findAllByRole('button', { name: 'Commit to the branch' }))[0]
     fireEvent.click(commit)
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('main'))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.querySelector('p')).toHaveTextContent('Commit this change to “main” and push it? A published commit cannot be recalled.')
+    expect(document.getElementById(dialog.getAttribute('aria-labelledby')!)).toHaveTextContent(/^Commit to the branch$/)
+    await confirmAction('Commit to the branch')
     await waitFor(() =>
       expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/findings/f1/commit') && (c[1] as RequestInit)?.method === 'POST')).toBe(true),
     )
   })
 
   it('sends nothing when the operator cancels the confirmation', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     mountPage()
     await screen.findByText('zzq/fabric')
     const commit = (await screen.findAllByRole('button', { name: 'Commit to the branch' }))[0]
     fireEvent.click(commit)
-    expect(confirm).toHaveBeenCalledTimes(1)
+    await confirmAction('Cancel')
     // The mutation's POST runs after its async onMutate, so let pending work settle before asserting absence.
     await act(async () => {})
     expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit | undefined)?.method === 'POST')).toBe(false)
+  })
+
+  it.each([
+    ['branch', 'replacement'],
+    ['target_display', 'zzq/replacement'],
+    ['target_url', 'https://github.com/zzq/replacement'],
+    ['clone', '/workspace/replacement'],
+  ])('sends no commit when %s changes during confirmation', async (field, replacement) => {
+    const { queryClient } = mountPage()
+    await screen.findByText('zzq/fabric')
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Commit to the branch' }))[0])
+    expect(await screen.findByRole('dialog')).toHaveTextContent('“main”')
+    act(() => queryClient.setQueryData(['auto-improvement-config'], {
+      ...queryClient.getQueryData<Record<string, unknown>>(['auto-improvement-config']),
+      [field]: replacement,
+    }))
+    await confirmAction('Commit to the branch')
+    await act(async () => {})
+    expect(fetchMock.mock.calls.filter(c => (c[1] as RequestInit)?.method === 'POST')).toHaveLength(0)
+  })
+
+  it.each([
+    ['branch', 'replacement'],
+    ['target_display', 'zzq/replacement'],
+    ['target_url', 'https://github.com/zzq/replacement'],
+    ['clone', '/workspace/replacement'],
+  ])('sends no commit when %s changes after approval before dispatch', async (field, replacement) => {
+    let resume!: () => void
+    const paused = new Promise<void>(resolve => { resume = resolve })
+    const onMutate = vi.fn(() => paused)
+    const { queryClient } = mountPage(new MutationCache({ onMutate }))
+    await screen.findByText('zzq/fabric')
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Commit to the branch' }))[0])
+    await confirmAction('Commit to the branch')
+    await waitFor(() => expect(onMutate).toHaveBeenCalledTimes(1))
+    expect(fetchMock.mock.calls.filter(c => (c[1] as RequestInit)?.method === 'POST')).toHaveLength(0)
+    await act(async () => {
+      queryClient.setQueryData(['auto-improvement-config'], {
+        ...queryClient.getQueryData<Record<string, unknown>>(['auto-improvement-config']),
+        [field]: replacement,
+      })
+      resume()
+    })
+    await waitFor(() => expect(queryClient.getMutationCache().getAll()[0].state.status).toBe('error'))
+    expect(await screen.findByText('The commit was refused.')).toBeInTheDocument()
+    expect(fetchMock.mock.calls.filter(c => (c[1] as RequestInit)?.method === 'POST')).toHaveLength(0)
+  })
+
+  it('refuses a changed target when an offline commit resumes', async () => {
+    const { queryClient } = mountPage()
+    await screen.findByText('zzq/fabric')
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Commit to the branch' }))[0])
+    act(() => onlineManager.setOnline(false))
+    await confirmAction('Commit to the branch')
+    await waitFor(() => expect(queryClient.getMutationCache().getAll()[0].state.isPaused).toBe(true))
+    expect(fetchMock.mock.calls.filter(c => (c[1] as RequestInit)?.method === 'POST')).toHaveLength(0)
+    await act(async () => {
+      queryClient.setQueryData(['auto-improvement-config'], {
+        ...queryClient.getQueryData<Record<string, unknown>>(['auto-improvement-config']),
+        branch: 'replacement',
+      })
+      onlineManager.setOnline(true)
+      await queryClient.resumePausedMutations()
+    })
+    await waitFor(() => expect(queryClient.getMutationCache().getAll()[0].state.status).toBe('error'))
+    expect(await screen.findByText('The commit was refused.')).toBeInTheDocument()
+    expect(fetchMock.mock.calls.filter(c => (c[1] as RequestInit)?.method === 'POST')).toHaveLength(0)
+  })
+
+  it('commits the captured finding when the ledger changes on the same target', async () => {
+    const { queryClient } = mountPage()
+    await screen.findByText('zzq/fabric')
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Commit to the branch' }))[0])
+    expect(await screen.findByRole('dialog')).toHaveTextContent('“main”')
+    act(() => queryClient.setQueryData(['auto-improvement-findings'], { findings: [] }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Show finding details' })).not.toBeInTheDocument())
+    await confirmAction('Commit to the branch')
+    await waitFor(() => expect(fetchMock.mock.calls.some(c =>
+      String(c[0]).endsWith('/findings/f1/commit') && (c[1] as RequestInit)?.method === 'POST',
+    )).toBe(true))
+  })
+
+  it('ignores another commit while publishing is pending', async () => {
+    let finish!: (value: ReturnType<typeof respond>) => void
+    const pending = new Promise<ReturnType<typeof respond>>(resolve => { finish = resolve })
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) =>
+      init?.method === 'POST' ? pending : Promise.resolve(respond(String(input), init)))
+    mountPage()
+    const buttons = await screen.findAllByRole('button', { name: 'Commit to the branch' })
+    fireEvent.click(buttons[0])
+    await confirmAction('Commit to the branch')
+    await waitFor(() => expect(buttons[0]).toHaveAttribute('aria-disabled', 'true'))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    fireEvent.click(buttons[1])
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(fetchMock.mock.calls.filter(c => (c[1] as RequestInit)?.method === 'POST')).toHaveLength(1)
+    await act(async () => finish(respond('', { method: 'POST' })))
   })
 
   it('opens a finding session with its fingerprint and PR link', async () => {
