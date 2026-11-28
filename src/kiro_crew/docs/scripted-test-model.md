@@ -14,7 +14,9 @@ when `KIROCREW_FAKE_ACP_SCRIPT` names one. With neither set, nothing changes.
 
 ## Write a reply script
 
-A reply script is a JSON file holding one object with a `replies` list:
+A reply script is a UTF-8 JSON file holding one object with a `replies` list.
+One leading byte-order mark, which Windows editors write for "UTF-8 with BOM", is
+accepted:
 
 ```json
 {
