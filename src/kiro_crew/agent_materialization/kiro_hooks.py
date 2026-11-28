@@ -908,7 +908,10 @@ _FILENAME_EVENT_SUFFIXES: tuple[tuple[str, str], ...] = (
 
 # Header parsing — only inspect the first few lines so the scan stays O(K).
 _HOOK_HEADER_SCAN_LINES = 5
-_HOOK_HEADER_RE = re.compile(r"^\s*#\s*(event|matcher)\s*:\s*(\S.*?)\s*$", re.IGNORECASE)
+# The value ends on a non-space, so the trailing ``\s*`` is the only reader of
+# the whitespace after it: a lazy value beside ``\s*$`` rescanned that run once
+# per character, quadratic on a long header line. The captured value is unchanged.
+_HOOK_HEADER_RE = re.compile(r"^\s*#\s*(event|matcher)\s*:\s*(\S(?:.*\S)?)\s*$", re.IGNORECASE)
 
 
 def _parse_hook_script_headers(path: Path) -> tuple[str | None, str | None]:
