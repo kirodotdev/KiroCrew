@@ -78,6 +78,7 @@ from kiro_crew.agent_spec_format import (
     is_markdown_spec,
 )
 from kiro_crew.agent_spec_pins import spec_pin_for, spec_pins
+from kiro_crew.dashboard.side_readonly_spec import _home_relative
 
 logger = logging.getLogger(__name__)
 
@@ -322,10 +323,11 @@ def unreadable_spec_at(agents_dir: Path, name: str) -> AgentInfo | None:
     return None
 
 
-def unlisted_refusal_text(name: str, entry: dict[str, Any]) -> str:
+def unlisted_refusal_text(name: str, entry: dict[str, Any], agents_dir: Path) -> str:
     """The ``409 name_taken`` sentence when *entry*, a file the roster does not
-    show, is what holds *name*: by its stem, or by the name it declares when it
-    reads but yields no row. Every value in *entry* is already masked."""
+    show in *agents_dir*, is what holds *name*: by its stem, or by the name it
+    declares when it reads but yields no row. Every value in *entry* is already
+    masked."""
     filename = entry["filename"]
     if entry["reason"] == UNLISTED_DUPLICATE_NAME:
         why = (
@@ -340,17 +342,18 @@ def unlisted_refusal_text(name: str, entry: dict[str, Any]) -> str:
     else:
         why = "it cannot be read as an agent spec, so the list does not show it"
     return (
-        f"'{name}' is taken by ~/.kiro/agents/{filename}: {why}. "
+        f"'{name}' is taken by {_home_relative(agents_dir)}/{filename}: {why}. "
         "Fix, rename or delete that file to free the name."
     )
 
 
-def listed_refusal_text(name: str, listed: dict[str, str]) -> str:
+def listed_refusal_text(name: str, listed: dict[str, str], agents_dir: Path) -> str:
     """The ``409 name_taken`` sentence when *name* is the stem of a listed file
-    whose row carries another name, the one the file declares. *listed* comes
-    from a row the roster returns, so its values already passed the mask."""
+    in *agents_dir* whose row carries another name, the one the file declares.
+    *listed* comes from a row the roster returns, so its values already passed
+    the mask."""
     return (
-        f"'{name}' is taken by ~/.kiro/agents/{listed['filename']}, which the list "
+        f"'{name}' is taken by {_home_relative(agents_dir)}/{listed['filename']}, which the list "
         f"shows as '{listed['name']}', the name that file declares. Change the name "
         "inside that file, or rename or delete the file, to free the name."
     )

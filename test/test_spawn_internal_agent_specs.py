@@ -190,9 +190,9 @@ class TestTheGateRefusesIt:
 
 
 class TestTheModeRefusalExplanation:
-    def test_an_ordinary_agent_keeps_the_setup_remedy(self) -> None:
+    def test_an_ordinary_agent_keeps_the_setup_remedy(self, registry: Path) -> None:
         cause, remedy = srs.unavailable_mode_explanation("ops")
-        assert cause == "its ~/.kiro/agents/ops.json is likely missing."
+        assert cause == f"its {srs._home_relative(registry)}/ops.json is likely missing."
         assert remedy == "Run `kirocrew setup --agent-only` to materialize the agent config."
 
     def test_a_missing_configured_default_names_the_setting_not_setup(self, registry: Path) -> None:
@@ -216,7 +216,7 @@ class TestTheModeRefusalExplanation:
         """``kirocrew.json`` is a spec setup does write, so setup stays the answer."""
         _configure_default_agent("kirocrew")
         cause, remedy = srs.unavailable_mode_explanation("kirocrew")
-        assert cause == "its ~/.kiro/agents/kirocrew.json is likely missing."
+        assert cause == f"its {srs._home_relative(registry)}/kirocrew.json is likely missing."
         assert remedy == "Run `kirocrew setup --agent-only` to materialize the agent config."
 
     def test_an_agent_other_than_the_configured_default_keeps_its_answer(
@@ -386,6 +386,18 @@ class TestTheModeRefusalExplanation:
         (registry / "narrow.json").write_text(json.dumps(spec), encoding="utf-8")
         cause, _ = srs.unavailable_mode_explanation("narrow", kiro_cli_engine=True)
         assert "deprecated alias" in cause
+
+    def test_a_missing_spec_names_the_agents_folder_outside_the_home(
+        self, registry: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        """``KIRO_HOME`` can put the agents folder outside the home, as a pod
+        gateway does: a missing spec is named in that folder, including for a
+        name the probe is not tried for."""
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+        cause, _ = srs.unavailable_mode_explanation("ops")
+        assert cause == f"its {registry}/ops.json is likely missing."
+        cause, _ = srs.unavailable_mode_explanation("a/b")
+        assert cause == f"its {registry}/a/b.json is likely missing."
 
     def test_the_shown_path_is_the_probed_file(self, registry: Path, monkeypatch) -> None:
         """``KIRO_HOME`` moves the agents directory; the answer names that file."""

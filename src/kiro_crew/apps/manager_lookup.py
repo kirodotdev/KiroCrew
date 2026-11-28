@@ -219,11 +219,15 @@ def app_command_agent_refusal(owner: str, agent: str) -> str | None:
     if registration == "unverifiable":
         return f"{app} can't run: {others[0]}"
     if registration == "ambiguous":
+        from kiro_crew.apps import bridges  # bridges imports this module
+        from kiro_crew.dashboard.side_readonly_spec import _home_relative
+
+        folder = _home_relative(bridges._kiro_agents_dir())
         where = ", ".join(others) if others else f'the other agent named "{agent}"'
         return (
-            f'{app} can\'t run: another agent in ~/.kiro/agents is also named "{agent}", '
+            f'{app} can\'t run: another agent in {folder} is also named "{agent}", '
             f"so {app}'s agent can't be told apart from it. Rename or remove {where} "
-            "in ~/.kiro/agents, then run the command again from the command palette."
+            f"in {folder}, then run the command again from the command palette."
         )
     if registration != "ok":
         return (

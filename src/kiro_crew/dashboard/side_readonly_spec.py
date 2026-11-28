@@ -278,7 +278,7 @@ def _ordinary_mode_explanation(agent: str, *, kiro_cli_engine: bool = False) -> 
     from kiro_crew.agent import kiro_agents_dir_path
     from kiro_crew.agent_discovery import _read_agent_spec
 
-    display = f"~/.kiro/agents/{agent}.json"
+    display = f"{_home_relative(kiro_agents_dir_path())}/{agent}.json"
     missing = (
         f"its {display} is likely missing.",
         "Run `kirocrew setup --agent-only` to materialize the agent config.",

@@ -26,7 +26,7 @@ from kiro_crew import acp_tool_gate
 from kiro_crew.acp._dispatch import parse_session_modes, set_mode_params
 from kiro_crew.acp.session_handle import AcpModeNotFound, AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import ACP_BACKENDS_MARKDOWN_AGENT_SPECS, METHOD_SET_MODE
-from kiro_crew.agent import markdown_spec_for_agent
+from kiro_crew.agent import kiro_agents_dir_path, markdown_spec_for_agent
 from kiro_crew.metrics.events import SKILL_VIEW_FALLBACKS, emit_counter
 
 if TYPE_CHECKING:
@@ -300,7 +300,10 @@ async def _spawn_agent_not_loaded_reason(self: AcpRuntime, spawn_agent: str) -> 
             )
     # Setup rewrites only Kiro Crew's own specs, so for a configured
     # agent.default_agent it does not write, the remedy is the setting.
-    from kiro_crew.dashboard.side_readonly_spec import missing_default_agent_explanation
+    from kiro_crew.dashboard.side_readonly_spec import (
+        _home_relative,
+        missing_default_agent_explanation,
+    )
 
     default = await asyncio.to_thread(missing_default_agent_explanation, spawn_agent)
     if default is not None:
@@ -311,8 +314,8 @@ async def _spawn_agent_not_loaded_reason(self: AcpRuntime, spawn_agent: str) -> 
             f"relies on. {remedy}"
         )
     return (
-        f"Its ~/.kiro/agents/{spawn_agent}.json is missing, or the backend "
-        f"refused to load it. Refusing to run the backend's own default "
+        f"Its {_home_relative(kiro_agents_dir_path())}/{spawn_agent}.json is missing, "
+        f"or the backend refused to load it. Refusing to run the backend's own default "
         f"agent in its place, which would silently drop every Kiro Crew "
         f"tool the agent's prompt relies on. Run `kirocrew setup "
         f"--agent-only` to rewrite the agent config."

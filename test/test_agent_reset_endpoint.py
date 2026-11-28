@@ -18,6 +18,7 @@ from config_pending_helpers import HAND_EDIT, make_config_json_pending
 from kiro_crew import agent_state
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, PendingEditBlocksSave
 from kiro_crew.dashboard.handlers.agents import api_agent_reset
+from kiro_crew.dashboard.side_readonly_spec import _home_relative
 
 
 @pytest.fixture(autouse=True)
@@ -228,8 +229,8 @@ async def test_reset_keeps_copy_bound_by_file_stem(tmp_path):
 
 @pytest.mark.asyncio
 async def test_reset_ambiguous_origin_refusal_names_the_claimant_files(tmp_path):
-    """Two files claiming the origin's name: the 409 names both by file name
-    inside ~/.kiro/agents/, never the absolute path, and the copy is kept."""
+    """Two files claiming the origin's name: the 409 names both by the folder
+    they were found in and their file name, and the copy is kept."""
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
     _seed(agents_dir)
@@ -239,11 +240,11 @@ async def test_reset_ambiguous_origin_refusal_names_the_claimant_files(tmp_path)
         resp = await api_agent_reset(_reset_request("design-crew", {"crew": "design-crew"}))
 
     assert resp.status == 409, resp.text
+    d = _home_relative(agents_dir)
     assert json.loads(resp.text) == {
-        "error": "'kirocrew' matches more than one template file in ~/.kiro/agents/ "
-        "(SomePkg-kirocrew.json, kirocrew.json); rename one first.",
+        "error": "'kirocrew' matches more than one template file "
+        f"({d}/SomePkg-kirocrew.json, {d}/kirocrew.json); rename one first.",
         "code": "ambiguous_template_name",
     }
-    assert str(agents_dir) not in resp.text
     assert (agents_dir / "design-crew.json").exists()
     assert KiroCrewConfig.load().agents["design-crew"].kiro_agent == "design-crew"

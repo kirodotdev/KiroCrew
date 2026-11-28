@@ -623,7 +623,9 @@ answers to the name landing meanwhile is `409 ambiguous_template_name`. A
 create refused because such a file holds the name, by its stem or, when no
 row is labelled with the name, by the name a file that reads but yields no
 row declares, answers `409 name_taken` with that entry as `unlisted` and an
-`error` naming `~/.kiro/agents/<file>` and why the list does not show it. A listed file also holds its stem when the row carries the
+`error` naming the file in the agents directory it scanned (written from home
+with `~` when the directory sits under home, else in full, as `KIRO_HOME` and a
+pod gateway can place it) and why the list does not show it. A listed file also holds its stem when the row carries the
 other name the file declares (a copy saved as `src-custom.json` that still
 declares `src` is the row `src`, and `src-custom` is taken): a create of that
 stem answers `409 name_taken` with `listed: {filename, name}` and an `error`

@@ -20,6 +20,7 @@ from sidecar_fault_helpers import fail_one_sidecar_read
 from kiro_crew import agent_state
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, PendingEditBlocksSave
 from kiro_crew.dashboard.handlers.agents import api_agent_publish
+from kiro_crew.dashboard.side_readonly_spec import _home_relative
 
 
 @pytest.fixture(autouse=True)
@@ -885,8 +886,8 @@ async def test_publish_rollback_retained_destination_is_never_shared(tmp_path):
 
 @pytest.mark.asyncio
 async def test_publish_ambiguous_refusal_names_the_claimant_files(tmp_path):
-    """Two files claiming the copy's name: the 409 names both by file name
-    inside ~/.kiro/agents/, never the absolute path, and keeps its code."""
+    """Two files claiming the copy's name: the 409 names both by the folder
+    they were found in and their file name, and keeps its code."""
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
     _seed_private_copy(agents_dir, "c", "c", "kirocrew")
@@ -896,10 +897,10 @@ async def test_publish_ambiguous_refusal_names_the_claimant_files(tmp_path):
         resp = await api_agent_publish(_publish_request("c", {"crew": "c", "name": "published"}))
 
     assert resp.status == 409, resp.text
+    d = _home_relative(agents_dir)
     assert json.loads(resp.text) == {
-        "error": "'c' matches more than one template file in ~/.kiro/agents/ "
-        "(SomePkg-c.json, c.json); rename one first.",
+        "error": "'c' matches more than one template file "
+        f"({d}/SomePkg-c.json, {d}/c.json); rename one first.",
         "code": "ambiguous_template_name",
     }
-    assert str(agents_dir) not in resp.text
     assert not (agents_dir / "published.json").exists()
