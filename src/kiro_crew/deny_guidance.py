@@ -316,6 +316,11 @@ _RULE_CLASSES: dict[str, str] = {
     "credential-exfil-python-botocore-credentials": DENY_CLASS_AWS_CREDENTIAL,
     "credential-exfil-export-aws-access": DENY_CLASS_AWS_CREDENTIAL,
     "credential-exfil-export-aws-secret": DENY_CLASS_AWS_CREDENTIAL,
+    # Three commands whose output IS a credential: nothing leaves the host, so the
+    # credential-read prose answers them too.
+    "credential-exfil-aws-configure-export-credentials": DENY_CLASS_AWS_CREDENTIAL,
+    "credential-exfil-aws-configure-get-secret": DENY_CLASS_AWS_CREDENTIAL,
+    "credential-exfil-ada-credentials-print": DENY_CLASS_AWS_CREDENTIAL,
     # Reaching the product's own credential mint, which is the self-protection
     # answer verbatim. Both rules are ALSO enforced by the argv-structural floor,
     # so keying them here is what makes the two routes to the same rule agree on

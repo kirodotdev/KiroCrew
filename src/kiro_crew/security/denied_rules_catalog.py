@@ -500,6 +500,38 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             "resolve and expose the active AWS credentials."
         ),
     ),
+    # ── Commands whose output is a credential ──
+    # Speed bumps, matched on argv (``argv_rules._PREDICATES``): each pattern is only
+    # the row's identity and the text Settings shows.
+    DeniedCommandRule(
+        id="credential-exfil-aws-configure-export-credentials",
+        pattern=r"aws\s+configure\s+export-credentials",
+        category="credential-exfil",
+        description=(
+            "Blocks `aws configure export-credentials`, which prints the active AWS access "
+            "key, secret key and session token. A search or a doc read that only mentions "
+            "the command is allowed."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-aws-configure-get-secret",
+        pattern=r"aws\s+configure\s+get\s+\S*(?:secret|session_token|security_token)",
+        category="credential-exfil",
+        description=(
+            "Blocks `aws configure get` of a secret key or a session token "
+            "(`aws_secret_access_key`, `aws_session_token`), which prints it. Reading a "
+            "setting that holds no secret, such as `region`, is allowed."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-ada-credentials-print",
+        pattern=r"ada\s+credentials\s+print",
+        category="credential-exfil",
+        description=(
+            "Blocks `ada credentials print`, which prints AWS credentials. Other `ada` "
+            "commands are allowed."
+        ),
+    ),
     DeniedCommandRule(
         id="credential-exfil-curl-imds",
         pattern=".*curl.*169\\.254\\.169\\.254.*",

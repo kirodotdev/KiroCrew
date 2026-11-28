@@ -231,9 +231,11 @@ def test_contributed_rule_actually_denies_a_matching_command(monkeypatch) -> Non
     _with_context(monkeypatch, denied_rules=_Source([_rule()]))
     effective = resolve_effective_denied_regexes(_config())
     assert security.is_denied("ada credentials update --account 1234", denied_regexes=effective)
-    # Scoped to the mutating verbs: the read-only form stays runnable, which is
+    # Scoped to the mutating verbs: a read-only form stays runnable, which is
     # what a glob-tier ``*ada credentials*`` overlay pattern cannot express.
-    assert security.is_denied("ada credentials print", denied_regexes=effective) is None
+    # ``print`` is not the example: a built-in row refuses it, since its output
+    # is a credential.
+    assert security.is_denied("ada credentials list", denied_regexes=effective) is None
 
 
 # ── Settings snapshot + toggle ────────────────────────────────────────────────
