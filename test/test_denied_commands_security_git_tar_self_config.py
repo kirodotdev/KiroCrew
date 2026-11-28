@@ -3,7 +3,8 @@
 Split out of ``test_denied_commands_security_git_tar_self.py`` to keep each file
 under the 2000-line cap. Same rule, own-host pin and helpers as that sibling;
 this file holds the config-key classifier, the all-verb config self-dial scan,
-and the ``GIT_CONFIG_PARAMETERS`` cases.
+the ``GIT_CONFIG_PARAMETERS`` cases, and the command lines and transports git
+runs for a verb.
 """
 
 from __future__ import annotations
@@ -273,3 +274,103 @@ class TestGitTarSelfConfig:
     def test_malformed_git_config_parameters_falls_back_to_the_config_classifier(self):
         cmd = 'GIT_CONFIG_PARAMETERS="remote.x.url=localhost:x \'" git ls-remote far:x'
         assert _denied_by(cmd) == self._RULE
+
+    # Commands and transports git runs for a verb, each dialing this host,
+    # refused by this floor or by the ssh floor the carried command reaches.
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "git submodule foreach 'git fetch localhost:x'",
+            "git submodule foreach --recursive 'ssh localhost id'",
+            "git submodule --quiet foreach 'ssh localhost id'",
+            "git -C sub submodule foreach 'ssh localhost id'",
+            "git rebase -x 'ssh localhost id' main",
+            "git rebase --exec 'ssh localhost id' main",
+            "git rebase --exec='ssh localhost id' main",
+            "git rebase -x'ssh localhost id' main",
+            "git rebase -ix'ssh localhost id' main",
+            "git rebase -x 'git fetch localhost:x' main",
+            "git bisect run ssh localhost id",
+            "git -c core.fsmonitor='ssh localhost id' status",
+            "git -c core.editor='ssh localhost id' commit",
+            "git -c core.pager='ssh localhost id' log",
+            "git -c sequence.editor='ssh localhost id' rebase -i HEAD~2",
+            "git -c diff.external='ssh localhost id' diff",
+            "git -c credential.helper='!ssh localhost id' fetch origin",
+            "git -c hook.pre-commit.command='ssh localhost id' commit -m x",
+            "GIT_SSH_COMMAND='ssh localhost id' git show HEAD",
+            "GIT_SSH_COMMAND='ssh localhost' git status",
+            "export GIT_SSH_COMMAND='ssh localhost id #'; git status",
+            "git svn clone svn+ssh://localhost/r",
+            "SVN_SSH='ssh localhost id' git svn clone svn+ssh://svn.example.com/r",
+        ],
+        ids=[
+            "submodule-foreach",
+            "submodule-foreach-recursive",
+            "submodule-quiet-foreach",
+            "submodule-foreach-in-dir",
+            "rebase-x",
+            "rebase-exec",
+            "rebase-exec-attached",
+            "rebase-x-stuck",
+            "rebase-x-bundled",
+            "rebase-x-git",
+            "bisect-run",
+            "core-fsmonitor",
+            "core-editor",
+            "core-pager",
+            "sequence-editor",
+            "diff-external",
+            "credential-helper",
+            "hook-command",
+            "transport-env-show",
+            "transport-env-status",
+            "transport-env-exported",
+            "svn-ssh-url",
+            "svn-ssh-env",
+        ],
+    )
+    def test_command_git_runs_for_a_verb_dialing_self_is_denied(self, cmd):
+        assert _denied_by(cmd) in self._DIAL_RULES, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "git rebase main",
+            "git rebase -i HEAD~3",
+            "git rebase --onto x y",
+            "git rebase -x 'make test' main",
+            "git rebase -x'make test' main",
+            "git rebase -x 'ssh build.example.com make' main",
+            "git rebase -x 'curl http://localhost:8080/health' main",
+            "git submodule foreach 'git status'",
+            "git submodule foreach 'git fetch origin'",
+            "git submodule foreach 'echo ssh localhost'",
+            "git bisect run make test",
+            "GIT_SSH_COMMAND='ssh -i key' git show HEAD",
+            "git svn clone svn+ssh://svn.example.com/r",
+            "SVN_SSH='ssh -i key' git svn clone svn+ssh://svn.example.com/r",
+            "git push -u origin main",
+            "git clean -xfd",
+        ],
+        ids=[
+            "rebase",
+            "rebase-interactive",
+            "rebase-onto",
+            "rebase-x-make",
+            "rebase-x-stuck-make",
+            "rebase-x-remote-ssh",
+            "rebase-x-local-http",
+            "foreach-status",
+            "foreach-fetch-origin",
+            "foreach-echo",
+            "bisect-run-make",
+            "transport-env-no-host",
+            "svn-ssh-remote",
+            "svn-ssh-env-no-host",
+            "push-set-upstream",
+            "clean-x",
+        ],
+    )
+    def test_command_git_runs_for_a_verb_not_dialing_self_is_allowed(self, cmd):
+        assert _denied_by(cmd) not in self._DIAL_RULES, cmd
