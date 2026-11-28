@@ -12,6 +12,7 @@ import { isUntitledSession, sessionDisplayTitle } from '../utils/sessionDisplayT
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useWheelToHorizontal } from '../hooks/useWheelToHorizontal'
 import { TAB_ID_ATTR, useRevealActiveTab } from '../hooks/useRevealActiveTab'
+import { OWNS_SCROLL_X_PROPS } from '../hooks/useTrackpadSwipe'
 import {
   TAB_STATUS_COLOR,
   removeTabAt,
@@ -479,7 +480,7 @@ export default function EmbedTabStrip() {
           of the scroller itself would travel with the scrolled content, so the
           fades anchor to this non-scrolling parent. It also owns the flex
           sizing so the scroller keeps filling the row. */}
-      <div className="relative min-w-0 flex-1">
+      <div className="relative min-w-0 flex-1" {...OWNS_SCROLL_X_PROPS}>
         <div
           ref={setStrip}
           className="flex items-center gap-1 overflow-x-auto relative"

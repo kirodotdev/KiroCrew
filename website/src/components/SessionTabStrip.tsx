@@ -22,6 +22,7 @@ import {
 import { offlineProps } from '../utils/offline'
 import { i18nT } from '../i18n/t'
 import { useLongPressReorder } from '../hooks/useLongPressReorder'
+import { OWNS_SCROLL_X_PROPS } from '../hooks/useTrackpadSwipe'
 import { isUntitledSession, sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 
 /**
@@ -544,7 +545,7 @@ export default function SessionTabStrip({ tabs, pinned = NO_PINS, activeKey, cue
       // strip claims both horizontal directions from touchstart.
       data-owns-swipe="left right"
     >
-      <div className="relative min-w-0 flex-1">
+      <div className="relative min-w-0 flex-1" {...OWNS_SCROLL_X_PROPS}>
       {/* The scroller is a wrapper, not the group. Framer's drag auto-scroll
           looks for a scrollable ANCESTOR of the Reorder.Group, so a group
           that scrolls itself never scrolls while a tab is held at its edge,

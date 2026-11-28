@@ -1,6 +1,7 @@
 import { memo, useRef, useState, useEffect, useLayoutEffect, useCallback } from 'react'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useWheelToHorizontal } from '../hooks/useWheelToHorizontal'
+import { OWNS_SCROLL_X_PROPS } from '../hooks/useTrackpadSwipe'
 import { ChevronLeft, ChevronRight, ArrowUp, Loader2 } from 'lucide-react'
 import { InstantTip, useInstantTip as useSharedInstantTip } from './InstantTip'
 import ErrorNotice from './ErrorNotice'
@@ -688,7 +689,10 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, multi, ani
 
   return (
     <div className="pt-1">
-      <div className="relative">
+      {/* The whole row, arrows included, owns a sideways trackpad swipe even
+          at its end or when every chip fits, so the swipe never reaches the
+          chat's side panel (useTrackpadSwipe's OWNS_SCROLL_X_ATTR). */}
+      <div className="relative" {...OWNS_SCROLL_X_PROPS}>
       {edges.left && <div className="absolute left-0 top-0 bottom-0 w-10 z-10 pointer-events-none bg-gradient-to-r from-bg to-transparent" />}
       {edges.right && <div className="absolute right-0 top-0 bottom-0 w-10 z-10 pointer-events-none bg-gradient-to-l from-bg to-transparent" />}
       {edges.left && (

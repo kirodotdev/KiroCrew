@@ -7,7 +7,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import {
-  createTrackpadSwipeReader, isClearSwipe, SWIPE_GESTURE_IDLE_MS, swipeTiming, useTrackpadSwipe, canScrollX,
+  createTrackpadSwipeReader, isClearSwipe, SWIPE_GESTURE_IDLE_MS, swipeTiming, useTrackpadSwipe, canScrollX, OWNS_SCROLL_X_ATTR,
   relayedWheelTime, FRAME_WHEEL_MAX_AGE_MS, FINGER_HOLD_MAX_MS,
   type TrackpadSwipeDir, type WheelSample, type WheelVerdict,
 } from './useTrackpadSwipe'
@@ -476,6 +476,71 @@ describe('useTrackpadSwipe: a pinch-zoomed page', () => {
     expect(onDragStart).not.toHaveBeenCalled()
   })
 
+  it('leaves a sideways swipe over a chip row to the browser while zoomed in', () => {
+    vi.stubGlobal('visualViewport', Object.assign(new EventTarget(), { scale: 2 }))
+    const root = document.createElement('div')
+    const row = document.createElement('div')
+    row.setAttribute('data-owns-scroll-x', '')
+    root.appendChild(row)
+    document.body.appendChild(root)
+    renderHook(() => useTrackpadSwipe({ current: root }, {
+      enabled: true, wants: () => true, onDragStart: () => {}, onDragMove: () => {}, onDragEnd: () => {}, onSwipe: () => {},
+    }))
+    const ev = new WheelEvent('wheel', { deltaX: 20, deltaY: 0, bubbles: true, cancelable: true })
+    act(() => { row.dispatchEvent(ev) })
+    expect(ev.defaultPrevented).toBe(false)
+  })
+
+  /** A chip row marked as owning its sideways runs; returns a wheel over it. */
+  const mountOwnerRow = (scrollable = false) => {
+    const root = document.createElement('div')
+    const row = document.createElement('div')
+    row.setAttribute(OWNS_SCROLL_X_ATTR, '')
+    if (scrollable) {
+      row.style.overflowX = 'auto'
+      Object.defineProperty(row, 'scrollWidth', { value: 400 })
+      Object.defineProperty(row, 'clientWidth', { value: 100 })
+    }
+    root.appendChild(row)
+    document.body.appendChild(root)
+    renderHook(() => useTrackpadSwipe({ current: root }, {
+      enabled: true, wants: () => true, onDragStart: () => {}, onDragMove: () => {}, onDragEnd: () => {}, onSwipe: () => {},
+    }))
+    return (dx: number, dy: number, at: number) => {
+      const ev = new WheelEvent('wheel', { deltaX: dx, deltaY: dy, bubbles: true, cancelable: true })
+      Object.defineProperty(ev, 'timeStamp', { value: at })
+      act(() => { row.dispatchEvent(ev) })
+      return ev.defaultPrevented
+    }
+  }
+
+  it('never cancels a vertical-first run over a marked row that later turns sideways', () => {
+    const wheel = mountOwnerRow()
+    expect(wheel(0, 30, 1)).toBe(false)
+    expect(wheel(2, 20, 17)).toBe(false)
+    for (let i = 0; i < 4; i++) expect(wheel(20, 5, 33 + i * 16)).toBe(false)
+  })
+
+  it('cancels a sideways-first run over a marked row for the whole run', () => {
+    const wheel = mountOwnerRow()
+    for (let i = 0; i < 6; i++) expect(wheel(20, 2, 1 + i * 16)).toBe(true)
+  })
+
+  it('cancels the edge samples of a sideways run that reaches a marked row\'s end mid-run', () => {
+    const wheel = mountOwnerRow(true)
+    let left = 0
+    const row = [...document.querySelectorAll(`[${OWNS_SCROLL_X_ATTR}]`)].at(-1)!
+    Object.defineProperty(row, 'scrollLeft', { get: () => left })
+    for (let i = 0; i < 3; i++) expect(wheel(20, 2, 1 + i * 16)).toBe(false)
+    left = 300
+    for (let i = 3; i < 6; i++) expect(wheel(20, 2, 1 + i * 16)).toBe(true)
+  })
+
+  it('leaves a sideways run over a marked row that can still scroll to the row', () => {
+    const wheel = mountOwnerRow(true)
+    for (let i = 0; i < 6; i++) expect(wheel(20, 2, 1 + i * 16)).toBe(false)
+  })
+
   /** A relaying frame under a fresh root whose hook accepts frames. */
   const mountWithFrame = (onDragStart: () => void) => {
     const root = document.createElement('div')
@@ -497,6 +562,28 @@ describe('useTrackpadSwipe: a pinch-zoomed page', () => {
     }
     return { post, relay }
   }
+
+  it('cancels a native edge sample over a marked row in a run a relayed frame wheel began', () => {
+    const root = document.createElement('div')
+    const row = document.createElement('div')
+    row.setAttribute(OWNS_SCROLL_X_ATTR, '')
+    const frame = document.createElement('iframe')
+    frame.setAttribute('data-wheel-relay', '')
+    Object.defineProperty(frame, 'contentWindow', { value: { postMessage: () => {} } })
+    root.append(row, frame)
+    document.body.appendChild(root)
+    renderHook(() => useTrackpadSwipe({ current: root }, {
+      enabled: true, wants: () => false, onDragStart: () => {}, onDragMove: () => {}, onDragEnd: () => {}, onSwipe: () => {},
+      acceptFrame: () => true,
+    }))
+    const msg = new MessageEvent('message', { data: { type: 'mc-frame-wheel', dx: 20, dy: 0, mode: 0, inv: null, t: 1 } })
+    Object.defineProperty(msg, 'source', { value: frame.contentWindow })
+    act(() => { window.dispatchEvent(msg) })
+    const ev = new WheelEvent('wheel', { deltaX: 20, deltaY: 0, bubbles: true, cancelable: true })
+    Object.defineProperty(ev, 'timeStamp', { value: 17 })
+    act(() => { row.dispatchEvent(ev) })
+    expect(ev.defaultPrevented).toBe(true)
+  })
 
   it("never drags from a frame's relayed run while zoomed in", () => {
     vi.stubGlobal('visualViewport', Object.assign(new EventTarget(), { scale: 2 }))
