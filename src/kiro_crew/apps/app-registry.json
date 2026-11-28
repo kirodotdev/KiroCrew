@@ -22,5 +22,11 @@
     "gitUrl": "https://github.com/mvn-bachhuynh-dn/slack-channels-onboard",
     "repo": "https://github.com/mvn-bachhuynh-dn/slack-channels-onboard",
     "branch": "release"
+  },
+  {
+    "name": "kipo",
+    "gitUrl": "https://github.com/masterphelps/kipo",
+    "repo": "https://github.com/masterphelps/kipo",
+    "branch": "main"
   }
 ]
