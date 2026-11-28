@@ -6653,6 +6653,7 @@
       "auto_jev_enter": "자동 (판단 모델): 지금 반영할지 나중에 실행할지 판단 모델이 결정합니다 (Enter)",
       "approval_hint_adjust": "승인 모드 조정",
       "approval_hint_question": "매번 확인하기 번거로우신가요?",
+      "git_confirm_always_asks": "이 명령은 Trust나 YOLO에서도 항상 확인을 요청합니다.",
       "send_a_message_or_tap_the_mic_for_voice": "메시지를 보내거나 마이크를 눌러 음성 사용",
       "release_to_transcribe": "놓으면 텍스트 변환",
       "hold_to_talk": "눌러서 말하기",

@@ -829,6 +829,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_turn/eager_spawn.py",
         "dashboard/chat_turn/elicitation_prompt.py",
         "dashboard/chat_turn/file_changes.py",
+        # The git-write confirm's audit row and card notice, moved out of
+        # tool_approval.py; the notice reaches the browser through the runner's sinks.
+        "dashboard/chat_turn/git_write_confirm.py",
         "dashboard/chat_turn/mcp_oauth_notice.py",
         "dashboard/chat_turn/mcp_session.py",
         "dashboard/chat_turn/model_fallback.py",

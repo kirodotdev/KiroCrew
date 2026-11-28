@@ -7021,6 +7021,7 @@
       "auto_jev_enter": "Automático (modelo de decisão): o modelo de decisão escolhe entre agir agora ou executar depois (Enter)",
       "approval_hint_adjust": "Ajustar o modo de aprovação",
       "approval_hint_question": "Cansado de confirmar cada etapa?",
+      "git_confirm_always_asks": "Este comando sempre pede confirmação, mesmo no Trust ou YOLO.",
       "send_a_message_or_tap_the_mic_for_voice": "Envie uma mensagem ou toque no microfone para voz",
       "release_to_transcribe": "Solte para transcrever",
       "hold_to_talk": "Mantenha pressionado para falar",

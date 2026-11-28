@@ -84,6 +84,10 @@ if TYPE_CHECKING:
         _reject_invalid_tool,
         _steer_policy_notice,
     )
+    from kiro_crew.dashboard.chat_turn.git_write_confirm import (
+        _git_write_needing_confirm,
+        _note_git_write_confirm,
+    )
     from kiro_crew.dashboard.chat_turn.native_cards import _safe_native_crew_debug_title
     from kiro_crew.dashboard.chat_turn.tool_rows import _tcid_identity_key, _tool_meta
     from kiro_crew.dashboard.chat_turn.turn_ledgers import _wt_note_approved
@@ -878,6 +882,11 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         else ""
     )
     turn._child_lf_warning = _child_lf_warning
+    # Read once per request: whether this call is one the person must confirm
+    # (hooks.confirm_git_writes). The card reads it too, to offer no standing
+    # grant and to stay open through a Trust or YOLO switch.
+    _git_write = _git_write_needing_confirm(state, slot, event)
+    turn._git_write_confirm = _git_write
     if state.context_builder:
         # Pass the raw shell command (not just the display title)
         # so the security gate evaluates what actually executes.
@@ -1058,6 +1067,11 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 web_term=_web_ask,
             )
             tool_result = ToolHookResult(action=TOOL_ALLOW)
+        if _git_write and tool_result.action == TOOL_AUTO_APPROVE:
+            # A confirmed command is put to the person; the hook layer's grant
+            # becomes a plain allow, so the scripted PreToolUse hooks below
+            # still run before the card.
+            tool_result = ToolHookResult(action=TOOL_ALLOW)
         if tool_result.action == TOOL_AUTO_APPROVE:
             # The hook layer granted this by NAME (its
             # `auto_approve_tools` globs, or the read-only allowlist).
@@ -1237,6 +1251,17 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             return _Flow.CONTINUE
         turn._pre_tool_hooks_fired = True
         # Hooks passed — fall through to patterns/trust-reads/trust/yolo/interactive
+    if _git_write:
+        # Every grant below (native crew, trusted patterns, trust-reads,
+        # session trust, YOLO) is skipped: the card asks.
+        _note_git_write_confirm(
+            session_key=session_key,
+            slot=slot,
+            event=event,
+            reason=_git_write,
+            notices=_declined_grant_notices,
+        )
+        return None
     # Native crew auto-approve: when a native subagent (crew pipeline)
     # is active and the session is configured to auto-approve subagent
     # tools, approve immediately to avoid deadlocking the blocked

@@ -248,13 +248,17 @@ _SPLIT_HELPERS: dict[str, str] = {
 #: its ``channel_trust`` (a code channel's card adds "Trust this channel"),
 #: ``requester`` on ``_request_approval`` (the one shared Slack user who may answer),
 #: ``line_start`` on ``_filter_options_brackets`` (whether the text already sent
-#: ends a line, so a marker line is held from its start), and the keyword-only
+#: ends a line, so a marker line is held from its start), the keyword-only
 #: ``requester`` on ``post_linked_approval`` (the shared user whose message opened
-#: the linked slot's turn may answer its card), and the keyword-only
+#: the linked slot's turn may answer its card), the keyword-only
 #: ``thread_trust`` on ``post_linked_approval`` and ``_build_approval_blocks`` (a
-#: Conductor thread's conductor's card reads "Trust this thread"), and ``bot`` on
-#: ``_persist_channel_config`` (``!channel bot`` saves a channel's Bot).
-_BASE_SHAPE_DIGEST = "6745aaa7f3b8d7bb076f5ff28974625b434730bd1d29fbd9efa6d7e0753031a6"
+#: Conductor thread's conductor's card reads "Trust this thread"), ``bot`` on
+#: ``_persist_channel_config`` (``!channel bot`` saves a channel's Bot), the
+#: ``git_confirm`` on ``post_linked_approval``, ``_build_approval_blocks``'s
+#: ``trust_button`` (a git-confirm card keeps the code channel's escaping without
+#: the Trust button), and ``_resolve_linked_click`` returning ``None`` (a Trust
+#: click on a git-confirm card settles nothing).
+_BASE_SHAPE_DIGEST = "41884f73422038b1c3fcc673be31d06498a177017115f06da1edbe9aba50af0a"
 
 #: Definitions that stay in the facade file, each because a repository guard, a
 #: contract or the import-time body reads it there. The reason per entry is in

@@ -9,7 +9,7 @@ import CopyBranchButton from './CopyBranchButton'
 import ProjectAwsProfileStatus from './ProjectAwsProfile'
 import { useDictationPanelUsable } from './VoiceDictationPanel'
 import { useSlotRemoteEnvironment } from './sessionEnvironmentHooks'
-import { ApprovalActions } from './chat-input/ApprovalActions'
+import { ApprovalActions, GitConfirmNote } from './chat-input/ApprovalActions'
 import { DenyOverrideWarning } from './DenyOverrideDropdown'
 import { OverlayPortal } from './overlayRoot'
 import { useQueryClient } from '@tanstack/react-query'
@@ -396,7 +396,7 @@ function ChatInput({
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError, showApprovalStatus,
     approvalToolInput, approvalIsUnattended,
-    approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
+    approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand, approvalIsGitConfirm,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, approvalSubagentTask, approvalAskedBySubagent, showGhost, showInChat,
   } = approval
   const activeSlot = slotId
@@ -1188,12 +1188,12 @@ function ChatInput({
                   )}
                   <ApprovalActions approval={approval} slotId={slotId} />
               </div>
-              {approvalDenyRule && <DenyOverrideWarning rule={approvalDenyRule} family={approvalDenyFamily} detail={approvalDenyDetail} command={approvalDenyCommand} />}
+              {approvalDenyRule ? <DenyOverrideWarning rule={approvalDenyRule} family={approvalDenyFamily} detail={approvalDenyDetail} command={approvalDenyCommand} /> : approvalIsGitConfirm && <GitConfirmNote />}
               {/* A1 hint: points at the footer mode picker. Withheld for unattended
                   sources (the picker governs THIS slot), the ghost state (picker
-                  unmounted), an override card, the B2 nudge, and once the user has
-                  found the picker (this link or a mode change). */}
-              {!showGhost && !approvalIsUnattended && !approvalDenyRule && !approvalModeAdjusted && !approvalNudgeActive && approvalMode && (
+                  unmounted), an override card, a git-confirm card (no mode answers it), the B2
+                  nudge, and once the user has found the picker (this link or a mode change). */}
+              {!showGhost && !approvalIsGitConfirm && !approvalIsUnattended && !approvalDenyRule && !approvalModeAdjusted && !approvalNudgeActive && approvalMode && (
                 <div className="flex items-center gap-1.5 flex-wrap px-3.5 pb-2 -mt-1 text-[12px] text-muted select-none">
                   <span>{i18nT('components.chatInput.approval_hint_question')}</span>
                   <button

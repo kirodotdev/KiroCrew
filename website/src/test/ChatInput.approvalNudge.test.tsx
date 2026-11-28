@@ -114,6 +114,30 @@ describe('approval bar discoverability hint (A1)', () => {
   })
 })
 
+describe('git-confirm card', () => {
+  // A git-confirm card asks under every approval mode, so pointing at the mode
+  // picker or offering Trust would lead nowhere.
+  it('says the command always asks instead of showing the approval-mode hint', () => {
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval({ git_confirm: '1' })) })
+    expect(screen.getByText('This command always asks, even in Trust or YOLO.')).toBeInTheDocument()
+    expect(screen.queryByText('Tired of confirming every step?')).not.toBeInTheDocument()
+    expect(screen.queryByText('Adjust approval mode')).not.toBeInTheDocument()
+  })
+
+  it('offers Allow once and Reject but no Trust button', () => {
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval({ git_confirm: '1' })) })
+    expect(screen.getByText('Allow once')).toBeInTheDocument()
+    expect(screen.getByText('Reject')).toBeInTheDocument()
+    expect(screen.queryByText('Trust')).not.toBeInTheDocument()
+  })
+
+  it('an ordinary card still shows Trust and no git line', () => {
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) })
+    expect(screen.getByText('Trust')).toBeInTheDocument()
+    expect(screen.queryByText('This command always asks, even in Trust or YOLO.')).not.toBeInTheDocument()
+  })
+})
+
 describe('approval nudge trigger (B2)', () => {
   async function approveN(store: ReturnType<typeof renderWithProviders>['store'], n: number) {
     for (let i = 1; i <= n; i++) {
