@@ -59,6 +59,18 @@ export function createUpdatesEndpoints({ post, del, j, jfetch: fetch }: ClientTr
     }
   }
 
+  /**
+   * The same confirmation for a restart that does not go through
+   * `POST /api/restart` (the desktop app stops and respawns its gateway).
+   * `GET /api/restart` reads the running work and restarts nothing; a "no"
+   * throws `WorkConfirmDeclined`. A read that fails throws too: not knowing
+   * what is running is no licence to cut it.
+   */
+  const confirmRestartWork = async (): Promise<void> => {
+    const work = asWorkInFlight(await fetch('/api/restart').then(j))
+    if (work) await confirmRestartUnderWork(work)
+  }
+
   const lifecycle = {
     // Update
     checkUpdate: () => fetch('/api/update/check').then(j) as Promise<UpdateCheckResult>,
@@ -85,6 +97,7 @@ export function createUpdatesEndpoints({ post, del, j, jfetch: fetch }: ClientTr
      */
     setUpdateChannel: (channel: string) => post('/api/update/channel', { channel }).then(j) as Promise<UpdateCheckResult>,
     restartGateway,
+    confirmRestartWork,
     // In-app wheel update step-up: arming records the request and returns the
     // host command to run; the approval nonce never reaches this client.
     //

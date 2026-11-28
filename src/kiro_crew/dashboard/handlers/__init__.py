@@ -631,6 +631,7 @@ from kiro_crew.dashboard.handlers.updates import (  # noqa: E402, F401
     _version_key,
     api_changelog,
     api_gateway_restart,
+    api_gateway_restart_census,
     api_log_level,
     api_log_level_get,
     api_logs,

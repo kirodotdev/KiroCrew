@@ -12,6 +12,7 @@ import { sseStatus } from '../store/dashboardSlice'
 import { MemoryRouter } from 'react-router-dom'
 import { AboutPanel } from '../pages/settings/AboutPanel'
 import { i18nT } from '../i18n/t'
+import { confirmText, stubAppConfirm } from './appConfirmStub'
 
 const BLANK_STATUS = {
   uptime: '1m', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0,
@@ -29,14 +30,16 @@ const BASE_INFO = {
 
 type Win = { updateAPI?: unknown; gatewayRestartAPI?: unknown }
 
-function stubFetch() {
+/** `census`: what `GET /api/restart` answers; every other request answers `{}`. */
+function stubFetch(census: Record<string, unknown> = {}) {
   const posts: string[] = []
   vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: RequestInit) => {
     if (init?.method === 'POST') posts.push(String(input))
+    const body = !init?.method && String(input) === '/api/restart' ? census : {}
     return {
       ok: true,
       status: 200,
-      json: async () => ({}),
+      json: async () => body,
       text: async () => '{}',
       headers: new Headers({ 'content-type': 'application/json' }),
     }
@@ -118,6 +121,57 @@ describe('desktop About: Restart gateway', () => {
       expect(btn.textContent).toContain(i18nT('pages.settings.aboutPanel.restarting'))
     })
     expect(posts.some(url => url.includes('/api/restart'))).toBe(false)
+  })
+
+  it('warns about running work, by name, before the app stops the gateway', async () => {
+    for (const answer of [false, true]) {
+      const posts = stubFetch({
+        code: 'work_in_flight', busy: 1,
+        holders: [{ kind: 'script', name: 'nightly-sync', since_secs: 21, count: 1 }], holders_more: 0,
+      })
+      const ask = stubAppConfirm(answer)
+      const bridge = bridgeAnswering(true)
+      mountDesktop({ bridge })
+      await screen.findByTestId('desktop-gateway-restart-row')
+      fireEvent.click(screen.getByTestId('gateway-restart-desktop'))
+      fireEvent.click(screen.getByTestId('gateway-restart-desktop'))
+
+      await waitFor(() => expect(ask).toHaveBeenCalledTimes(1))
+      const text = confirmText(ask.mock.calls[0][0])
+      expect(text).toContain(i18nT('components.updateFoundModal.work_running_title'))
+      expect(text).toContain('nightly-sync')
+      expect(ask.mock.calls[0][0].confirmLabel).toBe(i18nT('components.updateFoundModal.restart_anyway'))
+      if (answer) {
+        await waitFor(() => expect(bridge.restart).toHaveBeenCalledTimes(1))
+      } else {
+        // A "no" is a quiet cancel: no restart, no error, the control back.
+        await waitFor(() => expect((screen.getByTestId('gateway-restart-desktop') as HTMLButtonElement).disabled).toBe(false))
+        expect(bridge.restart).not.toHaveBeenCalled()
+        expect(screen.queryByTestId('desktop-gateway-restart-error')).toBeNull()
+      }
+      expect(posts.some(url => url.includes('/api/restart'))).toBe(false)
+      cleanup()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('restarts nothing and says so when the gateway cannot say what is running', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      if (String(input) === '/api/restart') throw new TypeError('Failed to fetch')
+      return {
+        ok: true, status: 200, json: async () => ({}), text: async () => '{}',
+        headers: new Headers({ 'content-type': 'application/json' }),
+      }
+    }))
+    const bridge = bridgeAnswering(true)
+    mountDesktop({ bridge })
+    await screen.findByTestId('desktop-gateway-restart-row')
+    fireEvent.click(screen.getByTestId('gateway-restart-desktop'))
+    fireEvent.click(screen.getByTestId('gateway-restart-desktop'))
+
+    const error = await screen.findByTestId('desktop-gateway-restart-error')
+    expect(error.textContent).toContain(i18nT('pages.settings.aboutPanel.desktop_restart_unavailable'))
+    expect(bridge.restart).not.toHaveBeenCalled()
   })
 
   it('arms with no extra line: About passes no armed note', async () => {

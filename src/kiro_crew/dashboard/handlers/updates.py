@@ -49,10 +49,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_apply import _restart_running  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _start_gateway_restart  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _update_record_busy  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import _work_in_flight_response  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import api_gateway_restart  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import api_update_apply  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import api_update_cancel  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import api_update_simulate  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import (  # noqa: F401
+        api_gateway_restart_census,
+    )
     from kiro_crew.dashboard.handlers.updates_channel import _changelog_cache  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import _changelog_path  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import _overlay_refusal  # noqa: F401

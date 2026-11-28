@@ -1298,7 +1298,12 @@ liveness monitor reads a rebind slower than its six missed probes as a wedge
 and kills it; on Windows the exec starts a new process and exits the old one,
 so the app loses its child and no longer stops the gateway on quit. A restart
 through the app ends turns that are mid-reply the way quitting does; they keep
-their Resume button.
+their Resume button. So before it asks the app, the page reads
+`GET /api/restart` (owner-gated, restarts nothing): while work is running it
+answers the same `work_in_flight` body `POST /api/restart {"force": false}`
+refuses with, and the row shows the same "Work is still running" dialog, naming
+that work, with "Restart anyway". A "no" restarts nothing. A read that fails
+restarts nothing either: the row shows its "can't restart right now" error.
 
 The row shows only in the main window, connected (liveness armed) to a gateway
 this app spawned. An adopted gateway, a remote crew and a connection window get

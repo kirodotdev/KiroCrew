@@ -217,4 +217,7 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/mcp/project-servers/approve"): RouteAccess(
         "mcp.project_servers.approve", UNSTABLE
     ),
+    # Owner dashboard only (handlers/updates_apply.py); the census POST /api/restart
+    # refuses with, read for the desktop app's own Restart gateway. Restarts nothing.
+    ("GET", "/api/restart"): RouteAccess("update.restart_census.read", UNSTABLE),
 }
