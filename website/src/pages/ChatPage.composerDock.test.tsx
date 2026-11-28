@@ -63,6 +63,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import ComposerDockView from './chat/page/ComposerDockView'
 import { dismissFollowupItem } from '../store/chatSlice'
 import { i18nT } from '../i18n/t'
+import { OVERLAY_Z_MAX } from '../lib/themeDecorLayer'
 
 type DockProps = Parameters<typeof ComposerDockView>[0]
 
@@ -91,6 +92,22 @@ describe('ComposerDockView', () => {
     runsHere.value = here
     render(<ComposerDockView {...dockProps()} />)
     expect(seen.chatInput!.terminalCommands).toBe(target)
+  })
+
+  // The phone mute toggle portals into this slot (#43431). Theme overlays paint
+  // in the shell's decor slot at OVERLAY_Z_MAX, and one with pointer events
+  // would swallow taps on a toggle beneath it, so the slot must outrank it, and
+  // nothing between the slot and the dock root may trap it in a lower context.
+  it('lifts the theme mute slot above every theme overlay (OVERLAY_Z_MAX)', () => {
+    render(<ComposerDockView {...dockProps()} />)
+    const slot = screen.getByTestId('theme-mute-slot')
+    expect(Number(slot.style.zIndex)).toBeGreaterThan(OVERLAY_Z_MAX)
+    const root = screen.getByTestId('composer-dock-root')
+    for (let el = slot.parentElement; el; el = el.parentElement) {
+      expect(el.style.zIndex).toBe('')
+      expect(el.className).not.toMatch(/(^|\s)(z-|transform|filter|isolate|backdrop-)/)
+      if (el === root) break
+    }
   })
 
   it('dismisses the prefill hint from the composer', () => {

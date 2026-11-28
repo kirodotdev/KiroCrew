@@ -94,6 +94,15 @@ export function useThemeDecorBehindSlot(): HTMLElement | null {
 // toggle rises with the dock however tall the draft or its cards grow.
 let muteSlot: HTMLElement | null = null
 
+/**
+ * The dock slot's z-index: the fixed corner toggle's z-[50], so the toggle
+ * stays tappable above a pointer-interactive overlay (OVERLAY_Z_MAX). The slot
+ * and the decor slot share the shell's stacking context, so this only holds
+ * while no ancestor of the slot between it and the shell creates a stacking
+ * context of its own (z-index, transform, filter, isolation).
+ */
+export const THEME_MUTE_SLOT_Z = 50
+
 /** Ref callback for the composer dock's mute-toggle slot. */
 export function registerThemeMuteSlot(el: HTMLElement | null): void {
   if (muteSlot === el) return

@@ -75,7 +75,7 @@ import { KnowledgePicker } from '../KnowledgePicker'
 import { JumpToBottomButton } from '../../../app-sdk/ChatScrollChrome'
 import WorkflowProgressBar from '../WorkflowProgressBar'
 import { tryQuickSend } from '../../../lib/quickSend'
-import { registerThemeMuteSlot } from '../../../lib/themeDecorLayer'
+import { THEME_MUTE_SLOT_Z, registerThemeMuteSlot } from '../../../lib/themeDecorLayer'
 import { i18nT } from '../../../i18n/t'
 import { acpBackendName } from '../../../api/acpBackend'
 import { fmtDateFields, fmtNumber } from '../../../i18n/format'
@@ -432,8 +432,11 @@ export default function ComposerDockView({
               <JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={() => scrollBottom(true)} />
               {/* On a phone ThemeExperienceLayer portals its sound mute toggle
                   here: right of the centred jump button, above the dock's top
-                  edge, so it rises with the dock and never lands on send/stop. */}
-              <div ref={registerThemeMuteSlot} className="absolute -top-12 right-4 z-10 pointer-events-none" data-testid="theme-mute-slot" />
+                  edge, so it rises with the dock and never lands on send/stop.
+                  Like the wave chip above, its z-index (THEME_MUTE_SLOT_Z)
+                  competes in the shell's stacking context, above a pointer-
+                  interactive theme overlay, so the toggle stays tappable. */}
+              <div ref={registerThemeMuteSlot} className="absolute -top-12 right-4 pointer-events-none" style={{ zIndex: THEME_MUTE_SLOT_Z }} data-testid="theme-mute-slot" />
               {/* Status chrome never claims more than half the pane. The dock
                   is anchored to the pane's bottom edge and grows upward, so an
                   opening keyboard — which shrinks the layout viewport — would
