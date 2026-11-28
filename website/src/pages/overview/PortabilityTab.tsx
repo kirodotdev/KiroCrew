@@ -137,6 +137,19 @@ export function unbundledTemplates(header: string | null): { names: string[]; mo
   }
 }
 
+/**
+ * The export's `X-Kirocrew-Agents-Folder` header, sent beside the template header:
+ * a JSON string naming the folder those templates are copied from.
+ */
+export function agentsFolderHeader(header: string | null): string {
+  try {
+    const raw: unknown = JSON.parse(header || '""')
+    return typeof raw === 'string' ? raw : ''
+  } catch {
+    return ''
+  }
+}
+
 /** One agent template an archive carries, from the preview's `agent_templates`. */
 export interface BundledTemplate {
   name: string
@@ -379,7 +392,12 @@ export default function PortabilityTab() {
       downloadBlob(blob, m ? m[1] : 'kirocrew-export.zip')
       setExportStatus({ type: 'ok', msg: i18nT('pages.overview.portabilityTab.download_started') })
       const { names, more } = unbundledTemplates(resp.headers.get('X-Kirocrew-Unbundled-Templates'))
-      if (names.length || more) setExportWarning(i18nT('pages.overview.portabilityTab.export_templates_not_included', { names: joinWithMore(names, more) }))
+      if (names.length || more) {
+        setExportWarning(i18nT('pages.overview.portabilityTab.export_templates_not_included', {
+          names: joinWithMore(names, more),
+          folder: agentsFolderHeader(resp.headers.get('X-Kirocrew-Agents-Folder')),
+        }))
+      }
       const apps = unbundledTemplates(resp.headers.get('X-Kirocrew-Unbundled-Apps'))
       if (apps.names.length || apps.more) setExportAppsWarning(i18nT('pages.overview.portabilityTab.export_apps_not_included', { names: joinWithMore(apps.names, apps.more) }))
       const skipped = withChats ? skippedChats(resp.headers.get('X-Kirocrew-Sessions-Skipped-Size')) : 0
@@ -477,7 +495,8 @@ export default function PortabilityTab() {
         if (missing.length) {
           const more: number = summary.missing_agent_templates_more || 0
           const crews = joinWithMore(missing.map(m => `${m.crew} → ${m.kiro_agent}`), more)
-          warnings.push(i18nT('pages.overview.portabilityTab.import_templates_missing', { crews }))
+          const folder = typeof data.agents_folder === 'string' ? data.agents_folder : ''
+          warnings.push(i18nT('pages.overview.portabilityTab.import_templates_missing', { crews, folder }))
         }
         // No archive carries an app: the apps the other machine had that this one
         // has not set up. Two apps may share a name, so a repeat is kept.

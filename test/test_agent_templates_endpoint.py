@@ -205,6 +205,23 @@ async def test_roster_marks_editability_and_references(agents_dir):
 
 
 @pytest.mark.asyncio
+async def test_roster_names_the_agents_folder_it_reads(agents_dir, tmp_path):
+    """The tab's copy names this folder rather than ``~/.kiro/agents``, which
+    ``KIRO_HOME`` and a pod gateway move it away from: written from home with
+    ``~`` when it sits under home, and in full when it does not."""
+    _seed_config()
+    # Path.home() is patched, not HOME: Windows reads the home from USERPROFILE.
+    with patch("pathlib.Path.home", return_value=tmp_path / "elsewhere"):
+        resp = await api_agent_templates(_request("GET"))
+    assert resp.status == 200, resp.text
+    assert (await _body(resp)).get("agents_folder") == str(agents_dir)
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        resp = await api_agent_templates(_request("GET"))
+    assert (await _body(resp)).get("agents_folder") == "~/agents"
+
+
+@pytest.mark.asyncio
 async def test_roster_flags_which_rows_the_picker_may_offer(agents_dir):
     """The writer's shared predicate appears as one display flag per row."""
     from kiro_crew.agent_discovery import AgentInfo

@@ -130,10 +130,13 @@ const openMore = () => {
   return screen.findAllByRole('menuitem')
 }
 
+// Where KIRO_HOME puts the agents folder: the copy must name it, not ~/.kiro/agents.
+const AGENTS_FOLDER = '/srv/kiro-home/agents'
+
 beforeEach(() => {
   Object.values(mockApi).forEach(m => m.mockReset())
   mockDispatch.mockReset(); mockNavigate.mockReset(); mockCreateSlot.mockClear()
-  mockApi.agentTemplates.mockResolvedValue({ templates: [MINE, PKG, RUNTIME, COPY] })
+  mockApi.agentTemplates.mockResolvedValue({ templates: [MINE, PKG, RUNTIME, COPY], agents_folder: AGENTS_FOLDER })
   mockApi.agentDetail.mockImplementation(async (name: string) => ({
     name, description: name === 'reviewer' ? 'Careful reviewer' : 'shipped', model: 'claude-x',
     prompt: `prompt of ${name}`, tools: ['fs_read', '@docs/search'], allowedTools: ['@docs/search'],
@@ -195,7 +198,7 @@ describe('AgentTemplatesTab roster', () => {
     // The read-only banner carries the reason once and the remedy beside it;
     // the header subtitle only says "Read-only".
     expect(screen.getAllByText(/Installed by a package/)).toHaveLength(1)
-    expect(screen.getByText((_, el) => el?.tagName === 'DIV' && el.textContent === 'Read-only · ~/.kiro/agents/Pkg-atlas.json')).toBeInTheDocument()
+    expect(screen.getByText((_, el) => el?.tagName === 'DIV' && el.textContent === 'Read-only · /srv/kiro-home/agents/Pkg-atlas.json')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Duplicate to edit/ })).toBeInTheDocument()
     // The banner leads with a bold two-word reason so the four read-only
     // states can be told apart at a glance.
@@ -559,6 +562,31 @@ describe('AgentTemplatesTab actions', () => {
     expect(within(dialog).getByText('pr-bot')).toBeInTheDocument()
     // The roster is untouched: the row is still listed.
     expect(option('reviewer')).toBeInTheDocument()
+  })
+
+  it('names the agents folder the server reports in the delete confirm and the New dialog', async () => {
+    mockApi.agentTemplates.mockResolvedValue({ templates: [FREE, PKG, RUNTIME, COPY], agents_folder: AGENTS_FOLDER })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    confirm.mockClear()
+    renderTab()
+    await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'))
+    const items = await openMore()
+    fireEvent.click(items.find(i => i.textContent === 'Delete')!)
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('only its file is removed from “/srv/kiro-home/agents”;'))
+    fireEvent.click(screen.getByRole('button', { name: /New custom agent/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'New custom agent' })
+    expect(dialog).toHaveTextContent('Saved to /srv/kiro-home/agents/<name>.json and offered in the chat picker right away.')
+    expect(confirm.mock.calls.flat().join(' ')).not.toContain('~/.kiro/agents')
+    expect(document.body).not.toHaveTextContent('~/.kiro/agents')
+  })
+
+  it('leaves the New dialog intro out when the roster read failed, as it names no folder', async () => {
+    mockApi.agentTemplates.mockRejectedValue(new StubApiError(503, 'unavailable', { code: 'templates_unavailable' }))
+    renderTab()
+    fireEvent.click(await screen.findByRole('button', { name: /New custom agent/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'New custom agent' })
+    expect(within(dialog).getByRole('textbox', { name: 'Name' })).toBeInTheDocument()
+    expect(dialog).not.toHaveTextContent('Saved to')
   })
 
   it('names a reserved template id in the create dialog when the server refuses it', async () => {

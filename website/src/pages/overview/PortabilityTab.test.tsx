@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
-import PortabilityTab, { IMPORT_RESULT_KEY, chatImportLines, importedItemCount, keptSettingsFiles, refusalText, settingsFileLabel, refusedItems, unbundledTemplates } from './PortabilityTab'
+import PortabilityTab, { IMPORT_RESULT_KEY, agentsFolderHeader, chatImportLines, importedItemCount, keptSettingsFiles, refusalText, settingsFileLabel, refusedItems, unbundledTemplates } from './PortabilityTab'
 import { __resetUiPrefsSyncForTests, resumeUiPrefsSync } from '../../lib/uiPrefs'
 import { i18nT } from '../../i18n/t'
 import { confirmAction } from '../../test/confirmAction'
@@ -56,6 +56,16 @@ describe('unbundledTemplates', () => {
     expect(unbundledTemplates(null)).toEqual({ names: [], more: 0 })
     expect(unbundledTemplates('{not json')).toEqual({ names: [], more: 0 })
     expect(unbundledTemplates('{"a": 1}')).toEqual({ names: [], more: 0 })
+  })
+})
+
+describe('agentsFolderHeader', () => {
+  it('reads the folder the header names, and nothing from a malformed one', () => {
+    expect(agentsFolderHeader('"/srv/kiro-home/agents"')).toBe('/srv/kiro-home/agents')
+    expect(agentsFolderHeader('"~/r\\u00e9sum\\u00e9/agents"')).toBe('~/résumé/agents')
+    expect(agentsFolderHeader(null)).toBe('')
+    expect(agentsFolderHeader('{not json')).toBe('')
+    expect(agentsFolderHeader('["/srv"]')).toBe('')
   })
 })
 
@@ -124,7 +134,10 @@ describe('PortabilityTab template warnings', () => {
   it('names the templates an export leaves out, and still downloads', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(['PK']), {
       status: 200,
-      headers: { 'X-Kirocrew-Unbundled-Templates': '["reviewer", "writer", "+3"]' },
+      headers: {
+        'X-Kirocrew-Unbundled-Templates': '["reviewer", "writer", "+3"]',
+        'X-Kirocrew-Agents-Folder': '"/srv/kiro-home/agents"',
+      },
     })))
     vi.stubGlobal('URL', class extends URL {
       static createObjectURL = () => 'blob:x'
@@ -135,6 +148,9 @@ describe('PortabilityTab template warnings', () => {
     const warning = await screen.findByTestId('portability-export-warning')
     expect(warning.textContent).toContain('reviewer, writer, and 3 more')
     expect(warning.textContent).not.toContain('+3')
+    // The folder the server reads, which KIRO_HOME can move from ~/.kiro/agents.
+    expect(warning.textContent).toContain('Copy them from /srv/kiro-home/agents to the agents folder on the other machine.')
+    expect(warning.textContent).not.toContain('~/.kiro/agents')
     expect(screen.getByText('Download started.')).toBeTruthy()
   })
 
@@ -184,7 +200,11 @@ describe('PortabilityTab template warnings', () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(
       url.includes('preview')
         ? { ok: true, manifest: { version: 1, created_at: 't', hostname: 'h', user: 'u', contents: {} } }
-        : { ok: true, summary: { items: ['config (restored)'], missing_agent_templates: [{ crew: 'triage', kiro_agent: 'local-only' }] } },
+        : {
+          ok: true,
+          summary: { items: ['config (restored)'], missing_agent_templates: [{ crew: 'triage', kiro_agent: 'local-only' }] },
+          agents_folder: '/srv/kiro-home/agents',
+        },
     ), { status: 200 })))
     render(<PortabilityTab />)
     const input = screen.getByLabelText(/choose import file/i) as HTMLInputElement
@@ -194,6 +214,8 @@ describe('PortabilityTab template warnings', () => {
     fireEvent.click(importButton)
     const warning = await screen.findByTestId('portability-import-warning')
     expect(warning.textContent).toContain('triage \u2192 local-only')
+    expect(warning.textContent).toContain('Copy the missing templates into /srv/kiro-home/agents before you use these crews.')
+    expect(warning.textContent).not.toContain('~/.kiro/agents')
     expect(screen.getByText(/Import complete/)).toBeTruthy()
   })
 

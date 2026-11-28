@@ -17,9 +17,11 @@ from aiohttp import web
 from aiohttp.multipart import BodyPartReader
 
 from kiro_crew import pinned_fs, platform_compat
+from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard import part_stream
 from kiro_crew.dashboard.folder_portability import live_folder_merge
 from kiro_crew.dashboard.handlers._shared import open_multipart, require_owner_dashboard_request
+from kiro_crew.dashboard.side_readonly_spec import _home_relative
 from kiro_crew.portability import (
     apply_import_zip,
     is_agent_template_stem,
@@ -103,6 +105,11 @@ _SPOOL_FILE = "import.zip"
 
 #: Export response header naming the agent templates the bundle does not carry.
 UNBUNDLED_TEMPLATES_HEADER = "X-Kirocrew-Unbundled-Templates"
+
+#: Export response header sent beside the template header: the agents folder those
+#: templates are copied from, which ``KIRO_HOME`` and a pod gateway move away from
+#: ``~/.kiro/agents``. A JSON string with ASCII escapes, like the template header.
+AGENTS_FOLDER_HEADER = "X-Kirocrew-Agents-Folder"
 
 #: Export response header naming the installed apps a whole-install export does not
 #: carry, nor their data. Same JSON shape and bounds as the template header.
@@ -335,6 +342,7 @@ async def api_portability_export(request: web.Request) -> web.StreamResponse:
         more += past_cap
     if unbundled or more:
         headers[UNBUNDLED_TEMPLATES_HEADER] = json.dumps(unbundled + ([f"+{more}"] if more else []))
+        headers[AGENTS_FOLDER_HEADER] = json.dumps(_home_relative(kiro_agents_dir()))
     # Every installed app stays behind with its data (`unbundled_apps` says which
     # are named). A memory export carries no install, so it gets no app notice.
     if not memory_only:
@@ -647,7 +655,15 @@ async def api_portability_import(request: web.Request) -> web.Response:
             ),
         )
 
-        return web.json_response({"ok": True, "summary": summary, "manifest": manifest})
+        # The folder the missing-templates warning tells the user to copy them into.
+        return web.json_response(
+            {
+                "ok": True,
+                "summary": summary,
+                "manifest": manifest,
+                "agents_folder": _home_relative(kiro_agents_dir()),
+            }
+        )
     except (SourceComponentUnsound, NamedStoresInUse) as e:
         # A refusal, not a failure: both are raised before anything moves (a torn database
         # in the archive; a named store open in some process), and the operator needs the
