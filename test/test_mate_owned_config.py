@@ -297,6 +297,42 @@ def test_write_mate_config_overwrites_an_existing_crewmate_file(layout):
     assert written["mcpServers"] == {} and written["tools"] == []
 
 
+def test_a_create_that_lost_the_race_leaves_the_winners_file(layout, monkeypatch, tmp_path):
+    """A create writing the file before it publishes refuses a name already bound."""
+    from kiro_crew.config import loader as config_loader
+    from kiro_crew.memory_stores import MemberAlreadyExists
+
+    _user, mates, _checkout = layout
+    config = tmp_path / "config.json"
+    monkeypatch.setattr(config_loader, "config_path", lambda: config)
+    config.write_text(json.dumps({"agents": {"other": {"kiro_agent": "other"}}}))
+    assert json.loads(write_mate_config("ada", unbound=True).read_text())["name"] == "ada"
+
+    edited = {"name": "ada", "prompt": "the owner's edit", "tools": ["fs_read"]}
+    _write(mates, "ada", edited)
+    config.write_text(json.dumps({"agents": {"ada": {"kiro_agent": "ada"}}}))
+    with pytest.raises(MemberAlreadyExists):
+        write_mate_config("ada", unbound=True)
+    assert json.loads((mates / "ada.json").read_text()) == edited
+
+
+@pytest.mark.parametrize("text", ['{"agents": {"ada": ', '{"agents": []}'])
+def test_a_roster_that_cannot_be_read_refuses_the_write(text, layout, monkeypatch, tmp_path):
+    """A config.json that cannot be read may bind the Bot, so its file is kept."""
+    from kiro_crew.config import loader as config_loader
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    _user, mates, _checkout = layout
+    config = tmp_path / "config.json"
+    monkeypatch.setattr(config_loader, "config_path", lambda: config)
+    edited = {"name": "ada", "prompt": "the owner's edit", "tools": ["fs_read"]}
+    _write(mates, "ada", edited)
+    config.write_text(text)
+    with pytest.raises(UnknownMemoryStore, match="configuration is unreadable"):
+        write_mate_config("ada", unbound=True)
+    assert json.loads((mates / "ada.json").read_text()) == edited
+
+
 def test_another_instances_crewmate_file_is_never_overwritten(layout, monkeypatch, tmp_path):
     """Two instances share one Kiro home; the same crewmate name names one file."""
     from kiro_crew.mate_config import MateConfigError

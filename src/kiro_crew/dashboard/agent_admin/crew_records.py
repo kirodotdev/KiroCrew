@@ -62,11 +62,10 @@ async def _eager_copy_mate_config(name: str) -> str:
     with the prompt inlined as literal text, then repoints ``kiro_agent`` to
     *name* so resolution finds the owned file and the picker never offers it.
 
-    Best-effort and never raises: a crewmate that was already published must not
-    be reported as a failed create over this copy. Returns a short outcome code
-    for the log. On any failure ``kiro_agent`` is left pointing at the source
-    template, which still resolves and runs (the pre-RFC shared-pointer model),
-    so the degradation is graceful.
+    Never raises; returns a short outcome code for the log. The create route
+    writes the own file and publishes the binding on it first, so there this
+    answers ``already_owned`` and no failure can leave the binding on the
+    template.
 
     Runs with :mod:`kiro_crew.dashboard.handlers.agents`'s injected namespace, so
     ``KiroCrewConfig``, ``persist_member_config``, ``_get_config_lock`` and
@@ -816,8 +815,34 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
         # Only the store's own refusal tells the dialog to drop the pick; a host
         # or storage failure leaves it, since the store is still there to take.
         adopt_refused = False
+        name_clash = False
+        from kiro_crew.mate_config import (
+            MateConfigError,
+            discard_unbound_mate_config,
+            user_agent_named,
+            write_mate_config,
+        )
+
+        # Set by the worker itself: a cancellation during the write is re-raised
+        # only after the write finished, so the line after the await may not run.
+        wrote = {"own": False}
+
+        def _write_own_file() -> None:
+            write_mate_config(name, unbound=True)
+            wrote["own"] = True
+
         try:
             try:
+                # The Bot's own file is written BEFORE the binding is published,
+                # and the binding names it from the start. A user-level agent of
+                # the same name (one that appeared since the check above) or a
+                # write that fails refuses the create, so no Bot is ever
+                # published running its template or another agent.
+                if await _drained_to_thread(user_agent_named, name):
+                    name_clash = True
+                    raise MateConfigError(f"a user-level agent is already named {name!r}")
+                await _drained_to_thread(_write_own_file)
+                new_agent.kiro_agent = name
                 if adopt_store:
                     from kiro_crew.member_memory_adopt import adopt_member_memory
 
@@ -835,6 +860,9 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
                     )
                 )
             except BaseException:
+                if wrote["own"]:
+                    # Kept when the binding landed after all (or another create's did).
+                    await _drained_to_thread(discard_unbound_mate_config, name)
                 retire_unpublished_workspace(
                     cfg, name, new_workspace, previous_workspace=previous_workspace
                 )
@@ -859,6 +887,19 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
         except MemberAlreadyExists:
             return web.json_response(
                 {"error": f"Agent '{name}' already exists", "code": "agent_exists"}, status=409
+            )
+        except MateConfigError as exc:
+            if name_clash:
+                return web.json_response(
+                    {
+                        "error": f"A template is already named '{name}'; give this crew "
+                        "another name.",
+                        "code": "template_name_in_use",
+                    },
+                    status=409,
+                )
+            return web.json_response(
+                {"error": str(exc), "code": "bot_config_unwritable"}, status=409
             )
         except teams_mod.TeamsUnavailable as exc:
             return web.json_response(
@@ -888,10 +929,8 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
     # and repoint the binding to it, clobbering the mate id (the create-ordering
     # bug the live pod surfaced).
     #
-    # Best-effort: a crewmate that was published must not be reported as a failed
-    # create over the copy. A copy that does not land leaves ``kiro_agent``
-    # pointing at the source template (the pre-RFC shared-pointer model), and the
-    # grant below then skips (``mate_file_missing``) rather than minting a fork.
+    # The own file was written and the binding published on it above, so here
+    # this answers ``already_owned``; it stays as the one shared adopt step.
     mate_copy = await _eager_copy_mate_config(name)
     logger.info("new Bot %s: bot-owned config %s", name, mate_copy)
     # A template without the crewmate's own tools gets them on the member's OWNED

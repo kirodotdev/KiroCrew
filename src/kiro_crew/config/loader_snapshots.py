@@ -921,6 +921,20 @@ def publish_mate_agents(names: Iterable[str]) -> None:
         _MATERIALIZED_AGENTS_GENERATION += 1
 
 
+def retract_mate_agent(name: str) -> None:
+    """Undo :func:`publish_mate_agents` for *name*, whose crewmate file was removed.
+
+    Only a crewmate-only entry is dropped; a name the user level declares stays.
+    """
+    global _MATERIALIZED_AGENTS, _MATERIALIZED_AGENTS_GENERATION, _MATERIALIZED_MATE_ONLY
+    with _MATERIALIZED_AGENTS_LOCK:
+        if name not in _MATERIALIZED_MATE_ONLY:
+            return
+        _MATERIALIZED_MATE_ONLY = _MATERIALIZED_MATE_ONLY - {name}
+        _MATERIALIZED_AGENTS = _MATERIALIZED_AGENTS - {name}
+        _MATERIALIZED_AGENTS_GENERATION += 1
+
+
 def schedule_materialized_agents_refresh() -> None:
     """Refresh the snapshot from ANY context without blocking an event loop.
 
