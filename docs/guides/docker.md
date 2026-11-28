@@ -233,6 +233,27 @@ Nothing is applied from there; you still pull the new image as above.
   agent commands, and do not mount host paths you would not hand to the
   agent. The startup log states which posture was chosen.
 
+## Deploying on Railway
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/kirocrew-ai-agent-gateway)
+
+A community template runs the `stable` image on Railway with a persistent
+volume at `/home/kirocrew`, the `/api/health` healthcheck, and
+`KIROCREW_CORS_ORIGINS` set to the service's Railway domain. Railway
+containers cannot create user namespaces, so the template sets
+`KIROCREW_ALLOW_UNSANDBOXED=1` (see **Option B** below).
+
+Railway's edge connects to the container from changing addresses, so the
+per-IP session pin rejects dashboard API calls with `IP mismatch`. The
+template therefore ships an opt-in same-host relay, enabled with
+`KIROCREW_RELAY_ENABLED=1`: the gateway binds `127.0.0.1` and a small relay
+inside the container forwards the public port to it. This is the
+reverse-proxy pattern from
+[Remote Hosts and Mobile Access](remote-and-mobile.md#behind-a-reverse-proxy),
+with the same caveat: the pin is shared, and the dashboard token is the
+access control. Mint a login link with `railway ssh` and
+`kirocrew token --port 5477` (the gateway's port behind the relay).
+
 ## Sandbox troubleshooting
 
 Kiro Crew runs agent commands inside a Linux user-namespace sandbox that
