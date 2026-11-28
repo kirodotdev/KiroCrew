@@ -644,10 +644,15 @@ attributes takes the attribute-keeping merge pattern before its next tag.
 
 Beside the pure `kirocrew-<v>-py3-none-any.whl`, every fresh build publishes one
 wheel per host the KAS engine runs on (#39623): `kirocrew-<v>-py3-none-<tag>.whl`
-for `manylinux_2_28_x86_64`, `manylinux_2_28_aarch64`, `macosx_11_0_arm64` and
-`macosx_11_0_x86_64`. Each is the pure wheel plus the pinned engine and its Node
-at `kiro_crew/_kas_engine/<pin>/`, so install and update need no engine download
-and code and engine switch together. Windows and every other host keep the pure
+for `manylinux_2_26_x86_64`, `manylinux_2_28_x86_64`, `manylinux_2_28_aarch64`,
+`macosx_11_0_arm64` and `macosx_11_0_x86_64`. Each is the pure wheel plus the
+pinned engine and its Node at `kiro_crew/_kas_engine/<pin>/`, so install and
+update need no engine download and code and engine switch together. The
+`manylinux_2_26_x86_64` wheel is for linux-x64 on glibc 2.26 and 2.27 (Amazon
+Linux 2, #42475) and carries the Amazon Linux 2 pin (`KAS_PIN_AL2_VERSION`),
+checked against that pin's manifest; every other wheel carries the normal pin.
+pip on glibc 2.28 or newer prefers the `manylinux_2_28_x86_64` wheel, and a host
+below glibc 2.26 keeps the pure wheel. Windows and every other host keep the pure
 wheel and `kirocrew kas install`, which stays the fallback and migration path.
 
 - **Build.** `build-platform-wheels.yml` (after `build-wheel.yml` in the same run), one leg per tag on the host
@@ -659,9 +664,10 @@ wheel and `kirocrew kas install`, which stays the fallback and migration path.
   `(built into the wheel)` with nothing downloaded and pass the same
   `python -I -m pip check` the update runs before it promotes a new venv
   (`pip install` reads only the filename's tag, `pip check` reads the WHEEL
-  headers). A failed leg fails the
+  headers). The `manylinux_2_26_x86_64` leg also runs the wheel's Node and loads
+  each linux-x64 native addon in a pinned `amazonlinux:2` container. A failed leg fails the
   reusable workflow, so the release publishes nothing.
-- **Publish.** `publish-cli.yml` re-runs `verify` over all four (a missing tag
+- **Publish.** `publish-cli.yml` re-runs `verify` over all five (a missing tag
   fails the job), attests them, and for each writes `<prefix>/<wheel>`,
   `<prefix>/cli-manifest-<tag>.json` and, when the pure feed advanced,
   `feed/<channel>/latest-cli-<tag>.json`: the same signed schema as
@@ -672,7 +678,8 @@ wheel and `kirocrew kas install`, which stays the fallback and migration path.
   platform wheel by tag on its own.
 - **Clients.** `wheel_engine.fetch_verified_manifest` and `cli.sh` read
   `latest-cli.json` first: it names the channel's version. On a host with a tag
-  (`wheel_engine_platform.host_wheel_tag`; Linux needs glibc 2.28) they then read
+  (`wheel_engine_platform.host_wheel_tag`; Linux needs glibc 2.28, or 2.26 on
+  linux-x64 for the Amazon Linux 2 wheel) they then read
   `latest-cli-<tag>.json` and use it only when it names that same version; absent
   (403/404) or another version leaves the pure wheel. A pinned `cli.sh --version`
   installs the pure wheel.

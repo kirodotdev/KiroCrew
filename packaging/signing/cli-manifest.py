@@ -31,6 +31,7 @@ CHANNELS = ("nightly", "insider", "stable", "lts")
 #: Platform wheels a release publishes beside the pure wheel, each with its own signed
 #: manifest (``scripts/kas_platform_wheel.py`` PLATFORM_TAGS; a pin test holds them equal).
 PLATFORM_WHEEL_TAGS = (
+    "manylinux_2_26_x86_64",
     "manylinux_2_28_x86_64",
     "manylinux_2_28_aarch64",
     "macosx_11_0_arm64",

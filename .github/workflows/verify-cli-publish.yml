@@ -1,7 +1,7 @@
 name: Verify CLI Publish (no publish)
 
 # The nightly's CLI lane up to its gate, and nothing after it: build the pure
-# wheel and the four platform wheels exactly as nightly.yml does, then run
+# wheel and the five platform wheels exactly as nightly.yml does, then run
 # publish-cli.yml with `verify_only: true`, which runs its "Verify platform
 # wheels" gate and skips the publish job.
 #

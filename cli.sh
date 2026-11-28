@@ -926,7 +926,8 @@ else
   echo "Resolving KiroCrew ($CHANNEL channel) ..."
 fi
 # The platform wheel this host takes: the pure wheel plus the pinned KAS engine
-# (wheel_engine_platform.host_wheel_tag; glibc 2.28 is the bundled Node's floor).
+# (wheel_engine_platform.host_wheel_tag; glibc 2.28 is the bundled Node's floor,
+# 2.26 the Amazon Linux 2 pin's on linux-x64).
 # Empty for every other host, and for a pinned version, which installs the pure
 # wheel. Its signed manifest is latest-cli-<tag>.json; when that is absent, the
 # install falls back to latest-cli.json and downloads the engine after pip.
@@ -947,10 +948,14 @@ if s == "Darwin" and tag:
 if s == "Linux" and tag:
     lib, ver = platform.libc_ver()
     try:
-        ok = lib == "glibc" and tuple(int(x) for x in ver.split(".")[:2]) >= (2, 28)
+        glibc = tuple(int(x) for x in ver.split(".")[:2]) if lib == "glibc" else None
     except ValueError:
-        ok = False
-    tag = tag if ok else ""
+        glibc = None
+    if glibc is None:
+        tag = ""
+    elif glibc < (2, 28):
+        # Amazon Linux 2: its wheel carries the AL2 KAS pin (glibc 2.26 floor).
+        tag = "manylinux_2_26_x86_64" if tag == "manylinux_2_28_x86_64" and glibc >= (2, 26) else ""
 print(tag)
 ' 2>/dev/null || true)"
 fi
