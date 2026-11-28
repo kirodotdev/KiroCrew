@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.cron_script_mcp import KeptMcpServers
+from kiro_crew.cron_script_session_state import session_state_rows
 from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
@@ -188,6 +189,28 @@ class ScriptContext:
         if not isinstance(result, list):
             raise RuntimeError(f"list_session_folders() failed: {self._reason(result)}")
         return result
+
+    def list_sessions(self) -> list[dict]:
+        """Return each dashboard chat's state, read from ``GET /api/chat/slots``.
+
+        One dict per chat: ``slot``, ``title``, ``folder_id``, ``status`` (one of
+        ``SESSION_STATUSES``), ``unread``, ``last_activity`` and ``last_reply``
+        (ISO times, empty when unknown). Incognito, temporary and channel-born
+        chats are left out. A cron bound to a crew member sees only the chats
+        that member owns or created, as the gateway filters the list for it.
+        Sends nothing and changes nothing. Raises RuntimeError if the gateway
+        refuses or cannot be reached.
+        """
+        result = self._exchange(
+            urllib.request.Request(
+                f"http://127.0.0.1:{self._port}/api/chat/slots",
+                headers=self._headers(),
+                method="GET",
+            )
+        )
+        if not isinstance(result, list):
+            raise RuntimeError(f"list_sessions() failed: {self._reason(result)}")
+        return session_state_rows(result)
 
     def create_session_folder(self, name: str, *, parent_id: str = "") -> dict:
         """Create a session folder and return it (``POST /api/chat/folders``).

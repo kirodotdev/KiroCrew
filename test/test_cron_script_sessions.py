@@ -99,6 +99,33 @@ class TestListSessionFolders:
             ctx.list_session_folders()
 
 
+class TestListSessions:
+    def test_gets_the_slot_list_as_the_cron_and_projects_it(self, ctx, gateway):
+        gateway.answers[("GET", "/api/chat/slots")] = [
+            {"key": "chat-1", "title": "Ops", "running": True, "memory_mode": "persistent"},
+            {"key": "chat-2", "title": "Secret", "memory_mode": "incognito"},
+        ]
+
+        rows = ctx.list_sessions()
+
+        assert [(r["slot"], r["status"]) for r in rows] == [("chat-1", "working")]
+        (req,) = gateway.seen
+        assert req.full_url == "http://127.0.0.1:7788/api/chat/slots"
+        assert req.get_method() == "GET"
+        assert req.data is None
+        assert _cron_headers(req) == {
+            "secret": "tok",
+            "key": f"cron:{_JOB}",
+            "token": "signed-run-token",
+        }
+
+    def test_a_non_list_answer_is_an_error(self, ctx, gateway):
+        gateway.answers[("GET", "/api/chat/slots")] = {"error": "Token required"}
+
+        with pytest.raises(RuntimeError, match="list_sessions.*Token required"):
+            ctx.list_sessions()
+
+
 class TestCreateSessionFolder:
     def test_posts_the_name_and_returns_the_folder(self, ctx, gateway):
         made = {"id": "f9", "name": "Ops", "parent_id": None}
