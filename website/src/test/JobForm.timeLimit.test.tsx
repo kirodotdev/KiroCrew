@@ -11,7 +11,7 @@ import { screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { renderWithProviders } from './helpers'
-import JobForm, { buildBody, parseJobDefaults, DEFAULT_RUN_LIMIT_SECS } from '../components/JobForm'
+import JobForm, { buildBody, parseJobDefaults, unroundedRunLimit, DEFAULT_RUN_LIMIT_SECS } from '../components/JobForm'
 import type { CronJob } from '../types'
 import { api } from '../api/client'
 
@@ -59,6 +59,29 @@ describe('the run time limit in the job form', () => {
     const f = { ...parseJobDefaults(makeJob({ timeout_secs: 1000 })), name: 'renamed' }
     expect(f.timeLimitMin).toBe(17)
     expect(buildBody(f, 'UTC', () => {}, true)!.timeout_secs).toBeUndefined()
+  })
+
+  it('names a stored limit that is not a whole number of minutes', () => {
+    expect(unroundedRunLimit(1)).toBe('1s')
+    expect(unroundedRunLimit(1000)).toBe('16m 40s')
+    expect(unroundedRunLimit(3600)).toBeNull()
+  })
+
+  it('says beside the field when it shows the stored limit rounded', async () => {
+    renderWithProviders(<JobForm layout="vertical" agents={[]} onSaved={() => {}} job={makeJob({ timeout_secs: 1 })} />)
+    const field = await screen.findByLabelText('Time limit in minutes')
+    expect(field).toHaveValue(1)
+    const note = 'The saved limit is 1s. This field shows it rounded to whole minutes, and saving keeps 1s unless you change the field.'
+    expect(field).toHaveAccessibleDescription(note)
+    // Once the user types a new limit, the stored one no longer applies.
+    fireEvent.change(field, { target: { value: '5' } })
+    expect(screen.queryByText(note)).toBeNull()
+  })
+
+  it('adds no note for a limit in whole minutes', async () => {
+    renderWithProviders(<JobForm layout="horizontal" agents={[]} onSaved={() => {}} job={makeJob({ timeout_secs: 3600 })} />)
+    const field = await screen.findByLabelText('Time limit in minutes')
+    expect(field).not.toHaveAttribute('aria-describedby')
   })
 
   it('offers the limit on a script job too: it bounds every kind of run', () => {

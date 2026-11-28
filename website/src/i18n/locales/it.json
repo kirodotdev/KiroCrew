@@ -8115,6 +8115,7 @@
       "time_limit": "Limite di tempo",
       "time_limit_description": "Interrompi un'esecuzione ancora in corso dopo questo tempo e segnalala come scaduta. Vale per l'intera esecuzione. Predefinito: 30 minuti.",
       "time_limit_minutes": "Limite di tempo in minuti",
+      "time_limit_unrounded": "Il limite salvato è {{limit}}. Questo campo lo mostra arrotondato ai minuti interi, e il salvataggio mantiene {{limit}} se non modifichi il campo.",
       "mode_advice_minimal_context": "Questo job ha bisogno dell'agente, ma sembra non aver bisogno del tuo contesto salvato. Il contesto minimo mantiene l'agente e scarta il resto.",
       "mode_advice_script": "Questo job sembra un controllo meccanico che non richiede alcun ragionamento. La forma più economica è un job di script, che non consuma nessun turno dell'agente; chiedi nella chat di crearne uno. Il contesto minimo è la seconda scelta migliore qui.",
       "model": "Modello",
